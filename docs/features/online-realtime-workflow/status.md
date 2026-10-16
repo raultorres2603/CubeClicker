@@ -43,6 +43,7 @@ Reflect the game's online, real-time nature across the AI agent workflow and pro
 - 2026-10-17 — code review r1 completed — verdict: **approved** (blocking 0; nonblocking 7: F1 MINOR + F2–F7 INFO → backlog); reviewer independently re-verified AC-1…AC-25 (15/15 baselines; AC-24 clean; no push) — docs/features/online-realtime-workflow/reviews/code-r1.md
 - 2026-10-17 — code_review → accepted — approved with 0 blocking; all ACs verified met; post-acceptance ff-only merge to `main` dispatched — docs/features/online-realtime-workflow/reviews/code-r1.md
 - 2026-10-17 — post-acceptance: `--ff-only` merge done — `main` == `feat/online-realtime-workflow` == `8a599a0`; no merge commit; no push (`origin/main` unchanged at `927fd78`); branch retained; uncommitted working-tree files untouched
+- 2026-10-17 — post-acceptance (out-of-band): docs commit `8b34eff` "Specs for new updates on framework" landed on `feat/online-realtime-workflow` (branch = `main` + 1; branch now on origin; local `main` stays at `8a599a0`); it will reach `main` with the next post-acceptance merge (details in docs/features/containerized-workflow/status.md)
 
 ## Blockers / open questions
 - **Accepted 2026-10-17** — code-r1 approved (blocking 0; 7 nonblocking). Post-acceptance: `--ff-only` merge done — `main` == branch == `8a599a0`; branch retained; no push ever.
