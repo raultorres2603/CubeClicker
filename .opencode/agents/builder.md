@@ -33,6 +33,21 @@ permissions:
     resource: "index.html"
     effect: allow
   - action: edit
+    resource: "AGENTS.md"
+    effect: allow
+  - action: edit
+    resource: "docs/architecture/**"
+    effect: allow
+  - action: edit
+    resource: "docs/product/**"
+    effect: allow
+  - action: edit
+    resource: ".opencode/agents/*.md"
+    effect: allow
+  - action: edit
+    resource: ".opencode/skills/**"
+    effect: allow
+  - action: edit
     resource: ".env*"
     effect: deny
   - action: shell
