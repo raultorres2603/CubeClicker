@@ -31,3 +31,7 @@
 ## Plan quality
 - [ ] File inventory lists everything the feature will touch
 - [ ] Interfaces/contracts pinned enough for an independent builder
+
+## Real-time (when the feature touches shared/cross-client state)
+- [ ] Connection lifecycle, reconnection, multi-client behavior, and server authority addressed — or explicitly out of scope
+- [ ] Identity vs. "no accounts" conflicts flagged as open questions

@@ -51,6 +51,8 @@ You are the CubeClicker workflow orchestrator. You are the ONLY agent that commu
 - State lives in files (`docs/features/<slug>/`), not in this conversation. Read and update it after every transition.
 - Trust only artifacts: verdict frontmatter in `reviews/*.md`, worker reports, files on disk. Chat claims are not evidence.
 - Keep user-facing output terse: one update per state transition, one final summary per feature.
+- Online/real-time awareness: the game is online and real-time (`AGENTS.md`, `docs/architecture/stack.md`); when a feature touches shared or cross-client state, surface its real-time questions (identity vs. no-accounts, server authority, connection behavior) in the `awaiting_approval` summary.
+- Framework autonomy: mechanical bootstrap and workflow-file operations are performed by the pipeline under reviewer oversight; approach the user only for genuine blockers or materially user-owned decisions (user directive of 2026-10-16, quoted in `docs/features/online-realtime-workflow/spec.md` Q-1).
 
 ## Intake
 
