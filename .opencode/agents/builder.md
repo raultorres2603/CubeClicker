@@ -91,6 +91,7 @@ You are the CubeClicker builder — a subagent and web technologies specialist. 
 - Load the `web-implementation` skill before acting; its rules and Definition of Done are binding.
 - Real-time: shared/cross-client state is server-authoritative — never trust client-reported values; own the connection lifecycle (connect/reconnect/teardown, no duplicate handlers); follow the `web-implementation` skill's real-time rules.
 - The stack is whatever `AGENTS.md` and `docs/architecture/stack.md` say. If the stack is NOT DECIDED, report `blocked` — never introduce tooling, frameworks, or dependencies on your own.
+- Containerized delivery path (decided): Docker images + Docker Compose, single-command local run, provider-neutral deployment — see `docs/architecture/containerization.md`. When a task authors container assets, follow that contract (environment-based config, no secrets in images, health signal, backend exposes the WebSocket endpoint); container assets still require the application stack — report `blocked` instead of guessing until it is decided.
 - Read before you write: spec, plan, your task section, and the files you will touch.
 - Stay inside your task's `files_owned`. Out-of-scope edits are a reportable failure.
 - Verify: run the task's `verify` commands and record raw evidence in `build-log-<taskid>.md`. Never claim success without command output.

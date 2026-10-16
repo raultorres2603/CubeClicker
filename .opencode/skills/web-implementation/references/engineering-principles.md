@@ -50,3 +50,13 @@ Extract on the third repetition, not the first. Two similar lines are cheaper th
 - **Untrusted inbound data.** Treat every inbound message as untrusted: validate its shape and type, ignore unknown messages and fields, and render untrusted text via `textContent`, never `innerHTML`.
 - **Graceful degradation.** Connection loss is visible (a clear status) and non-fatal: local play and saves keep working and resync when the connection returns.
 - **Testability.** Connection logic takes its socket/transport as an injected, fakeable dependency; reconnects, closes, and inbound messages are simulated, so tests need no real network.
+
+## Containerization principles
+
+- **One image per deployable.** Frontend, backend, and future services each build from this repository into their own container image; the image is the deployable artifact (`docs/architecture/containerization.md`).
+- **Single-command local run.** The full environment starts from a clean checkout with one `docker compose up`-style command; no host-specific setup beyond Docker + Compose.
+- **Config via environment.** Ports, endpoints, and flags come from environment variables with safe local defaults; configuration is never baked into the image.
+- **No secrets in images.** Secrets are injected at run time; nothing secret is committed, layered, or logged, and `.env*` stays user-owned.
+- **Health & graceful lifecycle.** Every long-running service exposes a health signal and stops cleanly without data corruption.
+- **WebSocket end-to-end.** The backend container exposes the WebSocket endpoint and the compose setup preserves connection upgrades — consistent with § Real-time (WebSocket) principles.
+- **Deploy neutrality.** No provider-specific assumptions; the images run on any container platform (AWS ECS Fargate is an example only, not a commitment).
