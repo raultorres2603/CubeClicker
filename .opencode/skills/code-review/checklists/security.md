@@ -37,3 +37,9 @@ Adapted from the OWASP web-top-10 mindset for a client-side game. Mark each item
 - [ ] No API keys, tokens, or secrets in client code or in messages sent to or from the client
 - [ ] Transport is secure in production (`wss://` on https pages; no mixed content)
 - [ ] Shared state is never derived from unvalidated client-reported values (server-authoritative)
+
+## Containers & images (if applicable)
+- [ ] No secrets or credentials baked into images, layers, or compose files; `.env*` untouched
+- [ ] Image references deterministic (pinned versions where reproducibility matters)
+- [ ] Containers run without privileged/escalated privileges; exposed ports are intentional
+- [ ] Provider-neutral: no deployment-provider lock-in or credentials in images/compose

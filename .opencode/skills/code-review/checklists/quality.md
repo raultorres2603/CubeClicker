@@ -36,3 +36,9 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] Reconnection is bounded (finite attempts/backoff) and resyncs state after reconnecting
 - [ ] Multi-client behavior is consistent (two clients converge on the same shared state), or single-client scope is explicit in the spec
 - [ ] Shared/global values are server-authoritative; client-reported values are never treated as truth
+
+## Containerized delivery (if applicable)
+- [ ] Single-command local run preserved (`docker compose up`-style starts the full environment)
+- [ ] One image per deployable; images build reproducibly from the repository
+- [ ] Runtime config via environment variables with safe local defaults; no host-specific assumptions
+- [ ] Health signal present for long-running services; containers stop gracefully

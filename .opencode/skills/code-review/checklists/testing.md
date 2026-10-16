@@ -29,3 +29,8 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] Multi-client behavior has at least one test: two clients observe the same shared state
 - [ ] Reconnect/close paths are tested via simulated connection events (no real network), including state resync after reconnect
 - [ ] Malformed/unknown inbound messages are handled in tests (ignored, no crash, no state change)
+
+## Container coverage (if applicable)
+- [ ] The containerized local environment starts and serves the full stack (documented smoke check)
+- [ ] WebSocket connectivity verified through the container path (upgrades work end-to-end)
+- [ ] Container build/run checks are part of the verification suite once the stack provides commands
