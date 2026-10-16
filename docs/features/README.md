@@ -4,6 +4,7 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 
 | Slug | Title | State | Last updated |
 | --- | --- | --- | --- |
-| — | (no features yet) | — | — |
+| online-realtime-workflow | Online & Real-Time Workflow Alignment | accepted | 2026-10-17 |
+| project-glossary | Project Glossary | awaiting_approval | 2026-10-16 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
