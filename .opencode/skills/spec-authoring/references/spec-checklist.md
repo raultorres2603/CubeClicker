@@ -35,3 +35,7 @@
 ## Real-time (when the feature touches shared/cross-client state)
 - [ ] Connection lifecycle, reconnection, multi-client behavior, and server authority addressed — or explicitly out of scope
 - [ ] Identity vs. "no accounts" conflicts flagged as open questions
+
+## Containers (when the feature adds services, images, ports, configuration, or deployables)
+- [ ] Containerization impact addressed per `docs/architecture/containerization.md` (local-run contract, image/service rules, deploy neutrality, WebSocket endpoint exposure) — or explicitly out of scope
+- [ ] Stack-dependent container details flagged as open questions; no container assets specified for an undecided stack
