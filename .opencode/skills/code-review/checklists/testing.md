@@ -24,3 +24,8 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] The review records raw command names and result summaries (not "tests pass" without output)
 - [ ] Any AC marked met cites where the proof lives (test name, file:line, command)
 - [ ] Anything not verifiable is marked unable-to-verify and treated as unmet
+
+## Real-time coverage (if applicable)
+- [ ] Multi-client behavior has at least one test: two clients observe the same shared state
+- [ ] Reconnect/close paths are tested via simulated connection events (no real network), including state resync after reconnect
+- [ ] Malformed/unknown inbound messages are handled in tests (ignored, no crash, no state change)

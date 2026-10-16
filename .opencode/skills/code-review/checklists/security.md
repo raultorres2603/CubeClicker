@@ -30,3 +30,10 @@ Adapted from the OWASP web-top-10 mindset for a client-side game. Mark each item
 
 ## Game-specific abuse (document, don't over-engineer)
 - [ ] Client-side save tampering is acknowledged; any future economy validation is server-side by design — flag if the task implies competitive/paid value stored client-side
+
+## Real-time & untrusted messages (if applicable)
+- [ ] Inbound WebSocket messages are treated as untrusted: shape/type-validated before use, unknown or malformed types ignored (no crash, no state change)
+- [ ] Untrusted text from messages is rendered via `textContent` — never `innerHTML`/`insertAdjacentHTML`
+- [ ] No API keys, tokens, or secrets in client code or in messages sent to or from the client
+- [ ] Transport is secure in production (`wss://` on https pages; no mixed content)
+- [ ] Shared state is never derived from unvalidated client-reported values (server-authoritative)

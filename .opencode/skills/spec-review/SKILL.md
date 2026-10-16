@@ -22,6 +22,7 @@ Task Brief plus `spec.md`, `plan.md`, `tasks.md`, `docs/product/vision.md`, `AGE
 - **Testing** — strategy present; commands exist in `AGENTS.md`; relevant edge cases named.
 - **Consistency** — aligns with the vision; reuses existing architecture; contradicts nothing in `AGENTS.md`.
 - **Risks** — ambiguities that will surface mid-build as blockers.
+- **Real-time (when applicable)** — features touching shared/cross-client state define connection lifecycle, reconnection, multi-client behavior, and server authority for shared values; identity/accounts conflicts are flagged.
 
 ## Severity & verdict
 

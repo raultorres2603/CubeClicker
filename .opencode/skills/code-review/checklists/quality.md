@@ -29,3 +29,10 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] No per-frame allocations or DOM churn in hot loops
 - [ ] Timers/observers cleaned up on teardown (no leaks across reloads/HMR)
 - [ ] Bundle additions justified and measured where significant
+
+## Real-time (if the feature uses the connection)
+- [ ] One owner for the connection lifecycle (connect/open/close/reconnect/teardown); UI observes connection status instead of opening its own connection
+- [ ] Reconnect is idempotent: no duplicate handlers or subscriptions survive a reconnect; teardown closes the connection and removes handlers
+- [ ] Reconnection is bounded (finite attempts/backoff) and resyncs state after reconnecting
+- [ ] Multi-client behavior is consistent (two clients converge on the same shared state), or single-client scope is explicit in the spec
+- [ ] Shared/global values are server-authoritative; client-reported values are never treated as truth
