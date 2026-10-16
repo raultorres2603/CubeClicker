@@ -4,7 +4,8 @@
 
 ## One-liner
 
-A web-based clicker game built and maintained by an AI-native development team.
+A web-based, online, real-time clicker game built and maintained by an AI-native development team.
+> **Direction:** candidate online/real-time features are tracked provisionally in [realtime-backlog.md](realtime-backlog.md) — direction, not commitments.
 
 ## Core loop
 
