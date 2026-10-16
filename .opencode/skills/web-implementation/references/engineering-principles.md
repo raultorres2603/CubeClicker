@@ -41,3 +41,12 @@ Extract on the third repetition, not the first. Two similar lines are cheaper th
 - Main-thread tasks over ~16 ms are splitting candidates (chunk heavy work; don't run it per frame).
 - Memory: no unbounded arrays/growth per tick; pools or reuse for hot-loop objects.
 - Bundle: state any new dependency's cost in the build log; keep the game shell loading instantly.
+
+## Real-time (WebSocket) principles
+
+- **Single connection owner.** One module owns the socket and its lifecycle; the rest of the UI observes connection status and never opens its own socket.
+- **Lifecycle & reconnection.** Reconnection is bounded (retry limit/backoff) and resyncs state on success; handlers are idempotent, so reconnecting never registers duplicates or double-applies server state.
+- **Server authority.** Shared/global values (counters, presence, leaderboards) come from the server; optimistic UI must reconcile with the server's answer, and client-reported values are never treated as truth.
+- **Untrusted inbound data.** Treat every inbound message as untrusted: validate its shape and type, ignore unknown messages and fields, and render untrusted text via `textContent`, never `innerHTML`.
+- **Graceful degradation.** Connection loss is visible (a clear status) and non-fatal: local play and saves keep working and resync when the connection returns.
+- **Testability.** Connection logic takes its socket/transport as an injected, fakeable dependency; reconnects, closes, and inbound messages are simulated, so tests need no real network.

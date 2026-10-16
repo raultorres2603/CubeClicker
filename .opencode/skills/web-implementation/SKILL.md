@@ -23,6 +23,7 @@ You implement exactly one task (or a small parallel-safe batch) per invocation, 
 - Game logic is pure and framework-free: functions over explicit state in `src/core/` (or the stack's equivalent). No DOM or timers inside pure logic — time and randomness come in as parameters.
 - Rendering/UI subscribes to state; it does not own it. Single source of truth for game state.
 - One place owns `requestAnimationFrame`/interval usage; clean up on teardown. No leaks.
+- Real-time (WebSocket): one owner for the connection lifecycle (connect → open → close → reconnect); reconnection is bounded and resyncs state; shared/cross-client state is server-authoritative (the client never trusts reported values); teardown closes connections and removes handlers. Depth in `references/engineering-principles.md` § Real-time principles.
 - Persistence: versioned save schema plus a migration function; validate on load; a corrupt save must never crash the game.
 - DRY without premature abstraction: extract on the third repetition, not the first. KISS: prefer the boring solution. YAGNI: build what the task asks, nothing speculative.
 - `textContent`, never `innerHTML`, for user-controlled strings. No `eval`, no remote code.
