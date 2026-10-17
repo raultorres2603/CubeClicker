@@ -1,6 +1,7 @@
 # CubeClicker — Product Vision
 
 > Living document. The user owns the vision; agents read it as the north star. Updates flow through feature requests.
+> **Terminology:** canonical domain terms are defined in [glossary.md](glossary.md).
 
 ## One-liner
 
