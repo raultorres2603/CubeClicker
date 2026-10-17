@@ -1,12 +1,36 @@
 # Stack
 
-**Status: NOT DECIDED** (application stack) — **DECIDED:** the containerized delivery path (§ Containerized delivery path; user decision, 2026-10-17).
+**Status: DECIDED** (application stack, 2026-10-17) — the containerized delivery path remains as decided (§ Containerized delivery path).
 
-The stack will be selected via a dedicated stack-selection task. Until this file is filled in:
+The application stack was decided on 2026-10-17 and is recorded in § Application stack (DECIDED, 2026-10-17) below; the container conventions it implies are settled in `docs/architecture/containerization.md`. Both are binding for all future work — a departure requires a user-owned amendment (spec revision first, then implementation).
 
-- Agents MUST NOT introduce, assume, or install any framework, language runtime, build tool, or dependency beyond the decided containerization tooling (Docker images + Docker Compose; § Containerized delivery path).
-- The Builder MUST report `blocked` if asked to implement code before the stack is decided.
-- The Planner may write stack-agnostic specs but MUST flag stack-dependent decisions as open questions.
+## Application stack (DECIDED, 2026-10-17)
+
+- **Language:** TypeScript (strict), across every workspace.
+- **Runtime:** Node.js 24 LTS.
+- **Backend:** Fastify + `@fastify/websocket` — HTTP health at `GET /healthz`, WebSocket server at `GET /ws`.
+- **Frontend:** React + Vite (SPA, static build).
+- **Package manager:** npm (workspaces) — layout `src/backend` + `src/frontend`; unit tests colocated as `*.test.ts` beside the sources they cover; cross-service e2e tests in `tests/e2e/`.
+- **Tests:** Vitest.
+- **Lint:** ESLint (flat config) + typescript-eslint.
+- **Dev runner:** `tsx` (backend watch mode).
+
+The rationale for this decision (candidate comparison and explicit trade-offs) is recorded in this feature's spec: `docs/features/stack-selection/spec.md` § Stack decision.
+
+### Commands
+
+Canonical commands, mirrored in `AGENTS.md` § Commands:
+
+| Command | Purpose |
+| --- | --- |
+| `npm ci` | install dependencies from the committed lockfile |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | TypeScript, no emit |
+| `npm test` | Vitest, all workspaces |
+| `npm run build` | build all workspaces |
+| `npm run dev` | start the full local environment with hot reload (equivalent to `docker compose up`) |
+| `npm run smoke` | containerized end-to-end smoke test (equivalent to `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
+| `docker compose up` | the single-command local environment (backend + frontend containers) |
 
 ## Containerized delivery path (DECIDED)
 
@@ -14,14 +38,14 @@ The stack will be selected via a dedicated stack-selection task. Until this file
 - Docker images + Docker Compose are the decided containerization tooling (user decision, 2026-10-17).
 - Deployable artifacts are container images runnable on any container platform — provider-neutral; AWS ECS Fargate is an example only and no provider is chosen.
 - Future services (databases, queues, etc.) are added via the same containerized path.
-- The application stack (language, framework, runtime, tooling, ports) remains NOT DECIDED; concrete container assets (Dockerfiles, compose file) are authored at/after stack selection.
+- The application stack is decided (§ Application stack (DECIDED, 2026-10-17) above) and the container assets exist in this repository: `compose.yaml` and `compose.smoke.yaml` at the root, plus the Dockerfiles under `src/backend/` and `src/frontend/`.
 - The backend container must expose the WebSocket endpoint required by § Hard constraints.
 - Binding requirements live in `docs/architecture/containerization.md`.
 
-## Hard constraints (all candidates)
+## Hard constraints
 
 - Any selected stack must support a WebSocket server on the backend and WebSocket client connections from the frontend.
 - Rationale: CubeClicker is an online, real-time game with cross-client visibility — clients are expected to see each other's live activity.
-- This section constrains capability only; it names no technology, and the application stack remains NOT DECIDED until the stack-selection task decides it.
+- This section constrains capability only; it names no technology. The decided stack satisfies it: the backend serves the WebSocket endpoint (`GET /ws`) and the frontend connects to it over WebSocket.
 
-When decided, this file will define: language, framework, build tooling, test tooling, package manager, project layout, and the canonical commands (lint / typecheck / test / build / dev) mirrored in `AGENTS.md`. The stack-selection task must also produce the container assets that realize the decided delivery path (Dockerfiles, compose file) and document the single-command local run (see § Containerized delivery path).
+The decision recorded above is operationalized by the scaffold in this repository: the container stack starts with `docker compose up`, the run instructions live in `README.md`, and the canonical commands (lint / typecheck / test / build / dev / smoke) are listed above and mirrored in `AGENTS.md` § Commands.

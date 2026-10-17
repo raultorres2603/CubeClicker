@@ -4,22 +4,32 @@ CubeClicker is a web-based, online, real-time, multi-client clicker game. Client
 
 ## Stack
 
-- **Application stack: NOT DECIDED.** The canonical stack lives in `docs/architecture/stack.md`. Until that file defines it, agents MUST NOT introduce, assume, or install any framework, runtime, build tool, or dependency beyond the decided containerized delivery path (next bullet); the builder reports `blocked` for stack-dependent implementation instead of guessing.
-- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `docker compose up`-style command; deployable artifacts are container images runnable on any container platform (AWS ECS Fargate is an example only — no provider is chosen); future services (databases, queues, etc.) join the same path. Docker and Docker Compose are the decided tooling; concrete container assets are authored once the application stack is decided (see `docs/architecture/containerization.md`).
-- **Online/real-time constraint (protocol-level).** The game is online and real-time: the backend must be WebSocket-compatible and the frontend must connect to it over WebSocket. Any stack selection must satisfy this. No framework, library, or runtime is implied or chosen. See docs/architecture/stack.md § Hard constraints.
+- **Application stack: DECIDED (2026-10-17)** — TypeScript (strict); Node.js 24 LTS + Fastify (WebSocket); React + Vite; npm workspaces; Vitest; ESLint. Canonical details in `docs/architecture/stack.md`.
+- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `docker compose up` command (hot reload); deployable artifacts are container images runnable on any container platform (AWS ECS Fargate is an example only — no provider is chosen); future services (databases, queues, etc.) join the same path. Docker and Docker Compose are the decided tooling; the container assets live in the repository (`compose.yaml`, Dockerfiles under `src/*`), and the run instructions live in `README.md` (see `docs/architecture/containerization.md`).
+- **Online/real-time constraint (protocol-level).** The game is online and real-time: the backend must be WebSocket-compatible and the frontend must connect to it over WebSocket. The decided stack satisfies this constraint: the backend serves the WebSocket endpoint (`/ws`) and the frontend connects to it over WebSocket. See docs/architecture/stack.md § Hard constraints.
 
 ## Commands
 
-- **TBD** — filled in after the stack-selection task (lint, typecheck, test, build, dev). Until then, treat commands as unavailable and say so in reports.
-- **Local environment (containerized).** The full local environment will start with a single `docker compose up`-style command (backend + frontend containers) once the container assets land; run instructions will be documented at the repo root and mirrored here.
+Host tooling commands need Node.js 24 LTS + npm; running the environment itself needs only Docker with Compose. Run instructions live in `README.md`.
+
+- `npm ci` — install dependencies from the committed lockfile.
+- `npm run lint` — ESLint.
+- `npm run typecheck` — TypeScript, no emit.
+- `npm test` — Vitest unit tests, all workspaces.
+- `npm run build` — build all workspaces.
+- `npm run dev` — start the full local environment with hot reload (equivalent to `docker compose up`).
+- `npm run smoke` — containerized end-to-end smoke test (equivalent to `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`).
+- **Local environment (containerized).** The full local environment starts with a single `docker compose up` command (backend + frontend containers); run instructions are documented in `README.md` at the repository root and mirrored here.
 
 ## Project structure
 
-- `src/` — application source
-- `tests/` — unit and e2e tests
-- `public/` — static assets
+- `src/backend/` — backend workspace (Node.js + Fastify; its own Dockerfile)
+- `src/frontend/` — frontend workspace (React + Vite; its own Dockerfile)
+- `tests/e2e/` — containerized smoke/e2e tests
 - `docs/` — product vision, architecture, feature artifacts
 - `.opencode/` — agents, skills, commands (the AI team)
+
+Unit tests are colocated beside the sources they cover (`*.test.ts`, inside each workspace).
 
 ## Workflow
 
@@ -29,7 +39,7 @@ CubeClicker is a web-based, online, real-time, multi-client clicker game. Client
 
 ## Conventions
 
-- Language: TypeScript (strict) per the agreed stack.
+- Language: TypeScript (strict) — decided with the application stack (2026-10-17); see docs/architecture/stack.md.
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
 - Branches: `feat/<slug>` for feature work; merge to main only after a feature is `accepted`.
 - Tests accompany every behavior change.
