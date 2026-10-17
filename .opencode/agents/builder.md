@@ -33,6 +33,24 @@ permissions:
     resource: "index.html"
     effect: allow
   - action: edit
+    resource: "README.md"
+    effect: allow
+  - action: edit
+    resource: ".gitignore"
+    effect: allow
+  - action: edit
+    resource: ".dockerignore"
+    effect: allow
+  - action: edit
+    resource: "package-lock.json"
+    effect: allow
+  - action: edit
+    resource: "compose.yaml"
+    effect: allow
+  - action: edit
+    resource: "compose.smoke.yaml"
+    effect: allow
+  - action: edit
     resource: "AGENTS.md"
     effect: allow
   - action: edit
