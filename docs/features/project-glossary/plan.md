@@ -1,6 +1,6 @@
 ---
 feature: project-glossary
-revision: 1
+revision: 2
 ---
 # Plan — Project Glossary
 
@@ -44,6 +44,7 @@ Rules: exactly one H1; exactly the eight H3 term entries (spelling lowercase as 
 - Words = whitespace-delimited tokens. Sentences = runs of text ending in `.`, `!`, or `?`.
 - Definition/example caps count the text **after** the label (labels/headings excluded); the total-file caps count **all** content.
 - Slack check: worst case ≈ 8 × (40 + 25) plus headings/labels/intro ≈ 610 words < 700; either counting convention passes. Builders should avoid abbreviations (e.g., "e.g.") inside entries to keep sentence counts unambiguous.
+- Term matching (for AC-8): the term must appear as a whole, punctuation/whitespace-delimited token (case-insensitive); inflections count (e.g., clicked/clicking for `click`; saved/saving/saves for `save`; singular `point` counts for `points`); unrelated words that merely contain the letters (e.g., "disappoint") do not count.
 
 ### Required terms — semantic anchors (wording-level; no mechanics)
 
@@ -71,7 +72,7 @@ The intro (between H1 and `## Terms`) must state: (a) these are the canonical Cu
 - The Markdown link target is the relative sibling `glossary.md`; the visible label references the glossary/terminology.
 - No other vision.md change of any kind.
 
-**Baseline — `docs/product/vision.md` (verbatim, captured 2026-10-16).** The repository's only commit (`cba610b`, "Initial commit") contains just `.gitattributes` and `LICENSE`; all project files — including `docs/` — are untracked, so there is no committed baseline. Reviewers compare against this quote:
+**Baseline — `docs/product/vision.md` (committed; verbatim from `git show HEAD:docs/product/vision.md`, captured 2026-10-17).** The quote below is the file's current committed content. It already includes the changes from the accepted online-realtime-workflow feature (commit `b3aeff1`, its T2): (a) the One-liner was modified to "A web-based, online, real-time clicker game built and maintained by an AI-native development team."; (b) one line was added: `> **Direction:** candidate online/real-time features are tracked provisionally in [realtime-backlog.md](realtime-backlog.md) — direction, not commitments.` These are pre-existing baseline content, not part of this feature. **Operational rule (AC-13):** the baseline is the committed content of `docs/product/vision.md` at T2 start; it governs if it differs from the quote below. Any pre-existing uncommitted `vision.md` changes must be noted in `build-log-T2.md` before the link line is added. Reviewers compare against this quote:
 
 ```markdown
 # CubeClicker — Product Vision
@@ -80,7 +81,8 @@ The intro (between H1 and `## Terms`) must state: (a) these are the canonical Cu
 
 ## One-liner
 
-A web-based clicker game built and maintained by an AI-native development team.
+A web-based, online, real-time clicker game built and maintained by an AI-native development team.
+> **Direction:** candidate online/real-time features are tracked provisionally in [realtime-backlog.md](realtime-backlog.md) — direction, not commitments.
 
 ## Core loop
 
@@ -142,3 +144,8 @@ Planner artifacts (`spec.md`, `plan.md`, `tasks.md` in this directory) and revie
 - **Q-4** — Confirm the single additive link line in user-owned `vision.md` is acceptable.
 - **Q-5** — Retrofit existing docs to glossary terms later?
 - **Q-6** — None stack-dependent: this feature needs no framework, runtime, or tooling; verification stays inspection-only until the stack lands.
+
+## Revision history
+
+- r1 — 2026-10-16 — initial draft
+- r2 — 2026-10-17 — hygiene fold per spec-r1 F2/F3; no requirement changes
