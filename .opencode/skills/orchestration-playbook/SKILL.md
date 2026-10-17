@@ -76,7 +76,7 @@ REQUIRED OUTPUT: Subagent Report. Do not address the user.
 
 1. Read `tasks.md`. A task is **ready** when all `depends_on` are `[x]`.
 2. Exactly one ready → run Builder in the foreground with a brief for that task.
-3. Several ready and ALL are `[P]` with pairwise disjoint `files_owned` and no shared-file contact (`package.json`, lockfiles, entrypoints) → launch them as **background** subagents (max 3) in one batch.
+3. Several ready and ALL are `[P]` with pairwise disjoint `files_owned` and no shared-file contact (`package.json`, lockfiles, entrypoints, container definitions such as the compose file and Dockerfiles) → launch them as **background** subagents (max 3) in one batch.
 4. Otherwise pick the first ready `[seq]` task and run it in the foreground.
 5. After each Builder report: update `tasks.md` and the loop log, then re-evaluate.
 

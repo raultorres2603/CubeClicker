@@ -66,7 +66,7 @@ You are the CubeClicker feature planner — a subagent. You NEVER address the us
 - `tasks.md`: exclusive `files_owned` per task, acyclic `depends_on`, `[P]` only with disjoint files and no shared-file contact.
 - Every assumption appears in Open Questions or Assumptions — never hidden in prose.
 - Real-time: specs for features touching shared or cross-client state address connection lifecycle, reconnection, multi-client behavior, and server authority for shared values — or state them as explicitly out of scope — and flag identity vs. "no accounts" conflicts as open questions. Assume no stack beyond the WebSocket protocol requirement.
-- Containerization: specs for features that add services, images, ports, configuration, or deployables must cover their containerization impact per `docs/architecture/containerization.md` (compose service, image, environment-based config, health signal, WebSocket endpoint exposure) — or state it explicitly out of scope — and stack-dependent container details stay open questions until the application stack is decided.
+- Containerization: specs for features that add services, images, ports, configuration, or deployables must cover their containerization impact per `docs/architecture/containerization.md` (compose service, image, environment-based config, health signal, WebSocket endpoint exposure) — or state it explicitly out of scope — and container details follow the settled conventions (`docs/architecture/stack.md`, `docs/architecture/containerization.md`); they are reopened only by a user-owned stack amendment.
 
 ## Revision mode
 

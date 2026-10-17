@@ -23,7 +23,7 @@ Task Brief plus `spec.md`, `plan.md`, `tasks.md`, `docs/product/vision.md`, `AGE
 - **Consistency** — aligns with the vision; reuses existing architecture; contradicts nothing in `AGENTS.md`.
 - **Risks** — ambiguities that will surface mid-build as blockers.
 - **Real-time (when applicable)** — features touching shared/cross-client state define connection lifecycle, reconnection, multi-client behavior, and server authority for shared values; identity/accounts conflicts are flagged.
-- **Containers (when applicable)** — features adding services, images, ports, configuration, or deployables address the containerization contract (`docs/architecture/containerization.md`: local-run contract, image/service rules, deploy neutrality, WebSocket endpoint exposure) or state it out of scope; stack-dependent container details are open questions.
+- **Containers (when applicable)** — features adding services, images, ports, configuration, or deployables address the containerization contract (`docs/architecture/containerization.md`: local-run contract, image/service rules, deploy neutrality, WebSocket endpoint exposure) or state it out of scope; container details must match the settled conventions (`docs/architecture/containerization.md`) or be flagged as open questions.
 
 ## Severity & verdict
 

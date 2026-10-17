@@ -38,4 +38,4 @@
 
 ## Containers (when the feature adds services, images, ports, configuration, or deployables)
 - [ ] Containerization impact addressed per `docs/architecture/containerization.md` (local-run contract, image/service rules, deploy neutrality, WebSocket endpoint exposure) — or explicitly out of scope
-- [ ] Stack-dependent container details flagged as open questions; no container assets specified for an undecided stack
+- [ ] Container details follow the settled conventions (`docs/architecture/containerization.md`); deviations are flagged as open questions for a user-owned amendment
