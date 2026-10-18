@@ -28,6 +28,7 @@ Create `docs/product/glossary.md` defining the canonical CubeClicker domain term
 - 2026-10-17 — building → code_review — every task [x]; build_round 1; code review dispatched for independent re-verification of commits `e16f281` → `f0a141f` → `4751750` (base `02a9471`; branch `feat/project-glossary`) — review dispatched
 - 2026-10-17 — code_review → accepted — code-r1: approved (blocking 0; nonblocking 2 × INFO: F1 `vision.md:3-4` blockquote coalescing — contract-conformant, no action; F2 sweep reminder — handled by packaging) — ALL 13 ACs independently re-verified met (never from build logs); commit hygiene verified (3 linear commits, touch-sets == files_owned, nothing pushed); spec-defect check: none — docs/features/project-glossary/reviews/code-r1.md
 - 2026-10-17 — ACCEPTED 2026-10-17 — post-acceptance packaging: process artifacts (plan/tasks/status/reviews incl. spec-r1 + code-r1) + README index row committed on `feat/project-glossary`; ff-only merge to `main` via packaging op (result line appended on completion)
+- 2026-10-17 — post-acceptance: ff-only merge done — `main` == `feat/project-glossary` == `5d47786` (packaging commit: 5 files, +104; ff carried 10 files, 499+/18− from `02a9471`); no merge commit; tree clean except this bookkeeping line; nothing pushed (`origin/main` unchanged at `02a9471`); branch retained
 
 ## Blockers / open questions
 - None — accepted 2026-10-17 (code-r1: 0 blocking). Packaging + ff-only merge to `main` in progress.
