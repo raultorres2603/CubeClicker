@@ -1,13 +1,13 @@
 # CubeClicker backend image — multi-stage (`dev` / `prod`).
 # Build context is the repository root:
-#   podman build --target dev  -f src/backend/Dockerfile .
-#   podman build --target prod -f src/backend/Dockerfile .
+#   podman build --format docker --target dev  -f src/backend/Dockerfile .
+#   podman build --format docker --target prod -f src/backend/Dockerfile .
 # All COPY sources are root-relative.
 
 # Every stage copies the root manifests plus both workspace manifests, so `npm ci`
 # resolves the shared lockfile exactly as on the host.
 # --- dev: tsx watch over bind-mounted sources (hot reload) ---
-FROM node:24-alpine AS dev
+FROM docker.io/library/node:24-alpine AS dev
 
 ENV NODE_ENV=development
 WORKDIR /app
@@ -28,7 +28,7 @@ HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=15s \
 CMD ["npm", "run", "dev", "-w", "@cubeclicker/backend"]
 
 # --- build: compile the backend workspace to dist/ ---
-FROM node:24-alpine AS build
+FROM docker.io/library/node:24-alpine AS build
 
 WORKDIR /app
 
@@ -43,7 +43,7 @@ COPY src/backend ./src/backend
 RUN npm run build -w @cubeclicker/backend
 
 # --- prod-deps: production-only dependency tree ---
-FROM node:24-alpine AS prod-deps
+FROM docker.io/library/node:24-alpine AS prod-deps
 
 WORKDIR /app
 
@@ -54,7 +54,7 @@ COPY src/frontend/package.json ./src/frontend/package.json
 RUN npm ci --omit=dev
 
 # --- prod: non-root runtime with the compiled server ---
-FROM node:24-alpine AS prod
+FROM docker.io/library/node:24-alpine AS prod
 
 ENV NODE_ENV=production
 WORKDIR /app/src/backend
