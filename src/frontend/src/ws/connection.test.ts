@@ -214,3 +214,60 @@ describe('createConnection', () => {
     expect(h.statuses).toEqual(['connecting']);
   });
 });
+
+/**
+ * In-process stand-in for the ambient `WebSocket` global — records every instantiation
+ * and the handlers `connection.ts` attaches; it never opens a socket.
+ */
+class FakeGlobalWebSocket {
+  static instances: FakeGlobalWebSocket[] = [];
+
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  closeCalls = 0;
+
+  constructor(readonly url: string) {
+    FakeGlobalWebSocket.instances.push(this);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+  }
+}
+
+describe('createConnection — default socket factory', () => {
+  beforeEach(() => {
+    FakeGlobalWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeGlobalWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeGlobalWebSocket.instances = [];
+  });
+
+  it('uses the ambient WebSocket global with the exact url when no factory is injected', () => {
+    const statuses: ConnectionStatus[] = [];
+    const connection = createConnection({
+      url: 'ws://default-factory.test:8080/ws',
+      onStatus: (status) => statuses.push(status),
+    });
+
+    expect(FakeGlobalWebSocket.instances).toHaveLength(1);
+    const socket = FakeGlobalWebSocket.instances[0]!;
+    expect(socket.url).toBe('ws://default-factory.test:8080/ws');
+    expect(statuses).toEqual(['connecting']);
+
+    // The default socket drives the very same state machine as an injected factory.
+    socket.onopen?.();
+    expect(statuses).toEqual(['connecting', 'connected']);
+
+    // Teardown closes that socket exactly once and detaches every handler.
+    connection.close();
+    expect(socket.closeCalls).toBe(1);
+    expect(socket.onopen).toBeNull();
+    expect(socket.onclose).toBeNull();
+    expect(socket.onerror).toBeNull();
+  });
+});
