@@ -117,7 +117,7 @@ No bounded exception used: every assertion is an exact value (`toEqual([0, 0, 21
 
 ### Scope check
 
-```
+```sh
 $ git status --short            # before commit
 ?? docs/features/cube-game-frontend/plan.md      (pre-existing untracked artifacts, not staged)
 ?? docs/features/cube-game-frontend/reviews/
@@ -127,11 +127,16 @@ $ git status --short            # before commit
 ?? src/frontend/src/render/scene.test.ts
 ?? src/frontend/src/render/scene.ts
 ?? docs/features/cube-game-frontend/build-log-T12.md
-$ git commit --only -- src/frontend/src/render/scene.ts src/frontend/src/render/scene.test.ts docs/features/cube-game-frontend/build-log-T12.md
-$ git show --stat HEAD          # exactly the three files above (recorded post-commit below)
+$ git add --intent-to-add -- src/frontend/src/render/scene.ts src/frontend/src/render/scene.test.ts docs/features/cube-game-frontend/build-log-T12.md
+$ git commit -m "feat: add scene composition with camera flights (T12)" --only -- src/frontend/src/render/scene.ts src/frontend/src/render/scene.test.ts docs/features/cube-game-frontend/build-log-T12.md
+[main 7135d47] feat: add scene composition with camera flights (T12)
+ 3 files changed, 1148 insertions(+)
+ create mode 100644 docs/features/cube-game-frontend/build-log-T12.md
+ create mode 100644 src/frontend/src/render/scene.test.ts
+ create mode 100644 src/frontend/src/render/scene.ts
 ```
 
-`git add` was never used; no directory was staged; no `--amend`; the parallel T10 files (`picking.ts`, `picking.test.ts`, `build-log-T10.md`) are untouched by this commit.
+`git add` was never used on a directory and never with `.`/`-A` (only `--intent-to-add` on the three explicit paths, so `--only` had known paths and no other path could be swept into the commit); no `--amend`; the parallel T10 files (`picking.ts`, `picking.test.ts`, `build-log-T10.md`, committed as `c1b8d0d` by that builder) are untouched by this commit.
 
 ## Acceptance audit
 
@@ -153,3 +158,34 @@ $ git show --stat HEAD          # exactly the three files above (recorded post-c
 
 - The scene is exercised against real three.js objects with a fake `RendererAdapter`; there is no GL context in node (the spec's documented residual, mocked at T13's `webgl.ts`).
 - Bursts are asserted through the pool's live buffer (`drawRange.count`, position triples), not through GPU output.
+
+## Post-commit verification (committed tree `7135d47`)
+
+```
+$ git show --stat HEAD
+commit 7135d4759fa14b7ea1b420363d06d53b13035710
+    feat: add scene composition with camera flights (T12)
+
+ docs/features/cube-game-frontend/build-log-T12.md | 155 +++++
+ src/frontend/src/render/scene.test.ts             | 675 ++++++++++++++++++++++
+ src/frontend/src/render/scene.ts                  | 318 ++++++++++
+ 3 files changed, 1148 insertions(+)
+
+$ git status --short
+?? docs/features/cube-game-frontend/plan.md
+?? docs/features/cube-game-frontend/reviews/
+?? docs/features/cube-game-frontend/spec.md
+?? docs/features/cube-game-frontend/status.md
+?? docs/features/cube-game-frontend/tasks.md     (pre-existing feature artifacts, owned by the orchestrator/planner — not this task)
+
+$ npm test --workspace @cubeclicker/frontend
+ Test Files  14 passed (14)
+      Tests  232 passed (232)
+
+$ npm run coverage --workspace @cubeclicker/frontend   # exit 0
+All files        |   99.27 |     99.2 |     100 |   99.27 |
+ src/render      |   99.66 |    99.21 |     100 |   99.66 |
+  scene.ts       |     100 |      100 |     100 |     100 |
+```
+
+No file changed after the commit, so this run is the committed tree's own result.
