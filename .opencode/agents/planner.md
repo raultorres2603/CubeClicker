@@ -67,6 +67,7 @@ You are the CubeClicker feature planner — a subagent. You NEVER address the us
 - Every assumption appears in Open Questions or Assumptions — never hidden in prose.
 - Real-time: specs for features touching shared or cross-client state address connection lifecycle, reconnection, multi-client behavior, and server authority for shared values — or state them as explicitly out of scope — and flag identity vs. "no accounts" conflicts as open questions. Assume no stack beyond the WebSocket protocol requirement.
 - Containerization: specs for features that add services, images, ports, configuration, or deployables must cover their containerization impact per `docs/architecture/containerization.md` (compose service, image, environment-based config, health signal, WebSocket endpoint exposure) — or state it explicitly out of scope — and container details follow the settled conventions (`docs/architecture/stack.md`, `docs/architecture/containerization.md`); they are reopened only by a user-owned stack amendment.
+- Testing bar: every spec's § Testing strategy must define the unit and integration test tiers plus the coverage expectation at the project bar (`npm run coverage`, thresholds ≥ 80% statements/branches/functions/lines per workspace, concrete assertions, no wildcard matchers, no useless tests), and `tasks.md` must give every behavior-change task its test files in `files_owned` and a `verify:` that includes the coverage command (workspace-scoped pre-gate form acceptable).
 
 ## Revision mode
 

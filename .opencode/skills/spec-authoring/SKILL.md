@@ -15,7 +15,7 @@ You write `spec.md` (what and why) and `plan.md` (how) for one feature, then han
 4. Define **non-goals** explicitly — scope control is a feature.
 5. Boundaries in three tiers: ✅ Always / ⚠️ Ask first / 🚫 Never.
 6. Security considerations: user-controlled data, persistence integrity, no secrets client-side, dependency additions.
-7. Testing strategy: what is unit vs e2e, which commands verify what (from `AGENTS.md`).
+7. Testing strategy: unit vs integration vs containerized e2e tiers, which commands verify what (from `AGENTS.md`), and the coverage expectation — `npm run coverage`, ≥ 80% statements/branches/functions/lines per workspace — with the project assertion/no-useless-tests bar.
 8. `plan.md`: architecture (modules, data flow, state ownership), interfaces/contracts, file inventory, key decisions with rationale, risks.
 9. Run `references/spec-checklist.md` against your draft before reporting. Fix gaps.
 

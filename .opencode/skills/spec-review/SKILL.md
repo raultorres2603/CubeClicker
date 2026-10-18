@@ -19,7 +19,7 @@ Task Brief plus `spec.md`, `plan.md`, `tasks.md`, `docs/product/vision.md`, `AGE
 - **Dependency graph** — acyclic; dependencies point at earlier tasks; every AC mapped; tasks sized to one builder session.
 - **Parallel safety** — every `[P]` has `files_owned` disjoint from all other tasks and no shared-file contact. Violation is a BLOCKER (parallel collisions are the #1 multi-agent failure).
 - **Security** — user-controlled data, persistence integrity, secrets, dependency additions addressed.
-- **Testing** — strategy present; commands exist in `AGENTS.md`; relevant edge cases named.
+- **Testing** — strategy present with unit + integration tiers; commands exist in `AGENTS.md`; the coverage expectation names `npm run coverage` with thresholds ≥ 80% (statements, branches, functions, lines) per workspace; assertion-quality and no-useless-tests bars referenced; relevant edge cases named.
 - **Consistency** — aligns with the vision; reuses existing architecture; contradicts nothing in `AGENTS.md`.
 - **Risks** — ambiguities that will surface mid-build as blockers.
 - **Real-time (when applicable)** — features touching shared/cross-client state define connection lifecycle, reconnection, multi-client behavior, and server authority for shared values; identity/accounts conflicts are flagged.

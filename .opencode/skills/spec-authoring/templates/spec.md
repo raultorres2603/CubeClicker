@@ -30,7 +30,9 @@ updated: <date>
 
 ## Testing strategy
 - Unit: …
+- Integration: …
 - E2E: …
+- Coverage: `npm run coverage` — thresholds ≥ 80% (statements, branches, functions, lines), per workspace.
 - Verification commands: <from AGENTS.md>
 
 ## Open questions
