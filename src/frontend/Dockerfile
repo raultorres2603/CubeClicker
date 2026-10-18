@@ -1,9 +1,9 @@
 # CubeClicker frontend image — multi-stage (`dev` for hot-reload development, `prod` for static serving).
-# Build context is the repository root:  podman build --target dev|prod -f src/frontend/Dockerfile .
+# Build context is the repository root:  podman build --format docker --target dev|prod -f src/frontend/Dockerfile .
 # No secrets and no environment-specific values are baked in; runtime config comes from the environment.
 
 # --- dev: Vite dev server on 5173 (source is bind-mounted by compose for hot reload) ---
-FROM node:24-alpine AS dev
+FROM docker.io/library/node:24-alpine AS dev
 
 WORKDIR /app
 
@@ -25,7 +25,7 @@ HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=15s \
 CMD ["npm", "run", "dev", "-w", "@cubeclicker/frontend"]
 
 # --- build: type-agnostic production build of the SPA (vite build → dist/) ---
-FROM node:24-alpine AS build
+FROM docker.io/library/node:24-alpine AS build
 
 WORKDIR /app
 
@@ -38,7 +38,7 @@ COPY src/frontend src/frontend
 RUN npm run build -w @cubeclicker/frontend
 
 # --- prod: unprivileged nginx serving the static build on 8080 (non-root by image default) ---
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS prod
+FROM docker.io/nginxinc/nginx-unprivileged:1.27-alpine AS prod
 
 COPY src/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/src/frontend/dist/ /usr/share/nginx/html/

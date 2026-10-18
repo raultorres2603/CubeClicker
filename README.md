@@ -52,9 +52,11 @@ The defaults work out of the box. `.env` files are user-owned and are not used b
 ## Production images
 
 ```bash
-podman build --target prod -f src/backend/Dockerfile .
-podman build --target prod -f src/frontend/Dockerfile .
+podman build --format docker --target prod -f src/backend/Dockerfile .
+podman build --format docker --target prod -f src/frontend/Dockerfile .
 ```
+
+The `--format docker` form keeps the image `HEALTHCHECK`, which Podman 5's default OCI build format would drop.
 
 Both images are provider-neutral and are the deployable artifacts. Release tagging is deferred to deployment time.
 
