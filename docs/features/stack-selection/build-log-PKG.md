@@ -134,9 +134,138 @@ $ git status --short --untracked-files=all
 
 Matches the expected set: the uncommitted `stack-selection` artifacts (`spec.md`, `plan.md`, `tasks.md`, `status.md`, `reviews/**` incl. `code-r1.md`) + this new log + the two modified docs. The 13 committed build logs (`build-log-T0.md` … `build-log-T7.md`) are already in history, correctly absent from the dirty set. No unexpected path.
 
-## § 5 — Commit + merge
+## § 5 — Commit + merge (pointer)
 
-See § 6/§ 7 below (appended with the raw `git show --stat`, `git log`, `git status`, and `main` sha after the operations).
+The packaging commit `bc3c954` and its fast-forward propagation to `main` are recorded with raw command output in **§ 6** below (appended in the follow-up residue-fold pass, commit `docs: fold stack-selection packaging residues (PKG)`). The fold pass itself and its verification are in **§ 7**.
+
+## § 6 — Merge evidence (packaging pass; raw output)
+
+Staging (explicit pathspecs only — never `git add .`/`-A`):
+
+```
+$ git add docs/features/stack-selection docs/features/README.md docs/features/project-glossary/status.md
+$ git diff --cached --name-status
+M	docs/features/README.md
+M	docs/features/project-glossary/status.md
+A	docs/features/stack-selection/build-log-PKG.md
+A	docs/features/stack-selection/plan.md
+A	docs/features/stack-selection/reviews/code-r1.md
+A	docs/features/stack-selection/reviews/spec-r1.md
+A	docs/features/stack-selection/reviews/spec-r2.md
+A	docs/features/stack-selection/reviews/spec-r3.md
+A	docs/features/stack-selection/reviews/spec-r4.md
+A	docs/features/stack-selection/reviews/spec-r5.md
+A	docs/features/stack-selection/reviews/t2c-check.md
+A	docs/features/stack-selection/spec.md
+A	docs/features/stack-selection/status.md
+A	docs/features/stack-selection/tasks.md
+```
+
+Commit and fast-forward:
+
+```
+$ git commit -m "docs: package stack-selection artifacts (accepted)"
+[feat/stack-selection bc3c954] docs: package stack-selection artifacts (accepted)
+ 14 files changed, 1438 insertions(+)
+
+$ git show --stat bc3c954
+commit bc3c954c88d2974c0a2f784ba94df5bdc509d965
+    docs: package stack-selection artifacts (accepted)
+
+ docs/features/README.md                            |   1 +
+ docs/features/project-glossary/status.md           |   1 +
+ docs/features/stack-selection/build-log-PKG.md     | 151 ++++++++
+ docs/features/stack-selection/plan.md              | 406 +++++++++++++++++++++
+ docs/features/stack-selection/reviews/code-r1.md   | 122 +++++++
+ docs/features/stack-selection/reviews/spec-r1.md   |  55 +++
+ docs/features/stack-selection/reviews/spec-r2.md   |  49 +++
+ docs/features/stack-selection/reviews/spec-r3.md   |  60 ++++
+ docs/features/stack-selection/reviews/spec-r4.md   |  75 ++++
+ docs/features/stack-selection/reviews/spec-r5.md   |  77 ++++
+ docs/features/stack-selection/reviews/t2c-check.md |  37 ++
+ docs/features/stack-selection/spec.md              | 190 ++++++++++
+ docs/features/stack-selection/status.md            |  72 ++++
+ docs/features/stack-selection/tasks.md             | 142 +++++++
+ 14 files changed, 1438 insertions(+)
+
+$ git checkout main && git merge --ff-only feat/stack-selection
+Switched to branch 'main'
+Updating 5d47786..bc3c954
+Fast-forward
+ 66 files changed, 13101 insertions(+), 40 deletions(-)
+
+$ git diff --stat 5d47786..bc3c954 | tail -1        # same tree delta the fast-forward reported
+ 66 files changed, 13101 insertions(+), 40 deletions(-)
+
+$ git log --oneline -3
+bc3c954 docs: package stack-selection artifacts (accepted)
+8b637db docs: record T7 verification pass for stack-selection (T7)
+2f62057 fix: relabel compose bind mounts for SELinux hosts (T6b)
+
+$ git rev-list --merges 5d47786..bc3c954 | wc -l
+0
+
+$ git status --short                                # immediately after the merge
+(empty — clean)
+
+$ git rev-parse main feat/stack-selection
+bc3c954c88d2974c0a2f784ba94df5bdc509d965
+bc3c954c88d2974c0a2f784ba94df5bdc509d965
+```
+
+Freeze and no-push checks:
+
+```
+$ git diff --stat 8b637db..main -- . ':(exclude)docs/features'
+(empty — application code frozen at 8b637db; the merge carried nothing outside docs/features from bc3c954)
+
+$ git show --name-only --format="" bc3c954
+docs/features/README.md
+docs/features/project-glossary/status.md
+docs/features/stack-selection/{build-log-PKG,plan,spec,status,tasks}.md
+docs/features/stack-selection/reviews/{code-r1,spec-r1,spec-r2,spec-r3,spec-r4,spec-r5,t2c-check}.md
+
+$ git rev-parse origin/main
+02a9471f1f615dd009e0ae2e836e0d7595e457ca      # unchanged from the pre-feature state — never pushed
+```
+
+## § 7 — Residue fold pass (this commit)
+
+Follow-up pass authorized by the orchestrator: fold the one residual stale phrase flagged in § 1 and complete this log's § 5 pointer. Working branch `feat/stack-selection` at `bc3c954`; the orchestrator's uncommitted `status.md` packaging line carried across the checkout unchanged (verified, not rewritten).
+
+`tasks.md:7` fold (r5 preamble sentence, anchored shell write; F4a-matched wording):
+
+```
+$ python3 - <<'PY'   # anchored, unique (n==1), line-7 asserted, abort-on-missing-anchor
+anchor occurrences: 1
+line 7 before: "…and closes AC-26/AC-27; T6 stays `[>]` (blocked-partial) until T6b is green. Manual `chcon`-style host preconditions (candidate A) and host-wide `label = false` (candidate C) are rejected. …"
+line 7 after:  "…and closes AC-26/AC-27; T6/T6b closed on green runs (2026-10-18; `build-log-T6b.md` § 3). Manual `chcon`-style host preconditions (candidate A) and host-wide `label = false` (candidate C) are rejected. …"
+sha256 before: 4e2b3d3a2f6cbcfc917820d60ff169e8fd5e5b1808350b994a238bb727e3ea04
+sha256 after:  e5c123597edfd76a20ee396c64ab0ee28388ab5a64b4ac999f7cd4e9c2cae33d
+lines: 142
+residual '[>]' count: 0
+SWEEP OK
+
+$ grep -n '\[>\]\|blocked-partial' docs/features/stack-selection/tasks.md
+(exit 1 — no hits: no stale pre-T6b marker or wording remains anywhere in tasks.md)
+
+$ sed -n '5p' docs/features/stack-selection/tasks.md
+**Task board:** … T6 [x] · T6b [x] · T7 [x]. T6/T6b closed on green runs (2026-10-18; `build-log-T6b.md` § 3).
+
+$ wc -l docs/features/stack-selection/tasks.md
+142 docs/features/stack-selection/tasks.md
+```
+
+Pre-commit dirty set for this pass (exactly the three authorized paths):
+
+```
+$ git status --short
+ M docs/features/stack-selection/tasks.md
+ M docs/features/stack-selection/build-log-PKG.md
+ M docs/features/stack-selection/status.md
+```
+
+This log is part of the commit it documents, so that commit's own sha cannot be recorded in-file by construction; the fold commit sha and the post-fold `main` position are reported in the packaging report (same convention as § 6's commit, whose sha was recorded here only because the log was staged with it).
 
 ## Acceptance audit
 
@@ -145,7 +274,8 @@ See § 6/§ 7 below (appended with the raw `git show --stat`, `git log`, `git st
 - F4 T6 r5-note (`tasks.md:124`) → met (§ 1: `blocked-partial, unchanged` → `closed, 2026-10-18` with green-run evidence pointer).
 - Features index row → met (§ 2: `accepted | 2026-10-18`, project-glossary format).
 - Dirty set == expected inventory → met (§ 4).
-- Commit on `feat/stack-selection` + `--ff-only` merge to `main` → met (§ 6/§ 7).
+- Commit on `feat/stack-selection` + `--ff-only` merge to `main` → met (§ 6).
 - No push, no `git add .`/`-A`, no `.env*`, no code changes → met (§ 6: explicit path staging only; feature code frozen at `8b637db`).
+- Residue fold (this pass) — `tasks.md:7` stale r5-preamble sentence → closed wording; § 5 pointer completed with § 6 → met (§ 7).
 
-Deviations from spec: none affecting content. Recorded: § 0 (shell-write mechanism for the two `edit`-denied artifact paths, T0 precedent) and § 1 (residual stale phrase at `tasks.md:7`, left untouched per the brief's pinned F4 locations).
+Deviations from spec: none affecting content. Recorded: § 0 (shell-write mechanism for the `edit`-denied artifact paths `tasks.md` / `docs/features/README.md`, T0 precedent) and § 1/§ 7 (the `tasks.md:7` residue: flagged in § 1 as out of the brief's pinned F4 locations, then folded in this authorized follow-up pass — no stale pre-T6b marker or wording remains in `tasks.md`).
