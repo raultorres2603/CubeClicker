@@ -38,7 +38,7 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] Shared/global values are server-authoritative; client-reported values are never treated as truth
 
 ## Containerized delivery (if applicable)
-- [ ] Single-command local run preserved (`docker compose up`-style starts the full environment)
+- [ ] Single-command local run preserved (`podman compose up`-style starts the full environment)
 - [ ] One image per deployable; images build reproducibly from the repository
 - [ ] Runtime config via environment variables with safe local defaults; no host-specific assumptions
 - [ ] Health signal present for long-running services; containers stop gracefully

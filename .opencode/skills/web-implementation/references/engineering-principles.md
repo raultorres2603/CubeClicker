@@ -54,7 +54,7 @@ Extract on the third repetition, not the first. Two similar lines are cheaper th
 ## Containerization principles
 
 - **One image per deployable.** Frontend, backend, and future services each build from this repository into their own container image; the image is the deployable artifact (`docs/architecture/containerization.md`).
-- **Single-command local run.** The full environment starts from a clean checkout with one `docker compose up`-style command; no host-specific setup beyond Docker + Compose.
+- **Single-command local run.** The full environment starts from a clean checkout with one `podman compose up`-style command; no host-specific setup beyond Podman with a working compose provider.
 - **Config via environment.** Ports, endpoints, and flags come from environment variables with safe local defaults; configuration is never baked into the image.
 - **No secrets in images.** Secrets are injected at run time; nothing secret is committed, layered, or logged, and `.env*` stays user-owned.
 - **Health & graceful lifecycle.** Every long-running service exposes a health signal and stops cleanly without data corruption.
