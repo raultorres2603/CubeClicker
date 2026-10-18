@@ -16,6 +16,7 @@ Host tooling commands need Node.js 24 LTS + npm; running the environment itself 
 - `npm run lint` — ESLint.
 - `npm run typecheck` — TypeScript, no emit.
 - `npm test` — Vitest unit tests, all workspaces.
+- `npm run coverage` — Vitest with V8 coverage in all workspaces (thresholds ≥ 80% statements/branches/functions/lines per workspace; part of the build gate).
 - `npm run build` — build all workspaces.
 - `npm run dev` — start the full local environment with hot reload (equivalent to `podman compose up`).
 - `npm run smoke` — containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`).
@@ -29,7 +30,7 @@ Host tooling commands need Node.js 24 LTS + npm; running the environment itself 
 - `docs/` — product vision, architecture, feature artifacts
 - `.opencode/` — agents, skills, commands (the AI team)
 
-Unit tests are colocated beside the sources they cover (`*.test.ts`, inside each workspace).
+Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.tsx`, inside each workspace).
 
 ## Workflow
 
@@ -42,10 +43,10 @@ Unit tests are colocated beside the sources they cover (`*.test.ts`, inside each
 - Language: TypeScript (strict) — decided with the application stack (2026-10-17); see docs/architecture/stack.md.
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
 - Branches: `feat/<slug>` for feature work; merge to main only after a feature is `accepted`.
-- Tests accompany every behavior change.
+- Tests accompany every behavior change: unit tests and integration tests with concrete expected values (no wildcard matchers), and no useless tests; coverage stays ≥ 80% (statements, branches, functions, lines) per workspace, verified with `npm run coverage`.
 
 ## Boundaries
 
-- ✅ Always: run lint, typecheck, and tests before reporting done; keep artifacts under `docs/features/<slug>/`; follow existing patterns.
+- ✅ Always: run lint, typecheck, tests, and the coverage command before reporting done; keep artifacts under `docs/features/<slug>/`; follow existing patterns.
 - ⚠️ Ask first: adding dependencies; changing shared config (CI, entrypoints, lockfiles) outside a task that owns it; deleting files.
-- 🚫 Never: commit secrets or API keys; edit `.env*`; `git push`; edit outside your role's write scope; rewrite a spec to match buggy code.
+- 🚫 Never: commit secrets or API keys; edit `.env*`; `git push`; edit outside your role's write scope; rewrite a spec to match buggy code; weaken assertions (wildcard matchers, snapshot-only or assertion-free tests) or exclude production code from coverage without a justified, reviewer-approved reason.

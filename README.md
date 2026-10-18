@@ -35,6 +35,7 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `npm run lint` | ESLint |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm test` | Vitest unit tests, all workspaces |
+| `npm run coverage` | Vitest with V8 coverage in all workspaces (thresholds ≥ 80% statements/branches/functions/lines per workspace) |
 | `npm run build` | build all workspaces |
 | `npm run dev` | start the full local environment with hot reload (equivalent to `podman compose up`) |
 | `npm run smoke` | containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |

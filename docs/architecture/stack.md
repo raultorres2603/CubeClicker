@@ -10,7 +10,7 @@ The application stack was decided on 2026-10-17 and is recorded in § Applicatio
 - **Runtime:** Node.js 24 LTS.
 - **Backend:** Fastify + `@fastify/websocket` — HTTP health at `GET /healthz`, WebSocket server at `GET /ws`.
 - **Frontend:** React + Vite (SPA, static build).
-- **Package manager:** npm (workspaces) — layout `src/backend` + `src/frontend`; unit tests colocated as `*.test.ts` beside the sources they cover; cross-service e2e tests in `tests/e2e/`.
+- **Package manager:** npm (workspaces) — layout `src/backend` + `src/frontend`; unit tests colocated as `*.test.ts` / `*.test.tsx` beside the sources they cover; cross-service e2e tests in `tests/e2e/`.
 - **Tests:** Vitest.
 - **Lint:** ESLint (flat config) + typescript-eslint.
 - **Dev runner:** `tsx` (backend watch mode).
@@ -27,6 +27,7 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 | `npm run lint` | ESLint |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm test` | Vitest, all workspaces |
+| `npm run coverage` | Vitest with V8 coverage in all workspaces (thresholds ≥ 80% statements/branches/functions/lines per workspace) |
 | `npm run build` | build all workspaces |
 | `npm run dev` | start the full local environment with hot reload (equivalent to `podman compose up`) |
 | `npm run smoke` | containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
@@ -48,4 +49,4 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 - Rationale: CubeClicker is an online, real-time game with cross-client visibility — clients are expected to see each other's live activity.
 - This section constrains capability only; it names no technology. The decided stack satisfies it: the backend serves the WebSocket endpoint (`GET /ws`) and the frontend connects to it over WebSocket.
 
-The decision recorded above is operationalized by the scaffold in this repository: the container stack starts with `podman compose up`, the run instructions live in `README.md`, and the canonical commands (lint / typecheck / test / build / dev / smoke) are listed above and mirrored in `AGENTS.md` § Commands.
+The decision recorded above is operationalized by the scaffold in this repository: the container stack starts with `podman compose up`, the run instructions live in `README.md`, and the canonical commands (lint / typecheck / test / coverage / build / dev / smoke) are listed above and mirrored in `AGENTS.md` § Commands.
