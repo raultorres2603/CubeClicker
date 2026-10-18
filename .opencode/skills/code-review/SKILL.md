@@ -15,11 +15,12 @@ Task Brief plus `spec.md`, `tasks.md`, all `build-log-*.md`, previous `reviews/*
 
 1. Read the spec's acceptance criteria — build the verification table FIRST (one row per AC).
 2. Inspect the diff file-by-file; note anything not traceable to a task or spec.
-3. Run the full verification suite yourself (commands from `AGENTS.md`) — evidence over claims. Run cheap edge-case experiments where useful (corrupt save, rapid clicks, reload, offline time jump).
+3. Run the full verification suite yourself (commands from `AGENTS.md`, including the coverage command `npm run coverage`) — evidence over claims. Run cheap edge-case experiments where useful (corrupt save, rapid clicks, reload, offline time jump).
 4. Verify every AC: met / unmet / unable-to-verify, each with evidence (command output, `file:line`, observed behavior).
 5. Run the checklists: `checklists/security.md`, `checklists/quality.md`, `checklists/testing.md`.
-6. Verify previous-round findings (fixed / not fixed / waived with reason).
-7. Decide the verdict, write `reviews/code-r<iteration>.md` using `templates/review.md`, and return the report.
+6. Inspect the diff's tests against the banned-matcher list and the no-useless-tests bar (every test can fail on a real regression); verify the coverage exclusions match the spec's justified list.
+7. Verify previous-round findings (fixed / not fixed / waived with reason).
+8. Decide the verdict, write `reviews/code-r<iteration>.md` using `templates/review.md`, and return the report.
 
 ## Severity & verdict rules
 
@@ -29,6 +30,8 @@ Task Brief plus `spec.md`, `tasks.md`, all `build-log-*.md`, previous `reviews/*
 - Any open BLOCKER or MAJOR → `changes_requested`. Otherwise `approved`.
 - Every finding MUST include: severity, `file:line` (or artifact section), what's wrong, why it matters, required action.
 - "Unable to verify" counts as unmet for gate purposes — state what evidence is missing.
+- Coverage below the advertised thresholds (`npm run coverage`, ≥ 80% statements/branches/functions/lines per workspace) counts as unmet — the feature's coverage criterion fails.
+- Unjustified banned-matcher usage, snapshot-only or assertion-free tests, and coverage-exclusion gaming are findings — `MAJOR` unless justified in-test and accepted (the bounded exception rule: ≤ 1 per task, concrete unavoidability reason, reviewer-approved).
 
 ## Rules
 
