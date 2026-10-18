@@ -64,16 +64,106 @@ Note: per-task build logs `build-log-T1.md` … `build-log-T9.md` were already c
 
 ## §3 Commit A
 
-_Pending — completed in the fold commit with the commit-A sha._
+On `feat/testing-criteria`, staged explicitly (nine paths; never `git add .` / `-A`):
+
+```
+$ git add docs/features/testing-criteria/spec.md docs/features/testing-criteria/plan.md docs/features/testing-criteria/tasks.md docs/features/testing-criteria/status.md docs/features/testing-criteria/reviews/spec-r1.md docs/features/testing-criteria/reviews/spec-r2.md docs/features/testing-criteria/reviews/code-r1.md docs/features/testing-criteria/build-log-PKG.md docs/features/README.md
+
+$ git diff --cached --name-only
+docs/features/README.md
+docs/features/testing-criteria/build-log-PKG.md
+docs/features/testing-criteria/plan.md
+docs/features/testing-criteria/reviews/code-r1.md
+docs/features/testing-criteria/reviews/spec-r1.md
+docs/features/testing-criteria/reviews/spec-r2.md
+docs/features/testing-criteria/spec.md
+docs/features/testing-criteria/status.md
+docs/features/testing-criteria/tasks.md
+```
+
+Commit message: `docs: package testing-criteria artifacts (accepted)`
+
+```
+$ git show --stat --oneline HEAD
+7a10bf6 docs: package testing-criteria artifacts (accepted)
+ docs/features/README.md                           |   1 +
+ docs/features/testing-criteria/build-log-PKG.md   |  79 ++++++++
+ docs/features/testing-criteria/plan.md            | 222 ++++++++++++++++++++++
+ docs/features/testing-criteria/reviews/code-r1.md | 104 ++++++++++
+ docs/features/testing-criteria/reviews/spec-r1.md |  60 ++++++
+ docs/features/testing-criteria/reviews/spec-r2.md |  70 +++++++
+ docs/features/testing-criteria/spec.md            | 139 ++++++++++++++
+ docs/features/testing-criteria/status.md          |  53 ++++++
+ docs/features/testing-criteria/tasks.md           |  94 ++++++++++
+ 9 files changed, 822 insertions(+)
+```
+
+Commit A = **`7a10bf64c988cbb6d9e90336080788b2dba67d0c`** (`git rev-parse HEAD` immediately after commit: same value; `git status --short` clean, nothing left unstaged or untracked).
 
 ## §4 Merge evidence
 
-_Pending — completed in the fold commit._
+```
+$ git checkout main
+Switched to branch 'main'
+Your branch is ahead of 'origin/main' by 6 commits.
+  (use "git push" to publish your local commits)
+
+$ git merge --ff-only feat/testing-criteria
+Updating 0784d00..7a10bf6
+Fast-forward
+ .opencode/agents/orchestrator.md                   |   4 +-
+ .opencode/agents/reviewer.md                       |   1 +
+ .opencode/skills/code-review/SKILL.md              |   9 +-
+ .opencode/skills/code-review/checklists/testing.md |  19 +
+ .opencode/skills/orchestration-playbook/SKILL.md   |   4 +-
+ docs/features/README.md                            |   1 +
+ docs/features/testing-criteria/build-log-PKG.md    |  79 ++++
+ docs/features/testing-criteria/build-log-T7.md     | 227 +++++++++++
+ docs/features/testing-criteria/build-log-T8.md     | 157 ++++++++
+ docs/features/testing-criteria/build-log-T9.md     | 448 +++++++++++++++++++++
+ docs/features/testing-criteria/plan.md             | 222 ++++++++++
+ docs/features/testing-criteria/reviews/code-r1.md  | 104 +++++
+ docs/features/testing-criteria/reviews/spec-r1.md  |  60 ++++
+ docs/features/testing-criteria/reviews/spec-r2.md  |  70 ++++++
+ docs/features/testing-criteria/spec.md             | 139 ++++++++++++++
+ docs/features/testing-criteria/status.md           |  53 +++
+ docs/features/testing-criteria/tasks.md            |  94 +++++++
+ 17 files changed, 1684 insertions(+), 7 deletions(-)
+ [ … create mode lines for the 11 new files … ]
+
+$ git log --oneline -3
+7a10bf6 docs: package testing-criteria artifacts (accepted)
+40acd35 docs: record T9 verification pass for testing-criteria (T9)
+af451c1 docs: require reviewer coverage reruns and assertion-quality checks (T7)
+
+$ git rev-parse main
+7a10bf64c988cbb6d9e90336080788b2dba67d0c
+
+$ git status --short   # captured before the fold edits
+(empty — clean)
+```
+
+- Merge range: **`0784d00..7a10bf6`**, `--ff-only` fast-forward → **0 merge commits**, no history rewrite.
+- `git rev-parse main` == commit A sha (`7a10bf64…`) ✅.
+- Working tree clean before the fold edits ✅ (`git status --short` empty).
+- The ff-merge additionally carried the earlier branch commits (T5–T9) into `main`, which is the intended acceptance fold; the packaging commit A is the branch tip at merge time.
 
 ## §5 Push check
 
-_Pending — completed in the fold commit._
+```
+$ git rev-parse origin/main
+7bc89bf559fa2b06933dabf7724c0fd649099c6b
+```
+
+`origin/main` is still the pre-feature base `7bc89bf` (unchanged from the code review's own push check). Local `main` is `[origin/main: ahead 10]`; `feat/testing-criteria` has no upstream. **Nothing pushed.**
 
 ## §6 Fold pass
 
-_Pending — completed in the fold commit._
+- This commit (B, docs-only) records commit A's sha and stat, the merge range `0784d00..7a10bf6`, the push check, and the fold notes; `build-log-PKG.md` §1–§6 are now complete.
+- No source/test/config/container/CI/`.env*` file touched; `feat/testing-criteria` retained (not deleted); no push; no amend/rewrite; repository left checked out on `main`.
+- **Outstanding (BLOCKED — one item, recorded for the orchestrator):** the two `status.md` loop-log lines could not be appended by the builder. `.opencode/agents/builder.md` frontmatter grants `edit` only on an allow-list; its default is `deny *` and the only `docs/features/**` entry is `docs/features/**/build-log*.md`, so `docs/features/testing-criteria/status.md` is out of the builder's write scope (the `edit` call was rejected twice, deterministically, and AGENTS.md forbids editing outside the role's write scope — so no shell bypass was attempted). Commit B therefore contains only `build-log-PKG.md` instead of the briefed two files. Exact lines to append to `docs/features/testing-criteria/status.md` after the `code_review → accepted` line:
+
+```
+- 2026-10-18 — packaging complete — commit 7a10bf6 on `feat/testing-criteria` (docs-only: spec/plan/tasks/status/reviews + index row + build-log-PKG.md) → `main` fast-forwarded `0784d00..7a10bf6` (0 merge commits; nothing pushed) — docs/features/testing-criteria/build-log-PKG.md
+- 2026-10-18 — residue fold — build-log-PKG.md merge evidence folded; working tree clean; nothing pushed.
+```
