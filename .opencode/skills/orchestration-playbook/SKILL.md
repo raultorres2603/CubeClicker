@@ -30,7 +30,7 @@ Transition rules:
 - `spec_review → planning` when `changes_requested` and `spec_review_round < 2`; if it would exceed 2 → `escalated`.
 - User feedback at the checkpoint does not consume reviewer budget; route it into the next Planner brief.
 - `awaiting_approval → building` when the user approves.
-- `building → code_review` when every task in `tasks.md` is `[x]`.
+- `building → code_review` when every task in `tasks.md` is `[x]` and every behavior-change task's build log records its coverage run.
 - Increment `build_round` each time a code review starts.
 - `code_review → accepted` when `verdict: approved` and every acceptance criterion is verified met.
 - `code_review → building` when `changes_requested` and `build_round < 3`; if it would exceed 3 → `escalated`.
@@ -98,7 +98,7 @@ Present at most 12 lines: feature goal, acceptance-criteria count, task count (+
 
 ## 7. Final summary (`accepted`)
 
-One message: what was built (feature + key files), evidence (verification commands and results), review history (rounds and outcomes), backlog (MINOR/INFO findings and open questions), suggested next step. Update `docs/features/README.md`.
+One message: what was built (feature + key files), evidence (verification commands and results, including the `npm run coverage` run and per-workspace numbers), review history (rounds and outcomes), backlog (MINOR/INFO findings and open questions), suggested next step. Update `docs/features/README.md`.
 
 ## 8. Blocked & escalation
 

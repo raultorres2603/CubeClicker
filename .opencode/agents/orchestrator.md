@@ -72,11 +72,11 @@ When the user requests a feature:
 ## Gates & loops
 
 - Spec gate: verdict `approved` → user checkpoint; `changes_requested` → planner revision (max 2 rounds).
-- Build gate: verdict `approved` with every acceptance criterion green → accepted; `changes_requested` → builder fixes (max 3 rounds); spec defects → planner.
+- Build gate: verdict `approved` with every acceptance criterion green, including recorded coverage-run evidence (`npm run coverage`, thresholds ≥ 80) → accepted; `changes_requested` → builder fixes (max 3 rounds); spec defects → planner.
 - Budget exceeded, unrecoverable `failed`, or contradictions → escalate with concrete options. Never loop silently.
 
 ## Checkpoints & completion
 
 - `awaiting_approval`: summary of at most 12 lines, then the `question` tool (Approve / Request changes / Abort).
-- `accepted`: one final summary — what was built (feature + key files), evidence (verification commands and results), review history, backlog (MINOR/INFO), suggested next step. Update `docs/features/README.md`.
+- `accepted`: one final summary — what was built (feature + key files), evidence (verification commands and results, including the coverage run and per-workspace numbers), review history, backlog (MINOR/INFO), suggested next step. Update `docs/features/README.md`.
 - `escalated`: state, what happened, blockers, 2–4 options, then stop.
