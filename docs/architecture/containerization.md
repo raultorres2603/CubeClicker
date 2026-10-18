@@ -4,8 +4,8 @@ Decided 2026-10-17 per direct user direction (recorded in `docs/architecture/sta
 
 ## Local development contract
 
-- The full environment — backend and frontend containers, plus any future services — starts from a clean checkout with a single `docker compose up`-style command.
-- No host prerequisites beyond Docker with Compose.
+- The full environment — backend and frontend containers, plus any future services — starts from a clean checkout with a single `podman compose up`-style command.
+- No host prerequisites beyond Podman with a working compose provider (`podman compose`).
 - When the container assets land, run instructions must be documented at the repository root and mirrored in `AGENTS.md` § Commands.
 
 ## Service containerization rules
@@ -35,7 +35,7 @@ Every item the previous revision left to stack selection is resolved; these valu
 - **Listen ports and environment-variable names.** Backend: `HOST` (default `0.0.0.0`) and `PORT` (default `8080`) — HTTP health and WebSocket on that port. Frontend dev server: 5173 (Vite, strict port). Host mappings are loopback-bound and interpolated: `127.0.0.1:${BACKEND_PORT:-8080}:8080` and `127.0.0.1:${FRONTEND_PORT:-5173}:5173` (`BACKEND_PORT` default 8080, `FRONTEND_PORT` default 5173). The frontend's WebSocket target is `VITE_WS_URL`, default `ws://localhost:8080/ws`.
 - **Health signal.** Backend: `GET /healthz` → `200` with body `{"status":"ok"}`; frontend: `GET /` serving the app. Each image declares its own `HEALTHCHECK` (interval 10s, timeout 3s, retries 5, start-period 15s); the compose files declare no duplicate healthcheck.
 - **Image naming/tagging.** `cubeclicker-backend` and `cubeclicker-frontend`; the local (compose-built, `target: dev`) tag is `:dev`. Release tagging is deferred to deployment time.
-- **Compose file and Dockerfile locations.** `compose.yaml` at the repository root (project name `cubeclicker`; services `backend`, `frontend`), `compose.smoke.yaml` at the root (service `smoke`; opt-in, never part of a plain `docker compose up`), and one multi-stage Dockerfile per workspace: `src/backend/Dockerfile`, `src/frontend/Dockerfile` (targets `dev` and `prod`).
-- **Dev-mode behavior.** Hot reload: backend `tsx watch` and frontend Vite HMR, over bind mounts of each workspace's sources. Dependency or manifest changes require a rebuild (`docker compose up --build`).
-- **Local-run command and its README home.** `docker compose up` starts the full local environment; it is documented in `README.md` at the repository root and mirrored in `AGENTS.md` § Commands (as `npm run dev`). The containerized smoke test runs with `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (`npm run smoke`).
+- **Compose file and Dockerfile locations.** `compose.yaml` at the repository root (project name `cubeclicker`; services `backend`, `frontend`), `compose.smoke.yaml` at the root (service `smoke`; opt-in, never part of a plain `podman compose up`), and one multi-stage Dockerfile per workspace: `src/backend/Dockerfile`, `src/frontend/Dockerfile` (targets `dev` and `prod`).
+- **Dev-mode behavior.** Hot reload: backend `tsx watch` and frontend Vite HMR, over bind mounts of each workspace's sources. Dependency or manifest changes require a rebuild (`podman compose up --build`).
+- **Local-run command and its README home.** `podman compose up` starts the full local environment; it is documented in `README.md` at the repository root and mirrored in `AGENTS.md` § Commands (as `npm run dev`). The containerized smoke test runs with `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (`npm run smoke`).
 - **Deferred to deployment time (named, not designed here).** Proxy/load-balancer upgrade handling; release image tagging; production runtime-config injection for the frontend.

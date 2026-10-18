@@ -28,14 +28,14 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 | `npm run typecheck` | TypeScript, no emit |
 | `npm test` | Vitest, all workspaces |
 | `npm run build` | build all workspaces |
-| `npm run dev` | start the full local environment with hot reload (equivalent to `docker compose up`) |
-| `npm run smoke` | containerized end-to-end smoke test (equivalent to `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
-| `docker compose up` | the single-command local environment (backend + frontend containers) |
+| `npm run dev` | start the full local environment with hot reload (equivalent to `podman compose up`) |
+| `npm run smoke` | containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
+| `podman compose up` | the single-command local environment (backend + frontend containers) |
 
 ## Containerized delivery path (DECIDED)
 
-- The backend and the frontend each run as containers; the full local environment starts from a clean checkout with a single `docker compose up`-style command.
-- Docker images + Docker Compose are the decided containerization tooling (user decision, 2026-10-17).
+- The backend and the frontend each run as containers; the full local environment starts from a clean checkout with a single `podman compose up`-style command.
+- Podman and Podman Compose (`podman compose`) are the decided containerization tooling (user decision, 2026-10-17; tooling amendment 2026-10-17).
 - Deployable artifacts are container images runnable on any container platform — provider-neutral; AWS ECS Fargate is an example only and no provider is chosen.
 - Future services (databases, queues, etc.) are added via the same containerized path.
 - The application stack is decided (§ Application stack (DECIDED, 2026-10-17) above) and the container assets exist in this repository: `compose.yaml` and `compose.smoke.yaml` at the root, plus the Dockerfiles under `src/backend/` and `src/frontend/`.
@@ -48,4 +48,4 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 - Rationale: CubeClicker is an online, real-time game with cross-client visibility — clients are expected to see each other's live activity.
 - This section constrains capability only; it names no technology. The decided stack satisfies it: the backend serves the WebSocket endpoint (`GET /ws`) and the frontend connects to it over WebSocket.
 
-The decision recorded above is operationalized by the scaffold in this repository: the container stack starts with `docker compose up`, the run instructions live in `README.md`, and the canonical commands (lint / typecheck / test / build / dev / smoke) are listed above and mirrored in `AGENTS.md` § Commands.
+The decision recorded above is operationalized by the scaffold in this repository: the container stack starts with `podman compose up`, the run instructions live in `README.md`, and the canonical commands (lint / typecheck / test / build / dev / smoke) are listed above and mirrored in `AGENTS.md` § Commands.

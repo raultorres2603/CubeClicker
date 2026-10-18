@@ -5,21 +5,21 @@ CubeClicker is a web-based, online, real-time, multi-client clicker game. Client
 ## Stack
 
 - **Application stack: DECIDED (2026-10-17)** — TypeScript (strict); Node.js 24 LTS + Fastify (WebSocket); React + Vite; npm workspaces; Vitest; ESLint. Canonical details in `docs/architecture/stack.md`.
-- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `docker compose up` command (hot reload); deployable artifacts are container images runnable on any container platform (AWS ECS Fargate is an example only — no provider is chosen); future services (databases, queues, etc.) join the same path. Docker and Docker Compose are the decided tooling; the container assets live in the repository (`compose.yaml`, Dockerfiles under `src/*`), and the run instructions live in `README.md` (see `docs/architecture/containerization.md`).
+- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `podman compose up` command (hot reload); deployable artifacts are container images runnable on any container platform (AWS ECS Fargate is an example only — no provider is chosen); future services (databases, queues, etc.) join the same path. Podman and Podman Compose (`podman compose`) are the decided tooling; the container assets live in the repository (`compose.yaml`, Dockerfiles under `src/*`), and the run instructions live in `README.md` (see `docs/architecture/containerization.md`).
 - **Online/real-time constraint (protocol-level).** The game is online and real-time: the backend must be WebSocket-compatible and the frontend must connect to it over WebSocket. The decided stack satisfies this constraint: the backend serves the WebSocket endpoint (`/ws`) and the frontend connects to it over WebSocket. See docs/architecture/stack.md § Hard constraints.
 
 ## Commands
 
-Host tooling commands need Node.js 24 LTS + npm; running the environment itself needs only Docker with Compose. Run instructions live in `README.md`.
+Host tooling commands need Node.js 24 LTS + npm; running the environment itself needs only Podman with a working compose provider (`podman compose`). Run instructions live in `README.md`.
 
 - `npm ci` — install dependencies from the committed lockfile.
 - `npm run lint` — ESLint.
 - `npm run typecheck` — TypeScript, no emit.
 - `npm test` — Vitest unit tests, all workspaces.
 - `npm run build` — build all workspaces.
-- `npm run dev` — start the full local environment with hot reload (equivalent to `docker compose up`).
-- `npm run smoke` — containerized end-to-end smoke test (equivalent to `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`).
-- **Local environment (containerized).** The full local environment starts with a single `docker compose up` command (backend + frontend containers); run instructions are documented in `README.md` at the repository root and mirrored here.
+- `npm run dev` — start the full local environment with hot reload (equivalent to `podman compose up`).
+- `npm run smoke` — containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`).
+- **Local environment (containerized).** The full local environment starts with a single `podman compose up` command (backend + frontend containers); run instructions are documented in `README.md` at the repository root and mirrored here.
 
 ## Project structure
 
