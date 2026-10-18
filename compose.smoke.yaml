@@ -1,0 +1,12 @@
+# Containerized smoke test — opt-in override, never started by a plain `podman compose up`.
+# Run: podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
+services:
+  smoke:
+    image: node:24-alpine
+    working_dir: /smoke
+    volumes:
+      - "./tests/e2e:/smoke:ro"
+    command: ["node", "smoke.mjs"]
+    depends_on:
+      - backend
+      - frontend
