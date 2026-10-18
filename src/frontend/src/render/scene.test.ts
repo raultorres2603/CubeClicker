@@ -569,6 +569,29 @@ describe('intent application', () => {
     expect(plateDispose).toHaveBeenCalledTimes(1);
   });
 
+  it('exposes the live cube view through the rebuild-aware accessor (plan-r3 seam, AC-6)', () => {
+    const view = createView();
+    const initial = view.cubeView;
+
+    // The accessor answers with the cube view the scene holds right now.
+    expect(initial.group).toBe(cubeGroup(view));
+    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0b0b12');
+
+    view.applyIntents([{ kind: 'levelChanged', style: NEXT_STYLE }], 16);
+
+    // A handle captured once would now be the disposed previous view: the accessor follows
+    // the rebuild instead.
+    expect(view.cubeView).not.toBe(initial);
+    expect(view.cubeView.group).toBe(cubeGroup(view));
+    expect(view.cubeView.group).not.toBe(initial.group);
+    expect(view.scene.children).not.toContain(initial.group);
+    expect((view.cubeView.body.material as MeshStandardMaterial).color.getHexString()).toBe(
+      '1a0b0e',
+    );
+    // The stale handle is untouched by the rebuild — it was a different cube view.
+    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0b0b12');
+  });
+
   it('rebuilds the cube view in the new style on levelChanged (AC-10)', () => {
     const view = createView();
     applySnapshot(view, snapshot());

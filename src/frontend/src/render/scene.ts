@@ -95,6 +95,15 @@ export interface SceneView {
   /** The pinned camera (AC-22). */
   camera: PerspectiveCamera;
   /**
+   * The cube view currently in the scene, for callers that need its handles at call
+   * time (the session's `pickMiniCube(camera, cubeView, …)` pick).
+   *
+   * A `readonly` accessor, not a stored field: `levelChanged` (and the snapshot style
+   * reconciliation) replaces the cube view, so a reference captured once would be the
+   * disposed previous handle. Re-read it at the point of use.
+   */
+  readonly cubeView: CubeView;
+  /**
    * Applies the engine's ordered effect intents: explosion → hide the instance and spawn
    * its burst at the mini-cube origin; `faceCleared` → start the plate fade that ends in
    * a face removal; `levelChanged` → dispose and rebuild the cube view in the new style.
@@ -257,6 +266,12 @@ export function createSceneView(options: {
   const view: SceneView = {
     scene,
     camera,
+
+    get cubeView(): CubeView {
+      // Rebuild-aware: `rebuildCube` re-assigns the binding, so the getter always
+      // answers with the cube view the scene currently holds (never a stale one).
+      return cube;
+    },
 
     applyIntents(intents: EffectIntent[], nowMs: number): void {
       for (const intent of intents) {

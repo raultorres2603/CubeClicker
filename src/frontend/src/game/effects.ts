@@ -103,7 +103,10 @@ export const EXPLOSION_PARTICLE_COUNT = 24;
  */
 export const PARTICLE_POOL_CAP = 3 * EXPLOSION_PARTICLE_COUNT;
 
-/** Pointer travel (px) below which a gesture is a tap, at/above which it is a drag. */
+/**
+ * Pointer travel (px) up to and including which a gesture is a tap: travel ≤ 40 px is a
+ * tap (exactly at the threshold is a tap), 41 px is a drag (AC-6).
+ */
 export const TAP_DRAG_THRESHOLD_PX = 40;
 
 /** Ceiling applied to `devicePixelRatio` when sizing the renderer (spec § Pinned constants). */

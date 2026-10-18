@@ -11,10 +11,9 @@
  * the current position. Travel **up to and including** {@link TAP_DRAG_THRESHOLD_PX}
  * (40 px; imported from `game/effects.ts`, never redefined here) is a `tap`; strictly
  * beyond it is a `drag`. The boundary cases are pinned by test: 39 px → tap,
- * 40 px → tap, 41 px → drag. (The one-line comment beside the constant in
- * `effects.ts` reads "below … at/above …", i.e. the exclusive form; the plan's input
- * key table — "exactly at threshold is a tap" — and AC-6's 39/40-tap, 41-drag cases
- * are the pinned form implemented here. Flagged in the T11 build log.)
+ * 40 px → tap, 41 px → drag. The doc comment beside the constant in `effects.ts`
+ * states the same inclusive form (plan-r3 correction of the mismatch the T11 build
+ * log flagged).
  *
  * **Direction sign convention (consistent with `rotation.ts`'s frame).** `direction`
  * is the sign of the gesture's displacement along the dominant axis, which makes the
