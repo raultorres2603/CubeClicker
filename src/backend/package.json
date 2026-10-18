@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@fastify/websocket": "^11",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^24",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4",
     "vitest": "^3"
   }
