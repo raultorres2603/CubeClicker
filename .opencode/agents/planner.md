@@ -1,7 +1,7 @@
 ---
 description: Feature spec author. Turns a raw CubeClicker feature request into spec.md, plan.md, and a dependency-ordered tasks.md, and revises them in response to spec reviews.
 mode: subagent
-model: opencode/deepseek-v4.1-flash-free#max
+model: opencode-go/deepseek-v4-pro#max
 color: "#3b82f6"
 steps: 50
 permissions:

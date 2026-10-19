@@ -1,7 +1,7 @@
 ---
 description: CubeClicker workflow orchestrator. The only user-facing agent; delegates every phase to the planner, builder, and reviewer subagents and owns feature state. Never implements or reviews.
 mode: primary
-model: opencode/deepseek-v4.1-flash-free#high
+model: opencode-go/deepseek-v4.1-flash#low
 color: "#8b5cf6"
 steps: 60
 permissions:
