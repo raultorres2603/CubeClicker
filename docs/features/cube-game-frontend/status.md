@@ -1,10 +1,10 @@
 ---
 feature: cube-game-frontend
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 0
+build_round: 1
 created: 2026-10-18
-updated: 2026-10-18
+updated: 2026-10-19
 ---
 # Status — Cube Game Frontend (first playable 3D experience)
 
@@ -24,9 +24,9 @@ First playable frontend of CubeClicker: a futuristic 3D cube with galaxy/starfie
 - [x] T10 — Picking (raycast to mini-cube id) [P]
 - [x] T11 — Input mapping (gestures, keyboard) [P]
 - [x] T12 — Scene composition, camera flights, intent application
-- [>] T13 — Session wiring, browser environment & WebGL bootstrap
-- [ ] T14 — React UI: shell, HUD, canvas, theme
-- [ ] T15 — Verify & integrate
+- [x] T13 — Session wiring, browser environment & WebGL bootstrap
+- [x] T14 — React UI: shell, HUD, canvas, theme
+- [x] T15 — Verify & integrate
 
 ## Loop log
 - 2026-10-18 — created → PLANNING — request: "Let's start by creating the frontend … 3D cube … mini cubes … explote animation … galaxy background"
@@ -54,7 +54,16 @@ First playable frontend of CubeClicker: a futuristic 3D cube with galaxy/starfie
 - 2026-10-18 — building — plan gap found pre-T13 (SceneView lacks cube-view handle for pickMiniCube); routed to planner for a minimal seam amendment + delta review — plan.md/tasks.md pending
 - 2026-10-18 — building — planner applied plan r3/tasks r3 seam amendment (SceneView.cubeView accessor owned by T13) — plan.md r3
 - 2026-10-18 — building — delta review r3: approved (blocking: 0); F1 comment fix folded into T13's brief — reviews/plan-delta-r3.md
+- 2026-10-19 — building — T13 resumed: plan-r3 seam delta-approved; held partial work in the working tree; F1 gestures.ts comment-only fix folded (tasks r4) — tasks.md
+- 2026-10-19 — building — T13 completed by builder (resume; skeleton was already committed in 02228ac; completion commit 9b90190; 263 tests; coverage 99.39/98.9/100/99.39) — build-log-T13.md
+- 2026-10-19 — building — T14 completed by builder (game shell, HUD, canvas, theme; commit 2ca10ce; 273 tests; coverage 99.17/99.13/100/99.17; build 209.10 kB gzip) — build-log-T14.md
+- 2026-10-19 — building → code_review — T15 completed by builder (full gate green: both workspaces ≥ 80; build 209.10 kB gzip ≤ 350 KB; smoke PASS 4/4; all AC-1…AC-22 met; commit 46840c7) — build-log-T15.md
+- 2026-10-19 — code_review → accepted — review r1 verdict: approved (blocking: 0; all AC-1…AC-22 met; plan-r3 seam verified) — reviews/code-r1.md
 
 ## Blockers / open questions
-- Commit-index races during the 3-way parallel batch (T6/T7/T8/T9): builders self-repaired with `git reset --soft` + explicit-path commits; T7's hash changed (5709f45 → 5e7fddc). T15 must audit commit contents/diffs against build-start baselines to confirm no cross-task contamination. Future briefs will pin `git commit --only -- <paths>` to avoid the shared index.
-- Open (in progress): plan gap — SceneView exposes no cube-view handle while the session contract calls `pickMiniCube(camera, cubeView, …)`; planner amendment + delta review in flight; T13 on hold until resolved.
+- none blocking. Backlog (post-acceptance):
+  - Manual browser visual pass not executed (environment): recommend `podman compose up` + the game shell checklist before merge/next feature.
+  - `npm audit`: 4 advisories (2 moderate/2 critical) — pre-existing Vitest dev tooling, not `three`; semver-major fix out of scope.
+  - Residual coverage (workspace bars met): `ui/GameCanvas.tsx:23–30` unexecuted under SSR (`src/ui` 79.48 statements); real GL context mocked in `webgl.test.ts`; `session.ts:173` branch; `picking.ts:88–89`; retained scaffold `ws/connection.ts` 95.34.
+  - Audit trail: `02228ac` (T13 partial skeleton + feature docs, non-conventional message) and superseded hashes (T7 `5e7fddc`/`5709f45` → `b17058a`; T9 `6494791`→`4363f9a`; T8 `bbf403e`) retained by design — no history rewrite.
+  - plan-delta-r3 F2 (spec Q-3 "≥ 40 px" paraphrase): spec r2 untouched; AC-6 evidence is the 39/40/41 px test pins.
