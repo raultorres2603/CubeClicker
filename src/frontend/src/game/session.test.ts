@@ -327,12 +327,14 @@ function createFakeRendererFactory(): FakeRendererFactory {
   };
 }
 
-function createFakeEnv(options: {
-  rect?: Rect;
-  dpr?: number;
-  reducedMotion?: boolean;
-  hidden?: boolean;
-}): FakeEnv {
+function createFakeEnv(
+  options: {
+    rect?: Rect;
+    dpr?: number;
+    reducedMotion?: boolean;
+    hidden?: boolean;
+  } = {},
+): FakeEnv {
   const canvas = createFakeCanvas(options.rect ?? { left: 0, top: 0, width: 800, height: 800 });
   const keys = createFakeKeyTarget();
   const scheduler = createFakeScheduler();
@@ -854,8 +856,10 @@ describe('subscription', () => {
 
     unsubscribe();
     fake.keys.emitKey('ArrowLeft');
+    // The engine still receives the event (only the subscription is gone): the left step is
+    // queued behind the running right step, so the orientation counters stay where they are.
     expect(listener).toHaveBeenCalledTimes(2);
-    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
   });
 });
 

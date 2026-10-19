@@ -42,7 +42,7 @@ import type { PerspectiveCamera, Scene } from 'three';
 import { classifyPointer, type PointerGesture } from '../input/gestures';
 import { mapKey } from '../input/keyboard';
 import { pickMiniCube } from '../render/picking';
-import { createSceneView, type SceneView } from '../render/scene';
+import { createSceneView } from '../render/scene';
 import { browserEnvironment } from '../browser-env';
 import { PIXEL_RATIO_CAP } from './effects';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
