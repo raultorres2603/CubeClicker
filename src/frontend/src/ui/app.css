@@ -1,0 +1,107 @@
+/*
+ * Game shell presentation (T14).
+ *
+ * Layout only: the scene, HUD values and phase copy come from the React tree (AC-1).
+ * The colour literals mirror `ui/theme.ts` (HUD_TEXT, HUD_BACKGROUND, ACCENT,
+ * PAGE_BACKGROUND); a stylesheet cannot import TypeScript values, so `theme.test.ts`
+ * is what pins their WCAG AA contrast (AC-14). Keep the two files in sync.
+ */
+
+:root {
+  --hud-text: #e8f6ff;
+  --hud-background: rgba(6, 10, 20, 0.72);
+  --accent: #7cf6ff;
+  --page-background: #000000;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--page-background);
+  color: var(--hud-text);
+  font-family: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+main {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* The canvas owns the viewport; the session sizes the renderer from its box (AC-13). */
+main > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  outline: none;
+}
+
+/* Visible keyboard focus (AC-1): the canvas is the game's focus target. */
+main > canvas:focus,
+main > canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+/* HUD panel — the only <section> inside <main> (ui/Hud.tsx). */
+main > section {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(124, 246, 255, 0.28);
+  border-radius: 0.5rem;
+  background: var(--hud-background);
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+main > section p {
+  margin: 0;
+}
+
+main > section [data-stat] {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/*
+ * Phase announcement / skip hint. Always in the DOM and in the accessibility tree; the
+ * empty `playing` state simply has no text content, so the CSS-only treatment drops the
+ * chrome instead of hiding the element (AC-14: never removed, never hidden).
+ */
+.phase-announcement {
+  position: absolute;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(124, 246, 255, 0.28);
+  border-radius: 999px;
+  background: var(--hud-background);
+  color: var(--hud-text);
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.phase-announcement:empty {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
