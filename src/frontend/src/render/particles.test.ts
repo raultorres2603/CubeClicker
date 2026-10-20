@@ -114,16 +114,20 @@ describe('createParticleSystem', () => {
     expect(system.activeCount()).toBe(0);
   });
 
-  it('pins the additive point material the pool draws with', () => {
-    const material = pointsOf(createParticleSystem(noJitter)).material;
+  it('pins the additive, depth-test-free material and the particle render order', () => {
+    const points = pointsOf(createParticleSystem(noJitter));
+    const material = points.material;
 
     expect(material.size).toBe(0.15);
     expect(material.sizeAttenuation).toBe(true);
     expect(material.vertexColors).toBe(true);
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
+    expect(material.depthTest).toBe(false);
     expect(material.blending).toBe(AdditiveBlending);
-    expect(pointsOf(createParticleSystem(noJitter)).frustumCulled).toBe(false);
+    // Above the starfield and the face plates, which keep three's default order 0 (AC-3).
+    expect(points.renderOrder).toBe(10);
+    expect(points.frustumCulled).toBe(false);
   });
 });
 

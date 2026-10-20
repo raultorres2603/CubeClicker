@@ -1,17 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BURST_ORIGIN_OFFSET,
   createBurst,
   DEFAULT_TIMINGS,
   easeInOutQuad,
   easeOutCubic,
   EXPLOSION_PARTICLE_COUNT,
+  MINI_CUBE_POP_COLOR_STRENGTH,
+  MINI_CUBE_POP_EXPAND_MS,
+  MINI_CUBE_POP_MS,
+  MINI_CUBE_POP_PEAK_SCALE,
   PARTICLE_POOL_CAP,
   PIXEL_RATIO_CAP,
+  popColorMultiplierAt,
+  popScaleAt,
   REDUCED_TIMINGS,
   STAR_COUNT,
   TAP_DRAG_THRESHOLD_PX,
   timingsFor,
+  TRAVEL_STARFIELD_SCALE,
 } from './effects';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
@@ -80,6 +88,15 @@ describe('non-grid pinned constants', () => {
     expect(PARTICLE_POOL_CAP).toBe(3 * EXPLOSION_PARTICLE_COUNT);
     expect(PARTICLE_POOL_CAP / EXPLOSION_PARTICLE_COUNT).toBe(3);
   });
+
+  it('pins the visual-polish constants (AC-1, AC-3, AC-4)', () => {
+    expect(TRAVEL_STARFIELD_SCALE).toBe(8);
+    expect(BURST_ORIGIN_OFFSET).toBe(0.5);
+    expect(MINI_CUBE_POP_MS).toBe(160);
+    expect(MINI_CUBE_POP_EXPAND_MS).toBe(100);
+    expect(MINI_CUBE_POP_PEAK_SCALE).toBe(1.1);
+    expect(MINI_CUBE_POP_COLOR_STRENGTH).toBe(0.3);
+  });
 });
 
 describe('easeOutCubic', () => {
@@ -105,6 +122,32 @@ describe('easeInOutQuad', () => {
     expect([0.25, 0.5, 1].map((progress) => 12 + 78 * easeInOutQuad(progress))).toEqual([
       21.75, 51, 90,
     ]);
+  });
+});
+
+describe('popScaleAt', () => {
+  it('follows the pinned pop timeline at t = 0 / 50 / 100 / 130 / 160 / 161 ms', () => {
+    // Expand 1 → 1.1 over 100 ms, shrink 1.1 → 0 over the remaining 60 ms (AC-4).
+    expect([0, 50, 100, 130, 160, 161].map(popScaleAt)).toEqual([1, 1.05, 1.1, 0.55, 0, 0]);
+  });
+
+  it('settles to the hidden zero-scale at and after the total duration, clamping earlier time to the start', () => {
+    expect([-10, 0].map(popScaleAt)).toEqual([1, 1]);
+    expect([200, 1000].map(popScaleAt)).toEqual([0, 0]);
+  });
+});
+
+describe('popColorMultiplierAt', () => {
+  it('follows the pinned colour-flash timeline at t = 0 / 50 / 100 / 130 / 160 / 161 ms', () => {
+    // 1 → 1.3 over the expand phase, back to 1 over the shrink phase (AC-4, bounded flash).
+    expect([0, 50, 100, 130, 160, 161].map(popColorMultiplierAt)).toEqual([
+      1, 1.15, 1.3, 1.15, 1, 1,
+    ]);
+  });
+
+  it('returns to exactly 1 outside the envelope and peaks at the bounded flash strength', () => {
+    expect([-10, 200, 1000].map(popColorMultiplierAt)).toEqual([1, 1, 1]);
+    expect(popColorMultiplierAt(100)).toBe(1 + MINI_CUBE_POP_COLOR_STRENGTH);
   });
 });
 

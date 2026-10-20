@@ -22,6 +22,12 @@
  * `PointsMaterial` carries a single size per draw call, and the pool deliberately stays one
  * drawable (AC-16) rather than one `Points` per fragment.
  *
+ * Layering (spec AC-3). Transparent geometry draws after the opaque cube tiles, and the
+ * pool's material disables the depth test (`depthTest: false`, `depthWrite` stays false) so
+ * a burst is never occluded by the mini-cube surface it spawns in front of. The drawable
+ * also carries {@link PARTICLE_RENDER_ORDER} (10) — above the starfield and the face plates,
+ * which keep the default 0 — so the burst draws last within the transparent pass.
+ *
  * `PARTICLE_POOL_CAP` is imported from `game/effects.ts` (T5), the single home for the
  * non-grid pinned constants (plan § Constant homes — never redefined locally).
  */
@@ -41,6 +47,13 @@ import { PARTICLE_POOL_CAP, type Burst, type BurstParticle } from '../game/effec
 
 /** World-space point size of one fragment (attenuated by distance). */
 const PARTICLE_POINT_SIZE = 0.15;
+
+/**
+ * Render order of the particle drawable (spec AC-3). Above the starfield and the face
+ * plates, which keep three's default order 0, so the burst draws last in the transparent
+ * pass; combined with `depthTest: false` this keeps it in front of the clicked mini-cube.
+ */
+const PARTICLE_RENDER_ORDER = 10;
 
 /**
  * Half-range of the spawn jitter: a fragment starts within
@@ -132,9 +145,12 @@ export function createParticleSystem(
     blending: AdditiveBlending,
     transparent: true,
     depthWrite: false,
+    depthTest: false,
   });
 
   const points = new Points<BufferGeometry, PointsMaterial>(geometry, material);
+  // Above the starfield and the face plates (default order 0) — see PARTICLE_RENDER_ORDER.
+  points.renderOrder = PARTICLE_RENDER_ORDER;
   // The buffer is rewritten every frame and its slots start at the origin, so a
   // bounding-sphere cull would be stale — the pool is always submitted instead.
   points.frustumCulled = false;

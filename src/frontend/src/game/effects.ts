@@ -6,11 +6,14 @@
  *
  * **Constant homes (plan § Constant homes — F2).** This module is the single home for
  * the non-grid pinned constants: {@link STAR_COUNT}, {@link EXPLOSION_PARTICLE_COUNT},
- * {@link PARTICLE_POOL_CAP}, {@link TAP_DRAG_THRESHOLD_PX} and {@link PIXEL_RATIO_CAP}.
- * Consumers (`render/starfield.ts`, `render/particles.ts`, `input/**`, the engine and
- * the session) import them from here and never redefine them locally. `GRID_SIZE` is
- * the only constant that lives in `types.ts`; style values live in `progression.ts`
- * and HUD colours in `ui/theme.ts`.
+ * {@link PARTICLE_POOL_CAP}, {@link TAP_DRAG_THRESHOLD_PX}, {@link PIXEL_RATIO_CAP},
+ * {@link TRAVEL_STARFIELD_SCALE}, {@link BURST_ORIGIN_OFFSET} and the mini-cube pop
+ * constants ({@link MINI_CUBE_POP_MS}, {@link MINI_CUBE_POP_EXPAND_MS},
+ * {@link MINI_CUBE_POP_PEAK_SCALE}, {@link MINI_CUBE_POP_COLOR_STRENGTH}).
+ * Consumers (`render/starfield.ts`, `render/particles.ts`, `render/scene.ts`,
+ * `render/cube-view.ts`, `input/**`, the engine and the session) import them from here
+ * and never redefine them locally. `GRID_SIZE` is the only constant that lives in
+ * `types.ts`; style values live in `progression.ts` and HUD colours in `ui/theme.ts`.
  */
 
 /** Duration profile for the animated phases and effects (spec § Pinned constants). */
@@ -111,6 +114,67 @@ export const TAP_DRAG_THRESHOLD_PX = 40;
 
 /** Ceiling applied to `devicePixelRatio` when sizing the renderer (spec § Pinned constants). */
 export const PIXEL_RATIO_CAP = 2;
+
+/** x/y expansion of the starfield layer at travel progress 1 (spec AC-1). */
+export const TRAVEL_STARFIELD_SCALE = 8;
+
+/** World units the burst origin moves out along the face normal (spec AC-3). */
+export const BURST_ORIGIN_OFFSET = 0.5;
+
+/** Total duration of the pop-then-shrink disappearance (spec AC-4). */
+export const MINI_CUBE_POP_MS = 160;
+
+/** Grow phase of the pop: `1 → MINI_CUBE_POP_PEAK_SCALE` over the first 100 ms (spec AC-4). */
+export const MINI_CUBE_POP_EXPAND_MS = 100;
+
+/** Peak scale factor of the pop (spec AC-4). */
+export const MINI_CUBE_POP_PEAK_SCALE = 1.1;
+
+/** Peak `instanceColor` multiplier delta of the pop's brightness flash (spec AC-4). */
+export const MINI_CUBE_POP_COLOR_STRENGTH = 0.3;
+
+/** Duration of the shrink phase: the remainder of the pop after the expand phase (60 ms). */
+const MINI_CUBE_POP_SHRINK_MS = MINI_CUBE_POP_MS - MINI_CUBE_POP_EXPAND_MS;
+
+/**
+ * Tile scale factor of the mini-cube pop at `elapsedMs` (spec AC-4).
+ *
+ * Linear expand `1 → MINI_CUBE_POP_PEAK_SCALE` over `[0, MINI_CUBE_POP_EXPAND_MS]`, then a
+ * linear shrink `MINI_CUBE_POP_PEAK_SCALE → 0` over the remaining 60 ms. Total function of
+ * `elapsedMs` alone: non-positive elapsed time is clamped to the start pose (1) and every
+ * time at or after {@link MINI_CUBE_POP_MS} yields 0 (the hidden end state).
+ */
+export function popScaleAt(elapsedMs: number): number {
+  if (elapsedMs >= MINI_CUBE_POP_MS) {
+    return 0;
+  }
+  if (elapsedMs <= 0) {
+    return 1;
+  }
+  if (elapsedMs <= MINI_CUBE_POP_EXPAND_MS) {
+    return 1 + (MINI_CUBE_POP_PEAK_SCALE - 1) * (elapsedMs / MINI_CUBE_POP_EXPAND_MS);
+  }
+  const shrinkProgress = (elapsedMs - MINI_CUBE_POP_EXPAND_MS) / MINI_CUBE_POP_SHRINK_MS;
+  return MINI_CUBE_POP_PEAK_SCALE * (1 - shrinkProgress);
+}
+
+/**
+ * Per-instance colour multiplier of the mini-cube pop at `elapsedMs` (spec AC-4).
+ *
+ * Runs `1 → 1 + MINI_CUBE_POP_COLOR_STRENGTH` over the expand phase and back to 1 over the
+ * shrink phase, i.e. a bounded brightness flash toward white (hue unchanged). Total function
+ * of `elapsedMs` alone: 1 outside the envelope `(0, MINI_CUBE_POP_MS)`.
+ */
+export function popColorMultiplierAt(elapsedMs: number): number {
+  if (elapsedMs <= 0 || elapsedMs >= MINI_CUBE_POP_MS) {
+    return 1;
+  }
+  if (elapsedMs <= MINI_CUBE_POP_EXPAND_MS) {
+    return 1 + MINI_CUBE_POP_COLOR_STRENGTH * (elapsedMs / MINI_CUBE_POP_EXPAND_MS);
+  }
+  const shrinkProgress = (elapsedMs - MINI_CUBE_POP_EXPAND_MS) / MINI_CUBE_POP_SHRINK_MS;
+  return 1 + MINI_CUBE_POP_COLOR_STRENGTH * (1 - shrinkProgress);
+}
 
 /** Speed range of a fragment: `[BURST_SPEED_MIN, BURST_SPEED_MIN + BURST_SPEED_RANGE)`. */
 const BURST_SPEED_MIN = 1;
