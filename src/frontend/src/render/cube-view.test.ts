@@ -2,24 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BoxGeometry,
   Group,
+  InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
   Mesh,
-  MeshBasicMaterial,
   MeshStandardMaterial,
   PlaneGeometry,
   Vector3,
   type Material,
 } from 'three';
 
+import { MINI_CUBE_POP_PEAK_SCALE } from '../game/effects';
 import { CUBE_STYLES } from '../game/progression';
 import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from '../game/types';
 import {
   createCubeView,
   CUBE_HALF_SIZE,
   CUBE_SIZE,
-  CURSOR_PADDING,
-  CURSOR_THICKNESS_FACTOR,
+  FACE_NORMALS,
   MINI_CUBE_THICKNESS,
   MINI_CUBE_TILE_RATIO,
   PLATE_OFFSET,
@@ -28,8 +28,9 @@ import {
 
 /**
  * The view is exercised against real three.js objects (the integration tier the spec
- * pins for `render/**`): every assertion below reads the scene graph or a material —
- * no mocks except the `dispose` spies that count disposal.
+ * pins for `render/**`): every assertion below reads the scene graph, an instance matrix,
+ * an instance-colour buffer or a material — no mocks except the `dispose` spies that count
+ * disposal.
  */
 
 const STYLE = CUBE_STYLES[0]!;
@@ -99,6 +100,21 @@ function instanceAxis(mesh: InstancedMesh, index: number, axis: 0 | 1 | 2): numb
     .map((value) => value + 0);
 }
 
+/** The three scale factors of one instance: the length of each basis column. */
+function instanceScale(mesh: InstancedMesh, index: number): number[] {
+  const matrix = instanceMatrix(mesh, index);
+  return [0, 1, 2].map((axis) => new Vector3().setFromMatrixColumn(matrix, axis).length());
+}
+
+/** The per-instance colour multiplier stored for one instance. */
+function instanceColor(mesh: InstancedMesh, index: number): number[] {
+  const color = mesh.instanceColor;
+  if (color === null) {
+    throw new Error('the face mesh has no instanceColor buffer');
+  }
+  return [color.getX(index), color.getY(index), color.getZ(index)];
+}
+
 function faceMesh(view: CubeView, faceId: FaceId): InstancedMesh {
   const mesh = view.faces.get(faceId);
   if (mesh === undefined) {
@@ -119,13 +135,6 @@ function tileMaterial(view: CubeView, faceId: FaceId): MeshStandardMaterial {
   return faceMesh(view, faceId).material as MeshStandardMaterial;
 }
 
-/** One of the highlight mesh's local axes in group space. */
-function highlightAxis(view: CubeView, axis: 0 | 1 | 2): Vector3 {
-  return new Vector3()
-    .set(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0)
-    .applyQuaternion(view.highlight.quaternion);
-}
-
 function plateMaterial(view: CubeView, faceId: FaceId): MeshStandardMaterial {
   return facePlate(view, faceId).material as MeshStandardMaterial;
 }
@@ -133,7 +142,6 @@ function plateMaterial(view: CubeView, faceId: FaceId): MeshStandardMaterial {
 function geometrySpies(view: CubeView): Array<ReturnType<typeof vi.spyOn>> {
   return [
     view.body.geometry,
-    view.highlight.geometry,
     ...FACE_ORDER.map((faceId) => faceMesh(view, faceId).geometry),
     ...FACE_ORDER.map((faceId) => facePlate(view, faceId).geometry),
   ].map((geometry) => vi.spyOn(geometry, 'dispose'));
@@ -142,7 +150,6 @@ function geometrySpies(view: CubeView): Array<ReturnType<typeof vi.spyOn>> {
 function materialSpies(view: CubeView): Array<ReturnType<typeof vi.spyOn>> {
   const materials: Material[] = [
     view.body.material as Material,
-    view.highlight.material as Material,
     ...FACE_ORDER.map((faceId) => tileMaterial(view, faceId)),
     ...FACE_ORDER.map((faceId) => plateMaterial(view, faceId)),
   ];
@@ -150,24 +157,37 @@ function materialSpies(view: CubeView): Array<ReturnType<typeof vi.spyOn>> {
 }
 
 describe('cube geometry constants', () => {
-  it('pins the body, tile, plate and highlight geometry values', () => {
+  it('pins the body, tile and plate geometry values', () => {
     expect(CUBE_SIZE).toBe(5);
     expect(CUBE_HALF_SIZE).toBe(2.5);
     expect(MINI_CUBE_THICKNESS).toBe(0.25);
     expect(MINI_CUBE_TILE_RATIO).toBe(0.9);
     expect(PLATE_OFFSET).toBe(0.0625);
-    expect(CURSOR_PADDING).toBe(0.0625);
-    expect(CURSOR_THICKNESS_FACTOR).toBe(1.5);
+  });
+
+  it('pins the group-space face normals (spec AC-3)', () => {
+    expect([...Object.keys(FACE_NORMALS)]).toEqual(FACE_ORDER);
+
+    for (const { faceId, normal } of PINNED_AXES) {
+      expect(FACE_NORMALS[faceId].toArray()).toEqual(normal);
+    }
   });
 });
 
 describe('createCubeView', () => {
-  it('builds one body, six face grids, six plates and one hidden highlight', () => {
+  it('builds exactly one body, six face grids and six plates, in order', () => {
     const view = createCubeView(STYLE);
 
     expect(view.group).toBeInstanceOf(Group);
-    expect(view.group.children).toHaveLength(14);
+    expect(view.group.children).toHaveLength(13);
     expect(view.group.children.filter((child) => child instanceof InstancedMesh)).toHaveLength(6);
+
+    // Exact child order: the body, then each face's grid followed by its plate.
+    const expectedChildren = [view.body];
+    for (const faceId of FACE_ORDER) {
+      expectedChildren.push(faceMesh(view, faceId), facePlate(view, faceId));
+    }
+    expect(view.group.children).toEqual(expectedChildren);
 
     expect(view.body.geometry).toBeInstanceOf(BoxGeometry);
     expect((view.body.geometry as BoxGeometry).parameters).toEqual({
@@ -188,15 +208,28 @@ describe('createCubeView', () => {
       expect(faceMesh(view, faceId).instanceMatrix.count).toBe(25);
       expect(facePlate(view, faceId).geometry).toBeInstanceOf(PlaneGeometry);
     }
+  });
 
-    expect(view.highlight).toBeInstanceOf(Mesh);
-    expect(view.highlight.visible).toBe(false);
+  it('gives every face an all-white instanceColor buffer (spec AC-4)', () => {
+    const view = createCubeView(STYLE);
+
+    for (const faceId of FACE_IDS) {
+      const mesh = faceMesh(view, faceId);
+      const color = mesh.instanceColor;
+
+      expect(color).toBeInstanceOf(InstancedBufferAttribute);
+      expect(color!.count).toBe(25);
+      expect(color!.itemSize).toBe(3);
+      // Every slot starts at the neutral multiplier, so idle tiles render unchanged.
+      expect(Array.from(color!.array as Float32Array)).toEqual(new Array(75).fill(1));
+      expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+      expect(instanceColor(mesh, 24)).toEqual([1, 1, 1]);
+    }
   });
 
   it('takes the pinned colours and PBR values from the style', () => {
     const view = createCubeView(CUBE_STYLES[0]!);
     const body = view.body.material as MeshStandardMaterial;
-    const highlight = view.highlight.material as MeshBasicMaterial;
 
     expect(STYLE.id).toBe('obsidian-neon');
     expect(body.color.getHexString()).toBe('0b0b12');
@@ -208,10 +241,6 @@ describe('createCubeView', () => {
     expect(plateMaterial(view, 'front').color.getHexString()).toBe('0b0b12');
     expect(plateMaterial(view, 'front').transparent).toBe(true);
     expect(plateMaterial(view, 'front').opacity).toBe(1);
-    expect(highlight).toBeInstanceOf(MeshBasicMaterial);
-    expect(highlight.color.getHexString()).toBe('7cf6ff');
-    expect(highlight.transparent).toBe(true);
-    expect(highlight.opacity).toBe(0.9);
   });
 
   it('places every plate at the pinned distance, facing outwards', () => {
@@ -254,6 +283,7 @@ describe('createCubeView', () => {
     expect(three.faces.size).toBe(6);
     for (const faceId of FACE_IDS) {
       expect(faceMesh(three, faceId).count).toBe(9);
+      expect(faceMesh(three, faceId).instanceColor!.count).toBe(9);
     }
     // cell = 5 / 3; first instance (row 0, col 0) and last (row 2, col 2) on the front.
     expect(instancePosition(faceMesh(three, 'front'), 0)).toEqual([
@@ -314,34 +344,142 @@ describe('instance matrices', () => {
 });
 
 describe('hideMiniCube', () => {
-  it('zeroes one instance matrix while keeping its position', () => {
+  it('hides instantly for reduced motion: zero scale, no colour write', () => {
     const view = createCubeView(STYLE);
+
+    view.hideMiniCube('front:0:0', true);
+
+    expect(instancePosition(faceMesh(view, 'front'), 0)).toEqual([-2, 2, TILE_DISTANCE]);
+    expect(instanceScale(faceMesh(view, 'front'), 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(faceMesh(view, 'front'), 0)).toEqual([1, 1, 1]);
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(faceMesh(view, 'front').count).toBe(25);
+
+    // No record exists, so time cannot resurrect the flashed intermediate state.
+    view.update(50);
+    expect(instanceScale(faceMesh(view, 'front'), 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(faceMesh(view, 'front'), 0)).toEqual([1, 1, 1]);
+  });
+
+  it('plays the pinned pop timeline on the real instance matrix and colour', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
 
     view.hideMiniCube('front:0:0');
 
-    expect(instancePosition(faceMesh(view, 'front'), 0)).toEqual([-2, 2, TILE_DISTANCE]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 1)).toEqual([0, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 2)).toEqual([0, 0, 0]);
-    expect(faceMesh(view, 'front').count).toBe(25);
-    expect(faceMesh(view, 'front').instanceMatrix.count).toBe(25);
+    // t = 0: the pop starts at the tile's own size — nothing has changed yet.
+    expect(instanceScale(mesh, 0)).toEqual([TILE_SIZE_F32, TILE_SIZE_F32, Math.fround(0.25)]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // t = 50: expand, factor 1.05, colour 1.15.
+    view.update(50);
+    expect(instanceScale(mesh, 0)).toEqual([
+      Math.fround(0.9 * 1.05),
+      Math.fround(0.9 * 1.05),
+      Math.fround(0.25 * 1.05),
+    ]);
+    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.15), Math.fround(1.15), Math.fround(1.15)]);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // t = 100: the peak — factor 1.1, colour 1.3.
+    view.update(50);
+    expect(instanceScale(mesh, 0)).toEqual([
+      Math.fround(0.9 * 1.1),
+      Math.fround(0.9 * 1.1),
+      Math.fround(0.25 * 1.1),
+    ]);
+    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // t = 130: shrink, factor 0.55, colour 1.15.
+    view.update(30);
+    expect(instanceScale(mesh, 0)).toEqual([
+      Math.fround(0.9 * 0.55),
+      Math.fround(0.9 * 0.55),
+      Math.fround(0.25 * 0.55),
+    ]);
+    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.15), Math.fround(1.15), Math.fround(1.15)]);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // t = 160: the predecessor's hidden end state — zero scale, colour back to 1.
+    view.update(30);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // Settled: the record is gone, so later frames keep the end state.
+    view.update(30);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
     expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
   });
 
-  it('hides exactly the requested id, on its own face, and is idempotent', () => {
+  it('never restarts a running pop when the same id is hidden again', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+
+    view.hideMiniCube('front:0:0');
+    view.update(50);
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.9 * 1.05));
+
+    view.hideMiniCube('front:0:0');
+    view.update(0);
+
+    // Still at t = 50: a restart would have brought the factor back to 1.
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.9 * 1.05));
+    expect(instanceColor(mesh, 0)[0]).toBe(Math.fround(1.15));
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
+  });
+
+  it('runs independent records 60 ms apart, side by side', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+
+    view.hideMiniCube('front:0:0');
+    view.update(60);
+    view.hideMiniCube('front:0:1');
+    view.update(40);
+
+    // The first record is at t = 100 (peak); the second trails it by exactly 60 ms.
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.9 * 1.1));
+    expect(instanceColor(mesh, 0)[0]).toBe(Math.fround(1.3));
+
+    view.update(60);
+
+    // First record settled at t = 160 while the second reaches the pinned t = 100 peak.
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(instanceScale(mesh, 1)[0]).toBe(Math.fround(0.9 * MINI_CUBE_POP_PEAK_SCALE));
+    expect(instanceColor(mesh, 1)[0]).toBe(Math.fround(1.3));
+  });
+
+  it('leaves every other instance and face untouched', () => {
     const view = createCubeView(STYLE);
 
     view.hideMiniCube('top:1:1');
-    view.hideMiniCube('top:1:1');
+    view.update(100);
 
     // top index 6 = row 1, col 1 → (0, 2.625, 0) + right * -1 + down * -1.
     expect(instancePosition(faceMesh(view, 'top'), 6)).toEqual([-1, TILE_DISTANCE, -1]);
-    expect(instanceAxis(faceMesh(view, 'top'), 6, 0)).toEqual([0, 0, 0]);
-    expect(view.isMiniCubeHidden('top:1:1')).toBe(true);
+    expect(instanceScale(faceMesh(view, 'top'), 6)).toEqual([
+      Math.fround(0.9 * 1.1),
+      Math.fround(0.9 * 1.1),
+      Math.fround(0.25 * 1.1),
+    ]);
+    expect(instanceScale(faceMesh(view, 'top'), 7)).toEqual([
+      TILE_SIZE_F32,
+      TILE_SIZE_F32,
+      Math.fround(0.25),
+    ]);
+    expect(instanceColor(faceMesh(view, 'top'), 7)).toEqual([1, 1, 1]);
+    expect(instanceScale(faceMesh(view, 'front'), 6)).toEqual([
+      TILE_SIZE_F32,
+      TILE_SIZE_F32,
+      Math.fround(0.25),
+    ]);
     expect(view.isMiniCubeHidden('top:1:2')).toBe(false);
-    expect(view.isMiniCubeHidden('front:0:0')).toBe(false);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'top'), 7, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
+    expect(view.isMiniCubeHidden('front:0:1')).toBe(false);
   });
 
   it('rejects malformed and off-grid ids', () => {
@@ -394,87 +532,51 @@ describe('hideMiniCube', () => {
     expect(view.isMiniCubeHidden('left:0:0')).toBe(true);
     expect(view.isMiniCubeHidden('left:1:1')).toBe(false);
     expect(view.faces.has('left')).toBe(false);
+
+    // No mesh is left to animate: the frame update is a silent no-op.
+    view.update(100);
+    expect(view.isMiniCubeHidden('left:0:0')).toBe(true);
   });
 });
 
-describe('highlightCursor', () => {
-  it('moves the accent highlight onto the pinned cell and clears it again', () => {
+describe('settlePops', () => {
+  it('zero-scales every running pop at once and clears the records', () => {
     const view = createCubeView(STYLE);
+    const front = faceMesh(view, 'front');
+    const back = faceMesh(view, 'back');
 
-    expect(view.highlight.visible).toBe(false);
+    view.hideMiniCube('front:0:0');
+    view.hideMiniCube('back:4:4');
+    view.update(50);
+    expect(instanceScale(front, 0)[0]).toBe(Math.fround(0.9 * 1.05));
+    expect(instanceScale(back, 24)[0]).toBe(Math.fround(0.9 * 1.05));
 
-    view.highlightCursor({ faceId: 'front', row: 2, col: 2 });
+    view.settlePops();
 
-    expect(view.highlight.visible).toBe(true);
-    expect(view.highlight.position.toArray()).toEqual([0, 0, TILE_DISTANCE]);
-    expect(view.highlight.scale.toArray()).toEqual([
-      TILE_SIZE + CURSOR_PADDING,
-      TILE_SIZE + CURSOR_PADDING,
-      MINI_CUBE_THICKNESS * CURSOR_THICKNESS_FACTOR,
-    ]);
-    expect(view.highlight.scale.toArray()).toEqual([0.9625, 0.9625, 0.375]);
-    expect(highlightAxis(view, 0).toArray()).toEqual([1, 0, 0]);
-    expect(highlightAxis(view, 1).toArray()).toEqual([0, 1, 0]);
-    expect(highlightAxis(view, 2).toArray()).toEqual([0, 0, 1]);
+    expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
+    expect(instanceScale(back, 24)).toEqual([0, 0, 0]);
+    expect(instanceColor(front, 0)).toEqual([1, 1, 1]);
+    expect(instanceColor(back, 24)).toEqual([1, 1, 1]);
+    expect(instancePosition(front, 0)).toEqual([-2, 2, TILE_DISTANCE]);
 
-    view.highlightCursor({ faceId: 'top', row: 4, col: 0 });
-
-    expect(view.highlight.position.toArray()).toEqual([-2, TILE_DISTANCE, 2]);
-    expect(highlightAxis(view, 2).dot(new Vector3(0, 1, 0))).toBe(1);
-    expect(highlightAxis(view, 0).dot(new Vector3(1, 0, 0))).toBe(1);
-    expect(highlightAxis(view, 1).dot(new Vector3(0, 0, -1))).toBe(1);
-
-    view.highlightCursor(null);
-
-    expect(view.highlight.visible).toBe(false);
-    // The highlight keeps its last placement while hidden.
-    expect(view.highlight.position.toArray()).toEqual([-2, TILE_DISTANCE, 2]);
+    // The records are empty: no further writes can happen.
+    const frontWrites = vi.spyOn(front, 'setMatrixAt');
+    const backWrites = vi.spyOn(back, 'setMatrixAt');
+    view.update(50);
+    expect(frontWrites).toHaveBeenCalledTimes(0);
+    expect(backWrites).toHaveBeenCalledTimes(0);
+    expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
   });
 
-  it('orients the highlight on every face (right, up, normal)', () => {
+  it('is a no-op when no pop is running', () => {
     const view = createCubeView(STYLE);
+    const front = faceMesh(view, 'front');
+    const writes = vi.spyOn(front, 'setMatrixAt');
 
-    for (const { faceId, right, up, normal } of PINNED_AXES) {
-      view.highlightCursor({ faceId, row: 0, col: 0 });
+    view.settlePops();
 
-      expect(view.highlight.visible).toBe(true);
-      expect(highlightAxis(view, 0).dot(new Vector3(...right))).toBe(1);
-      expect(highlightAxis(view, 1).dot(new Vector3(...up))).toBe(1);
-      expect(highlightAxis(view, 2).dot(new Vector3(...normal))).toBe(1);
-    }
-
-    view.highlightCursor(null);
-    expect(view.highlight.visible).toBe(false);
-  });
-
-  it('stays hidden for a face that is already removed', () => {
-    const view = createCubeView(STYLE);
-
-    view.highlightCursor({ faceId: 'bottom', row: 0, col: 0 });
-    expect(view.highlight.visible).toBe(true);
-
-    view.removeFace('bottom');
-    view.highlightCursor({ faceId: 'bottom', row: 0, col: 0 });
-
-    expect(view.highlight.visible).toBe(false);
-  });
-
-  it('rejects a cursor outside the grid', () => {
-    const view = createCubeView(STYLE);
-
-    expect(() => view.highlightCursor({ faceId: 'front', row: 5, col: 0 })).toThrow(
-      RangeError('mini-cube "front:5:0" is outside the 5x5 grid'),
-    );
-    expect(() => view.highlightCursor({ faceId: 'front', row: -1, col: 4 })).toThrow(
-      RangeError('mini-cube "front:-1:4" is outside the 5x5 grid'),
-    );
-    expect(() => view.highlightCursor({ faceId: 'front', row: 0.5, col: 0 })).toThrow(
-      RangeError('mini-cube "front:0.5:0" is outside the 5x5 grid'),
-    );
-    expect(() => view.highlightCursor({ faceId: 'front', row: 0, col: Number.NaN })).toThrow(
-      RangeError('mini-cube "front:0:NaN" is outside the 5x5 grid'),
-    );
-    expect(view.highlight.visible).toBe(false);
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceScale(front, 0)).toEqual([TILE_SIZE_F32, TILE_SIZE_F32, Math.fround(0.25)]);
   });
 });
 
@@ -501,7 +603,7 @@ describe('removeFace', () => {
     expect(view.faces.size).toBe(5);
     expect(view.plateMeshes.size).toBe(5);
     expect([...view.faces.keys()]).toEqual(['back', 'left', 'right', 'top', 'bottom']);
-    expect(view.group.children).toHaveLength(12);
+    expect(view.group.children).toHaveLength(11);
     expect(meshGeometrySpy).toHaveBeenCalledTimes(1);
     expect(meshMaterialSpy).toHaveBeenCalledTimes(1);
     expect(plateGeometrySpy).toHaveBeenCalledTimes(1);
@@ -523,27 +625,50 @@ describe('removeFace', () => {
     expect(geometrySpy).toHaveBeenCalledTimes(1);
     expect(materialSpy).toHaveBeenCalledTimes(1);
     expect(view.faces.size).toBe(5);
-    expect(view.group.children).toHaveLength(12);
+    expect(view.group.children).toHaveLength(11);
   });
 
-  it('leaves the remaining faces hittable', () => {
+  it('cancels that face’s pop records and keeps the others running', () => {
+    const view = createCubeView(STYLE);
+    const front = faceMesh(view, 'front');
+    const back = faceMesh(view, 'back');
+
+    view.hideMiniCube('front:0:0');
+    view.hideMiniCube('back:0:0');
+    view.update(50);
+    expect(instanceScale(front, 0)[0]).toBe(Math.fround(0.9 * 1.05));
+
+    view.removeFace('front');
+    const frontWrites = vi.spyOn(front, 'setMatrixAt');
+    view.update(50);
+
+    expect(frontWrites).toHaveBeenCalledTimes(0);
+    // The back face's pop continues: it reaches the pinned t = 100 peak.
+    expect(instanceScale(back, 0)[0]).toBe(Math.fround(0.9 * 1.1));
+    expect(instanceColor(back, 0)[0]).toBe(Math.fround(1.3));
+  });
+
+  it('leaves the remaining faces operable', () => {
     const view = createCubeView(STYLE);
 
     view.removeFace('front');
-    view.hideMiniCube('back:0:0');
+    view.hideMiniCube('back:0:0', true);
 
     expect(instancePosition(faceMesh(view, 'back'), 0)).toEqual([2, 2, -TILE_DISTANCE]);
-    expect(instanceAxis(faceMesh(view, 'back'), 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceScale(faceMesh(view, 'back'), 0)).toEqual([0, 0, 0]);
     expect(view.isMiniCubeHidden('back:0:0')).toBe(true);
   });
 });
 
 describe('applyStyle', () => {
-  it('re-colours the existing materials in place', () => {
+  it('re-colours the existing materials in place without touching instance colours', () => {
     const view = createCubeView(CUBE_STYLES[0]!);
     const mesh = faceMesh(view, 'front');
     const body = view.body.material as MeshStandardMaterial;
-    const highlight = view.highlight.material as MeshBasicMaterial;
+
+    view.hideMiniCube('front:0:0');
+    view.update(100);
+    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
 
     view.applyStyle(CUBE_STYLES[3]!);
 
@@ -555,11 +680,13 @@ describe('applyStyle', () => {
     expect(tileMaterial(view, 'front').metalness).toBe(0.9);
     expect(tileMaterial(view, 'front').roughness).toBe(0.25);
     expect(plateMaterial(view, 'top').color.getHexString()).toBe('2a1a05');
-    expect(highlight.color.getHexString()).toBe('ffe9b3');
+    // The per-instance buffers are untouched: the running flash survives, idle slots stay 1.
+    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
+    expect(instanceColor(mesh, 1)).toEqual([1, 1, 1]);
     // In place: same mesh, same instance count, nothing rebuilt.
     expect(faceMesh(view, 'front')).toBe(mesh);
     expect(mesh.count).toBe(25);
-    expect(view.group.children).toHaveLength(14);
+    expect(view.group.children).toHaveLength(13);
   });
 
   it('leaves a removed face untouched and keeps a plate fade in progress', () => {
@@ -589,8 +716,8 @@ describe('dispose', () => {
     const geometryDisposers = geometrySpies(view);
     const materialDisposers = materialSpies(view);
 
-    expect(geometryDisposers).toHaveLength(14);
-    expect(materialDisposers).toHaveLength(14);
+    expect(geometryDisposers).toHaveLength(13);
+    expect(materialDisposers).toHaveLength(13);
 
     view.dispose();
 
@@ -613,6 +740,21 @@ describe('dispose', () => {
     expect(view.group.children).toHaveLength(0);
     expect(view.faces.size).toBe(0);
     expect(view.plateMeshes.size).toBe(0);
+  });
+
+  it('clears running pop records', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+    view.hideMiniCube('front:0:0');
+    view.update(50);
+
+    view.dispose();
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
+
+    view.update(50);
+
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.9 * 1.05));
   });
 
   it('does not dispose a removed face twice', () => {

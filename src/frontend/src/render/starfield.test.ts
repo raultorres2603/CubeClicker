@@ -165,8 +165,8 @@ describe('starfield drift', () => {
   });
 });
 
-describe('travel streak', () => {
-  it('grows the axis-aligned elongation along the travel axis within pinned bounds', () => {
+describe('travel expansion', () => {
+  it('scales the star disk uniformly in the view plane, leaving z at 1', () => {
     const starfield = createStarfield(seededRandom(6));
 
     expect(starfield.points.scale.toArray()).toEqual([1, 1, 1]);
@@ -174,31 +174,61 @@ describe('travel streak', () => {
     starfield.update(16, 0);
     expect(starfield.points.scale.toArray()).toEqual([1, 1, 1]);
 
+    // 1 + 7 * easeInOutQuad(p): 0.25 → 1.875, 0.5 → 4.5, 0.75 → 7.125, 1 → 8.
+    starfield.update(16, 0.25);
+    expect(starfield.points.scale.toArray()).toEqual([1.875, 1.875, 1]);
+
     starfield.update(16, 0.5);
-    expect(starfield.points.scale.toArray()).toEqual([1, 1, 1.25]);
+    expect(starfield.points.scale.toArray()).toEqual([4.5, 4.5, 1]);
+
+    starfield.update(16, 0.75);
+    expect(starfield.points.scale.toArray()).toEqual([7.125, 7.125, 1]);
 
     starfield.update(16, 1);
-    expect(starfield.points.scale.toArray()).toEqual([1, 1, 1.5]);
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
+  });
 
-    // Clamped at both ends: the elongation never leaves [1, 1.5].
+  it('clamps the travel input at both ends', () => {
+    const starfield = createStarfield(seededRandom(10));
+
     starfield.update(16, 2);
-    expect(starfield.points.scale.toArray()).toEqual([1, 1, 1.5]);
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
+
+    starfield.update(16, 5);
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
 
     starfield.update(16, -1);
     expect(starfield.points.scale.toArray()).toEqual([1, 1, 1]);
+
+    starfield.update(16, -0.5);
+    expect(starfield.points.scale.toArray()).toEqual([1, 1, 1]);
   });
 
-  it('keeps the last streak when the frame advance omits the travel progress', () => {
+  it('keeps the last expansion when the frame advance omits the travel progress', () => {
     const starfield = createStarfield(seededRandom(7));
 
-    starfield.update(16, 0.5);
-    expect(starfield.points.scale.z).toBe(1.25);
+    starfield.update(16, 0.25);
+    expect(starfield.points.scale.toArray()).toEqual([1.875, 1.875, 1]);
 
     starfield.update(16);
-    expect(starfield.points.scale.z).toBe(1.25);
+    expect(starfield.points.scale.toArray()).toEqual([1.875, 1.875, 1]);
 
     starfield.update(16, 0);
-    expect(starfield.points.scale.z).toBe(1);
+    expect(starfield.points.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('scales the same Points object without touching its stars', () => {
+    const starfield = createStarfield(seededRandom(11));
+    const points = starfield.points;
+    const position = points.geometry.getAttribute('position');
+    const before = Float32Array.from(position.array as Float32Array);
+
+    starfield.update(16, 0.5);
+    starfield.update(16, 1);
+
+    expect(starfield.points).toBe(points);
+    expect(points.geometry.getAttribute('position')).toBe(position);
+    expect(Array.from(position.array as Float32Array)).toEqual(Array.from(before));
   });
 });
 

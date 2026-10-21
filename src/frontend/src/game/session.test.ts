@@ -514,8 +514,8 @@ describe('attach', () => {
     const { scene, camera } = fake.renderer.renders[0]!;
     expect(scene).toBeInstanceOf(Scene);
     expect(camera.aspect).toBe(2);
-    // The first frame applies the intro flight's start position (AC-22).
-    expect(camera.position.toArray()).toEqual([0, 0, 60]);
+    // The first frame applies the intro search's opening pose (AC-2).
+    expect(camera.position.toArray()).toEqual([36, 20, 24]);
   });
 
   it('keeps a square projection on an empty rect', () => {
@@ -582,8 +582,16 @@ describe('pointer wiring', () => {
 
     fake.scheduler.tick(32);
 
-    // The drained intent reached the scene: the tile instance is hidden in the frame.
+    // The drained intent reached the scene: the tile is mid-pop (AC-4), still full enough
+    // to be visible, and has not been zero-scaled away yet.
     const mesh = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
+    const popping = instanceMatrix(mesh, 12);
+    expect(popping.elements[0]).toBe(Math.fround(0.9 * 1.016));
+    expect(new Vector3().setFromMatrixPosition(popping).toArray()).toEqual([0, 0, 2.625]);
+
+    fake.scheduler.tick(192);
+
+    // At the end of the 160 ms pop the instance reaches the hidden end state (AC-4).
     const hidden = instanceMatrix(mesh, 12);
     expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
     expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([0, 0, 2.625]);

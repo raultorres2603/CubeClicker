@@ -1,23 +1,25 @@
 /**
- * Procedural galaxy backdrop (T7 — plan § Render interfaces, spec AC-3 / AC-16).
+ * Procedural galaxy backdrop (T7 — plan § Render interfaces; spec AC-1 / AC-16).
  *
  * Exactly one `THREE.Points` object holds exactly {@link STAR_COUNT} stars. Every star is
  * drawn from the injected random source (four draws per star, in `x → y → z → brightness`
  * order), so the same seed always produces the same sky: the backdrop is deterministic,
  * testable and loaded from nothing (plan § Asset strategy — all visuals are procedural).
  *
- * `STAR_COUNT` is imported from `game/effects.ts` (T5), the single home for the non-grid
- * pinned constants (plan § Constant homes — never redefined locally).
+ * `STAR_COUNT`, {@link TRAVEL_STARFIELD_SCALE} and {@link easeInOutQuad} are imported from
+ * `game/effects.ts` (T5), the single home for the non-grid pinned constants and easings
+ * (plan § Constant homes — never redefined locally).
  *
  * The star disk is a wide, shallow box behind the cube (negative `z`), centred on the
- * origin: `x ∈ [-70, 70]`, `y ∈ [-40, 40]`, `z ∈ [-60, -8]`. Those extents keep every star
- * inside the camera's `far` plane (200) even at the travel extreme, where the camera pulls
- * back to `z = 90`.
+ * origin: `x ∈ [-70, 70]`, `y ∈ [-40, 40]`, `z ∈ [-60, -8]`. The camera's travel pull-away
+ * ends at `z = 90`, so even a star at `z = -60` sits 150 units away — inside the `far`
+ * plane (200). The travel expansion is applied in the view plane only (`x`/`y`), which
+ * keeps every star inside that same far plane at the travel extreme (spec AC-1).
  */
 
 import { BufferAttribute, BufferGeometry, Points, PointsMaterial } from 'three';
 
-import { STAR_COUNT } from '../game/effects';
+import { easeInOutQuad, STAR_COUNT, TRAVEL_STARFIELD_SCALE } from '../game/effects';
 
 /** Horizontal spread of the star disk (world units), centred on the origin. */
 const GALAXY_WIDTH = 140;
@@ -44,12 +46,6 @@ const STAR_MIN_BRIGHTNESS = 0.5;
  */
 const DRIFT_RADIANS_PER_MS = 1 / 65536;
 
-/**
- * Elongation added at `travelProgress = 1`: the star disk stretches to `1.5×` along the
- * travel axis (`z`) — the axis-aligned streak of the galaxy travel transition.
- */
-const STREAK_MAX_ELONGATION = 0.5;
-
 /** The galaxy backdrop: one starfield `Points` object plus its frame-update hooks. */
 export interface Starfield {
   /** The single `THREE.Points` drawable holding every star (AC-16: one object, never rebuilt). */
@@ -57,11 +53,12 @@ export interface Starfield {
   /**
    * Advances the backdrop by `dtMs` milliseconds: applies the slow drift.
    *
-   * `travelProgress` (0..1, clamped) is the galaxy travel input (AC-3): it scales the
-   * axis-aligned elongation of the star disk along `z`, from `1` (rest) to
-   * `1 + STREAK_MAX_ELONGATION` (`1.5`). Omit it to keep the current streak — the frame
-   * loop advances the drift every frame while the scene feeds the travel progress only
-   * while the travel phase runs.
+   * `travelProgress` (0..1, clamped) is the galaxy travel input (spec AC-1): it drives the
+   * uniform in-plane expansion of the star disk, from `1` (rest) to
+   * {@link TRAVEL_STARFIELD_SCALE} (`8`), eased with `easeInOutQuad` — the same easing the
+   * camera pull-away uses, so the stars visibly move outward for the whole transition. `z`
+   * stays `1`. Omit it to keep the current expansion — the frame loop advances the drift
+   * every frame while the scene feeds the travel progress only while the travel phase runs.
    */
   update(dtMs: number, travelProgress?: number): void;
   /** Releases the geometry and material of the starfield. */
@@ -114,7 +111,10 @@ export function createStarfield(random: () => number): Starfield {
 
       if (travelProgress !== undefined) {
         const progress = Math.min(1, Math.max(0, travelProgress));
-        points.scale.set(1, 1, 1 + STREAK_MAX_ELONGATION * progress);
+        const expansion = 1 + (TRAVEL_STARFIELD_SCALE - 1) * easeInOutQuad(progress);
+        // In-plane only: the stars spread radially away from the screen centre while their
+        // depth stays put, so no star leaves the camera's far plane.
+        points.scale.set(expansion, expansion, 1);
       }
     },
     dispose(): void {

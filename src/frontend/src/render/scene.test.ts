@@ -1,7 +1,9 @@
 import {
   AmbientLight,
+  Box3,
   Color,
   DirectionalLight,
+  Frustum,
   Group,
   InstancedMesh,
   Matrix4,
@@ -17,20 +19,19 @@ import {
 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { EffectIntent, EngineSnapshot } from '../game/engine';
-import { EXPLOSION_PARTICLE_COUNT, type Burst } from '../game/effects';
+import { BURST_ORIGIN_OFFSET, EXPLOSION_PARTICLE_COUNT, type Burst } from '../game/effects';
+import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
 import { CUBE_STYLES } from '../game/progression';
-import { createOrientation } from '../game/rotation';
-import { createBoard } from '../game/board';
 import { FACE_IDS, GRID_SIZE, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
-import { createSceneView, type SceneView } from './scene';
+import { CUBE_HALF_SIZE } from './cube-view';
+import { createSceneView, introCameraPose, snapToQuarterTurns, type SceneView } from './scene';
 
 /**
  * Integration tier the spec pins for `render/**`: the scene is exercised against real
  * three.js objects (node constructs them without a GL context) and every assertion below
- * reads the scene graph, a material or the camera. The only boundary that is faked is the
- * session's `RendererAdapter` (`webgl.ts`/`session.ts`, T13) — and even that fake only
- * records what it receives, so the scene's real state stays under test.
+ * reads the scene graph, an instance matrix, a material or the camera. The only boundary
+ * that is faked is the session's `RendererAdapter` (`webgl.ts`/`session.ts`, T13) — and even
+ * that fake only records what it receives, so the scene's real state stays under test.
  */
 
 const STYLE = CUBE_STYLES[0]!;
@@ -42,9 +43,6 @@ const TILE_DISTANCE = 2.625;
 
 /** The `front:0:0` tile centre in cube-local (and, unrotated, world) space. */
 const FRONT_FIRST_TILE: readonly [number, number, number] = [-2, 2, TILE_DISTANCE];
-
-/** The `front:4:4` tile centre — the opposite corner of the same face. */
-const FRONT_LAST_TILE: readonly [number, number, number] = [2, -2, TILE_DISTANCE];
 
 /** A random source that yields exactly zero star offsets and zero particle jitter. */
 const fixedRandom = (): number => 0.5;
@@ -96,20 +94,16 @@ function createView(style: CubeStyle = STYLE): SceneView {
   return createSceneView({ style, random: fixedRandom });
 }
 
-/** One engine snapshot with the pinned playing defaults; overrides pin the case at hand. */
+/**
+ * One engine snapshot with the pinned playing defaults (plan D-6): the rest of the fields
+ * come from a real engine, so no literal here names a field the engine may drop, and the
+ * overrides pin the case at hand.
+ */
 function snapshot(overrides: Partial<EngineSnapshot> = {}): EngineSnapshot {
   return {
+    ...createEngine({ random: fixedRandom }).getSnapshot(),
     phase: 'playing',
     phaseProgress: 1,
-    stats: { clicks: 0, facesDestroyed: 0 },
-    levelIndex: 0,
-    style: STYLE,
-    orientation: createOrientation(),
-    rotationFrom: null,
-    rotationProgress: 1,
-    cursor: null,
-    board: createBoard(),
-    reducedMotion: false,
     ...overrides,
   };
 }
@@ -117,7 +111,7 @@ function snapshot(overrides: Partial<EngineSnapshot> = {}): EngineSnapshot {
 /**
  * Applies one snapshot at frame time 0 — the pinned `SceneView.applySnapshot` signature
  * carries the loop's frame time, which the scene does not read (it applies snapshot
- * values only; the fades are driven by `update`'s `dtMs`).
+ * values only; the fades and pops are driven by `update`'s `dtMs`).
  */
 function applySnapshot(view: SceneView, value: EngineSnapshot): void {
   view.applySnapshot(value, 0);
@@ -218,13 +212,76 @@ function instanceMatrix(mesh: InstancedMesh, index: number): Matrix4 {
   return matrix;
 }
 
+/** The three scale factors of one instance: the length of each basis column. */
+function instanceScale(mesh: InstancedMesh, index: number): number[] {
+  const matrix = instanceMatrix(mesh, index);
+  return [0, 1, 2].map((axis) => new Vector3().setFromMatrixColumn(matrix, axis).length());
+}
+
+/** The per-instance colour multiplier stored for one instance. */
+function instanceColor(mesh: InstancedMesh, index: number): number[] {
+  const color = mesh.instanceColor;
+  if (color === null) {
+    throw new Error('the face mesh has no instanceColor buffer');
+  }
+  return [color.getX(index), color.getY(index), color.getZ(index)];
+}
+
 /** Total number of three.js objects in the scene graph (groups, drawables and lights). */
 function countObjects(root: Object3D): number {
   return 1 + root.children.reduce((total, child) => total + countObjects(child), 0);
 }
 
+/** The cube box: a `CUBE_SIZE` cube centred on the origin (spec AC-2 frustum gates). */
+const CUBE_BOX = new Box3(
+  new Vector3(-CUBE_HALF_SIZE, -CUBE_HALF_SIZE, -CUBE_HALF_SIZE),
+  new Vector3(CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+);
+
+/** The cube's eight corners, for the "fully framed" gate at the end of the find beat. */
+const CUBE_CORNERS: readonly Vector3[] = [-1, 1].flatMap((sx) =>
+  [-1, 1].flatMap((sy) =>
+    [-1, 1].map((sz) => new Vector3(sx * CUBE_HALF_SIZE, sy * CUBE_HALF_SIZE, sz * CUBE_HALF_SIZE)),
+  ),
+);
+
+/** The frustum of the scene's camera at the aspect the spec pins (16/9), at its current pose. */
+function cameraFrustum(view: SceneView): Frustum {
+  view.camera.aspect = 16 / 9;
+  view.camera.updateProjectionMatrix();
+  view.camera.updateMatrixWorld();
+  return new Frustum().setFromProjectionMatrix(
+    new Matrix4().multiplyMatrices(view.camera.projectionMatrix, view.camera.matrixWorldInverse),
+  );
+}
+
+/**
+ * The pinned intro pose table (spec AC-2). Every row is asserted as an exact literal; the
+ * `p = 0.56` row is the only one whose f64 evaluation sits a few ulps below the table's
+ * clean decimal values (0.56 is not binary-exact between the 0.4 and 0.72 segment bounds),
+ * so its literals are the exact outputs of the pinned formulas, documented next to them.
+ */
+const INTRO_POSES: ReadonlyArray<{
+  progress: number;
+  position: [number, number, number];
+  target: [number, number, number];
+}> = [
+  { progress: 0, position: [36, 20, 24], target: [0, 30, -40] },
+  { progress: 0.2, position: [34, 18, 26], target: [0, 30, -40] },
+  { progress: 0.4, position: [32, 16, 28], target: [0, 30, -40] },
+  // 4 − 7e-15, 2 − 3.6e-15, 26.25 and 3.75 − 7e-15, −5 + 7e-15 (see the doc above).
+  {
+    progress: 0.56,
+    position: [3.999999999999993, 1.9999999999999964, 26.25],
+    target: [0, 3.749999999999993, -4.999999999999993],
+  },
+  { progress: 0.72, position: [0, 0, 26], target: [0, 0, 0] },
+  { progress: 0.86, position: [0, 0, 13.75], target: [0, 0, 0] },
+  { progress: 1, position: [0, 0, 12], target: [0, 0, 0] },
+];
+
 describe('scene composition', () => {
-  it('sets a black background and assembles the starfield, lights, cube and particles (AC-3, AC-16)', () => {
+  it('sets a black background and assembles the starfield, lights, cube and particles (AC-16)', () => {
     const view = createView();
 
     expect(view.scene).toBeInstanceOf(Scene);
@@ -243,9 +300,11 @@ describe('scene composition', () => {
     expect(starfieldPoints(view)).toBeInstanceOf(Points);
     expect(starfieldPoints(view).geometry.getAttribute('position').count).toBe(1200);
 
-    // One instanced grid per face, `GRID_SIZE²` = 25 instances each.
+    // One instanced grid per face, `GRID_SIZE²` = 25 instances each, and no third drawable
+    // in the cube group: body + 6 grids + 6 plates = 13 children (AC-6).
     expect(faceMeshes(view)).toHaveLength(6);
     expect(faceMeshes(view).map((mesh) => mesh.count)).toEqual([25, 25, 25, 25, 25, 25]);
+    expect(cubeGroup(view).children).toHaveLength(13);
 
     // One pooled particle `Points` (never a `Points` per explosion).
     expect(particlePoints(view)).toBeInstanceOf(Points);
@@ -282,7 +341,7 @@ describe('scene composition', () => {
     expect(fake.disposals()).toBe(0);
   });
 
-  it('pins the camera lens and the rest position looking at the origin (AC-22)', () => {
+  it('pins the camera lens and the rest position looking at the origin (AC-2)', () => {
     const view = createView();
 
     expect(view.camera).toBeInstanceOf(PerspectiveCamera);
@@ -295,18 +354,130 @@ describe('scene composition', () => {
   });
 });
 
-describe('camera flights (AC-22)', () => {
-  it('flies the intro from (0,0,60) through (0,0,18) to rest', () => {
+describe('introCameraPose (AC-2)', () => {
+  it('yields the pinned pose table for every row', () => {
+    for (const { progress, position, target } of INTRO_POSES) {
+      const outPosition = new Vector3();
+      const outTarget = new Vector3();
+
+      introCameraPose(progress, outPosition, outTarget);
+
+      expect(outPosition.toArray()).toEqual(position);
+      expect(outTarget.toArray()).toEqual(target);
+    }
+  });
+
+  it('clamps the progress to the ends of the table', () => {
+    const outPosition = new Vector3();
+    const outTarget = new Vector3();
+
+    introCameraPose(-1, outPosition, outTarget);
+    expect(outPosition.toArray()).toEqual([36, 20, 24]);
+    expect(outTarget.toArray()).toEqual([0, 30, -40]);
+
+    introCameraPose(2, outPosition, outTarget);
+    expect(outPosition.toArray()).toEqual([0, 0, 12]);
+    expect(outTarget.toArray()).toEqual([0, 0, 0]);
+  });
+});
+
+describe('snapToQuarterTurns (AC-3)', () => {
+  it('snaps quarter-turn trig residue to the integer and normalises -0', () => {
+    const normal = new Vector3(1, 0, 6.123233995736766e-17);
+
+    expect(snapToQuarterTurns(normal).toArray()).toEqual([1, 0, 0]);
+
+    const negative = new Vector3(-6.123233995736766e-17, -1, 2.4492935982947064e-16);
+    expect(snapToQuarterTurns(negative).toArray()).toEqual([0, -1, 0]);
+  });
+
+  it('leaves genuine in-between components untouched', () => {
+    const between = new Vector3(0.5, -0.25, 0.125);
+
+    expect(snapToQuarterTurns(between).toArray()).toEqual([0.5, -0.25, 0.125]);
+
+    // Just outside the pinned epsilon: still untouched.
+    const near = new Vector3(2e-9, 1, 0);
+    expect(snapToQuarterTurns(near).toArray()).toEqual([2e-9, 1, 0]);
+  });
+});
+
+describe('intro search → find → approach (AC-2)', () => {
+  it('follows the pinned pose table through applySnapshot', () => {
+    const view = createView();
+
+    for (const { progress, position } of INTRO_POSES) {
+      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: progress }));
+      expect(view.camera.position.toArray()).toEqual(position);
+    }
+  });
+
+  it('looks exactly down the cube axis at the end of the find and the whole approach', () => {
+    const view = createView();
+
+    for (const phaseProgress of [0.72, 0.86, 1]) {
+      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress }));
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    }
+  });
+
+  it('searches off-screen, finds the cube centred and frames it fully (frustum gates)', () => {
+    const view = createView();
+
+    for (const phaseProgress of [0, 0.2, 0.4]) {
+      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress }));
+      const frustum = cameraFrustum(view);
+
+      expect(frustum.intersectsBox(CUBE_BOX)).toBe(false);
+      expect(frustum.containsPoint(new Vector3(0, 0, 0))).toBe(false);
+    }
+
+    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.56 }));
+    const found = cameraFrustum(view);
+    expect(found.containsPoint(new Vector3(0, 0, 0))).toBe(true);
+
+    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.72 }));
+    const framed = cameraFrustum(view);
+    expect(CUBE_CORNERS.map((corner) => framed.containsPoint(corner))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it('lands on the playing rest pose after a skip, whatever the intro progress was', () => {
+    const view = createView();
+
+    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.2 }));
+    expect(view.camera.position.toArray()).toEqual([34, 18, 26]);
+
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+  });
+
+  it('keeps the camera at rest through both flown phases under reduced motion', () => {
     const view = createView();
 
     applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 60]);
+    expect(view.camera.position.toArray()).toEqual([36, 20, 24]);
 
-    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.5 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 18]);
+    for (const phase of ['intro', 'travel'] as const) {
+      for (const phaseProgress of [0, 0.5, 1]) {
+        applySnapshot(view, snapshot({ phase, phaseProgress, reducedMotion: true }));
+        expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+        expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+      }
+    }
 
-    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 1 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    // No fly-through also means no starfield expansion.
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
   });
 
   it('pulls away during travel through (0,0,21.75) and (0,0,51) to (0,0,90)', () => {
@@ -328,43 +499,32 @@ describe('camera flights (AC-22)', () => {
     applySnapshot(view, snapshot({ phase: 'playing' }));
     expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
   });
-
-  it('keeps the camera at rest through both flown phases under reduced motion', () => {
-    const view = createView();
-
-    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0 }));
-    expect(view.camera.position.z).toBe(60);
-
-    for (const phase of ['intro', 'travel'] as const) {
-      for (const phaseProgress of [0, 0.5, 1]) {
-        applySnapshot(view, snapshot({ phase, phaseProgress, reducedMotion: true }));
-        expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
-      }
-    }
-
-    // No fly-through also means no starfield streak input.
-    view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
-  });
 });
 
-describe('starfield travel progress (AC-3)', () => {
-  it('drives the streak from the travel progress and keeps it across progress-less frames', () => {
+describe('starfield travel expansion (AC-1)', () => {
+  it('drives the in-plane expansion from the travel progress and keeps it across progress-less frames', () => {
     const view = createView();
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+
+    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.25 }));
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1.875, 1.875, 1]);
 
     applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5 }));
     view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1.25]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([4.5, 4.5, 1]);
 
-    // Frames that only advance time keep the streak (no snapshot in between).
+    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.75 }));
     view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([7.125, 7.125, 1]);
+
+    // Frames that only advance time keep the expansion (no snapshot in between).
     view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1.25]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([7.125, 7.125, 1]);
 
     applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 1 }));
     view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1.5]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([8, 8, 1]);
 
     applySnapshot(view, snapshot({ phase: 'playing' }));
     view.update(16);
@@ -383,6 +543,7 @@ describe('starfield travel progress (AC-3)', () => {
     view.update(16);
 
     expect(starfieldPoints(view)).toBe(points);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([4.5, 4.5, 1]);
   });
 });
 
@@ -415,23 +576,6 @@ describe('snapshot application', () => {
     expect(cubeGroup(view).rotation.y).toBe(3 * (Math.PI / 2));
   });
 
-  it('moves the cursor highlight onto the snapshot cell and hides it for a null cursor', () => {
-    const view = createView();
-
-    applySnapshot(view, snapshot({ cursor: { faceId: 'front', row: 0, col: 0 } }));
-    const highlight = cubeGroup(view).children[1] as Mesh;
-    expect(highlight.visible).toBe(true);
-    expect(highlight.position.toArray()).toEqual([...FRONT_FIRST_TILE]);
-
-    applySnapshot(view, snapshot({ cursor: { faceId: 'front', row: 4, col: 4 } }));
-    expect(highlight.position.toArray()).toEqual([...FRONT_LAST_TILE]);
-    expect(highlight.visible).toBe(true);
-
-    applySnapshot(view, snapshot({ cursor: null }));
-    expect(highlight.visible).toBe(false);
-    expect(highlight.position.toArray()).toEqual([...FRONT_LAST_TILE]);
-  });
-
   it('rebuilds the cube when the snapshot style changes without its levelChanged intent', () => {
     const view = createView();
     applySnapshot(view, snapshot());
@@ -453,7 +597,7 @@ describe('snapshot application', () => {
 });
 
 describe('intent application', () => {
-  it('hides the exploding instance and plays its burst at the mini-cube origin (AC-5)', () => {
+  it('pops the exploding tile and fronts its burst at the clicked surface (AC-3, AC-4)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     const mesh = faceMesh(view, 'front');
@@ -465,30 +609,52 @@ describe('intent application', () => {
 
     view.applyIntents([explosionIntent('front:0:0', 'front')], 100);
 
-    // Hidden: the instance keeps its slot and position, only its scale is zeroed.
-    const hidden = instanceMatrix(mesh, 0);
-    expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
-    expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([...FRONT_FIRST_TILE]);
+    // Marked hidden (unpickable) at intent time, but the tile itself has not shrunk yet.
+    expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(instanceScale(mesh, 0)).toEqual([Math.fround(0.9), Math.fround(0.9), Math.fround(0.25)]);
+
+    // t = 50: the pop is expanding (factor 1.05, multiplier 1.15).
+    view.update(50);
+    expect(instanceScale(mesh, 0)).toEqual([
+      Math.fround(0.9 * 1.05),
+      Math.fround(0.9 * 1.05),
+      Math.fround(0.25 * 1.05),
+    ]);
+    expect(instanceColor(mesh, 0)).toEqual([
+      Math.fround(1.15),
+      Math.fround(1.15),
+      Math.fround(1.15),
+    ]);
+
+    // t = 160: the predecessor's hidden end state, position preserved.
+    view.update(110);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(new Vector3().setFromMatrixPosition(instanceMatrix(mesh, 0)).toArray()).toEqual([
+      ...FRONT_FIRST_TILE,
+    ]);
 
     // Every other tile is untouched.
-    expect(instanceMatrix(mesh, 1).elements[0]).toBe(Math.fround(0.9));
+    expect(instanceScale(mesh, 1)[0]).toBe(Math.fround(0.9));
 
-    // The burst plays, one fragment per particle, all sitting on the tile origin.
+    // The burst plays in front of the tile: origin (−2, 2, 2.625) + 0.5 · (0, 0, 1).
     const positions = particlePositions(view);
     expect(particlePoints(view).geometry.drawRange.count).toBe(3);
-    expect([positions[0], positions[1], positions[2]]).toEqual([...FRONT_FIRST_TILE]);
-    expect([positions[3], positions[4], positions[5]]).toEqual([...FRONT_FIRST_TILE]);
+    expect([positions[0], positions[1], positions[2]]).toEqual([-2, 2, 3.125]);
+    expect([positions[3], positions[4], positions[5]]).toEqual([-2, 2, 3.125]);
+    expect(BURST_ORIGIN_OFFSET).toBe(0.5);
   });
 
-  it('follows the cube rotation when placing an explosion origin', () => {
+  it('follows the cube rotation when placing an explosion origin and normal', () => {
     const view = createView();
     applySnapshot(view, snapshot({ orientation: { yawSteps: 1, pitchSteps: 0 } }));
 
     view.applyIntents([explosionIntent('front:0:0', 'front')], 0);
 
-    // +1 yaw is +90° about +Y: (x, z) → (z, -x) for the tile at (-2, 2, 2.625).
+    // +1 yaw is +90° about +Y: the tile at (−2, 2, 2.625) lands at (2.625, 2, 2) and the
+    // front normal turns into +X; the quarter-turn trig residue is snapped away.
     const positions = particlePositions(view);
-    expect([positions[0], positions[1], positions[2]]).toEqual([2.625, 2, 2]);
+    expect([positions[0], positions[1], positions[2]]).toEqual([3.125, 2, 2]);
   });
 
   it('falls back to the cube centre when the exploding face is already gone', () => {
@@ -501,10 +667,45 @@ describe('intent application', () => {
 
     view.applyIntents([explosionIntent('back:0:0', 'back', 2)], 500);
 
-    // No instance left to read an origin from: the burst plays at the cube centre.
+    // No instance left to read an origin (or a normal) from: the burst plays at the centre.
     const positions = particlePositions(view);
     expect(particlePoints(view).geometry.drawRange.count).toBe(2);
     expect([positions[0], positions[1], positions[2]]).toEqual([0, 0, 0]);
+  });
+
+  it('hides instantly with no flash under reduced motion', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+    const mesh = faceMesh(view, 'front');
+
+    view.applyIntents([explosionIntent('front:0:0', 'front', 0)], 0);
+
+    // No record: the tile is zero-scaled at once and its colour is never written.
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
+
+    view.update(50);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+  });
+
+  it('settles a running pop when the snapshot switches to reduced motion (AC-4)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const mesh = faceMesh(view, 'front');
+
+    view.applyIntents([explosionIntent('front:0:0', 'front')], 0);
+    view.update(50);
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.9 * 1.05));
+
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+
+    view.update(50);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
   });
 
   it('fades a cleared face over the pinned 400 ms and then removes and disposes it (AC-9)', () => {
@@ -653,6 +854,7 @@ describe('frame updates and lifecycle', () => {
       expect(particlePoints(view).geometry.drawRange.count).toBe(24);
       view.update(350);
       expect(particlePoints(view).geometry.drawRange.count).toBe(0);
+      expect(instanceScale(faceMesh(view, 'front'), row * GRID_SIZE + row)).toEqual([0, 0, 0]);
     }
 
     // The pool, the starfield and the scene graph are reused — nothing grows per cycle.
@@ -669,7 +871,6 @@ describe('frame updates and lifecycle', () => {
     const particles = particlePoints(view);
     const body = cubeGroup(view).children[0] as Mesh;
     const frontPlate = facePlate(view, 'front');
-    const highlight = cubeGroup(view).children[1] as Mesh;
 
     const spies = [
       vi.spyOn(starfield.geometry, 'dispose'),
@@ -682,8 +883,6 @@ describe('frame updates and lifecycle', () => {
       vi.spyOn(faceMesh(view, 'front').material as Material, 'dispose'),
       vi.spyOn(frontPlate.geometry, 'dispose'),
       vi.spyOn(plateMaterial(frontPlate), 'dispose'),
-      vi.spyOn(highlight.geometry, 'dispose'),
-      vi.spyOn(highlight.material as Material, 'dispose'),
     ];
 
     view.dispose();

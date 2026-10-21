@@ -10,9 +10,9 @@
  *
  * - A real `THREE.Raycaster` casts through `(ndcX, ndcY)` from the given camera.
  * - Only the `InstancedMesh` of the face named by `frontFaceId` is intersected: a ray that
- *   reaches the cube through the body, a plate, the highlight cursor or any of the other
- *   five faces is a miss (`null`) — the gate is the target itself, so no ordering or
- *   occlusion bookkeeping is needed.
+ *   reaches the cube through the body, a plate or any of the other five faces is a miss
+ *   (`null`) — the gate is the target itself, so no ordering or occlusion bookkeeping is
+ *   needed.
  * - A hit decodes to `face:row:col` with the cube view's own instance encoding
  *   (`row * gridSize + col`); the grid size is read back from the instance count, so grids
  *   other than the pinned `GRID_SIZE` pick correctly.
@@ -82,9 +82,8 @@ export function pickMiniCube(
   const id: MiniCubeId = `${frontFaceId}:${row}:${col}`;
 
   if (cubeView.isMiniCubeHidden(id)) {
-    // Exploded instances are visually gone, so they are not clickable. Today the view
-    // scales them to zero and three's triangle test already skips them, so this guard
-    // states the contract for any hidden representation instead of relying on that.
+    // An exploded instance is unpickable from the intent on, before its 160 ms pop has
+    // shrunk it away, so a second tap on the animating tile can never double-fire.
     return null;
   }
 

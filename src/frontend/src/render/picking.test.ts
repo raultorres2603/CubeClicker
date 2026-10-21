@@ -82,17 +82,6 @@ describe('pickMiniCube', () => {
     expect(pickMiniCube(camera, view, 'front', 0, 1)).toBeNull();
   });
 
-  it('picks through the cursor highlight', () => {
-    const camera = createCamera();
-    const view = createCubeView(STYLE);
-    view.highlightCursor({ faceId: 'front', row: 2, col: 2 });
-
-    // The highlight box is thicker and wider than the tile it marks, so it is the nearest
-    // object on that ray: a pick that targeted the whole group would hit the highlight.
-    expect(view.highlight.visible).toBe(true);
-    expect(pickMiniCube(camera, view, 'front', 0, 0)).toBe('front:2:2');
-  });
-
   it('ignores a hit on a face that is not the given front face', () => {
     const camera = createCamera();
     const view = createCubeView(STYLE);
@@ -110,6 +99,19 @@ describe('pickMiniCube', () => {
     const view = createCubeView(STYLE);
 
     view.hideMiniCube('front:2:2');
+
+    expect(pickMiniCube(camera, view, 'front', 0, 0)).toBeNull();
+    expect(pickMiniCube(camera, view, 'front', 0.22875, 0)).toBe('front:2:3');
+  });
+
+  it('returns null while a mini-cube is still playing its pop', () => {
+    const camera = createCamera();
+    const view = createCubeView(STYLE);
+
+    // At t = 0 the tile is still full size, but the intent already marked it hidden:
+    // a second tap on the animating tile can never double-fire (spec AC-4).
+    view.hideMiniCube('front:2:2');
+    view.update(50);
 
     expect(pickMiniCube(camera, view, 'front', 0, 0)).toBeNull();
     expect(pickMiniCube(camera, view, 'front', 0.22875, 0)).toBe('front:2:3');
