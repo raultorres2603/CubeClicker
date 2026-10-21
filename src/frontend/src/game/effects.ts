@@ -7,7 +7,8 @@
  * **Constant homes (plan § Constant homes — F2).** This module is the single home for
  * the non-grid pinned constants: {@link STAR_COUNT}, {@link EXPLOSION_PARTICLE_COUNT},
  * {@link PARTICLE_POOL_CAP}, {@link TAP_DRAG_THRESHOLD_PX}, {@link PIXEL_RATIO_CAP},
- * {@link TRAVEL_STARFIELD_SCALE}, {@link BURST_ORIGIN_OFFSET} and the mini-cube pop
+ * {@link TRAVEL_STARFIELD_SCALE}, {@link TRAVEL_LEVEL_ADVANCE_P}, {@link BURST_ORIGIN_OFFSET}
+ * and the mini-cube pop
  * constants ({@link MINI_CUBE_POP_MS}, {@link MINI_CUBE_POP_EXPAND_MS},
  * {@link MINI_CUBE_POP_PEAK_SCALE}, {@link MINI_CUBE_POP_COLOR_STRENGTH}).
  * Consumers (`render/starfield.ts`, `render/particles.ts`, `render/scene.ts`,
@@ -78,6 +79,26 @@ export function easeInOutQuad(t: number): number {
   return 1 - (inverted * inverted) / 2;
 }
 
+/**
+ * Symmetric travel swing (spec AC-3).
+ *
+ * Rises with {@link easeInOutQuad} over the compressed first half (`p ≤ 0.5`):
+ * `easeInOutQuad(2p)`; falls over the second half as `1 − easeInOutQuad(2p − 1)`.
+ * Both ends are clamped to `[0, 1]` and the function is total: `0 → 0`, `0.5 → 1`,
+ * `1 → 0`. The same value drives the travel camera and the backdrop expansion, so the
+ * two can never drift apart mid-transition:
+ *
+ * - camera z = `12 + 78 · travelSwing(p)` (rest 12 → turn-around 90 → rest 12);
+ * - starfield scale = `1 + 7 · travelSwing(p)` (`(1,1,1) → (8,8,1) → (1,1,1)`).
+ */
+export function travelSwing(progress: number): number {
+  const clamped = Math.min(1, Math.max(0, progress));
+  if (clamped <= 0.5) {
+    return easeInOutQuad(2 * clamped);
+  }
+  return 1 - easeInOutQuad(2 * clamped - 1);
+}
+
 /** One explosion fragment: unit direction, speed and point size. */
 export interface BurstParticle {
   dx: number;
@@ -115,8 +136,14 @@ export const TAP_DRAG_THRESHOLD_PX = 40;
 /** Ceiling applied to `devicePixelRatio` when sizing the renderer (spec § Pinned constants). */
 export const PIXEL_RATIO_CAP = 2;
 
-/** x/y expansion of the starfield layer at travel progress 1 (spec AC-1). */
+/** x/y expansion of the starfield layer at the travel midpoint (spec AC-1). */
 export const TRAVEL_STARFIELD_SCALE = 8;
+
+/**
+ * Travel-progress fraction at which the level advances (spec AC-3) — the midpoint, where
+ * the camera is at the turn-around and the backdrop is at its peak expansion.
+ */
+export const TRAVEL_LEVEL_ADVANCE_P = 0.5;
 
 /** World units the burst origin moves out along the face normal (spec AC-3). */
 export const BURST_ORIGIN_OFFSET = 0.5;

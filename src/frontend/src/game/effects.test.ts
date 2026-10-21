@@ -19,7 +19,9 @@ import {
   STAR_COUNT,
   TAP_DRAG_THRESHOLD_PX,
   timingsFor,
+  TRAVEL_LEVEL_ADVANCE_P,
   TRAVEL_STARFIELD_SCALE,
+  travelSwing,
 } from './effects';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
@@ -97,6 +99,10 @@ describe('non-grid pinned constants', () => {
     expect(MINI_CUBE_POP_PEAK_SCALE).toBe(1.1);
     expect(MINI_CUBE_POP_COLOR_STRENGTH).toBe(0.3);
   });
+
+  it('pins the travel level-advance fraction to the midpoint (AC-3)', () => {
+    expect(TRAVEL_LEVEL_ADVANCE_P).toBe(0.5);
+  });
 });
 
 describe('easeOutCubic', () => {
@@ -116,11 +122,45 @@ describe('easeInOutQuad', () => {
   it('returns the exact values at t = 0, 0.25, 0.5, 0.75 and 1', () => {
     expect([0, 0.25, 0.5, 0.75, 1].map(easeInOutQuad)).toEqual([0, 0.125, 0.5, 0.875, 1]);
   });
+});
 
-  it('yields the AC-22 travel camera positions (21.75 at 0.25, 51 at 0.5, 90 at 1)', () => {
-    // scene.ts pulls the camera away as z = 12 + 78 * easeInOutQuad(progress).
-    expect([0.25, 0.5, 1].map((progress) => 12 + 78 * easeInOutQuad(progress))).toEqual([
-      21.75, 51, 90,
+describe('travelSwing', () => {
+  /** Pinned travel progress samples: rest → turn-around → rest (spec AC-3). */
+  const PINNED_PROGRESS = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
+
+  it('pins the swing table 0 → 1 → 0 symmetrically', () => {
+    expect(PINNED_PROGRESS.map(travelSwing)).toEqual([
+      0, 0.125, 0.5, 0.875, 1, 0.875, 0.5, 0.125, 0,
+    ]);
+  });
+
+  it('clamps both ends of the progress range', () => {
+    expect([-1, -0.001, 0].map(travelSwing)).toEqual([0, 0, 0]);
+    expect([1, 1.001, 2].map(travelSwing)).toEqual([0, 0, 0]);
+  });
+
+  it('rises strictly to the midpoint and falls strictly back to the rest value', () => {
+    const values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1].map(travelSwing);
+
+    for (let index = 1; index <= 5; index += 1) {
+      expect(values[index]).toBeGreaterThan(values[index - 1]);
+    }
+    for (let index = 6; index < values.length; index += 1) {
+      expect(values[index]).toBeLessThan(values[index - 1]);
+    }
+  });
+
+  it('yields the AC-3 travel camera positions (12 → 90 → 12)', () => {
+    // scene.ts flies the camera as z = 12 + 78 * travelSwing(progress).
+    expect(PINNED_PROGRESS.map((progress) => 12 + 78 * travelSwing(progress))).toEqual([
+      12, 21.75, 51, 80.25, 90, 80.25, 51, 21.75, 12,
+    ]);
+  });
+
+  it('yields the AC-3 starfield scale table (1 → 8 → 1, z stays 1)', () => {
+    // starfield.ts scales the backdrop as S = 1 + 7 * travelSwing(progress), applied as (S, S, 1).
+    expect(PINNED_PROGRESS.map((progress) => 1 + 7 * travelSwing(progress))).toEqual([
+      1, 1.875, 4.5, 7.125, 8, 7.125, 4.5, 1.875, 1,
     ]);
   });
 });
