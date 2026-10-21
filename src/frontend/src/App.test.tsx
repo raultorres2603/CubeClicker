@@ -19,7 +19,7 @@ import type { GameStats, Phase } from './game/types';
  */
 
 const ARIA_LABEL =
-  'Game canvas: drag or press arrow keys to rotate, W A S D to select a mini-cube, Enter or Space to explode it';
+  'Game canvas: click a mini-cube to explode it; drag or press the arrow keys to rotate the cube';
 
 function snapshotFor(
   phase: Phase,
@@ -35,7 +35,6 @@ function snapshotFor(
     orientation: { yawSteps: 0, pitchSteps: 0 },
     rotationFrom: null,
     rotationProgress: 1,
-    cursor: { faceId: 'front', row: 2, col: 2 },
     board: createBoard(),
     reducedMotion: false,
   };

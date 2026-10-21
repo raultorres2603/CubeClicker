@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { remainingOnFace } from '../game/board';
-import { createEngine, type GameEvent } from '../game/engine';
+import { createEngine, type GameEngine, type GameEvent } from '../game/engine';
 import { frontFace, type Orientation } from '../game/rotation';
-import { GRID_SIZE, type FaceId, type Phase } from '../game/types';
+import type { FaceId, Phase } from '../game/types';
 import { mapKey } from './keyboard';
 
 /** Asserts one row of the key table: `mapKey(key, phase)` is exactly `expected`. */
@@ -20,6 +19,17 @@ function mustMap(key: string, phase: Phase): GameEvent {
   return event;
 }
 
+/** One raw key through the real map → dispatch path; a `null` mapping dispatches nothing. */
+function pressKey(engine: GameEngine, key: string, phase: Phase): void {
+  const event = mapKey(key, phase);
+  if (event !== null) {
+    engine.dispatch(event);
+  }
+}
+
+/** Every key the removed keyboard selection cursor used to bind (spec AC-6). */
+const REMOVED_CURSOR_KEYS = ['w', 'a', 's', 'd', 'W', 'A', 'S', 'D', 'Enter', ' '] as const;
+
 describe('mapKey — playing key→event table (AC-7)', () => {
   it('maps the arrow keys to one rotation step each', () => {
     expectMapping('ArrowLeft', 'playing', { type: 'rotate', axis: 'yaw', direction: -1 });
@@ -28,23 +38,10 @@ describe('mapKey — playing key→event table (AC-7)', () => {
     expectMapping('ArrowDown', 'playing', { type: 'rotate', axis: 'pitch', direction: -1 });
   });
 
-  it('maps lower-case WASD to the four cursor steps', () => {
-    expectMapping('w', 'playing', { type: 'cursorMove', dx: 0, dy: -1 });
-    expectMapping('a', 'playing', { type: 'cursorMove', dx: -1, dy: 0 });
-    expectMapping('s', 'playing', { type: 'cursorMove', dx: 0, dy: 1 });
-    expectMapping('d', 'playing', { type: 'cursorMove', dx: 1, dy: 0 });
-  });
-
-  it('maps upper-case WASD identically (case-insensitive)', () => {
-    expectMapping('W', 'playing', { type: 'cursorMove', dx: 0, dy: -1 });
-    expectMapping('A', 'playing', { type: 'cursorMove', dx: -1, dy: 0 });
-    expectMapping('S', 'playing', { type: 'cursorMove', dx: 0, dy: 1 });
-    expectMapping('D', 'playing', { type: 'cursorMove', dx: 1, dy: 0 });
-  });
-
-  it('maps Enter and space to explodeCursor', () => {
-    expectMapping('Enter', 'playing', { type: 'explodeCursor' });
-    expectMapping(' ', 'playing', { type: 'explodeCursor' });
+  it('maps the removed WASD, Enter and space keys to no command at all (AC-6)', () => {
+    for (const key of REMOVED_CURSOR_KEYS) {
+      expectMapping(key, 'playing', null);
+    }
   });
 });
 
@@ -86,49 +83,27 @@ describe('mapKey — phase policy (AC-2)', () => {
 });
 
 describe('integration — mapKey results drive the real engine', () => {
-  it('skips the intro with an unbound key, then moves the cursor and explodes with Enter', () => {
+  it('skips the intro with an unbound key, rotates with the arrows and ignores the removed keys', () => {
     const engine = createEngine({ random: () => 0.5 });
     expect(engine.getSnapshot().phase).toBe('intro');
-    expect(mapKey('Escape', 'intro')).toEqual({ type: 'introSkip' });
 
-    engine.dispatch(mustMap('Escape', 'intro'));
+    pressKey(engine, 'Escape', 'intro');
     expect(engine.getSnapshot().phase).toBe('playing');
+    engine.drainIntents();
 
-    // `w` steps the cursor one row up from the front-face centre (row 2, col 2).
-    engine.dispatch(mustMap('w', 'playing'));
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 1, col: 2 });
+    pressKey(engine, 'ArrowRight', 'playing');
+    expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
+    engine.advance(300); // DEFAULT_TIMINGS.rotationMs: the step settles.
+    expect(engine.getSnapshot().rotationFrom).toBeNull();
 
-    // Enter explodes the highlighted mini-cube through the click-identical path.
-    engine.dispatch(mustMap('Enter', 'playing'));
-    const snapshot = engine.getSnapshot();
-    expect(snapshot.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
-    expect(remainingOnFace(snapshot.board, 'front')).toBe(GRID_SIZE * GRID_SIZE - 1);
-    // The cursor re-anchors to the nearest remaining cell: row-major lowest row first.
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 0, col: 2 });
-
-    const intents = engine.drainIntents();
-    expect(intents).toHaveLength(1);
-    const [explosion] = intents;
-    if (explosion === undefined || explosion.kind !== 'explosion') {
-      throw new Error(`expected one explosion intent, got ${JSON.stringify(intents)}`);
+    // The removed cursor keys produce no event, so the engine state does not move at all.
+    const before = engine.getSnapshot();
+    for (const key of REMOVED_CURSOR_KEYS) {
+      pressKey(engine, key, 'playing');
     }
-    expect(explosion.id).toBe('front:1:2');
-    expect(explosion.faceId).toBe('front');
-    expect(explosion.burst.particles).toHaveLength(24);
-  });
-
-  it('drives the cursor with WASD and clamps it at the grid edge', () => {
-    const engine = createEngine();
-    engine.dispatch(mustMap('Escape', 'intro'));
-
-    for (let press = 0; press < GRID_SIZE; press++) {
-      engine.dispatch(mustMap('a', 'playing'));
-    }
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 2, col: 0 });
-
-    engine.dispatch(mustMap('d', 'playing'));
-    engine.dispatch(mustMap('S', 'playing'));
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 3, col: 1 });
+    expect(engine.getSnapshot()).toBe(before);
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(engine.drainIntents()).toEqual([]);
   });
 
   it('reaches all six faces with arrow keys alone (AC-7)', () => {

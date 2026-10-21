@@ -65,7 +65,6 @@ describe('createEngine — initial state', () => {
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.rotationProgress).toBe(1);
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
     expect(snapshot.reducedMotion).toBe(false);
     expect(engine.drainIntents()).toEqual([]);
@@ -76,7 +75,6 @@ describe('createEngine — initial state', () => {
     const snapshot = engine.getSnapshot();
 
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([4, 4, 4, 4, 4, 4]);
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 1, col: 1 });
     expect(snapshot.reducedMotion).toBe(true);
 
     engine.advance(REDUCED_TIMINGS.introMs - 1);
@@ -128,11 +126,11 @@ describe('getSnapshot — referential stability (AC-11)', () => {
     engine.dispatch({ type: 'introSkip' });
     const before = engine.getSnapshot();
 
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 0 });
+    engine.setReducedMotion(true);
 
     const after = engine.getSnapshot();
     expect(after).not.toBe(before);
-    expect(after.cursor).toEqual({ faceId: 'front', row: 2, col: 3 });
+    expect(after.reducedMotion).toBe(true);
     expect(after.board).toBe(before.board);
     expect(after.stats).toBe(before.stats);
     expect(after.orientation).toBe(before.orientation);
@@ -161,15 +159,12 @@ describe('intro phase (AC-2)', () => {
     const before = engine.getSnapshot();
 
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
-    engine.dispatch({ type: 'explodeCursor' });
     engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 0 });
 
     const after = engine.getSnapshot();
     expect(after).toBe(before);
     expect(after.stats).toEqual({ clicks: 0, facesDestroyed: 0 });
     expect(after.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
-    expect(after.cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
     expect(engine.drainIntents()).toEqual([]);
   });
 
@@ -210,7 +205,6 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     expect(snapshot.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
     expect(snapshot.board.faces[0]?.miniCubes).toHaveLength(24);
     expect(snapshot.board.faces[0]?.miniCubes.some((miniCube) => miniCube.id === 'front:2:2')).toBe(false);
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 1, col: 2 });
     expect(engine.drainIntents()).toEqual([explosion('front:2:2', 'front')]);
     expect(engine.drainIntents()).toEqual([]);
   });
@@ -228,27 +222,6 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     expect(engine.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
     expect(engine.drainIntents()).toEqual([]);
-  });
-
-  it('explodes the cursor cell through the identical path as a click (AC-8)', () => {
-    const viaCursor = createEngine({ random: flatRandom });
-    viaCursor.dispatch({ type: 'introSkip' });
-    viaCursor.drainIntents();
-    viaCursor.dispatch({ type: 'explodeCursor' });
-
-    const viaClick = createEngine({ random: flatRandom });
-    viaClick.dispatch({ type: 'introSkip' });
-    viaClick.drainIntents();
-    viaClick.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
-
-    expect(viaCursor.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
-    expect(viaCursor.getSnapshot().board).toEqual(viaClick.getSnapshot().board);
-    expect(viaCursor.getSnapshot().cursor).toEqual(viaClick.getSnapshot().cursor);
-
-    const cursorIntents = viaCursor.drainIntents();
-    const clickIntents = viaClick.drainIntents();
-    expect(cursorIntents).toEqual([explosion('front:2:2', 'front')]);
-    expect(cursorIntents).toEqual(clickIntents);
   });
 
   it('falls back to the platform random source when none is injected', () => {
@@ -284,54 +257,6 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
   });
 });
 
-describe('keyboard cursor (AC-8)', () => {
-  it('moves the cursor, clamps at the edges and keeps its identity when nothing moves', () => {
-    const engine = createEngine({ gridSize: 3, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 1, col: 1 });
-
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 1 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
-
-    const atCorner = engine.getSnapshot();
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 1 });
-    expect(engine.getSnapshot()).toBe(atCorner);
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
-
-    engine.dispatch({ type: 'cursorMove', dx: -1, dy: -1 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 1, col: 1 });
-  });
-
-  it('re-anchors the cursor to the nearest remaining mini-cube after a removal', () => {
-    const engine = createEngine({ gridSize: 3, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-
-    engine.dispatch({ type: 'explodeCursor' });
-
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 0, col: 1 });
-  });
-
-  it('ignores cursor events while there is no cursor', () => {
-    const engine = createEngine({ gridSize: 1, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    for (const faceId of FACE_IDS) {
-      engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:0:0` });
-    }
-    engine.drainIntents();
-
-    const before = engine.getSnapshot();
-    expect(before.cursor).toBeNull();
-    expect(before.phase).toBe('playing');
-    expect(before.stats).toEqual({ clicks: 6, facesDestroyed: 6 });
-
-    engine.dispatch({ type: 'explodeCursor' });
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 1 });
-
-    expect(engine.getSnapshot()).toBe(before);
-    expect(engine.drainIntents()).toEqual([]);
-  });
-});
-
 describe('rotation steps (AC-6 queue)', () => {
   it('animates one step over the rotation duration and settles on the target orientation', () => {
     const engine = createEngine({ random: flatRandom });
@@ -343,7 +268,6 @@ describe('rotation steps (AC-6 queue)', () => {
     expect(snapshot.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationProgress).toBe(0);
-    expect(snapshot.cursor).toEqual({ faceId: 'left', row: 2, col: 2 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs / 2);
     snapshot = engine.getSnapshot();
@@ -372,7 +296,6 @@ describe('rotation steps (AC-6 queue)', () => {
     expect(snapshot.orientation).toEqual({ yawSteps: 2, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(snapshot.rotationProgress).toBe(0);
-    expect(snapshot.cursor).toEqual({ faceId: 'back', row: 2, col: 2 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     snapshot = engine.getSnapshot();
@@ -387,7 +310,6 @@ describe('rotation steps (AC-6 queue)', () => {
     engine.dispatch({ type: 'rotate', axis: 'pitch', direction: 1 });
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 1 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'top', row: 2, col: 2 });
 
     engine.dispatch({ type: 'rotate', axis: 'pitch', direction: 1 });
     engine.advance(DEFAULT_TIMINGS.rotationMs);
@@ -398,19 +320,6 @@ describe('rotation steps (AC-6 queue)', () => {
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: -1 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'bottom', row: 2, col: 2 });
-  });
-
-  it('keeps the cursor on the new front face after a yaw step', () => {
-    const engine = createEngine({ random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-
-    engine.dispatch({ type: 'cursorMove', dx: -1, dy: 0 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'front', row: 2, col: 1 });
-
-    engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
-
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'left', row: 2, col: 1 });
   });
 });
 
@@ -434,13 +343,9 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     ]);
     expect(snapshot.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toEqual({ yawSteps: 0, pitchSteps: 0 });
-    // The cleared face emptied the cursor, so the new front face re-anchors in board
-    // order (lowest row, then lowest column) instead of near the lost cell.
-    expect(snapshot.cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().rotationFrom).toBeNull();
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
     expect(engine.drainIntents()).toEqual([]);
   });
 
@@ -455,7 +360,6 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     expect(snapshot.stats).toEqual({ clicks: 8, facesDestroyed: 2 });
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 1, col: 1 });
   });
 
   it('re-evaluates the target after each step until the front face has mini-cubes', () => {
@@ -477,7 +381,6 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     let snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 2, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toEqual({ yawSteps: 1, pitchSteps: 0 });
-    expect(snapshot.cursor).toEqual({ faceId: 'back', row: 0, col: 0 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     snapshot = engine.getSnapshot();
@@ -498,11 +401,9 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     // `left` and `top` are both one step away; `left` comes first in FACE_IDS.
     const snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
-    expect(snapshot.cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
   });
 
   it('auto-rotates the shortest way round the yaw seam', () => {
@@ -516,12 +417,10 @@ describe('face destruction and auto-rotation (AC-9)', () => {
 
     // Only `right` remains: one step back (yaw 3) is shorter than three steps forward.
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 3, pitchSteps: 0 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'right', row: 0, col: 0 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 3, pitchSteps: 0 });
     expect(engine.getSnapshot().rotationFrom).toBeNull();
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'right', row: 0, col: 0 });
   });
 
   it('auto-rotates onto a pole face when only a pole has mini-cubes left', () => {
@@ -535,12 +434,10 @@ describe('face destruction and auto-rotation (AC-9)', () => {
 
     // `top` is reachable in one pitch step; yaw is left untouched.
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 1 });
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'top', row: 0, col: 0 });
 
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 1 });
     expect(engine.getSnapshot().rotationFrom).toBeNull();
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'top', row: 0, col: 0 });
   });
 });
 
@@ -580,7 +477,6 @@ describe('travel and level progression (AC-10)', () => {
     let snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 3, pitchSteps: -1 });
     expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
-    expect(snapshot.cursor).toBeNull();
     expect(snapshot.phase).toBe('playing');
 
     const levelIntents = engine.drainIntents();
@@ -602,13 +498,11 @@ describe('travel and level progression (AC-10)', () => {
 
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
     engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
-    engine.dispatch({ type: 'cursorMove', dx: 1, dy: 1 });
     engine.dispatch({ type: 'introSkip' });
     snapshot = engine.getSnapshot();
     expect(snapshot.phase).toBe('travel');
     expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
     expect(snapshot.orientation).toEqual({ yawSteps: 3, pitchSteps: -1 });
-    expect(snapshot.cursor).toBeNull();
     expect(engine.drainIntents()).toEqual([]);
 
     engine.advance(DEFAULT_TIMINGS.travelMs / 2);
@@ -624,7 +518,6 @@ describe('travel and level progression (AC-10)', () => {
     expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
     expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
 
@@ -635,7 +528,6 @@ describe('travel and level progression (AC-10)', () => {
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(engine.getSnapshot().rotationFrom).toBeNull();
-    expect(engine.getSnapshot().cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
   });
 });
 
@@ -674,7 +566,6 @@ describe('reduced motion (AC-12)', () => {
     expect(snapshot.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.rotationProgress).toBe(1);
-    expect(snapshot.cursor).toEqual({ faceId: 'left', row: 0, col: 0 });
     expect(engine.drainIntents()).toEqual([
       { kind: 'explosion', id: 'front:0:0', faceId: 'front', burst: EMPTY_BURST },
       { kind: 'explosion', id: 'front:0:1', faceId: 'front', burst: EMPTY_BURST },
@@ -708,7 +599,6 @@ describe('reduced motion (AC-12)', () => {
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style.id).toBe('crimson-alloy');
     expect(snapshot.stats).toEqual({ clicks: 6, facesDestroyed: 6 });
-    expect(snapshot.cursor).toEqual({ faceId: 'front', row: 0, col: 0 });
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([1, 1, 1, 1, 1, 1]);
   });
 

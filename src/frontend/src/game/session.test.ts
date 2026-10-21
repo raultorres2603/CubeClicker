@@ -407,7 +407,6 @@ function snapshot(overrides: Partial<EngineSnapshot> = {}): EngineSnapshot {
     orientation: createOrientation(),
     rotationFrom: null,
     rotationProgress: 1,
-    cursor: null,
     board: createBoard(),
     reducedMotion: false,
     ...overrides,

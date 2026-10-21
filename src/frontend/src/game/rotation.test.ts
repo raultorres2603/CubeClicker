@@ -1,24 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { createBoard, removeMiniCube } from './board';
 import {
-  createCursor,
   createOrientation,
   frontFace,
   interpolateRotation,
-  moveCursor,
-  reanchorCursor,
   rotateStep,
-  type Cursor,
   type Orientation,
 } from './rotation';
-import { FACE_IDS, GRID_SIZE, type Board, type FaceId, type MiniCubeId } from './types';
+import { FACE_IDS, type FaceId } from './types';
 
 /** One quarter turn in radians — the settle unit asserted throughout. */
 const QUARTER_TURN = Math.PI / 2;
-
-/** Center cell of the default grid (row 2, col 2). */
-const CENTER = Math.floor(GRID_SIZE / 2);
 
 /** Face normals in the cube's own frame: `+X` right, `+Y` up, `+Z` towards the camera. */
 const FACE_NORMALS: Readonly<Record<FaceId, readonly [number, number, number]>> = {
@@ -39,45 +31,6 @@ const ORIENTATION_PER_FACE: Readonly<Record<FaceId, Orientation>> = {
   top: rotateStep(createOrientation(), 'pitch', 1),
   bottom: rotateStep(createOrientation(), 'pitch', -1),
 };
-
-/** A front-face cursor at explicit coordinates. */
-function cursorAt(row: number, col: number): Cursor {
-  return { faceId: 'front', row, col };
-}
-
-/** Removes a list of ids from a board, returning the resulting board. */
-function removeIds(board: Board, ids: readonly MiniCubeId[]): Board {
-  let current = board;
-  for (const id of ids) {
-    current = removeMiniCube(current, id).board;
-  }
-  return current;
-}
-
-/** Every id of one face of the default grid, in board order (rows, then columns). */
-function idsOfFace(faceId: FaceId): MiniCubeId[] {
-  return Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, position): MiniCubeId => {
-    return `${faceId}:${Math.floor(position / GRID_SIZE)}:${position % GRID_SIZE}`;
-  });
-}
-
-/** Empties one face, leaving the other five playable. */
-function removeFace(board: Board, faceId: FaceId): Board {
-  return removeIds(board, idsOfFace(faceId));
-}
-
-/** Keeps only the listed `[row, col]` cells of one face (everything else is removed). */
-function keepOnlyOnFace(
-  board: Board,
-  faceId: FaceId,
-  coords: readonly (readonly [number, number])[],
-): Board {
-  const keep = new Set(coords.map(([row, col]) => `${faceId}:${row}:${col}`));
-  return removeIds(
-    board,
-    idsOfFace(faceId).filter((id) => !keep.has(id)),
-  );
-}
 
 /** `Rx(pitch)·Ry(yaw)` — the rotation the renderer applies for an interpolated orientation. */
 function rotateByEulerXyz(
@@ -287,223 +240,5 @@ describe('interpolateRotation', () => {
 
       expect(rotation).toEqual(settled[faceId]);
     }
-  });
-});
-
-describe('createCursor', () => {
-  it('anchors to the center of the front face', () => {
-    expect(createCursor()).toEqual({ faceId: 'front', row: 2, col: 2 });
-    expect(createCursor()).toEqual({ faceId: 'front', row: CENTER, col: CENTER });
-  });
-
-  it('scales the center to an explicit grid size', () => {
-    expect(createCursor(1)).toEqual({ faceId: 'front', row: 0, col: 0 });
-    expect(createCursor(3)).toEqual({ faceId: 'front', row: 1, col: 1 });
-    expect(createCursor(4)).toEqual({ faceId: 'front', row: 2, col: 2 });
-  });
-
-  it('returns a fresh cursor on every call', () => {
-    expect(createCursor()).not.toBe(createCursor());
-  });
-});
-
-describe('moveCursor', () => {
-  it('moves one cell per step: dy for rows, dx for columns', () => {
-    const center = createCursor();
-
-    expect(moveCursor(center, 0, -1)).toEqual({ faceId: 'front', row: 1, col: 2 }); // up
-    expect(moveCursor(center, 0, 1)).toEqual({ faceId: 'front', row: 3, col: 2 }); // down
-    expect(moveCursor(center, -1, 0)).toEqual({ faceId: 'front', row: 2, col: 1 }); // left
-    expect(moveCursor(center, 1, 0)).toEqual({ faceId: 'front', row: 2, col: 3 }); // right
-  });
-
-  it('clamps at all four edges instead of wrapping', () => {
-    expect(moveCursor({ faceId: 'front', row: 0, col: 0 }, -1, -1)).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 0,
-    });
-    expect(moveCursor({ faceId: 'front', row: 0, col: 0 }, 0, -1)).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 0,
-    });
-    expect(moveCursor({ faceId: 'front', row: 4, col: 4 }, 1, 1)).toEqual({
-      faceId: 'front',
-      row: 4,
-      col: 4,
-    });
-    expect(moveCursor({ faceId: 'front', row: 4, col: 0 }, -1, 1)).toEqual({
-      faceId: 'front',
-      row: 4,
-      col: 0,
-    });
-    expect(moveCursor({ faceId: 'front', row: 0, col: 4 }, 1, -1)).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 4,
-    });
-  });
-
-  it('clamps to an explicit grid size and keeps the cursor on its face', () => {
-    expect(moveCursor({ faceId: 'top', row: 2, col: 2 }, 1, 1, 3)).toEqual({
-      faceId: 'top',
-      row: 2,
-      col: 2,
-    });
-    expect(moveCursor({ faceId: 'top', row: 0, col: 0 }, -1, -1, 3)).toEqual({
-      faceId: 'top',
-      row: 0,
-      col: 0,
-    });
-    expect(moveCursor({ faceId: 'top', row: 1, col: 1 }, 1, 0, 3)).toEqual({
-      faceId: 'top',
-      row: 1,
-      col: 2,
-    });
-  });
-
-  it('returns a fresh cursor and never mutates its input', () => {
-    const cursor = createCursor();
-
-    const moved = moveCursor(cursor, 1, 1);
-
-    expect(moved).toEqual({ faceId: 'front', row: 3, col: 3 });
-    expect(moved).not.toBe(cursor);
-    expect(cursor).toEqual({ faceId: 'front', row: 2, col: 2 });
-  });
-});
-
-describe('reanchorCursor', () => {
-  it('keeps the preferred cell while its mini-cube is still on the front face', () => {
-    const board = removeIds(createBoard(), ['front:0:0']);
-
-    expect(reanchorCursor(board, createOrientation(), cursorAt(2, 2))).toEqual({
-      faceId: 'front',
-      row: 2,
-      col: 2,
-    });
-  });
-
-  it('re-anchors to the nearest remaining mini-cube after its own is destroyed', () => {
-    // (2,2) and its horizontal neighbours are gone: nearest leftovers are (1,2) and (3,2).
-    const board = removeIds(createBoard(), ['front:2:1', 'front:2:2', 'front:2:3']);
-
-    expect(reanchorCursor(board, createOrientation(), cursorAt(2, 2))).toEqual({
-      faceId: 'front',
-      row: 1,
-      col: 2,
-    });
-  });
-
-  it('measures grid distance as the row plus column delta', () => {
-    // Only two cells survive: (0,2) at |Δrow|+|Δcol| = 2 and (1,1) at 1 + 1 = 2.
-    // Chebyshev distance would pick (1,1); Manhattan distance ties, so the lowest
-    // row decides — that is the pinned metric.
-    const board = keepOnlyOnFace(createBoard(), 'front', [
-      [0, 2],
-      [1, 1],
-    ]);
-
-    expect(reanchorCursor(board, createOrientation(), cursorAt(2, 2))).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 2,
-    });
-  });
-
-  it('breaks ties by the lowest row and then the lowest column', () => {
-    const rowTie = keepOnlyOnFace(createBoard(), 'front', [
-      [1, 4],
-      [3, 0],
-    ]);
-    const columnTie = keepOnlyOnFace(createBoard(), 'front', [
-      [3, 3],
-      [3, 1],
-    ]);
-
-    expect(reanchorCursor(rowTie, createOrientation(), cursorAt(2, 2))).toEqual({
-      faceId: 'front',
-      row: 1,
-      col: 4,
-    });
-    expect(reanchorCursor(columnTie, createOrientation(), cursorAt(2, 2))).toEqual({
-      faceId: 'front',
-      row: 3,
-      col: 1,
-    });
-  });
-
-  it('uses board order (lowest row, then lowest column) when no cursor is preferred', () => {
-    const board = removeIds(createBoard(), ['front:0:0', 'front:0:1']);
-
-    expect(reanchorCursor(board, createOrientation())).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 2,
-    });
-    expect(reanchorCursor(board, createOrientation(), null)).toEqual({
-      faceId: 'front',
-      row: 0,
-      col: 2,
-    });
-  });
-
-  it('follows the orientation to the new front face', () => {
-    const board = removeIds(createBoard(), ['left:0:0']);
-    const yawed = rotateStep(createOrientation(), 'yaw', 1);
-    const pitched = rotateStep(createOrientation(), 'pitch', 1);
-    const pitchedBoard = keepOnlyOnFace(createBoard(), 'top', [
-      [1, 1],
-      [4, 4],
-    ]);
-
-    expect(frontFace(yawed)).toBe('left');
-    // The preferred cell is gone on the new front face, so its neighbour takes over.
-    expect(reanchorCursor(board, yawed, cursorAt(0, 0))).toEqual({
-      faceId: 'left',
-      row: 0,
-      col: 1,
-    });
-    // A cursor kept from the previous front face is only a row/col hint, never a face.
-    expect(reanchorCursor(board, yawed, { faceId: 'front', row: 4, col: 3 })).toEqual({
-      faceId: 'left',
-      row: 4,
-      col: 3,
-    });
-    expect(frontFace(pitched)).toBe('top');
-    expect(reanchorCursor(pitchedBoard, pitched, cursorAt(4, 4))).toEqual({
-      faceId: 'top',
-      row: 4,
-      col: 4,
-    });
-  });
-
-  it('returns null when the front face is empty while other faces remain', () => {
-    const board = removeFace(createBoard(), 'front');
-
-    expect(reanchorCursor(board, createOrientation(), cursorAt(2, 2))).toBeNull();
-    expect(reanchorCursor(board, rotateStep(createOrientation(), 'pitch', 1), cursorAt(2, 2))).toEqual(
-      { faceId: 'top', row: 2, col: 2 },
-    );
-  });
-
-  it('returns null when every face has been cleared', () => {
-    let board = createBoard();
-    for (const faceId of FACE_IDS) {
-      board = removeFace(board, faceId);
-    }
-
-    expect(reanchorCursor(board, createOrientation(), cursorAt(2, 2))).toBeNull();
-    expect(reanchorCursor(board, rotateStep(createOrientation(), 'yaw', 1), cursorAt(2, 2))).toBeNull();
-  });
-
-  it('never mutates the board it reads', () => {
-    const board = removeIds(createBoard(), ['front:2:2']);
-    const before = board.faces.map((face) => face.miniCubes.length);
-
-    reanchorCursor(board, createOrientation(), cursorAt(2, 2));
-
-    expect(board.faces.map((face) => face.miniCubes.length)).toEqual(before);
   });
 });

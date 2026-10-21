@@ -6,7 +6,7 @@
  * so every behaviour below is deterministic under test.
  *
  * **State ownership (plan § Architecture).** The engine owns the board, orientation,
- * cursor, stats and phase. Renderers and React read {@link GameEngine.getSnapshot}
+ * stats and phase. Renderers and React read {@link GameEngine.getSnapshot}
  * (referentially stable until a value changes) and consume one-shot
  * {@link EffectIntent}s drained in order — there is no back-channel into the engine.
  *
@@ -30,7 +30,7 @@
  *
  * **Travel.** When the sixth face clears, the engine waits `timings.faceFadeMs`, then
  * enters `travel` (draining one `travelStarted`), and after `timings.travelMs`
- * advances the level — fresh board, next style, default orientation/cursor, stats
+ * advances the level — fresh board, next style, default orientation, stats
  * carried — draining one `levelChanged`.
  */
 
@@ -44,14 +44,10 @@ import {
   recordFaceDestroyed,
 } from './progression';
 import {
-  createCursor,
   createOrientation,
   frontFace,
-  moveCursor,
-  reanchorCursor,
   rotateStep,
   type Axis,
-  type Cursor,
   type Orientation,
 } from './rotation';
 import {
@@ -69,9 +65,7 @@ import {
 export type GameEvent =
   | { type: 'introSkip' }
   | { type: 'explodeMiniCube'; id: MiniCubeId }
-  | { type: 'explodeCursor' }
-  | { type: 'rotate'; axis: Axis; direction: -1 | 1 }
-  | { type: 'cursorMove'; dx: -1 | 0 | 1; dy: -1 | 0 | 1 };
+  | { type: 'rotate'; axis: Axis; direction: -1 | 1 };
 
 /**
  * One-shot effect for the render layer, drained in the order it was produced.
@@ -98,8 +92,8 @@ export interface EngineOptions {
 
 /**
  * The single read surface for renderers and UI. Field references are stable until the
- * value behind them changes (React contract): `orientation`, `board`, `stats`, `cursor`
- * and `style` are the engine's own immutable values, never copies per call.
+ * value behind them changes (React contract): `orientation`, `board`, `stats` and
+ * `style` are the engine's own immutable values, never copies per call.
  */
 export interface EngineSnapshot {
   phase: Phase;
@@ -114,7 +108,6 @@ export interface EngineSnapshot {
   rotationFrom: Orientation | null;
   /** 0..1 during a rotation; 1 when idle. */
   rotationProgress: number;
-  cursor: Cursor | null;
   board: Board;
   reducedMotion: boolean;
 }
@@ -203,19 +196,6 @@ function faceIdOf(id: MiniCubeId): FaceId {
   return id.slice(0, id.indexOf(':')) as FaceId;
 }
 
-/** The id of the cursor's cell — the keyboard equivalent of a pointer pick. */
-function cursorId(cursor: Cursor): MiniCubeId {
-  return `${cursor.faceId}:${cursor.row}:${cursor.col}`;
-}
-
-/** Two cursors are interchangeable when they point at the same cell. */
-function sameCursor(a: Cursor | null, b: Cursor | null): boolean {
-  if (a === null || b === null) {
-    return a === b;
-  }
-  return a.faceId === b.faceId && a.row === b.row && a.col === b.col;
-}
-
 /**
  * Creates one engine session.
  *
@@ -234,7 +214,6 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
   let progression = createProgression();
   let board = createBoard(gridSize);
   let orientation = createOrientation();
-  let cursor: Cursor | null = createCursor(gridSize);
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
   let queuedStep: RotationStep | null = null;
@@ -281,20 +260,9 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
       orientation,
       rotationFrom,
       rotationProgress: rotationProgress(),
-      cursor,
       board,
       reducedMotion,
     };
-  }
-
-  /** Re-anchors the cursor on the front face; keeps identity when the cell is unchanged. */
-  function reanchor(): void {
-    const next = reanchorCursor(board, orientation, cursor);
-    if (sameCursor(next, cursor)) {
-      return;
-    }
-    cursor = next;
-    invalidate();
   }
 
   /** One auto-rotation step toward the nearest face that still has mini-cubes. */
@@ -347,7 +315,6 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
   function applyStep(step: RotationStep): boolean {
     const from = orientation;
     orientation = rotateStep(orientation, step.axis, step.direction);
-    reanchor();
     invalidate();
     if (currentTimings().rotationMs <= 0) {
       rotationFrom = null;
@@ -397,7 +364,7 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     settleRotation();
   }
 
-  /** Removes one mini-cube with its stats and intents — the click/keyboard common path. */
+  /** Removes one mini-cube with its stats and intents — the pointer-click path. */
   function explode(id: MiniCubeId): void {
     const removal = removeMiniCube(board, id);
     if (!removal.removed) {
@@ -411,21 +378,8 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
       progression = recordFaceDestroyed(progression);
       intents.push({ kind: 'faceCleared', faceId });
     }
-    reanchor();
     invalidate();
     settleFrontFace();
-  }
-
-  function moveCursorBy(dx: -1 | 0 | 1, dy: -1 | 0 | 1): void {
-    if (cursor === null) {
-      return;
-    }
-    const next = moveCursor(cursor, dx, dy, gridSize);
-    if (sameCursor(next, cursor)) {
-      return;
-    }
-    cursor = next;
-    invalidate();
   }
 
   function skipIntro(): void {
@@ -446,7 +400,6 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     progression = advanceLevel(progression);
     board = createBoard(gridSize);
     orientation = createOrientation();
-    cursor = createCursor(gridSize);
     rotationFrom = null;
     rotationElapsedMs = 0;
     queuedStep = null;
@@ -501,16 +454,8 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
         case 'explodeMiniCube':
           explode(event.id);
           return;
-        case 'explodeCursor':
-          if (cursor !== null) {
-            explode(cursorId(cursor));
-          }
-          return;
         case 'rotate':
           requestStep({ axis: event.axis, direction: event.direction });
-          return;
-        case 'cursorMove':
-          moveCursorBy(event.dx, event.dy);
           return;
         default:
           return;
