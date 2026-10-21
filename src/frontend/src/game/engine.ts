@@ -29,15 +29,23 @@
  * current nearest face (yaw distance ≤ 2, pitch distance ≤ 2).
  *
  * **Travel.** When the sixth face clears, the engine waits `timings.faceFadeMs`, then
- * enters `travel` (draining one `travelStarted`), and after `timings.travelMs`
- * advances the level — fresh board, next style, default orientation, stats
- * carried — draining one `levelChanged`.
+ * enters `travel` (draining one `travelStarted`). At the travel midpoint
+ * (`timings.travelMs · TRAVEL_LEVEL_ADVANCE_P`, crossed exactly once) the level advances —
+ * fresh board, next style, default orientation, stats carried — draining one
+ * `levelChanged` while the camera is at the turn-around; `playing` resumes at
+ * `timings.travelMs`, so the new cube is already built when the camera lands.
  */
 
 import { createBoard, remainingOnFace, removeMiniCube } from './board';
-import { createBurst, timingsFor, type Burst, type Timings } from './effects';
 import {
-  advanceLevel,
+  TRAVEL_LEVEL_ADVANCE_P,
+  createBurst,
+  timingsFor,
+  type Burst,
+  type Timings,
+} from './effects';
+import {
+  advanceLevel as advanceProgression,
   createProgression,
   currentStyle,
   recordClick,
@@ -396,16 +404,20 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     invalidate();
   }
 
-  function advanceLevelAndRebuild(): void {
-    progression = advanceLevel(progression);
+  /**
+   * The level advance itself (spec AC-3): progression +1, fresh board, default
+   * orientation, queued step/fade cleared, one `levelChanged` intent, snapshot
+   * invalidated. The phase switch stays with the caller — the advance happens at the
+   * travel midpoint while the phase is still `travel`.
+   */
+  function advanceLevel(): void {
+    progression = advanceProgression(progression);
     board = createBoard(gridSize);
     orientation = createOrientation();
     rotationFrom = null;
     rotationElapsedMs = 0;
     queuedStep = null;
     faceFadeRemainingMs = null;
-    phase = 'playing';
-    phaseElapsedMs = 0;
     intents.push({ kind: 'levelChanged', style: currentStyle(progression) });
     invalidate();
   }
@@ -430,10 +442,24 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     advanceRotation(dtMs);
   }
 
+  /**
+   * Travel countdown (spec AC-3): the level advances once at the midpoint crossing
+   * (`travelMs · TRAVEL_LEVEL_ADVANCE_P`, with a zero midpoint firing immediately) and
+   * the phase switches to `playing` at `travelMs`. A single advance that crosses both
+   * thresholds therefore fires the level advance first, then the phase switch.
+   */
   function advanceTravel(dtMs: number): void {
+    const before = phaseElapsedMs;
     phaseElapsedMs += dtMs;
-    if (phaseElapsedMs >= currentTimings().travelMs) {
-      advanceLevelAndRebuild();
+    const timings = currentTimings();
+    const midpointMs = timings.travelMs * TRAVEL_LEVEL_ADVANCE_P;
+    if (phaseElapsedMs >= midpointMs && (before < midpointMs || midpointMs <= 0)) {
+      advanceLevel();
+    }
+    if (phaseElapsedMs >= timings.travelMs) {
+      phase = 'playing';
+      phaseElapsedMs = 0;
+      invalidate();
       return;
     }
     invalidate();

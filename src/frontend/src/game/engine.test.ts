@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createEngine, type EffectIntent, type GameEngine } from './engine';
-import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS } from './effects';
+import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
 import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from './types';
 
@@ -49,6 +49,40 @@ function clearFace(engine: GameEngine, faceId: FaceId, gridSize: number): void {
 /** An explosion intent for one id of one face, in the default profile. */
 function explosion(id: MiniCubeId, faceId: FaceId): EffectIntent {
   return { kind: 'explosion', id, faceId, burst: FLAT_BURST };
+}
+
+/**
+ * The default profile with the sweep phases collapsed: rotations and the face fade settle
+ * within one frame, so a test reaches `travel` deterministically while `travelMs` keeps the
+ * pinned 2500 (midpoint 1250). Only the arrival timeline itself is under test.
+ */
+const ARRIVAL_TIMINGS: Timings = {
+  ...DEFAULT_TIMINGS,
+  rotationMs: 0,
+  faceFadeMs: 0,
+};
+
+/**
+ * Builds a flat-random engine, clears every mini-cube of every face and steps into
+ * `travel`, returning the engine plus the intents produced by the sweep. Both profiles
+ * under test settle a rotation instantly (`rotationMs` 0), and the face fade is advanced
+ * explicitly so the caller's profile alone decides when `travel` starts.
+ */
+function sweepIntoTravel(
+  timings: Timings,
+  gridSize: number,
+  options: { reducedMotion?: boolean } = {},
+): { engine: GameEngine; startIntents: EffectIntent[] } {
+  const engine = createEngine({ ...options, timings, gridSize, random: flatRandom });
+  engine.dispatch({ type: 'introSkip' });
+  for (const faceId of FACE_IDS) {
+    for (const id of idsOfFace(faceId, gridSize)) {
+      engine.dispatch({ type: 'explodeMiniCube', id });
+    }
+  }
+  engine.advance(Math.max(1, timings.faceFadeMs));
+  const startIntents = engine.drainIntents();
+  return { engine, startIntents };
 }
 
 describe('createEngine — initial state', () => {
@@ -528,6 +562,171 @@ describe('travel and level progression (AC-10)', () => {
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(engine.getSnapshot().rotationFrom).toBeNull();
+  });
+});
+
+describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
+  it('drains nothing and keeps the old level through the first 1249 ms of travel', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    engine.advance(1249);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(1249 / 2500);
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.style).toBe(CUBE_STYLES[0]);
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('advances exactly one level at 1250 ms while the phase is still travel', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    engine.advance(1249);
+    engine.advance(1);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0.5);
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.style).toBe(CUBE_STYLES[1]);
+    expect(snapshot.style.id).toBe('crimson-alloy');
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(snapshot.rotationFrom).toBeNull();
+    expect(snapshot.rotationProgress).toBe(1);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+  });
+
+  it('switches to playing at 2500 ms without a second levelChanged', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    engine.advance(1250);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+
+    engine.advance(1250);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.phaseProgress).toBe(1);
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.style).toBe(CUBE_STYLES[1]);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('fires the level advance first and then the phase switch on a single 2500 ms advance', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    engine.advance(2500);
+
+    // One crossing only: the level intent is produced while `travel`, then `playing` begins.
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.style).toBe(CUBE_STYLES[1]);
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+  });
+
+  it('follows the reduced timeline: 74 nothing, 75 levelChanged, 150 playing', () => {
+    const { engine } = sweepIntoTravel(REDUCED_TIMINGS, 1, { reducedMotion: true });
+
+    engine.advance(74);
+    let snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.style).toBe(CUBE_STYLES[0]);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(1);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.style).toBe(CUBE_STYLES[1]);
+    expect(snapshot.stats).toEqual({ clicks: 6, facesDestroyed: 6 });
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+
+    engine.advance(75);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('never refires the level advance while the arrival half runs on', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    engine.advance(1250);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+
+    engine.advance(100);
+    engine.advance(100);
+    engine.advance(300);
+    engine.advance(300);
+
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('advances at once when the injected travel duration makes the midpoint zero', () => {
+    const zeroTravel: Timings = { ...DEFAULT_TIMINGS, rotationMs: 0, faceFadeMs: 0, travelMs: 0 };
+    const { engine } = sweepIntoTravel(zeroTravel, 1);
+
+    engine.advance(1);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.style).toBe(CUBE_STYLES[1]);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+  });
+
+  it('gates every input during the arrival half', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    engine.advance(1250);
+    engine.drainIntents();
+    const before = engine.getSnapshot();
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
+    engine.dispatch({ type: 'introSkip' });
+
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.phase).toBe('travel');
+    expect(after.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(after.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
+    expect(after.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(after.rotationFrom).toBeNull();
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('drains exactly one travelStarted at travel start', () => {
+    const { engine, startIntents } = sweepIntoTravel(ARRIVAL_TIMINGS, 1);
+
+    expect(startIntents).toHaveLength(13);
+    expect(startIntents[11]).toEqual({ kind: 'faceCleared', faceId: 'bottom' });
+    expect(startIntents[12]).toEqual({ kind: 'travelStarted' });
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('ignores non-positive time during travel', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    const before = engine.getSnapshot();
+
+    engine.advance(0);
+    engine.advance(-16);
+
+    expect(engine.getSnapshot()).toBe(before);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().levelIndex).toBe(0);
+    expect(engine.drainIntents()).toEqual([]);
   });
 });
 
