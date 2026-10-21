@@ -17,12 +17,17 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### cube level
 
-**Definition:** A single cube in the run, made of six **faces** of 25 **mini-cubes** each (150 mini-cubes per cube level). Clearing every face completes the cube level: the game travels to the next cube level, which is a fresh cube in a new style while the player's stats carry over.
+**Definition:** A single cube in the run, made of six **faces** of N² **mini-cubes** each (6N² mini-cubes per cube level), where N is the level's random grid size — every cube level draws its own N in 3 to 7. Clearing every face completes the cube level: the game travels to the next cube level, which spawns at a random **cube world position** — left, right, above or below the finished cube, 24 world units away — as a fresh cube in a new style and with its own random grid size, while the player's stats carry over (online occupancy of those positions is a future feature).
 **Example:** Destroying the last mini-cube of the sixth face completes the cube level and travels to the next cube.
+
+### cube world position
+
+**Definition:** The fixed position of a **cube level** in the game's flat world plane. The first cube level sits at the origin; each new cube level spawns at the previous cube's world position plus the travel-direction offset of 24 world units (left, right, above or below), so the walk accumulates across levels. The camera always rests above the current cube's world position, looking at it. Future online play will assign positions with occupancy checks, so that no two players' cubes share a position — that is out of scope for now.
+**Example:** A cube level that travels to the right puts the next cube at 24 world units to the right of the finished one, and two consecutive rightward travels land at 48 world units.
 
 ### face
 
-**Definition:** One of the six flat sides of the cube — front, back, left, right, top and bottom — each a 5×5 grid of **mini-cubes**. A face is cleared (and disappears from the cube) when its last mini-cube is destroyed.
+**Definition:** One of the six flat sides of the cube — front, back, left, right, top and bottom — each an N×N grid of **mini-cubes**, where N is the cube level's random grid size (3 to 7), identical on all six faces. A face is cleared (and disappears from the cube) when its last mini-cube is destroyed.
 **Example:** Destroying every mini-cube on the front face clears that face, and the remaining five faces stay playable.
 
 ### idle progress
@@ -32,8 +37,8 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### mini-cube
 
-**Definition:** A single clickable tile of a **face**: one of the 25 cells of that face's 5×5 grid, identified as `face:row:col` with 0-based rows and columns (for example `front:0:0`). Destroying a mini-cube removes it from its face for good; it is the unit of destruction for the cube.
-**Example:** The mini-cube `front:0:0` is the top-left tile of the front face, and destroying it leaves 24 mini-cubes on the front face.
+**Definition:** A single clickable tile of a **face**: one of the N² cells of that face's N×N grid (N is the cube level's random grid size, 3 to 7), identified as `face:row:col` with 0-based rows and columns (for example `front:0:0`). The tiles sit flush edge-to-edge, so the cube's surface reads as one giant cube built from mini-cubes; destroying a mini-cube removes it from its face for good and exposes the dark interior behind it. It is the unit of destruction for the cube.
+**Example:** The mini-cube `front:0:0` is the top-left tile of the front face; on a 5×5 face destroying it leaves 24 mini-cubes on that face.
 
 ### offline progress
 

@@ -34,6 +34,14 @@
  * fresh board, next style, default orientation, stats carried — draining one
  * `levelChanged` while the camera is at the turn-around; `playing` resumes at
  * `timings.travelMs`, so the new cube is already built when the camera lands.
+ *
+ * **Randomness (spec AC-1, AC-3).** Randomness enters only through the current random
+ * source; this module never reads the platform RNG. The pinned draw order is: one grid
+ * draw at creation (level 0), the explosion bursts' draws, one direction draw at travel
+ * start, one grid draw at every level advance. An injected `gridSize` skips the grid draws
+ * entirely. The omitted-`random` fallback is a fixed-seed LCG, so a bare `createEngine()`
+ * is still deterministic; the session injects the browser's `env.random` at attach
+ * through {@link GameEngine.setRandomSource}.
  */
 
 import { createBoard, remainingOnFace, removeMiniCube } from './board';
@@ -60,13 +68,16 @@ import {
 } from './rotation';
 import {
   FACE_IDS,
-  GRID_SIZE,
+  MINI_CUBE_GRID_MAX,
+  MINI_CUBE_GRID_MIN,
+  TRAVEL_DIRECTIONS,
   type Board,
   type CubeStyle,
   type FaceId,
   type GameStats,
   type MiniCubeId,
   type Phase,
+  type TravelDirection,
 } from './types';
 
 /** Everything the player can do. Bound to the engine through `dispatch`. */
@@ -92,8 +103,13 @@ export type EffectIntent =
 
 /** Construction options; every environment value is injectable. */
 export interface EngineOptions {
+  /**
+   * Fixed grid edge for every level. When set, no grid draw is consumed and every level
+   * uses this size (the tests' determinism seam); otherwise each level draws its own.
+   */
   gridSize?: number;
   reducedMotion?: boolean;
+  /** Random source for the grid/direction draws and the bursts; defaults to the LCG. */
   random?: () => number;
   timings?: Timings;
 }
@@ -117,6 +133,16 @@ export interface EngineSnapshot {
   /** 0..1 during a rotation; 1 when idle. */
   rotationProgress: number;
   board: Board;
+  /**
+   * The current level's grid edge (`MINI_CUBE_GRID_MIN`..`MINI_CUBE_GRID_MAX`). Drawn once
+   * per level, so it changes exactly at the level advance (spec AC-1).
+   */
+  gridSize: number;
+  /**
+   * The drawn direction of the running travel; non-null exactly during `travel` and
+   * `null` in `intro`/`playing` (spec AC-3).
+   */
+  travelDirection: TravelDirection | null;
   reducedMotion: boolean;
 }
 
@@ -131,10 +157,54 @@ export interface GameEngine {
   getSnapshot(): EngineSnapshot;
   /** Live switch; an in-flight rotation collapses immediately when motion is reduced. */
   setReducedMotion(reduced: boolean): void;
+  /**
+   * Replaces the random source; every subsequent draw (grid, direction, bursts) uses it.
+   * The session injects the host's `env.random` here at attach (spec Assumptions).
+   */
+  setRandomSource(random: () => number): void;
 }
 
 /** One quarter turn in yaw counters. */
 const YAW_STEPS_PER_TURN = 4;
+
+/** Seed of the deterministic fallback LCG (spec § 1). */
+const LCG_SEED = 1;
+
+/** LCG modulus: 2³². */
+const LCG_MODULUS = 4294967296;
+
+/** LCG multiplier (the pinned `1664525`). */
+const LCG_MULTIPLIER = 1664525;
+
+/** LCG increment (the pinned `1013904223`). */
+const LCG_INCREMENT = 1013904223;
+
+/**
+ * The deterministic RNG fallback (spec § 1): a plain LCG — seed 1, multiplier 1664525,
+ * increment 1013904223, modulus 2³² — so an engine created without a `random` option is
+ * still fully deterministic and this layer never reads the platform RNG. Production
+ * injects the host's `env.random` through {@link GameEngine.setRandomSource} at attach.
+ */
+function createSeededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state * LCG_MULTIPLIER + LCG_INCREMENT) % LCG_MODULUS;
+    return state / LCG_MODULUS;
+  };
+}
+
+/** One grid draw: `N = MINI_CUBE_GRID_MIN + ⌊draw · (MAX − MIN + 1)⌋` (spec § 1). */
+function drawGridSize(random: () => number): number {
+  return (
+    MINI_CUBE_GRID_MIN +
+    Math.floor(random() * (MINI_CUBE_GRID_MAX - MINI_CUBE_GRID_MIN + 1))
+  );
+}
+
+/** One direction draw: `TRAVEL_DIRECTIONS[⌊draw · 4⌋]` (spec § 3). */
+function drawTravelDirection(random: () => number): TravelDirection {
+  return TRAVEL_DIRECTIONS[Math.floor(random() * TRAVEL_DIRECTIONS.length)];
+}
 
 /** An exact half turn: both directions are shortest, so `+1` is preferred. */
 const HALF_TURN = YAW_STEPS_PER_TURN / 2;
@@ -212,15 +282,21 @@ function faceIdOf(id: MiniCubeId): FaceId {
  * `setReducedMotion` live.
  */
 export function createEngine(options: EngineOptions = {}): GameEngine {
-  const gridSize = options.gridSize ?? GRID_SIZE;
-  const random = options.random ?? Math.random;
+  /** The injected grid size — skips every grid draw and applies to every level. */
+  const gridSizeOverride = options.gridSize;
+  /** The live random source; `setRandomSource` swaps it for every subsequent draw. */
+  let random = options.random ?? createSeededRandom(LCG_SEED);
   const providedTimings = options.timings;
 
   let reducedMotion = options.reducedMotion ?? false;
   let phase: Phase = 'intro';
   let phaseElapsedMs = 0;
   let progression = createProgression();
+  /** The current level's grid edge: drawn once per level unless one is injected. */
+  let gridSize = gridSizeOverride ?? drawGridSize(random);
   let board = createBoard(gridSize);
+  /** The running travel's drawn direction; cleared when `travel` ends (spec § 3). */
+  let travelDirection: TravelDirection | null = null;
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
@@ -269,6 +345,8 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
       rotationFrom,
       rotationProgress: rotationProgress(),
       board,
+      gridSize,
+      travelDirection,
       reducedMotion,
     };
   }
@@ -400,18 +478,21 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     faceFadeRemainingMs = null;
     phase = 'travel';
     phaseElapsedMs = 0;
+    // Exactly one direction draw per travel, from the current random source (spec § 3).
+    travelDirection = drawTravelDirection(random);
     intents.push({ kind: 'travelStarted' });
     invalidate();
   }
 
   /**
-   * The level advance itself (spec AC-3): progression +1, fresh board, default
-   * orientation, queued step/fade cleared, one `levelChanged` intent, snapshot
-   * invalidated. The phase switch stays with the caller — the advance happens at the
-   * travel midpoint while the phase is still `travel`.
+   * The level advance itself (spec AC-3): progression +1, one grid draw (unless a grid
+   * size is injected), fresh board, default orientation, queued step/fade cleared, one
+   * `levelChanged` intent, snapshot invalidated. The phase switch stays with the caller —
+   * the advance happens at the travel midpoint while the phase is still `travel`.
    */
   function advanceLevel(): void {
     progression = advanceProgression(progression);
+    gridSize = gridSizeOverride ?? drawGridSize(random);
     board = createBoard(gridSize);
     orientation = createOrientation();
     rotationFrom = null;
@@ -459,6 +540,8 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     if (phaseElapsedMs >= timings.travelMs) {
       phase = 'playing';
       phaseElapsedMs = 0;
+      // The direction is a `travel`-only value: `null` in `intro`/`playing` (spec AC-3).
+      travelDirection = null;
       invalidate();
       return;
     }
@@ -526,6 +609,12 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
         // The running step is already in the orientation counters: only its animation goes.
         settleRotation();
       }
+    },
+
+    setRandomSource(source: () => number): void {
+      // Only future draws change; nothing in the snapshot reads randomness, so the
+      // published snapshot keeps its identity.
+      random = source;
     },
   };
 }

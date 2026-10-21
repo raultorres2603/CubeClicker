@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createEngine, type EffectIntent, type GameEngine } from './engine';
 import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
-import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from './types';
+import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
 
 /**
  * The burst every default-profile explosion carries when the engine's random source is
@@ -29,6 +29,34 @@ function seededRandom(seed: number): () => number {
   return () => {
     state = (state * 1664525 + 1013904223) % 4294967296;
     return state / 4294967296;
+  };
+}
+
+/** A random source that counts how many draws were taken. */
+function countingRandom(value: number): { random: () => number; draws: () => number } {
+  let draws = 0;
+  return {
+    random: () => {
+      draws += 1;
+      return value;
+    },
+    draws: () => draws,
+  };
+}
+
+/**
+ * A random source over a fixed script: draws come back in order and any draw beyond the
+ * script throws, so the test pins the exact number of draws the engine consumes.
+ */
+function scriptedRandom(values: readonly number[]): () => number {
+  let index = 0;
+  return () => {
+    if (index >= values.length) {
+      throw new Error(`unexpected random draw #${index + 1}`);
+    }
+    const value = values[index]!;
+    index += 1;
+    return value;
   };
 }
 
@@ -100,6 +128,8 @@ describe('createEngine — initial state', () => {
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.rotationProgress).toBe(1);
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
+    expect(snapshot.gridSize).toBe(5);
+    expect(snapshot.travelDirection).toBeNull();
     expect(snapshot.reducedMotion).toBe(false);
     expect(engine.drainIntents()).toEqual([]);
   });
@@ -258,36 +288,242 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     expect(engine.drainIntents()).toEqual([]);
   });
 
-  it('falls back to the platform random source when none is injected', () => {
+  it('falls back to the pinned deterministic LCG when no random is injected', () => {
+    // LCG(1) draw 0 = 0.23645552527159452 ⇒ level 0 has N = 3 + ⌊0.236… · 5⌋ = 4.
     const engine = createEngine();
+    const initial = engine.getSnapshot();
+    expect(initial.gridSize).toBe(4);
+    expect(initial.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
+
     engine.dispatch({ type: 'introSkip' });
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
 
     const intents = engine.drainIntents();
+    // The burst draws continue the same stream right after the level-0 grid draw.
+    const replay = seededRandom(1);
+    replay();
+    expect(intents).toEqual([
+      { kind: 'explosion', id: 'front:2:2', faceId: 'front', burst: createBurst(replay) },
+    ]);
     if (intents[0]?.kind !== 'explosion') {
       throw new Error('expected one explosion intent');
     }
-    expect(intents[0].id).toBe('front:2:2');
-    expect(intents[0].burst.particles).toHaveLength(24);
     expect(intents[0].burst.lifetimeMs).toBe(350);
+    // The first and last fragments, pinned as literals (LCG(1) draws 1..120).
+    expect(intents[0].burst.particles[0]).toEqual({
+      dx: -0.5378154675194091,
+      dy: 0.01745155926329477,
+      dz: 0.8428819407106544,
+      speed: 1.1010872572660446,
+      size: 0.03847591771511361,
+    });
+    expect(intents[0].burst.particles[23]).toEqual({
+      dx: 0.8868520991554909,
+      dy: 0.39940894235590785,
+      dz: 0.23230551218090914,
+      speed: 1.9012028840370476,
+      size: 0.05006719280965627,
+    });
   });
 
-  it('builds each burst from the injected random source', () => {
+  it('builds each burst from the injected random source, after the level-0 grid draw', () => {
+    const replay = seededRandom(42);
+    // LCG(42) draw 0 = 0.25234517478384078 ⇒ level 0 has N = 3 + ⌊0.252… · 5⌋ = 4.
+    const firstDraw = replay();
     const engine = createEngine({ random: seededRandom(42) });
+    expect(firstDraw).toBe(0.25234517478384078);
+    expect(engine.getSnapshot().gridSize).toBe(4);
+
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
 
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
 
+    // `replay` is already one draw ahead: the grid draw precedes the burst's 120 draws.
     const intents = engine.drainIntents();
     expect(intents).toEqual([
-      { kind: 'explosion', id: 'front:0:0', faceId: 'front', burst: createBurst(seededRandom(42)) },
+      { kind: 'explosion', id: 'front:0:0', faceId: 'front', burst: createBurst(replay) },
     ]);
     if (intents[0]?.kind !== 'explosion') {
       throw new Error('expected one explosion intent');
     }
     expect(intents[0].burst.particles).toHaveLength(24);
     expect(intents[0].burst.lifetimeMs).toBe(350);
+  });
+});
+
+describe('per-level grid draws and travel directions (AC-1, AC-3)', () => {
+  /** Clears every face of the level at `gridSize` (reduced motion: no burst draws). */
+  function clearLevel(engine: GameEngine, gridSize: number): void {
+    for (const faceId of FACE_IDS) {
+      clearFace(engine, faceId, gridSize);
+    }
+  }
+
+  it('pins the travel-direction order to the draw index', () => {
+    expect(TRAVEL_DIRECTIONS).toEqual(['left', 'right', 'top', 'bottom']);
+  });
+
+  it('consumes exactly one draw at creation and one at each level advance', () => {
+    const counter = countingRandom(0.5);
+    const engine = createEngine({ random: counter.random, reducedMotion: true });
+
+    expect(counter.draws()).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(5);
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    clearLevel(engine, 5);
+    // Reduced motion emits no burst, so the whole clear consumes no draw at all.
+    expect(counter.draws()).toBe(1);
+
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(counter.draws()).toBe(2);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs);
+    expect(counter.draws()).toBe(3);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().gridSize).toBe(5);
+  });
+
+  it('skips every grid draw when the grid size is injected', () => {
+    const counter = countingRandom(0.5);
+    const engine = createEngine({ gridSize: 4, random: counter.random, reducedMotion: true });
+
+    expect(counter.draws()).toBe(0);
+    expect(engine.getSnapshot().gridSize).toBe(4);
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    clearLevel(engine, 4);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(counter.draws()).toBe(1);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs);
+    expect(counter.draws()).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(4);
+    expect(engine.getSnapshot().board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
+  });
+
+  it('draws N = 5 every level and the direction top from the constant draw 0.5', () => {
+    const engine = createEngine({ random: flatRandom, reducedMotion: true });
+    expect(engine.getSnapshot().gridSize).toBe(5);
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    clearLevel(engine, 5);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(5);
+    expect(engine.getSnapshot().board.faces.map((face) => face.miniCubes.length)).toEqual([
+      25, 25, 25, 25, 25, 25,
+    ]);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().travelDirection).toBeNull();
+
+    clearLevel(engine, 5);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+    engine.advance(REDUCED_TIMINGS.travelMs);
+    expect(engine.getSnapshot().levelIndex).toBe(2);
+    expect(engine.getSnapshot().gridSize).toBe(5);
+  });
+
+  it('reports the level grid size in every phase and changes it exactly at the advance', () => {
+    // Scripted draws: 0.1 → N = 3, 0.5 → `top`, 0.7 → N = 6. Any further draw throws.
+    const engine = createEngine({ random: scriptedRandom([0.1, 0.5, 0.7]), reducedMotion: true });
+
+    expect(engine.getSnapshot().phase).toBe('intro');
+    expect(engine.getSnapshot().gridSize).toBe(3);
+    expect(engine.getSnapshot().travelDirection).toBeNull();
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().gridSize).toBe(3);
+
+    clearLevel(engine, 3);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().gridSize).toBe(3);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(6);
+    expect(engine.getSnapshot().board.faces.map((face) => face.miniCubes.length)).toEqual([
+      36, 36, 36, 36, 36, 36,
+    ]);
+    expect(engine.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().gridSize).toBe(6);
+    expect(engine.getSnapshot().travelDirection).toBeNull();
+  });
+
+  it('draws a pinned per-level grid and per-travel direction sequence (seed 19)', () => {
+    // LCG(19) draws: 0.24343146895989776 → N = 4, 0.00193844665773213 → `left`,
+    // 0.82899093441665173 → N = 7, 0.37117785005830228 → `right`, 0.04693626845255494 → N = 3.
+    const engine = createEngine({ random: seededRandom(19), reducedMotion: true });
+    expect(engine.getSnapshot().gridSize).toBe(4);
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    clearLevel(engine, 4);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().travelDirection).toBe('left');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(7);
+    expect(engine.getSnapshot().travelDirection).toBe('left');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().travelDirection).toBeNull();
+
+    clearLevel(engine, 7);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().travelDirection).toBe('right');
+
+    engine.advance(REDUCED_TIMINGS.travelMs);
+    expect(engine.getSnapshot().levelIndex).toBe(2);
+    expect(engine.getSnapshot().gridSize).toBe(3);
+    expect(engine.getSnapshot().board.faces.map((face) => face.miniCubes.length)).toEqual([
+      9, 9, 9, 9, 9, 9,
+    ]);
+  });
+
+  it('redirects every subsequent draw through setRandomSource', () => {
+    // The creation draw (0.1) gives N = 3 and would pick `left` (⌊0.1 · 4⌋ = 0).
+    const engine = createEngine({ random: () => 0.1, reducedMotion: true });
+    expect(engine.getSnapshot().gridSize).toBe(3);
+
+    const beforeSwap = engine.getSnapshot();
+    // 0.9 gives N = 7 and `bottom` (⌊0.9 · 4⌋ = 3) for every later draw.
+    engine.setRandomSource(() => 0.9);
+    expect(engine.getSnapshot()).toBe(beforeSwap);
+
+    engine.advance(REDUCED_TIMINGS.introMs);
+    clearLevel(engine, 3);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().travelDirection).toBe('bottom');
+
+    engine.advance(REDUCED_TIMINGS.travelMs);
+    expect(engine.getSnapshot().gridSize).toBe(7);
+    expect(engine.getSnapshot().board.faces.map((face) => face.miniCubes.length)).toEqual([
+      49, 49, 49, 49, 49, 49,
+    ]);
   });
 });
 

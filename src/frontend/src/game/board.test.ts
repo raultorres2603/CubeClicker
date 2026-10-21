@@ -4,6 +4,8 @@ import { createBoard, remainingOnFace, removeMiniCube } from './board';
 import {
   FACE_IDS,
   GRID_SIZE,
+  MINI_CUBE_GRID_MAX,
+  MINI_CUBE_GRID_MIN,
   type Board,
   type Face,
   type FaceId,
@@ -68,6 +70,11 @@ describe('domain constants', () => {
   it('pins the face order and the grid size', () => {
     expect(FACE_IDS).toEqual(['front', 'back', 'left', 'right', 'top', 'bottom']);
     expect(GRID_SIZE).toBe(5);
+  });
+
+  it('pins the per-level random grid range to 3..7 (AC-1)', () => {
+    expect(MINI_CUBE_GRID_MIN).toBe(3);
+    expect(MINI_CUBE_GRID_MAX).toBe(7);
   });
 });
 
@@ -141,6 +148,84 @@ describe('createBoard', () => {
     expect(second).not.toBe(first);
     expect(second.faces[0]!.miniCubes).not.toBe(first.faces[0]!.miniCubes);
     expect(second.faces[0]!.miniCubes[0]).not.toBe(first.faces[0]!.miniCubes[0]);
+  });
+});
+
+describe('createBoard — every per-level grid size (AC-1)', () => {
+  /** `N` → mini-cubes per face (`N²`) and per cube level (`6N²`). */
+  const SIZES: ReadonlyArray<{ gridSize: number; perFace: number; total: number }> = [
+    { gridSize: 3, perFace: 9, total: 54 },
+    { gridSize: 4, perFace: 16, total: 96 },
+    { gridSize: 5, perFace: 25, total: 150 },
+    { gridSize: 6, perFace: 36, total: 216 },
+    { gridSize: 7, perFace: 49, total: 294 },
+  ];
+
+  it('creates six faces of N² unique ids for N = 3, 4, 5, 6 and 7', () => {
+    for (const { gridSize, perFace, total } of SIZES) {
+      const board = createBoard(gridSize);
+      const ids = idsOf(board);
+
+      expect(board.faces.map((face) => face.id)).toEqual(FACE_ORDER);
+      expect(board.faces.map((face) => face.miniCubes.length)).toEqual([
+        perFace,
+        perFace,
+        perFace,
+        perFace,
+        perFace,
+        perFace,
+      ]);
+      expect(ids).toHaveLength(total);
+      expect(new Set(ids).size).toBe(total);
+      for (const face of board.faces) {
+        expect(face.miniCubes[0]!.id).toBe(`${face.id}:0:0`);
+        expect(face.miniCubes.at(-1)!.id).toBe(`${face.id}:${gridSize - 1}:${gridSize - 1}`);
+        expect(ids.filter((id) => id.startsWith(`${face.id}:`))).toHaveLength(perFace);
+      }
+    }
+  });
+
+  it('keeps rows ascending then columns ascending on a 6×6 face', () => {
+    const front = faceOf(createBoard(6), 'front');
+
+    expect(front.miniCubes[0]).toEqual({ id: 'front:0:0', faceId: 'front', row: 0, col: 0 });
+    expect(front.miniCubes[5]).toEqual({ id: 'front:0:5', faceId: 'front', row: 0, col: 5 });
+    expect(front.miniCubes[6]).toEqual({ id: 'front:1:0', faceId: 'front', row: 1, col: 0 });
+    expect(front.miniCubes[35]).toEqual({ id: 'front:5:5', faceId: 'front', row: 5, col: 5 });
+    expect(front.miniCubes.map((miniCube) => miniCube.row)).toEqual([
+      0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4,
+      5, 5, 5, 5, 5, 5,
+    ]);
+    expect(front.miniCubes.map((miniCube) => miniCube.col)).toEqual([
+      0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5,
+      0, 1, 2, 3, 4, 5,
+    ]);
+  });
+
+  it('gives the 7×7 and 3×3 extremes the ids the render/pick layers decode', () => {
+    const large = createBoard(7);
+    const small = createBoard(3);
+
+    expect(faceOf(large, 'top').miniCubes).toHaveLength(49);
+    expect(faceOf(large, 'top').miniCubes[48]).toEqual({
+      id: 'top:6:6',
+      faceId: 'top',
+      row: 6,
+      col: 6,
+    });
+    expect(faceOf(large, 'bottom').miniCubes[24]).toEqual({
+      id: 'bottom:3:3',
+      faceId: 'bottom',
+      row: 3,
+      col: 3,
+    });
+    expect(faceOf(small, 'right').miniCubes).toHaveLength(9);
+    expect(faceOf(small, 'right').miniCubes[8]).toEqual({
+      id: 'right:2:2',
+      faceId: 'right',
+      row: 2,
+      col: 2,
+    });
   });
 });
 

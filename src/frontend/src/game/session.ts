@@ -171,7 +171,16 @@ export function createGameSession(options: GameSessionOptions = {}): GameSession
       active = true;
 
       const env = providedEnv ?? browserEnvironment(target);
-      const view = createSceneView({ style: engine.getSnapshot().style, random: env.random });
+      // The engine exists from session creation, so pre-attach snapshots run on its
+      // deterministic fallback; attach is where the host's randomness arrives. The scene
+      // is built at the level's drawn grid size (the engine's own value).
+      engine.setRandomSource(env.random);
+      const initialSnapshot = engine.getSnapshot();
+      const view = createSceneView({
+        style: initialSnapshot.style,
+        random: env.random,
+        gridSize: initialSnapshot.gridSize,
+      });
       const adapter: RendererAdapter = env.rendererFactory(target);
 
       let frameHandle: number | null = null;

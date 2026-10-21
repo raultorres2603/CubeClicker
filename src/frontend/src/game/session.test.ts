@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createBoard } from './board';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
+import { REDUCED_TIMINGS } from './effects';
 import { CUBE_STYLES } from './progression';
 import { createOrientation } from './rotation';
 import {
@@ -23,7 +24,7 @@ import {
   type SessionEnvironment,
   type VisibilitySource,
 } from './session';
-import { FACE_IDS, type FaceId, type MiniCubeId } from './types';
+import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from './types';
 
 /**
  * Integration tier for the session: every test below runs the *real* engine and the
@@ -106,6 +107,7 @@ interface FakeEngine {
   events: GameEvent[];
   advancements: number[];
   motionCalls: boolean[];
+  randomSources: Array<() => number>;
   setSnapshot(snapshot: EngineSnapshot): void;
 }
 
@@ -333,6 +335,7 @@ function createFakeEnv(
     dpr?: number;
     reducedMotion?: boolean;
     hidden?: boolean;
+    random?: () => number;
   } = {},
 ): FakeEnv {
   const canvas = createFakeCanvas(options.rect ?? { left: 0, top: 0, width: 800, height: 800 });
@@ -353,7 +356,7 @@ function createFakeEnv(
       resize: resize.source,
       rendererFactory: renderer.factory,
       now: () => clock.now,
-      random: fixedRandom,
+      random: options.random ?? fixedRandom,
       devicePixelRatio: () => options.dpr ?? 1,
     },
     canvas,
@@ -372,6 +375,7 @@ function createFakeEngine(initial: EngineSnapshot): FakeEngine {
   const events: GameEvent[] = [];
   const advancements: number[] = [];
   const motionCalls: boolean[] = [];
+  const randomSources: Array<() => number> = [];
   let snapshot = initial;
   return {
     engine: {
@@ -386,10 +390,14 @@ function createFakeEngine(initial: EngineSnapshot): FakeEngine {
       setReducedMotion(reduced) {
         motionCalls.push(reduced);
       },
+      setRandomSource(source) {
+        randomSources.push(source);
+      },
     },
     events,
     advancements,
     motionCalls,
+    randomSources,
     setSnapshot(next) {
       snapshot = next;
     },
@@ -408,6 +416,8 @@ function snapshot(overrides: Partial<EngineSnapshot> = {}): EngineSnapshot {
     rotationFrom: null,
     rotationProgress: 1,
     board: createBoard(),
+    gridSize: GRID_SIZE,
+    travelDirection: null,
     reducedMotion: false,
     ...overrides,
   };
@@ -496,6 +506,17 @@ function skipIntro(fake: FakeEnv, session: GameSession, rect: Rect): void {
   }
 }
 
+/** Clears every mini-cube of every face of one level, directly on the engine. */
+function clearLevel(engine: GameEngine, gridSize: number): void {
+  for (const faceId of FACE_IDS) {
+    for (let row = 0; row < gridSize; row += 1) {
+      for (let col = 0; col < gridSize; col += 1) {
+        engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+      }
+    }
+  }
+}
+
 describe('attach', () => {
   it('sizes the renderer from the container rect and the capped pixel ratio (AC-13)', () => {
     const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 1600, height: 800 }, dpr: 3 });
@@ -540,6 +561,93 @@ describe('attach', () => {
     expect(fake.motion.subscribeCount()).toBe(1);
     expect(fake.visibility.subscribeCount()).toBe(1);
     expect(fake.resize.subscribeCount()).toBe(1);
+  });
+});
+
+describe('random and grid wiring (AC-1, AC-3)', () => {
+  it('injects the environment random into the engine at attach', () => {
+    const recording = createFakeEngine(snapshot());
+    const fake = createFakeEnv();
+    const session = createGameSession({ env: fake.env, engine: recording.engine });
+
+    session.attach(fake.canvas.surface);
+
+    expect(recording.randomSources).toEqual([fake.env.random]);
+
+    session.dispose();
+    session.attach(fake.canvas.surface);
+
+    expect(recording.randomSources).toEqual([fake.env.random, fake.env.random]);
+  });
+
+  it('builds the scene at the engine grid size and draws later directions from env.random', () => {
+    // The engine is created without a random: the pinned LCG(1) draw 0 = 0.23645552527159452
+    // gives level 0 N = 4. The environment source is a constant 0 (⌊0 · 4⌋ = 0 → `left`),
+    // whereas the LCG's next draw (0.369…) would pick `right` — so the travel direction
+    // proves the attach-time injection and the scene geometry proves the grid pass-through.
+    const engine = createEngine();
+    const fake = createFakeEnv({ reducedMotion: true, random: () => 0 });
+    const session = createGameSession({ env: fake.env, engine });
+    session.attach(fake.canvas.surface);
+    fake.scheduler.tick(0);
+
+    expect(session.getSnapshot().gridSize).toBe(4);
+    const scene = fake.renderer.renders[0]!.scene;
+    expect(faceMesh(scene, 'front').count).toBe(16);
+    expect(faceMesh(scene, 'right').count).toBe(16);
+    // The first tile of the 4×4 front face: ((0 − 1.5) · 1.25, (1.5 − 0) · 1.25, 2.625).
+    const firstTile = instanceMatrix(faceMesh(scene, 'front'), 0);
+    expect(new Vector3().setFromMatrixPosition(firstTile).toArray()).toEqual([-1.875, 1.875, 2.625]);
+
+    engine.dispatch({ type: 'introSkip' });
+    clearLevel(engine, 4);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().travelDirection).toBe('left');
+  });
+
+  it('exposes the drawn travel direction only while travelling', () => {
+    // The default environment source is the constant 0.5: ⌊0.5 · 4⌋ = 2 → `top`.
+    const engine = createEngine({ gridSize: 4, reducedMotion: true });
+    const fake = createFakeEnv({ reducedMotion: true });
+    const session = createGameSession({ env: fake.env, engine });
+    session.attach(fake.canvas.surface);
+    fake.scheduler.tick(0);
+
+    expect(session.getSnapshot().phase).toBe('intro');
+    expect(session.getSnapshot().travelDirection).toBeNull();
+
+    engine.dispatch({ type: 'introSkip' });
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().travelDirection).toBeNull();
+
+    clearLevel(engine, 4);
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().levelIndex).toBe(1);
+    expect(session.getSnapshot().travelDirection).toBe('top');
+
+    engine.advance(REDUCED_TIMINGS.travelMs / 2);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().travelDirection).toBeNull();
+  });
+
+  it('keeps the deterministic fallback before attach', () => {
+    const session = createGameSession();
+
+    const snapshot = session.getSnapshot();
+    expect(snapshot.phase).toBe('intro');
+    expect(snapshot.gridSize).toBe(4);
+    expect(snapshot.travelDirection).toBeNull();
+    expect(snapshot.stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
   });
 });
 

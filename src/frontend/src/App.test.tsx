@@ -6,7 +6,7 @@ import { createBoard } from './game/board';
 import type { EngineSnapshot } from './game/engine';
 import { CUBE_STYLES } from './game/progression';
 import type { GameSession } from './game/session';
-import type { GameStats, Phase } from './game/types';
+import { GRID_SIZE, type GameStats, type Phase } from './game/types';
 
 /**
  * Integration test for the game shell (AC-1, AC-11, AC-14): the real `App`, `Hud` and
@@ -36,6 +36,8 @@ function snapshotFor(
     rotationFrom: null,
     rotationProgress: 1,
     board: createBoard(),
+    gridSize: GRID_SIZE,
+    travelDirection: null,
     reducedMotion: false,
   };
 }
