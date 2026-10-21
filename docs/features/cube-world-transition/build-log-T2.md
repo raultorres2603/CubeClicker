@@ -1,128 +1,193 @@
 # Build log — T2 — Render layer: flush mini-cube-built surface + directional world travel
 
 Task: T2 (`cube-world-transition`, 2026-10-21)
-Status: **BLOCKED** — the spec's pinned travel pose table contradicts its own (and the plan's, and the
-task's) travel pose formula in exactly two cells per direction. No code was written and no feature
-commit exists; the only change in this run is this log.
+Status: **completed** — all verify commands green (328/328 tests, coverage 99.33 / 99.4 / 100 / 99.33,
+typecheck 0, lint 0, plate grep empty, banned-matcher grep empty).
 
-Files changed: `docs/features/cube-world-transition/build-log-T2.md` (this file). No source, test or
-config file was modified; `git status --short src/frontend` is empty (see evidence 1).
+Files changed: `src/frontend/src/render/cube-view.ts`, `src/frontend/src/render/cube-view.test.ts`,
+`src/frontend/src/render/picking.test.ts`, `src/frontend/src/render/scene.ts`,
+`src/frontend/src/render/scene.test.ts`, `src/frontend/src/game/session.test.ts` (ratified one-line
+test-only re-pin, tasks.md r3), `docs/features/cube-world-transition/build-log-T2.md`.
 
-## What blocks the task
+## What changed & why (≤5 lines)
 
-`travelCameraPose` is pinned twice, with two different value sets:
+- **Surface (AC-2):** `MINI_CUBE_TILE_RATIO = 1` and the plates/materials/`PLATE_OFFSET` are deleted;
+  `CubeView` is `body + one InstancedMesh per live face` (7 children), the body is the dark interior, and
+  `removeFace` disposes the face's geometry + material once with no opacity write.
+- **Picking:** multi-size cases for 3×3 / 7×7 (the `√count` decode stays exact for square grids); flush
+  tiles leave no gaps, so the former gap coordinates now pick a tile on both sides.
+- **World model + travel (AC-3):** `CUBE_SPACING = 24`, pinned `TRAVEL_DIRECTION_OFFSETS`, pure
+  `travelCameraPose`; the scene tracks `cubePosition` / captured `travelFrom` / `pendingLevelChanged` and
+  rebuilds exactly once per level change, placing the new cube one spacing step in the drawn direction.
+- **Face clearing (AC-2):** instead of a plate fade, a `faceCleared` intent starts a
+  `timingsFor(reducedMotion).faceFadeMs` countdown (400 / 100 ms) — long enough for the last 160 ms pop —
+  then detaches and disposes the face.
+- **Tests:** the plate-era render groups are rewritten (flush tiling N = 3/5/7, plate-free children,
+  countdown, four-direction pose tables with targets, travelFrom regression, pending-rebuild per
+  direction, chained travel, framing/coverage gates, reduced instant swap, aspect stability).
 
-1. **Formula** (spec § 3 "Flight", spec § Pinned constants "Travel camera", plan § Interfaces
-   `travelCameraPose` comment, plan D-4, tasks.md T2):
-   `x(p) = ox + dx · easeInOutQuad(p)`, `y(p) = oy + dy · easeInOutQuad(p)`,
-   `z(p) = 12 + 78 · travelSwing(p)`, target `(x(p), y(p), 0)`.
-2. **Table** (spec.md L92–95 "Pinned pose tables"; AC-3 "the pure `travelCameraPose` yields exactly
-   the § 3 pose tables … at p ∈ {0, 0.25, 0.5, 0.75, 1} (positions and targets as exact literals)";
-   tasks.md T2 "the `travelFrom` regression (… p = 0.75 pose still `(18, 0, 51)`)").
+## Original blocker (r1) — resolved by spec r2
 
-They disagree in **two cells** (the other eight cells agree exactly):
+The r1 spec pinned `travelCameraPose` twice with two value sets: the formula (`x = dx·easeInOutQuad(p)`,
+`z = 12 + 78·travelSwing(p)`) and a § 3 pose table whose `p = 0.25` z was `21.75` and whose `p = 0.75`
+lateral was `18`. Recomputed with the shipped easings: z@0.25 = **51** (`travelSwing(0.25) = 0.5`) and
+lateral@0.75 = **21** (`easeInOutQuad(0.75) = 0.875`), i.e. the table disagreed with the formula in two
+cells per direction and could not be produced by the pinned easings. Spec r2 makes the formula
+authoritative and corrects the table to `p = 0.25 → (3, 0, 51)` / `p = 0.75 → (21, 0, 51)` (mirrored);
+`tasks.md`'s regression literal becomes `(21, 0, 51)`. Ruling (a) approved; ruling (b) (new easings,
+breaking the camera↔starfield `travelSwing` coupling) rejected.
 
-| Cell | Formula (with the shipped `easeInOutQuad` / `travelSwing`) | Spec § 3 table + tasks.md |
-| --- | --- | --- |
-| `p = 0.25`, `z` (all four directions) | `12 + 78 · travelSwing(0.25) = 12 + 78 · 0.5 = 51` | `21.75` (= `12 + 78 · 0.125`) |
-| `p = 0.75`, lateral (all four directions) | `24 · easeInOutQuad(0.75) = 24 · 0.875 = 21` | `18` (= `24 · 0.75`) |
+## Ratified re-pin (r3) — the one cross-layer literal
 
-Recomputed from verbatim copies of `easeInOutQuad`/`travelSwing` as they exist in
-`src/frontend/src/game/effects.ts` (evidence 2):
+`src/frontend/src/game/session.test.ts:696` pinned the **superseded** predecessor tile extent
+(`Math.fround(0.9 * 1.016)`), so T2's full-workspace gate could not pass inside T2's original
+`files_owned`. `tasks.md` r3 adds that test file to T2's `files_owned` for this single literal; the change
+is exactly one line and nothing else in the file was touched:
 
+```diff
+-    expect(popping.elements[0]).toBe(Math.fround(0.9 * 1.016));
++    expect(popping.elements[0]).toBe(Math.fround(1 * 1.016));
 ```
-left   p=0: (0, 0, 12)   p=0.25: (-3, 0, 51)   p=0.5: (-12, 0, 90)   p=0.75: (-21, 0, 51)   p=1: (-24, 0, 12)
-right  p=0: (0, 0, 12)   p=0.25: ( 3, 0, 51)   p=0.5: ( 12, 0, 90)   p=0.75: ( 21, 0, 51)   p=1: ( 24, 0, 12)
-top    p=0: (0, 0, 12)   p=0.25: (0,  3, 51)   p=0.5: (0,  12, 90)   p=0.75: (0,  21, 51)   p=1: (0,  24, 12)
-bottom p=0: (0, 0, 12)   p=0.25: (0, -3, 51)   p=0.5: (0, -12, 90)   p=0.75: (0, -21, 51)   p=1: (0, -24, 12)
-intermediate: { eq025: 0.125, eq075: 0.875, sw025: 0.5, sw075: 0.5 }
-```
 
-Spec § 3 table (spec.md L92–95), for comparison: `p = 0.25` → `(±3, ±3, 21.75)`, `p = 0.75` →
-`(±18, ±18, 51)`.
-
-**No single implementation satisfies both.** The table is not reproducible by the pinned easings:
-
-- the table's lateral column `0 / 0.125 / 0.5 / 0.75 / 1` is not symmetric (`L(0.25) = 0.125` while
-  `1 − L(0.75) = 0.25`), so `easeInOutQuad(p)` (`0 / 0.125 / 0.5 / 0.875 / 1`) cannot produce `18` at
-  `p = 0.75`; only an ad-hoc piecewise curve (`2p²` up to 0.5, then linear) would;
-- the table's z swing column `0 / 0.125 / 1 / 0.5 / 0` is not the retained `travelSwing`
-  (`0 / 0.5 / 1 / 0.5 / 0`) and is not symmetric, so the "retained z table … 12/21.75/51/80.25/90"
-  (spec § 3, plan D-4, followup AC-3 retention) cannot produce `21.75` at `p = 0.25`.
-
-Everything else in T2 (flush tiling, plate removal, `removeFace` disposal, picking multi-size,
-`cubePosition`/pending-rebuild mechanics, the countdown, the reduced-motion instant swap, the
-coverage/framing gates) is unambiguous and unaffected by the ruling; only `travelCameraPose` and the
-pose literals it pins are blocked.
-
-## Candidate answers
-
-- **(a) Formula authoritative (recommended).** Keep `x = dx·easeInOutQuad(p)`, `z = 12 + 78·travelSwing(p)`.
-  The § 3 table is corrected in r2 to `p = 0.25 → (3, 0, 51)` and `p = 0.75 → (21, 0, 51)` (mirrored for
-  `left`/`top`/`bottom`), and tasks.md T2's `(18, 0, 51)` becomes `(21, 0, 51)`. This preserves the
-  retained symmetric swing, the followup's z table retention, D-4's rationale and the starfield scale
-  coupling (`z` and `scale` stay driven by the same `travelSwing`). The two bad cells look like a
-  transcription of the old 9-row table (`21.75` is that table's `p = 0.125` row, and `21.75` is also
-  the superseded predecessor AC-22 value at `p = 0.25`; `18` is the linear value).
-- **(b) Table authoritative.** Then r2 must pin the actual easing functions instead of `easeInOutQuad`
-  + `travelSwing` (e.g. lateral `2p²` for `p ≤ 0.5` then linear; z `(2p)³` for `p ≤ 0.5` then linear),
-  accepting that the camera z no longer equals the retained `travelSwing` used by the starfield scale
-  (`z = 12 + 78·S(p)` with `S ≠ travelSwing` breaks the "same value drives camera and backdrop"
-  invariant documented in `game/effects.ts`), and update plan D-4 + the followup retention row.
-
-Both are constant/table-only corrections in the artifacts — no scope, dependency or architecture change.
+The rendered pop now produces `Math.fround(1 * 1.016) = 1.0160000324249268` (the flush tile extent is
+`CUBE_SIZE / gridSize`; for the session's 5×5 board one cell = 1 world unit).
 
 ## Evidence
 
-### 1. No source change in this run
+Raw commands run in the repository root on 2026-10-21.
+
+### 1. `npm test --workspace @cubeclicker/frontend` → exit 0
 
 ```
-$ git status --short src/frontend
-(empty)
+ ✓ src/game/progression.test.ts (10 tests) 9ms
+ ✓ src/ui/theme.test.ts (2 tests) 3ms
+ ✓ src/game/effects.test.ts (28 tests) 15ms
+ ✓ src/render/webgl.test.ts (5 tests) 7ms
+ ✓ src/game/rotation.test.ts (15 tests) 10ms
+ ✓ src/ws/connection.test.ts (10 tests) 18ms
+ ✓ src/browser-env.test.ts (6 tests) 12ms
+ ✓ src/game/board.test.ts (18 tests) 22ms
+ ✓ src/game/engine.test.ts (45 tests) 30ms
+ ✓ src/ui/GameCanvas.test.tsx (2 tests) 10ms
+ ✓ src/input/gestures.test.ts (21 tests) 7ms
+ ✓ src/input/keyboard.test.ts (8 tests) 9ms
+ ✓ src/ui/Hud.test.tsx (3 tests) 12ms
+ ✓ src/render/particles.test.ts (19 tests) 15ms
+ ✓ src/render/cube-view.test.ts (32 tests) 57ms
+ ✓ src/render/picking.test.ts (11 tests) 29ms
+ ✓ src/render/starfield.test.ts (15 tests) 77ms
+ ✓ src/App.test.tsx (4 tests) 17ms
+ ✓ src/game/session.test.ts (23 tests) 67ms
+ ✓ src/render/scene.test.ts (51 tests) 113ms
+ Test Files  20 passed (20)
+      Tests  328 passed (328)
+   Duration  613ms (transform 1.38s, setup 0ms, collect 3.64s, tests 537ms, environment 4ms, prepare 1.95s)
+TEST_EXIT=0
 ```
 
-### 2. Formula vs table, recomputed with the shipped easing bodies
+### 2. `npm run coverage --workspace @cubeclicker/frontend` → exit 0
 
 ```
-$ node -e '… verbatim easeInOutQuad/travelSwing from src/frontend/src/game/effects.ts …'
-left   p=0: (0, 0, 12)  p=0.25: (-3, 0, 51)  p=0.5: (-12, 0, 90)  p=0.75: (-21, 0, 51)  p=1: (-24, 0, 12)
-right  p=0: (0, 0, 12)  p=0.25: ( 3, 0, 51)  p=0.5: ( 12, 0, 90)  p=0.75: ( 21, 0, 51)  p=1: ( 24, 0, 12)
-top    p=0: (0, 0, 12)  p=0.25: (0,  3, 51)  p=0.5: (0,  12, 90)  p=0.75: (0,  21, 51)  p=1: (0,  24, 12)
-bottom p=0: (0, 0, 12)  p=0.25: (0, -3, 51)  p=0.5: (0, -12, 90)  p=0.75: (0, -21, 51)  p=1: (0, -24, 12)
-intermediate: { eq025: 0.125, eq075: 0.875, sw025: 0.5, sw075: 0.5 }
+ Test Files  20 passed (20)
+      Tests  328 passed (328)
+   Start at  15:13:30
+   Duration  817ms (transform 1.57s, setup 0ms, collect 4.30s, tests 645ms, environment 4ms, prepare 1.89s)
+
+ % Coverage report from v8
+-----------------|---------|----------|---------|---------|-------------------
+File             | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
+-----------------|---------|----------|---------|---------|-------------------
+All files        |   99.33 |     99.4 |     100 |   99.33 |
+ src             |     100 |      100 |     100 |     100 |
+  App.tsx        |     100 |      100 |     100 |     100 |
+  browser-env.ts |     100 |      100 |     100 |     100 |
+ src/game        |     100 |     99.6 |     100 |     100 |
+  board.ts       |     100 |      100 |     100 |     100 |
+  effects.ts     |     100 |      100 |     100 |     100 |
+  engine.ts      |     100 |      100 |     100 |     100 |
+  progression.ts |     100 |      100 |     100 |     100 |
+  rotation.ts    |     100 |      100 |     100 |     100 |
+  session.ts     |     100 |    98.18 |     100 |     100 | 173
+  types.ts       |     100 |      100 |     100 |     100 |
+ src/input       |     100 |      100 |     100 |     100 |
+  gestures.ts    |     100 |      100 |     100 |     100 |
+  keyboard.ts    |     100 |      100 |     100 |     100 |
+ src/render      |     100 |      100 |     100 |     100 |
+  cube-view.ts   |     100 |      100 |     100 |     100 |
+  particles.ts   |     100 |      100 |     100 |     100 |
+  picking.ts     |     100 |      100 |     100 |     100 |
+  scene.ts       |     100 |      100 |     100 |     100 |
+  starfield.ts   |     100 |      100 |     100 |     100 |
+  webgl.ts       |     100 |      100 |     100 |     100 |
+ src/ui          |   79.48 |      100 |     100 |   79.48 |
+  GameCanvas.tsx |    61.9 |      100 |     100 |    61.9 | 23-30
+  Hud.tsx        |     100 |      100 |     100 |     100 |
+  theme.ts       |     100 |      100 |     100 |     100 |
+ src/ws          |   95.34 |    92.59 |     100 |   95.34 |
+  connection.ts  |   95.34 |    92.59 |     100 |   95.34 | 53-54,99-100
+-----------------|---------|----------|---------|---------|-------------------
+COVERAGE_EXIT=0
 ```
 
-### 3. The contradicting artifact lines
+Per-metric (workspace aggregate): **statements 99.33 · branches 99.4 · functions 100 · lines 99.33** —
+all ≥ the pinned 80; no exclusion or threshold was changed. The two changed render modules are at
+100/100/100/100 (`cube-view.ts`, `scene.ts`); the residual uncovered lines are the accepted pre-existing
+ones (`ui/GameCanvas.tsx`, `ws/connection.ts`, `session.ts:173`).
+
+### 3. `npm run typecheck --workspace @cubeclicker/frontend` → 0 and `npm run lint` → 0
 
 ```
-$ sed -n '84,86p;92,95p' docs/features/cube-world-transition/spec.md
-- position: `x(p) = ox + dx · easeInOutQuad(p)`, `y(p) = oy + dy · easeInOutQuad(p)`, `z(p) = 12 + 78 · travelSwing(p)` …
-| right | `(0, 0, 12)` → `(0,0,0)` | `(3, 0, 21.75)` → `(3,0,0)` | `(12, 0, 90)` → `(12,0,0)` | `(18, 0, 51)` → `(18,0,0)` | `(24, 0, 12)` → `(24,0,0)` |
-| left | `(0, 0, 12)` | `(−3, 0, 21.75)` | `(−12, 0, 90)` | `(−18, 0, 51)` | `(−24, 0, 12)` |
-| top | `(0, 0, 12)` | `(0, 3, 21.75)` | `(0, 12, 90)` | `(0, 18, 51)` | `(0, 24, 12)` |
-| bottom | `(0, 0, 12)` | `(0, −3, 21.75)` | `(0, −12, 90)` | `(0, −18, 51)` | `(0, −24, 12)` |
-
-$ sed -n '111,112p' docs/features/cube-world-transition/plan.md
-/** Pure directional travel pose (spec AC-3): lateral easeInOutQuad toward the offset,
- *  z = 12 + 78·travelSwing(p); target = (x(p), y(p), 0) — identity quaternion at every p. */
-
-$ grep -n "easeInOutQuad(clamp(p))" docs/features/cube-world-transition/tasks.md
-45: … lateral `easeInOutQuad(clamp(p)) · offset`, `z = 12 + 78 · travelSwing(p)` … p = 0.75 pose still `(18, 0, 51)` …
+$ npm run typecheck --workspace @cubeclicker/frontend   → TYPECHECK_EXIT=0
+$ npm run lint                                          → LINT_EXIT=0
 ```
 
-### 4. Not run (blocked before implementation)
+### 4. Greps
 
-`npm test --workspace @cubeclicker/frontend`, `npm run coverage --workspace @cubeclicker/frontend`,
-`npm run typecheck --workspace @cubeclicker/frontend`, `npm run lint` — no change to verify. The
-pre-change baseline (T1's run) is 306 tests passing, coverage 99.32 / 99.37 / 100 / 99.32 in
-`build-log-T1.md`.
+```
+$ grep -n "plateMeshes\|Plate" src/frontend/src/render/cube-view.ts src/frontend/src/render/scene.ts
+PLATE_EXIT=1                    # no matches — plates fully removed from both files
+$ grep -n "opacity" src/frontend/src/render/scene.ts
+OPACITY_EXIT=1                  # no matches — no material transparency write anywhere
+$ grep -nE "expect\.anything|expect\.any\(|objectContaining|arrayContaining|stringContaining|stringMatching|toMatchObject|toBeCloseTo|toBeTruthy|toBeDefined|not\.toThrow|toHaveBeenCalled\(\)" src/frontend/src/render/{cube-view,picking,scene}.test.ts src/frontend/src/game/session.test.ts
+BANNED_EXIT=1                   # no matches
+```
+
+### 5. Pinned spot checks asserted by the tests
+
+- Flush tiling: N = 3 → tile extent `Math.fround(5/3) = 1.6666666269302368`, adjacent centre steps
+  `1.6666666269302368`; N = 7 → extent `Math.fround(5/7) = 0.7142857313156128`, centre steps
+  `0.7142856121063232 / 0.7142857313156128×4 / 0.7142856121063232` (the two outermost pairs sit one
+  float32 ulp below because the instance matrix is a `Float32Array`; the exact double spacing is `5/7`);
+  N = 5 → first/last centres `(−2, 2, 2.625)` / `(2, −2, 2.625)`; outermost outer faces reach `±2.5` on
+  all six faces.
+- Pose table (`travelCameraPose`, exact literals): `right` →
+  `(0,0,12) / (3,0,51) / (12,0,90) / (21,0,51) / (24,0,12)` with targets
+  `(0,0,0) / (3,0,0) / (12,0,0) / (21,0,0) / (24,0,0)`; `left`/`top`/`bottom` mirrored; identity
+  quaternion at every pinned p.
+- Rebuild placement: `right (24,0,0)`, `top (0,24,0)`, `left (−24,0,0)`, `bottom (0,−24,0)`; pending
+  change with a null direction rebuilds in place `(0,0,0)`; chained `right` → `(48,0,0)` and rest
+  `(48,0,12)`; travelFrom regression p = 0.75 → `(21,0,51)` (a double count would give `(45,0,51)`).
+- Countdown: face still present at 399 ms and removed at 400 ms (default), present at 99 ms and removed
+  at 100 ms (reduced); the material's `opacity` stays 1 throughout and the disposal spies fire once.
 
 ## Acceptance audit
 
-AC-2 → not started (unambiguous; ready to implement). AC-3 (scene parts) → **blocked** on the pose
-table/formula contradiction above. AC-4 (partial, render-side retention) → not started.
+- **AC-2 — mini-cube-built surface:** **met.** `cube-view.test.ts` (32 tests): ratio 1, exact child list
+  `[body, 6 × InstancedMesh]`, no `plateMeshes` key, flush extents/spacing/edges for N = 3/5/7, body =
+  `style.cubeColor`, pop timeline on a flush tile, idle colour, reduced instant hide, `removeFace`
+  disposal exactly once, idempotent `dispose()`. `scene.test.ts`: 400/100 ms countdown, removal on
+  completion, no opacity writes (asserted + grep).
+- **AC-3 — directional travel (scene parts):** **met.** `scene.test.ts` (51 tests): four-direction pose
+  tables (positions + targets, identity quaternion), captured `travelFrom` regression, pending rebuild
+  exactly once per level with per-direction placement and the snapshot's style/grid size, follow-ups
+  rebuild nothing, chained second travel, departure/arrival framing gates × aspects {2/3, 16/9, 7/3},
+  level-0 rest `(0,0,12)` + continuity at p = 1, reduced instant positional swap, starfield anchor at the
+  lateral poses, retained + extended corner-ray coverage gates, aspect stability.
+- **AC-4 — regression gate (partial, render-side):** **met.** Full workspace green (328/328), coverage
+  ≥ 80 × 4, lint/typecheck 0, plate grep empty, no banned matchers, no new dependencies; the only
+  accepted-behaviour literal changed is the ratified tile-extent re-pin (AC-2's supersession ledger).
 
 ## Deviations from spec
 
-None (nothing was implemented, so nothing deviates). The blocker is a defect in the spec/plan/task
-text, reported rather than resolved unilaterally.
+None. The implementation follows the formula-authoritative r2 pose table; the only cross-layer edit is the
+ratified r3 one-line test re-pin.

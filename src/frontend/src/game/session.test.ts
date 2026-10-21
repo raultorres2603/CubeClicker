@@ -693,7 +693,7 @@ describe('pointer wiring', () => {
     // to be visible, and has not been zero-scaled away yet.
     const mesh = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
     const popping = instanceMatrix(mesh, 12);
-    expect(popping.elements[0]).toBe(Math.fround(0.9 * 1.016));
+    expect(popping.elements[0]).toBe(Math.fround(1 * 1.016));
     expect(new Vector3().setFromMatrixPosition(popping).toArray()).toEqual([0, 0, 2.625]);
 
     fake.scheduler.tick(192);

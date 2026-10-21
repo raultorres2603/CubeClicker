@@ -1,18 +1,20 @@
 /**
- * Cube view (T8) — the cube body, one instanced mini-cube grid per face and the per-face
- * base plate (spec AC-4 / AC-5 / AC-16).
+ * Cube view — the cube body and one instanced mini-cube grid per face (spec AC-2 / AC-4 /
+ * AC-16).
  *
  * Layer: render adapter (`render/**`) — three.js only, no DOM, no game rules. The view never
  * reads the engine; callers (`scene.ts`) push intents into it (`hideMiniCube`, `removeFace`,
  * `applyStyle`) and advance time through `update`; the view owns every geometry/material it
  * creates, so `dispose()` can release them exactly once.
  *
- * Grid layout (pinned by the plan and asserted in `cube-view.test.ts`): the body is a
- * `CUBE_SIZE` cube centred on the group origin; every face carries a `gridSize²`-instance
- * `InstancedMesh` whose instance index is `row * gridSize + col` and whose cells tile the
- * face at `CUBE_SIZE / gridSize` spacing. Tile thickness and the plate/body gap are the
- * exported constants below — the single home for the cube-view geometry numbers (the plan's
- * non-grid effect constants live in `game/effects.ts` and are imported, never redefined).
+ * Mini-cube-built surface (spec AC-2). Each face is fully tiled by its mini-cubes, flush and
+ * edge-to-edge: the body is a `CUBE_SIZE` cube centred on the group origin and every face
+ * carries a `gridSize²`-instance `InstancedMesh` whose instance index is
+ * `row * gridSize + col` and whose tiles are `CUBE_SIZE / gridSize` wide (no plate, no gap).
+ * The body stays behind the tile layer as the dark interior a player sees where tiles have
+ * been removed. Tile thickness is the exported constant below — the single home for the
+ * cube-view geometry numbers (the plan's non-grid effect constants live in `game/effects.ts`
+ * and are imported, never redefined).
  *
  * Pop-then-shrink removal (spec AC-4). `hideMiniCube` marks the id hidden (unpickable)
  * immediately and, unless the caller asks for `instant` (reduced motion), starts one plain
@@ -32,7 +34,6 @@ import {
   Matrix4,
   Mesh,
   MeshStandardMaterial,
-  PlaneGeometry,
   Vector3,
   type BufferGeometry,
   type Material,
@@ -54,22 +55,23 @@ export const CUBE_HALF_SIZE = CUBE_SIZE / 2;
 /** Tile thickness along the face normal — the tiles sit proud of the body. */
 export const MINI_CUBE_THICKNESS = 0.25;
 
-/** Tile edge length as a fraction of the grid cell, leaving the visible grid gaps. */
-export const MINI_CUBE_TILE_RATIO = 0.9;
-
-/** Gap between the body surface and a face plate. */
-export const PLATE_OFFSET = 0.0625;
+/**
+ * Tile edge length as a fraction of the grid cell (spec AC-2).
+ *
+ * `1` — the tiles are flush, edge-to-edge: `tileSize = CUBE_SIZE / gridSize`, so `gridSize`
+ * tiles cover the face exactly and the outermost tiles reach the cube edges. The cube body
+ * stays visible only where tiles have been removed (the dark interior).
+ */
+export const MINI_CUBE_TILE_RATIO = 1;
 
 /** The view handed to the scene: meshes plus the intent/time entry points. */
 export interface CubeView {
   /** Everything the view adds to the scene lives under this group. */
   readonly group: Group;
-  /** The cube body behind the tile grids. */
+  /** The cube body behind the tile grids — the dark interior (spec AC-2). */
   readonly body: Mesh;
   /** One `InstancedMesh` (`gridSize²` instances) per live face, in `FACE_IDS` order. */
   readonly faces: ReadonlyMap<FaceId, InstancedMesh>;
-  /** One plate mesh per live face — transparent, so a clear can fade it out. */
-  readonly plateMeshes: ReadonlyMap<FaceId, Mesh>;
   /**
    * Marks one mini-cube hidden (unpickable) and starts its pop animation.
    *
@@ -87,9 +89,13 @@ export interface CubeView {
   update(dtMs: number): void;
   /** Instantly zero-scales every running pop and clears the records (live reduced-motion switch). */
   settlePops(): void;
-  /** Fades + removes one face: plate opacity 0, meshes detached, resources disposed, pops cancelled. */
+  /**
+   * Removes one face (spec AC-2): the face's running pops are cancelled, its `InstancedMesh`
+   * leaves the group, and its geometry and material are disposed exactly once. There is no
+   * plate and no opacity write anywhere on the cube.
+   */
   removeFace(faceId: FaceId): void;
-  /** Re-colours the existing materials in place (level change); nothing is rebuilt. */
+  /** Re-colours the body and the live faces' tile materials in place; nothing is rebuilt. */
   applyStyle(style: CubeStyle): void;
   /** Disposes every geometry/material exactly once, clears the records and empties the group. */
   dispose(): void;
@@ -145,9 +151,7 @@ interface FaceRecord {
   /** Instance centre per index (`row * gridSize + col`), in group space. */
   readonly positions: Vector3[];
   readonly mesh: InstancedMesh;
-  readonly plate: Mesh;
   readonly tileMaterial: MeshStandardMaterial;
-  readonly plateMaterial: MeshStandardMaterial;
 }
 
 /** One running pop: which instance of which face, and how far along the timeline it is. */
@@ -206,11 +210,12 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
   }
 
   const cellSize = CUBE_SIZE / gridSize;
+  // Flush tiling (spec AC-2): the tile edge is the whole cell, so `gridSize` tiles cover the
+  // face edge-to-edge and the outermost tiles' outer faces land on the cube edges.
   const tileSize = cellSize * MINI_CUBE_TILE_RATIO;
   const tileScale = new Vector3(tileSize, tileSize, MINI_CUBE_THICKNESS);
   const gridMid = (gridSize - 1) / 2;
   const tileDistance = CUBE_HALF_SIZE + MINI_CUBE_THICKNESS / 2;
-  const plateDistance = CUBE_HALF_SIZE + PLATE_OFFSET;
   const instanceCount = gridSize * gridSize;
 
   const group = new Group();
@@ -224,7 +229,6 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
 
   const records = new Map<FaceId, FaceRecord>();
   const faces = new Map<FaceId, InstancedMesh>();
-  const plateMeshes = new Map<FaceId, Mesh>();
   const hiddenIndices = new Map<FaceId, Set<number>>();
   const removedFaces = new Set<FaceId>();
   const disposedResources = new Set<BufferGeometry | Material>();
@@ -272,22 +276,10 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     }
     mesh.instanceMatrix.needsUpdate = true;
 
-    const plateMaterial = new MeshStandardMaterial({
-      color: style.cubeColor,
-      metalness: style.metalness,
-      roughness: style.roughness,
-      transparent: true,
-      opacity: 1,
-    });
-    const plate = new Mesh(new PlaneGeometry(CUBE_SIZE, CUBE_SIZE), plateMaterial);
-    plate.position.copy(frame.normal).multiplyScalar(plateDistance);
-    plate.quaternion.setFromRotationMatrix(basis);
-
-    records.set(faceId, { basis, positions, mesh, plate, tileMaterial, plateMaterial });
+    records.set(faceId, { basis, positions, mesh, tileMaterial });
     faces.set(faceId, mesh);
-    plateMeshes.set(faceId, plate);
     hiddenIndices.set(faceId, new Set());
-    group.add(mesh, plate);
+    group.add(mesh);
   }
 
   function disposeResource(resource: BufferGeometry | Material): void {
@@ -323,7 +315,7 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     hidden.add(index);
     const record = records.get(faceId)!;
     if (removedFaces.has(faceId)) {
-      // The face's meshes are already detached; the id is only recorded as hidden.
+      // The face's mesh is already detached; the id is only recorded as hidden.
       return;
     }
     if (instant) {
@@ -379,18 +371,12 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       }
     }
     const record = records.get(faceId)!;
-    // Fade end state first (the scene drives the fade by lowering `opacity`), then the
-    // meshes leave the group and their resources are released exactly once.
-    record.plateMaterial.opacity = 0;
-    record.plate.visible = false;
+    // The mesh leaves the group and its resources are released exactly once. There is no
+    // plate and no opacity write: the body behind the removed tiles is the dark interior.
     faces.delete(faceId);
-    plateMeshes.delete(faceId);
     group.remove(record.mesh);
-    group.remove(record.plate);
     disposeResource(record.mesh.geometry);
     disposeResource(record.tileMaterial);
-    disposeResource(record.plate.geometry);
-    disposeResource(record.plateMaterial);
   }
 
   function applyStyle(next: CubeStyle): void {
@@ -405,7 +391,6 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       record.tileMaterial.color.set(next.miniCubeColor);
       record.tileMaterial.metalness = next.metalness;
       record.tileMaterial.roughness = next.roughness;
-      record.plateMaterial.color.set(next.cubeColor);
     }
   }
 
@@ -420,19 +405,15 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     for (const record of records.values()) {
       disposeResource(record.mesh.geometry);
       disposeResource(record.tileMaterial);
-      disposeResource(record.plate.geometry);
-      disposeResource(record.plateMaterial);
     }
     group.clear();
     faces.clear();
-    plateMeshes.clear();
   }
 
   return {
     group,
     body,
     faces,
-    plateMeshes,
     hideMiniCube,
     isMiniCubeHidden,
     update,

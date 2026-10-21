@@ -1,17 +1,18 @@
 /**
- * Picking tests (T10 — spec § Testing strategy: render-layer modules are exercised against
- * real three.js objects in the node environment, no mocks).
+ * Picking tests (spec § Testing strategy: render-layer modules are exercised against real
+ * three.js objects in the node environment, no mocks).
  *
  * Every case builds a real `cube-view` plus a real `PerspectiveCamera` and casts one
  * concrete NDC position; the assertion is always the exact id or the exact `null`, so a
  * dropped front-face gate, a transposed instance decode, a wrong grid size or a pick that
  * ignores the hidden-instance rule fails the test.
  *
- * The NDC literals come from the fixture camera: fov 50, square viewport, at the AC-22
- * rest position `(0, 0, 12)` looking at the origin — 9.375 world units in front of the
- * front tile plane (`12 - 2.625`). There, one world unit spans `1 / (9.375 * tan 25°) =
- * 0.2287474…` NDC, and a tile is 0.9 world units wide (±0.45 = ±0.1029 NDC), so each
- * coordinate below lands within ~0.00002 NDC of the tile centre it names.
+ * The NDC literals come from the fixture camera: fov 50, square viewport, at the rest
+ * position `(0, 0, 12)` looking at the origin — 9.375 world units in front of the front
+ * tile plane (`12 - 2.625`). There, one world unit spans `1 / (9.375 * tan 25°) =
+ * 0.2287474…` NDC. The tiles are flush (`MINI_CUBE_TILE_RATIO = 1`, spec AC-2), so on an
+ * N × N grid each tile is `5 / N` world units wide and the face has no gaps: adjacent
+ * tiles meet at their shared edge.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -58,25 +59,26 @@ describe('pickMiniCube', () => {
     expect(pickMiniCube(camera, view, 'front', -0.22875, -0.22875)).toBe('front:3:1');
   });
 
-  it('returns null between two mini-cubes and still picks their neighbours', () => {
+  it('hits a tile on both sides of a former grid gap (flush tiling, AC-2)', () => {
     const camera = createCamera();
     const view = createCubeView(STYLE);
 
-    // The neighbours of each gap: col 1 at world x = -1, col 3 at world x = 1, row 2 at
-    // world y = 0 — the positive controls that keep the two nulls below meaningful.
-    expect(pickMiniCube(camera, view, 'front', -0.22875, 0)).toBe('front:2:1');
-    expect(pickMiniCube(camera, view, 'front', 0.22875, 0)).toBe('front:2:3');
+    // World x = 0.5 used to be the 0.1-wide gap between col 2 and col 3; the flush tiles
+    // now meet there, so both sides of the boundary pick a tile and neither is a null.
+    // NDC 0.11 → x ≈ 0.4809 (col 2), NDC 0.12 → x ≈ 0.5246 (col 3).
+    expect(pickMiniCube(camera, view, 'front', 0.11, 0)).toBe('front:2:2');
+    expect(pickMiniCube(camera, view, 'front', 0.12, 0)).toBe('front:2:3');
 
-    // x = -0.5 / y = 0.5 are the 0.1-wide grid gaps: the ray reaches the plate and the body
-    // behind them, but those are not pick targets.
-    expect(pickMiniCube(camera, view, 'front', -0.11437, 0)).toBeNull();
-    expect(pickMiniCube(camera, view, 'front', 0, 0.11437)).toBeNull();
+    // Same on the row axis: NDC 0.11 → y ≈ 0.4809 (row 2), NDC 0.12 → y ≈ 0.5246 (row 1).
+    expect(pickMiniCube(camera, view, 'front', 0, 0.11)).toBe('front:2:2');
+    expect(pickMiniCube(camera, view, 'front', 0, 0.12)).toBe('front:1:2');
   });
 
   it('returns null when the ray misses the cube', () => {
     const camera = createCamera();
     const view = createCubeView(STYLE);
 
+    // The flush 5 × 5 face spans ±2.5 world units = ±0.5719 NDC.
     expect(pickMiniCube(camera, view, 'front', 0.9, 0.9)).toBeNull();
     expect(pickMiniCube(camera, view, 'front', -0.9, -0.9)).toBeNull();
     expect(pickMiniCube(camera, view, 'front', 0, 1)).toBeNull();
@@ -126,17 +128,42 @@ describe('pickMiniCube', () => {
     expect(pickMiniCube(camera, view, 'front', 0, 0)).toBeNull();
   });
 
-  it('reads the grid size back from the view', () => {
+  it('decodes a 3 × 3 grid from its own instance count', () => {
     const camera = createCamera();
 
-    // 3x3 grid: the centre tile is row 1, col 1, and instance 6 is (row 2, col 0) at world
-    // (-5/3, -5/3). Decoding instance 6 with the default grid size would yield row 1, col 1.
+    // cell = 5/3: tile centres at ±5/3 = ±0.381245 NDC on each axis. Decoding instance 8
+    // with the default grid size would yield row 1, col 3 instead of row 2, col 2.
     const three = createCubeView(STYLE, 3);
     expect(pickMiniCube(camera, three, 'front', 0, 0)).toBe('front:1:1');
+    expect(pickMiniCube(camera, three, 'front', -0.38125, 0.38125)).toBe('front:0:0');
+    expect(pickMiniCube(camera, three, 'front', 0.38125, 0.38125)).toBe('front:0:2');
     expect(pickMiniCube(camera, three, 'front', -0.38125, -0.38125)).toBe('front:2:0');
+    expect(pickMiniCube(camera, three, 'front', 0.38125, -0.38125)).toBe('front:2:2');
+  });
 
-    // 1x1 grid: the single tile covers the whole face.
+  it('decodes a 7 × 7 grid from its own instance count', () => {
+    const camera = createCamera();
+
+    // cell = 5/7: tile centres at ±15/7 (0.490173 NDC), ±10/7 (0.326782 NDC) and ±5/7
+    // (0.163391 NDC). The expected ids are the exact instance decode `row * 7 + col`.
+    const seven = createCubeView(STYLE, 7);
+    expect(pickMiniCube(camera, seven, 'front', 0, 0)).toBe('front:3:3');
+    expect(pickMiniCube(camera, seven, 'front', -0.49, 0.49)).toBe('front:0:0');
+    expect(pickMiniCube(camera, seven, 'front', 0.49, -0.49)).toBe('front:6:6');
+    expect(pickMiniCube(camera, seven, 'front', 0.3268, 0.3268)).toBe('front:1:5');
+
+    // A hidden tile inside the 7 × 7 grid is unpickable; its neighbour is still pickable.
+    seven.hideMiniCube('front:3:3');
+    expect(pickMiniCube(camera, seven, 'front', 0, 0)).toBeNull();
+    expect(pickMiniCube(camera, seven, 'front', 0.1634, 0)).toBe('front:3:4');
+  });
+
+  it('decodes a 1 × 1 grid: the single flush tile covers the whole face', () => {
+    const camera = createCamera();
     const one = createCubeView(STYLE, 1);
+
     expect(pickMiniCube(camera, one, 'front', 0, 0)).toBe('front:0:0');
+    // The tile now spans the whole 5-unit face (±0.5719 NDC), so a corner still picks it.
+    expect(pickMiniCube(camera, one, 'front', 0.5, 0.5)).toBe('front:0:0');
   });
 });
