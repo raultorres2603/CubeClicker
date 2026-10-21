@@ -1,37 +1,84 @@
 /**
- * Procedural galaxy backdrop (T7 — plan § Render interfaces; spec AC-1 / AC-16).
+ * Procedural galaxy backdrop: a camera-anchored, view-axis **square** cone volume
+ * (follow-up plan § `render/starfield.ts`, r2; spec AC-1 / AC-16).
  *
  * Exactly one `THREE.Points` object holds exactly {@link STAR_COUNT} stars. Every star is
- * drawn from the injected random source (four draws per star, in `x → y → z → brightness`
- * order), so the same seed always produces the same sky: the backdrop is deterministic,
- * testable and loaded from nothing (plan § Asset strategy — all visuals are procedural).
+ * drawn from the injected random source (four draws per star, in `x → y → depth →
+ * brightness` order), so the same seed always produces the same sky: the backdrop is
+ * deterministic, testable and loaded from nothing (plan § Asset strategy — all visuals are
+ * procedural).
  *
- * `STAR_COUNT`, {@link TRAVEL_STARFIELD_SCALE} and {@link easeInOutQuad} are imported from
- * `game/effects.ts` (T5), the single home for the non-grid pinned constants and easings
+ * **Distribution (spec AC-1).** Each star sits on the **square** cone
+ * `depth ∈ [STARFIELD_DEPTH_NEAR, STARFIELD_DEPTH_FAR]` with the local position
+ * `x = (draw − 0.5) · 2 · depth · STARFIELD_TAN`, `y = (draw − 0.5) · 2 · depth ·
+ * STARFIELD_TAN`, `z = −depth` — one half-tangent for both axes (r2 correction: the r1
+ * rectangle was not rotation-invariant). The square's inradius ({@link STARFIELD_TAN})
+ * exceeds the largest supported viewport circumradius (`1.1840` at 21:9), so its
+ * cross-section contains the frustum cross-section at every depth and at **every swirl
+ * angle**; the uniform-in-slope distribution keeps the on-screen density constant over
+ * depth and aspect (spec § 1).
+ *
+ * **Anchor and swirl (spec AC-1).** `update` re-anchors the `Points` to the caller's camera
+ * pose: `position = anchor.position`, `quaternion = anchor.quaternion × RotZ(swirlAngle)`
+ * with `swirlAngle += max(0, dtMs) · DRIFT_RADIANS_PER_MS`. The swirl is about the **view
+ * axis**, under which the square is rotation-invariant in the coverage sense (every
+ * direction within its inradius is inside), so coverage can never degrade over time (the
+ * predecessor's world-y drift rotated a bounded disk until one side of the frame went
+ * starless — the reported defect; r1's rectangular cone failed the same way at 45° and was
+ * corrected to the square in r2). With no anchor the starfield anchors to the
+ * world-identity pose. The preallocated swirl quaternion and the caller-owned anchor
+ * references allocate nothing per frame.
+ *
+ * **Expansion (spec AC-3).** The travel input drives the uniform in-plane scale
+ * `(S, S, 1)` about the anchor (= the screen centre), `S = 1 + (TRAVEL_STARFIELD_SCALE − 1)
+ * · travelSwing(clamp(progress))`; `z` stays `1`, so the expansion never moves a star out of
+ * the camera's far plane. `S ≥ 1` at every progress, so the expanded backdrop remains a
+ * superset of the cone (coverage at the scale-8 turn-around is asserted in
+ * `scene.test.ts`).
+ *
+ * `STAR_COUNT`, {@link TRAVEL_STARFIELD_SCALE} and {@link travelSwing} are imported from
+ * `game/effects.ts`, the single home for the non-grid pinned constants and easings
  * (plan § Constant homes — never redefined locally).
- *
- * The star disk is a wide, shallow box behind the cube (negative `z`), centred on the
- * origin: `x ∈ [-70, 70]`, `y ∈ [-40, 40]`, `z ∈ [-60, -8]`. The camera's travel pull-away
- * ends at `z = 90`, so even a star at `z = -60` sits 150 units away — inside the `far`
- * plane (200). The travel expansion is applied in the view plane only (`x`/`y`), which
- * keeps every star inside that same far plane at the travel extreme (spec AC-1).
  */
 
-import { BufferAttribute, BufferGeometry, Points, PointsMaterial } from 'three';
+import {
+  BufferAttribute,
+  BufferGeometry,
+  Points,
+  PointsMaterial,
+  Quaternion,
+  Vector3,
+} from 'three';
 
-import { easeInOutQuad, STAR_COUNT, TRAVEL_STARFIELD_SCALE } from '../game/effects';
+import { STAR_COUNT, TRAVEL_STARFIELD_SCALE, travelSwing } from '../game/effects';
 
-/** Horizontal spread of the star disk (world units), centred on the origin. */
-const GALAXY_WIDTH = 140;
+/**
+ * Nearest star depth along the view axis (spec AC-1). Every star lies at
+ * `z = −depth` in the anchored local frame, i.e. this many units in front of the camera.
+ */
+export const STARFIELD_DEPTH_NEAR = 20;
 
-/** Vertical spread of the star disk (world units), centred on the origin. */
-const GALAXY_HEIGHT = 80;
+/** Farthest star depth along the view axis — inside the camera far plane (200) (AC-1). */
+export const STARFIELD_DEPTH_FAR = 160;
 
-/** Depth of the nearest star (world units behind the origin, i.e. `z = -8`). */
-const GALAXY_NEAR_DEPTH = 8;
+/** Widest supported aspect ratio: 21:9 ultrawide (spec AC-1). */
+const STARFIELD_ASPECT_MAX = 7 / 3;
 
-/** Extra depth span of the star disk: `z ∈ [-60, -8]`. */
-const GALAXY_DEPTH_SPAN = 52;
+/** Coverage margin over the supported frustum (spec AC-1): 15%. */
+const STARFIELD_COVERAGE_MARGIN = 0.15;
+
+/**
+ * Single half-angle tangent of the **square** cone, used for both axes:
+ * `tan(25°) · STARFIELD_ASPECT_MAX · (1 + STARFIELD_COVERAGE_MARGIN) = 1.251258882715913`
+ * — the 50° vertical lens's half angle (25°), the widest supported aspect (21:9) and the
+ * coverage margin. This is the inradius of the square cross-section; it exceeds the largest
+ * supported viewport circumradius (`√((tan25° · 7/3)² + tan²25°) = 1.1840`), so the volume
+ * covers the viewport at every depth and every swirl angle (spec AC-1, r2). It is the
+ * frustum-coverage contract itself; `scene.test.ts` verifies it against the real camera's
+ * corner rays, so a divergent lens or aspect bound fails the build (plan D-4).
+ */
+export const STARFIELD_TAN =
+  Math.tan((Math.PI * 50) / 360) * STARFIELD_ASPECT_MAX * (1 + STARFIELD_COVERAGE_MARGIN);
 
 /** World-space point size of a star (attenuated by distance). */
 const STAR_SIZE = 0.6;
@@ -40,27 +87,48 @@ const STAR_SIZE = 0.6;
 const STAR_MIN_BRIGHTNESS = 0.5;
 
 /**
- * Drift rate: `2^-16 = 1/65536` radians per millisecond (≈ 0.015259 rad/s — a full slow
+ * Swirl rate: `2^-16 = 1/65536` radians per millisecond (≈ 0.015259 rad/s — a full slow
  * turn in about 6.9 minutes). A power of two, so any integer `dtMs` scales exactly and
- * tests can pin exact drift angles.
+ * tests can pin exact swirl angles. Retained from the predecessor's drift (spec AC-1).
  */
 const DRIFT_RADIANS_PER_MS = 1 / 65536;
+
+/** The view axis the cone is anchored along and the swirl turns about. */
+const VIEW_AXIS = new Vector3(0, 0, 1);
+
+/** World-identity anchor position used when the caller passes no anchor. */
+const WORLD_IDENTITY_POSITION = new Vector3(0, 0, 0);
+
+/** World-identity anchor orientation used when the caller passes no anchor. */
+const WORLD_IDENTITY_QUATERNION = new Quaternion();
+
+/** Camera pose the starfield anchors to (caller-owned references; never copied per frame). */
+export interface StarfieldAnchor {
+  /** The camera's live position vector. */
+  position: Vector3;
+  /** The camera's live orientation quaternion. */
+  quaternion: Quaternion;
+}
 
 /** The galaxy backdrop: one starfield `Points` object plus its frame-update hooks. */
 export interface Starfield {
   /** The single `THREE.Points` drawable holding every star (AC-16: one object, never rebuilt). */
   readonly points: Points<BufferGeometry, PointsMaterial>;
   /**
-   * Advances the backdrop by `dtMs` milliseconds: applies the slow drift.
+   * Advances the backdrop by `dtMs` milliseconds, re-anchors it to `anchor` and applies the
+   * travel scale.
    *
-   * `travelProgress` (0..1, clamped) is the galaxy travel input (spec AC-1): it drives the
-   * uniform in-plane expansion of the star disk, from `1` (rest) to
-   * {@link TRAVEL_STARFIELD_SCALE} (`8`), eased with `easeInOutQuad` — the same easing the
-   * camera pull-away uses, so the stars visibly move outward for the whole transition. `z`
-   * stays `1`. Omit it to keep the current expansion — the frame loop advances the drift
-   * every frame while the scene feeds the travel progress only while the travel phase runs.
+   * - Swirl: `swirlAngle += max(0, dtMs) · DRIFT_RADIANS_PER_MS`; the anchored quaternion is
+   *   `anchor.quaternion × RotZ(swirlAngle)` (no anchor → the world-identity pose).
+   * - Anchor: `points.position` copies `anchor.position` (no anchor → the origin).
+   * - Scale: `travelProgress` (0..1, clamped) drives the uniform in-plane scale
+   *   `(S, S, 1)` with `S = 1 + (TRAVEL_STARFIELD_SCALE − 1) · travelSwing(progress)`; `z`
+   *   stays `1`. Omit it to keep the current scale — the frame loop feeds the travel
+   *   progress only while the travel phase runs (spec AC-1/AC-3).
+   *
+   * The anchor references and the swirl quaternion are preallocated: no per-frame allocation.
    */
-  update(dtMs: number, travelProgress?: number): void;
+  update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor): void;
   /** Releases the geometry and material of the starfield. */
   dispose(): void;
 }
@@ -68,7 +136,7 @@ export interface Starfield {
 /**
  * Builds the galaxy starfield from `random`.
  *
- * Draw order per star (four draws): `x`, `y`, `z` (mapped onto the star disk box), then the
+ * Draw order per star (four draws): `x`, `y`, `depth` (mapped onto the cone), then the
  * per-star brightness (mapped to `[STAR_MIN_BRIGHTNESS, 1]`). The colours are pure grey —
  * each star's brightness multiplies a white point colour — so the star colours are exactly
  * the drawn brightness values.
@@ -76,14 +144,21 @@ export interface Starfield {
 export function createStarfield(random: () => number): Starfield {
   const positions = new Float32Array(STAR_COUNT * 3);
   const colors = new Float32Array(STAR_COUNT * 3);
+  const depthSpan = STARFIELD_DEPTH_FAR - STARFIELD_DEPTH_NEAR;
 
   for (let index = 0; index < STAR_COUNT; index += 1) {
     const offset = index * 3;
-    positions[offset] = (random() - 0.5) * GALAXY_WIDTH;
-    positions[offset + 1] = (random() - 0.5) * GALAXY_HEIGHT;
-    positions[offset + 2] = -(GALAXY_NEAR_DEPTH + random() * GALAXY_DEPTH_SPAN);
+    const xDraw = random();
+    const yDraw = random();
+    const depthDraw = random();
+    const brightnessDraw = random();
 
-    const brightness = STAR_MIN_BRIGHTNESS + random() * (1 - STAR_MIN_BRIGHTNESS);
+    const depth = STARFIELD_DEPTH_NEAR + depthDraw * depthSpan;
+    positions[offset] = (xDraw - 0.5) * 2 * depth * STARFIELD_TAN;
+    positions[offset + 1] = (yDraw - 0.5) * 2 * depth * STARFIELD_TAN;
+    positions[offset + 2] = -depth;
+
+    const brightness = STAR_MIN_BRIGHTNESS + brightnessDraw * (1 - STAR_MIN_BRIGHTNESS);
     colors[offset] = brightness;
     colors[offset + 1] = brightness;
     colors[offset + 2] = brightness;
@@ -104,16 +179,27 @@ export function createStarfield(random: () => number): Starfield {
 
   const points = new Points<BufferGeometry, PointsMaterial>(geometry, material);
 
+  /** Accumulated swirl angle about the view axis (radians). */
+  let swirlAngle = 0;
+  /** Preallocated `RotZ(swirlAngle)`: the view-axis swirl composed with the anchor. */
+  const swirlQuaternion = new Quaternion();
+
   return {
     points,
-    update(dtMs: number, travelProgress?: number): void {
-      points.rotation.y += dtMs * DRIFT_RADIANS_PER_MS;
+    update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor): void {
+      swirlAngle += Math.max(0, dtMs) * DRIFT_RADIANS_PER_MS;
+
+      const anchorPosition = anchor?.position ?? WORLD_IDENTITY_POSITION;
+      const anchorQuaternion = anchor?.quaternion ?? WORLD_IDENTITY_QUATERNION;
+      points.position.copy(anchorPosition);
+      swirlQuaternion.setFromAxisAngle(VIEW_AXIS, swirlAngle);
+      points.quaternion.copy(anchorQuaternion).multiply(swirlQuaternion);
 
       if (travelProgress !== undefined) {
         const progress = Math.min(1, Math.max(0, travelProgress));
-        const expansion = 1 + (TRAVEL_STARFIELD_SCALE - 1) * easeInOutQuad(progress);
+        const expansion = 1 + (TRAVEL_STARFIELD_SCALE - 1) * travelSwing(progress);
         // In-plane only: the stars spread radially away from the screen centre while their
-        // depth stays put, so no star leaves the camera's far plane.
+        // depth stays put, so no star leaves the camera's far plane (depth ≤ 160 < 200).
         points.scale.set(expansion, expansion, 1);
       }
     },

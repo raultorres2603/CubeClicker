@@ -15,13 +15,13 @@
  *   the fade is done; `levelChanged` disposes the old cube view and builds a fresh one in
  *   the new style (AC-9, AC-10); and `travelStarted` needs nothing of its own — the travel
  *   transition is driven by the snapshot.
- * - {@link SceneView.applySnapshot} is the per-frame pull: the intro search → find →
- *   approach choreography and the travel pull-away (AC-2), cube orientation interpolation
- *   (the frame pinned in `game/rotation.ts`: `rotation.set(pitch, yaw, 0)`), the starfield
- *   travel expansion (AC-1) and level reconciliation (a style change that arrives without
- *   its intent is applied anyway, so the cube can never disagree with the snapshot).
- * - {@link SceneView.update} advances the frame-driven parts: starfield drift, particle
- *   aging, the face fades and the running mini-cube pops (AC-4).
+ * - {@link SceneView.applySnapshot} is the per-frame pull: the straight intro dolly and the
+ *   symmetric travel flight (AC-2/AC-3), cube orientation interpolation (the frame pinned
+ *   in `game/rotation.ts`: `rotation.set(pitch, yaw, 0)`), the starfield travel input
+ *   (AC-1/AC-3) and level reconciliation (a style change that arrives without its intent is
+ *   applied anyway, so the cube can never disagree with the snapshot).
+ * - {@link SceneView.update} advances the frame-driven parts: the camera-anchored starfield
+ *   swirl and scale, particle aging, the face fades and the running mini-cube pops (AC-4).
  *
  * The scene receives values only; it never reads the engine (plan § Data flow) and it
  * owns every three.js object it creates, so `dispose()` can release them exactly once
@@ -41,13 +41,13 @@ import {
   type Material,
 } from 'three';
 
-import { BURST_ORIGIN_OFFSET, easeInOutQuad, easeOutCubic, timingsFor } from '../game/effects';
+import { BURST_ORIGIN_OFFSET, easeOutCubic, timingsFor, travelSwing } from '../game/effects';
 import type { EffectIntent, EngineSnapshot } from '../game/engine';
 import { interpolateRotation } from '../game/rotation';
 import { GRID_SIZE, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
 import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
 import { createParticleSystem, type ParticleSystem } from './particles';
-import { createStarfield, type Starfield } from './starfield';
+import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
 
 /** Black backdrop behind the starfield (AC-3). */
 const BACKGROUND_COLOR = 0x000000;
@@ -61,28 +61,14 @@ const KEY_INTENSITY = 1.2;
 /** Key-light position: front-top-right of the cube. */
 const KEY_LIGHT_POSITION = { x: 6, y: 8, z: 10 };
 
-/** Camera rest distance — the gameplay position, and the end of the intro approach (AC-2). */
+/** Camera rest distance — the gameplay position, and the end of the intro dolly (AC-2). */
 const REST_Z = 12;
 
-/** Travel pull-away end distance (AC-2, retained from the predecessor AC-22). */
+/** Travel pull-away end distance (AC-3, retained from the predecessor AC-22). */
 const TRAVEL_END_Z = 90;
 
-/** Intro segment bounds on the clamped `phaseProgress` (AC-2). */
-const INTRO_SEARCH_END_P = 0.4;
-const INTRO_FIND_END_P = 0.72;
-
-/** Search beat: the camera pans linearly from its opening pose to this end pose (AC-2). */
-const INTRO_SEARCH_START = { x: 36, y: 20, z: 24 } as const;
-const INTRO_SEARCH_END = { x: 32, y: 16, z: 28 } as const;
-
-/** Search beat: the camera keeps this fixed sky point in frame (AC-2). */
-const INTRO_SEARCH_TARGET = { x: 0, y: 30, z: -40 } as const;
-
-/** Find beat end: centred on the cube's axis, 26 units out, looking at the cube (AC-2). */
-const INTRO_FIND_END = { x: 0, y: 0, z: 26 } as const;
-
-/** Approach beat end: the playing rest pose, looking at the origin (AC-2). */
-const INTRO_APPROACH_END = { x: 0, y: 0, z: REST_Z } as const;
+/** Intro start distance (spec AC-2) — the original AC-22 value, now always pointing at the cube. */
+const INTRO_START_Z = 60;
 
 /** Pinned lens (AC-2). */
 const CAMERA_FOV = 50;
@@ -97,15 +83,13 @@ const QUARTER_TURN_EPSILON = 1e-9;
 
 /**
  * Writes the intro camera pose for clamped `progress` into the caller-owned vectors
- * (spec AC-2) — zero allocation per frame. Three beats:
+ * (spec AC-2) — zero allocation per frame.
  *
- * - **Search** (`p ∈ [0, 0.4]`): position lerps linearly `(36, 20, 24) → (32, 16, 28)`
- *   while looking at the fixed sky point `(0, 30, −40)`; the cube is off-screen.
- * - **Find** (`p ∈ [0.4, 0.72]`): position `(32, 16, 28) → (0, 0, 26)` and target
- *   `(0, 30, −40) → (0, 0, 0)`, both eased with `easeOutCubic` over `(p − 0.4) / 0.32`;
- *   the cube enters the frame and ends fully centred.
- * - **Approach** (`p ∈ [0.72, 1]`): `z 26 → 12` with `easeOutCubic` over
- *   `(p − 0.72) / 0.28`, always looking at the origin; lands exactly at the rest pose.
+ * A straight, eased dolly-in along the view axis: the target is the cube centre at every
+ * progress and the position is `(0, 0, 60 − 48 · easeOutCubic(p))`, i.e. from
+ * {@link INTRO_START_Z} (`60`) to the rest pose (`12`). The cube is centred and fully framed
+ * from the first frame; the path is strictly monotonic and the camera quaternion is the
+ * identity at every instant (spec § 2).
  */
 export function introCameraPose(
   progress: number,
@@ -113,41 +97,9 @@ export function introCameraPose(
   outTarget: Vector3,
 ): void {
   const clamped = Math.min(1, Math.max(0, progress));
+  const travelled = easeOutCubic(clamped);
 
-  if (clamped <= INTRO_SEARCH_END_P) {
-    const q = clamped / INTRO_SEARCH_END_P;
-    outPosition.set(
-      INTRO_SEARCH_START.x + (INTRO_SEARCH_END.x - INTRO_SEARCH_START.x) * q,
-      INTRO_SEARCH_START.y + (INTRO_SEARCH_END.y - INTRO_SEARCH_START.y) * q,
-      INTRO_SEARCH_START.z + (INTRO_SEARCH_END.z - INTRO_SEARCH_START.z) * q,
-    );
-    outTarget.set(INTRO_SEARCH_TARGET.x, INTRO_SEARCH_TARGET.y, INTRO_SEARCH_TARGET.z);
-    return;
-  }
-
-  if (clamped <= INTRO_FIND_END_P) {
-    const q = easeOutCubic(
-      (clamped - INTRO_SEARCH_END_P) / (INTRO_FIND_END_P - INTRO_SEARCH_END_P),
-    );
-    outPosition.set(
-      INTRO_SEARCH_END.x + (INTRO_FIND_END.x - INTRO_SEARCH_END.x) * q,
-      INTRO_SEARCH_END.y + (INTRO_FIND_END.y - INTRO_SEARCH_END.y) * q,
-      INTRO_SEARCH_END.z + (INTRO_FIND_END.z - INTRO_SEARCH_END.z) * q,
-    );
-    outTarget.set(
-      INTRO_SEARCH_TARGET.x + (ORIGIN.x - INTRO_SEARCH_TARGET.x) * q,
-      INTRO_SEARCH_TARGET.y + (ORIGIN.y - INTRO_SEARCH_TARGET.y) * q,
-      INTRO_SEARCH_TARGET.z + (ORIGIN.z - INTRO_SEARCH_TARGET.z) * q,
-    );
-    return;
-  }
-
-  const q = easeOutCubic((clamped - INTRO_FIND_END_P) / (1 - INTRO_FIND_END_P));
-  outPosition.set(
-    INTRO_FIND_END.x + (INTRO_APPROACH_END.x - INTRO_FIND_END.x) * q,
-    INTRO_FIND_END.y + (INTRO_APPROACH_END.y - INTRO_FIND_END.y) * q,
-    INTRO_FIND_END.z + (INTRO_APPROACH_END.z - INTRO_FIND_END.z) * q,
-  );
+  outPosition.set(0, 0, INTRO_START_Z - (INTRO_START_Z - REST_Z) * travelled);
   outTarget.set(ORIGIN.x, ORIGIN.y, ORIGIN.z);
 }
 
@@ -207,9 +159,9 @@ export interface SceneView {
    */
   applyIntents(intents: EffectIntent[], nowMs: number): void;
   /**
-   * Applies one engine snapshot: the intro/travel camera (`introCameraPose` / pull-away),
-   * cube orientation, starfield travel input, level reconciliation and, under reduced
-   * motion, the instant settle of any running pop.
+   * Applies one engine snapshot: the intro dolly / symmetric travel camera, cube
+   * orientation, starfield travel input, level reconciliation and, under reduced motion,
+   * the instant settle of any running pop.
    *
    * `nowMs` is the frame time the plan's contract carries (the loop passes it); the
    * snapshot application itself is a pure function of the snapshot values — the flights
@@ -217,7 +169,7 @@ export interface SceneView {
    * scene does not consume it.
    */
   applySnapshot(snapshot: EngineSnapshot, nowMs: number): void;
-  /** Advances the frame-driven parts: starfield drift, particle aging, face fades, pops. */
+  /** Advances the frame-driven parts: the starfield swirl/scale, particles, fades, pops. */
   update(dtMs: number): void;
   /** Disposes every geometry/material it owns (exactly once) and empties the scene. */
   dispose(): void;
@@ -255,6 +207,15 @@ export function createSceneView(options: {
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(0, 0, REST_Z);
   camera.lookAt(ORIGIN);
+
+  /**
+   * The camera pose the starfield anchors to. The anchor holds the camera's live vectors
+   * (plan D-7), so it follows every flight with zero per-frame allocation.
+   */
+  const starfieldAnchor: StarfieldAnchor = {
+    position: camera.position,
+    quaternion: camera.quaternion,
+  };
 
   /** Style of the cube view currently in the scene (snapshot reconciliation uses it). */
   let currentStyle = options.style;
@@ -345,8 +306,8 @@ export function createSceneView(options: {
   }
 
   /**
-   * The intro search → find → approach choreography and the travel pull-away (AC-2), plus
-   * the starfield expansion input the travel phase drives (AC-1).
+   * The straight intro dolly and the symmetric travel path (AC-2/AC-3), plus the starfield
+   * travel input the travel phase drives (AC-1/AC-3).
    */
   function applyCamera(snapshot: EngineSnapshot): void {
     const progress = Math.min(1, Math.max(0, snapshot.phaseProgress));
@@ -367,7 +328,8 @@ export function createSceneView(options: {
     }
     if (snapshot.phase === 'travel') {
       travelProgress = progress;
-      camera.position.set(0, 0, REST_Z + (TRAVEL_END_Z - REST_Z) * easeInOutQuad(progress));
+      // Symmetric arrival path: rest → turn-around → rest, peaking exactly at p = 0.5.
+      camera.position.set(0, 0, REST_Z + (TRAVEL_END_Z - REST_Z) * travelSwing(progress));
       camera.lookAt(ORIGIN);
       return;
     }
@@ -417,8 +379,8 @@ export function createSceneView(options: {
             rebuildCube(intent.style);
             break;
           case 'travelStarted':
-            // Travel lives in the snapshot: camera pull-away + starfield expansion follow
-            // `phaseProgress`, so the one-shot marker needs no scene state of its own.
+            // Travel lives in the snapshot: the symmetric camera flight and the starfield
+            // scale follow `phaseProgress`, so the one-shot marker needs no state of its own.
             break;
         }
       }
@@ -444,8 +406,9 @@ export function createSceneView(options: {
 
     update(dtMs: number): void {
       // The travel input persists between snapshots: a frame that only advances time
-      // keeps the current expansion and the drift (see `starfield.update`).
-      starfield.update(dtMs, travelProgress);
+      // keeps the current expansion and the swirl (see `starfield.update`). The anchor is
+      // the live camera pose, so the backdrop stays camera-centred in every phase.
+      starfield.update(dtMs, travelProgress, starfieldAnchor);
       particles.update(dtMs);
       advanceFaceFades(dtMs);
       // Pops advance after the fades, so a face removed this frame never receives a write.

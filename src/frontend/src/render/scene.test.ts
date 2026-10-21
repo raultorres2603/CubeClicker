@@ -1,6 +1,5 @@
 import {
   AmbientLight,
-  Box3,
   Color,
   DirectionalLight,
   Frustum,
@@ -25,6 +24,7 @@ import { CUBE_STYLES } from '../game/progression';
 import { FACE_IDS, GRID_SIZE, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
 import { CUBE_HALF_SIZE } from './cube-view';
 import { createSceneView, introCameraPose, snapToQuarterTurns, type SceneView } from './scene';
+import { STARFIELD_TAN } from './starfield';
 
 /**
  * Integration tier the spec pins for `render/**`: the scene is exercised against real
@@ -46,6 +46,15 @@ const FRONT_FIRST_TILE: readonly [number, number, number] = [-2, 2, TILE_DISTANC
 
 /** A random source that yields exactly zero star offsets and zero particle jitter. */
 const fixedRandom = (): number => 0.5;
+
+/** Deterministic LCG (same seed → same stream); mirrors the engine's seeded sources. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+}
 
 /** The narrow renderer surface the session hands the scene (plan § session contract). */
 interface FakeRendererAdapter {
@@ -92,6 +101,16 @@ function createFakeAdapter(): {
 /** A scene with a deterministic random source (see {@link fixedRandom}). */
 function createView(style: CubeStyle = STYLE): SceneView {
   return createSceneView({ style, random: fixedRandom });
+}
+
+/**
+ * A scene whose starfield comes from the pinned density seed (7): the starfield consumes
+ * its 4 × `STAR_COUNT` draws before the particle pool, so the seed fixes the sky exactly.
+ */
+const DENSITY_SEED = 7;
+
+function createSeededView(): SceneView {
+  return createSceneView({ style: STYLE, random: seededRandom(DENSITY_SEED) });
 }
 
 /**
@@ -232,22 +251,22 @@ function countObjects(root: Object3D): number {
   return 1 + root.children.reduce((total, child) => total + countObjects(child), 0);
 }
 
-/** The cube box: a `CUBE_SIZE` cube centred on the origin (spec AC-2 frustum gates). */
-const CUBE_BOX = new Box3(
-  new Vector3(-CUBE_HALF_SIZE, -CUBE_HALF_SIZE, -CUBE_HALF_SIZE),
-  new Vector3(CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
-);
-
-/** The cube's eight corners, for the "fully framed" gate at the end of the find beat. */
+/** The cube's eight corners, for the "fully framed from the first frame" gate (AC-2). */
 const CUBE_CORNERS: readonly Vector3[] = [-1, 1].flatMap((sx) =>
   [-1, 1].flatMap((sy) =>
     [-1, 1].map((sz) => new Vector3(sx * CUBE_HALF_SIZE, sy * CUBE_HALF_SIZE, sz * CUBE_HALF_SIZE)),
   ),
 );
 
-/** The frustum of the scene's camera at the aspect the spec pins (16/9), at its current pose. */
-function cameraFrustum(view: SceneView): Frustum {
-  view.camera.aspect = 16 / 9;
+/** The supported aspect ratios the spec pins coverage/framing for (AC-1, AC-2). */
+const SUPPORTED_ASPECTS: readonly number[] = [2 / 3, 16 / 9, 7 / 3];
+
+/** The view axis every pinned camera pose looks down. */
+const VIEW_AXIS = new Vector3(0, 0, 1);
+
+/** The frustum of the scene's camera at `aspect`, at its current pose. */
+function cameraFrustumAt(view: SceneView, aspect: number): Frustum {
+  view.camera.aspect = aspect;
   view.camera.updateProjectionMatrix();
   view.camera.updateMatrixWorld();
   return new Frustum().setFromProjectionMatrix(
@@ -256,27 +275,82 @@ function cameraFrustum(view: SceneView): Frustum {
 }
 
 /**
- * The pinned intro pose table (spec AC-2). Every row is asserted as an exact literal; the
- * `p = 0.56` row is the only one whose f64 evaluation sits a few ulps below the table's
- * clean decimal values (0.56 is not binary-exact between the 0.4 and 0.72 segment bounds),
- * so its literals are the exact outputs of the pinned formulas, documented next to them.
+ * The four NDC corner rays of the real camera frustum, expressed as starfield-cone slopes.
+ *
+ * The cone is anchored to the camera and turned by `swirl` about the view axis, so a
+ * world-space ray is rotated back by `−swirl` to express it in the cone's local frame. The
+ * travel scale `(S, S, 1)` multiplies the stars' slopes by `S`, so the frustum slopes are
+ * divided by `S` to compare against the unscaled square cone's half-tan (equivalent to
+ * checking `|slope| ≤ S · STARFIELD_TAN`). Slopes are `x / depth` and `y / depth` with
+ * `depth = −z` (the anchored local frame puts every star at `z = −depth`).
+ */
+function cornerSlopes(
+  view: SceneView,
+  aspect: number,
+  swirl: number,
+  scale: number,
+): Array<readonly [number, number]> {
+  view.camera.aspect = aspect;
+  view.camera.updateProjectionMatrix();
+  view.camera.updateMatrixWorld(true);
+
+  const slopes: Array<readonly [number, number]> = [];
+  for (const ndcX of [-1, 1]) {
+    for (const ndcY of [-1, 1]) {
+      const near = new Vector3(ndcX, ndcY, -1).unproject(view.camera);
+      const far = new Vector3(ndcX, ndcY, 1).unproject(view.camera);
+      const direction = far.sub(near).normalize().applyAxisAngle(VIEW_AXIS, -swirl);
+      slopes.push([direction.x / -direction.z / scale, direction.y / -direction.z / scale]);
+    }
+  }
+  return slopes;
+}
+
+/**
+ * Projects every star through the real camera and partitions the NDC viewport into a 4 × 4
+ * grid (`row * 4 + col`, row 0 = bottom). Returns the in-viewport total and the per-cell
+ * counts — the AC-1 density measure.
+ */
+function ndcStarCells(view: SceneView, aspect: number): { total: number; cells: number[] } {
+  view.camera.aspect = aspect;
+  view.camera.updateProjectionMatrix();
+  view.camera.updateMatrixWorld(true);
+
+  const points = starfieldPoints(view);
+  points.updateMatrixWorld(true);
+  const position = points.geometry.getAttribute('position');
+  const cells = new Array<number>(16).fill(0);
+  const projected = new Vector3();
+  let total = 0;
+
+  for (let index = 0; index < position.count; index += 1) {
+    projected.fromBufferAttribute(position, index).applyMatrix4(points.matrixWorld).project(view.camera);
+    if (projected.x < -1 || projected.x > 1 || projected.y < -1 || projected.y > 1) {
+      continue;
+    }
+    total += 1;
+    const col = Math.min(3, Math.max(0, Math.floor(((projected.x + 1) / 2) * 4)));
+    const row = Math.min(3, Math.max(0, Math.floor(((projected.y + 1) / 2) * 4)));
+    cells[row * 4 + col] += 1;
+  }
+
+  return { total, cells };
+}
+
+/**
+ * The pinned intro pose table (spec AC-2, § 2): a straight dolly from `(0, 0, 60)` to the
+ * rest pose `(0, 0, 12)`, always looking at the cube. Every row is an exact literal (all
+ * dyadic-exact doubles) and the quaternion is the identity at every row.
  */
 const INTRO_POSES: ReadonlyArray<{
   progress: number;
   position: [number, number, number];
   target: [number, number, number];
 }> = [
-  { progress: 0, position: [36, 20, 24], target: [0, 30, -40] },
-  { progress: 0.2, position: [34, 18, 26], target: [0, 30, -40] },
-  { progress: 0.4, position: [32, 16, 28], target: [0, 30, -40] },
-  // 4 − 7e-15, 2 − 3.6e-15, 26.25 and 3.75 − 7e-15, −5 + 7e-15 (see the doc above).
-  {
-    progress: 0.56,
-    position: [3.999999999999993, 1.9999999999999964, 26.25],
-    target: [0, 3.749999999999993, -4.999999999999993],
-  },
-  { progress: 0.72, position: [0, 0, 26], target: [0, 0, 0] },
-  { progress: 0.86, position: [0, 0, 13.75], target: [0, 0, 0] },
+  { progress: 0, position: [0, 0, 60], target: [0, 0, 0] },
+  { progress: 0.25, position: [0, 0, 32.25], target: [0, 0, 0] },
+  { progress: 0.5, position: [0, 0, 18], target: [0, 0, 0] },
+  { progress: 0.75, position: [0, 0, 12.75], target: [0, 0, 0] },
   { progress: 1, position: [0, 0, 12], target: [0, 0, 0] },
 ];
 
@@ -372,12 +446,61 @@ describe('introCameraPose (AC-2)', () => {
     const outTarget = new Vector3();
 
     introCameraPose(-1, outPosition, outTarget);
-    expect(outPosition.toArray()).toEqual([36, 20, 24]);
-    expect(outTarget.toArray()).toEqual([0, 30, -40]);
+    expect(outPosition.toArray()).toEqual([0, 0, 60]);
+    expect(outTarget.toArray()).toEqual([0, 0, 0]);
 
     introCameraPose(2, outPosition, outTarget);
     expect(outPosition.toArray()).toEqual([0, 0, 12]);
     expect(outTarget.toArray()).toEqual([0, 0, 0]);
+  });
+
+  it('approaches monotonically along the view axis and always targets the cube', () => {
+    const outPosition = new Vector3();
+    const outTarget = new Vector3();
+    let previousZ = Number.POSITIVE_INFINITY;
+
+    // The pinned sweep {0, 0.1, …, 1}: x and y stay on the axis, z strictly decreases.
+    for (let step = 0; step <= 10; step += 1) {
+      const progress = step / 10;
+
+      introCameraPose(progress, outPosition, outTarget);
+
+      expect([outPosition.x, outPosition.y]).toEqual([0, 0]);
+      expect(outPosition.z).toBeLessThan(previousZ);
+      expect(outTarget.toArray()).toEqual([0, 0, 0]);
+      previousZ = outPosition.z;
+    }
+  });
+
+  it('frames the whole cube at every pinned progress and supported aspect (AC-2)', () => {
+    const view = createView();
+    const centre = new Vector3();
+
+    for (const { progress } of INTRO_POSES) {
+      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: progress }));
+
+      // On the view axis with the identity orientation: the cube centre is the screen
+      // centre and the camera looks straight at it.
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+
+      for (const aspect of SUPPORTED_ASPECTS) {
+        const frustum = cameraFrustumAt(view, aspect);
+
+        expect(CUBE_CORNERS.map((corner) => frustum.containsPoint(corner))).toEqual([
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+        ]);
+
+        centre.set(0, 0, 0).project(view.camera);
+        expect([centre.x + 0, centre.y + 0]).toEqual([0, 0]);
+      }
+    }
   });
 });
 
@@ -402,59 +525,22 @@ describe('snapToQuarterTurns (AC-3)', () => {
   });
 });
 
-describe('intro search → find → approach (AC-2)', () => {
+describe('intro dolly through the scene (AC-2)', () => {
   it('follows the pinned pose table through applySnapshot', () => {
     const view = createView();
 
     for (const { progress, position } of INTRO_POSES) {
       applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: progress }));
       expect(view.camera.position.toArray()).toEqual(position);
-    }
-  });
-
-  it('looks exactly down the cube axis at the end of the find and the whole approach', () => {
-    const view = createView();
-
-    for (const phaseProgress of [0.72, 0.86, 1]) {
-      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress }));
       expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
     }
-  });
-
-  it('searches off-screen, finds the cube centred and frames it fully (frustum gates)', () => {
-    const view = createView();
-
-    for (const phaseProgress of [0, 0.2, 0.4]) {
-      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress }));
-      const frustum = cameraFrustum(view);
-
-      expect(frustum.intersectsBox(CUBE_BOX)).toBe(false);
-      expect(frustum.containsPoint(new Vector3(0, 0, 0))).toBe(false);
-    }
-
-    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.56 }));
-    const found = cameraFrustum(view);
-    expect(found.containsPoint(new Vector3(0, 0, 0))).toBe(true);
-
-    applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.72 }));
-    const framed = cameraFrustum(view);
-    expect(CUBE_CORNERS.map((corner) => framed.containsPoint(corner))).toEqual([
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-    ]);
   });
 
   it('lands on the playing rest pose after a skip, whatever the intro progress was', () => {
     const view = createView();
 
     applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0.2 }));
-    expect(view.camera.position.toArray()).toEqual([34, 18, 26]);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 36.57600000000001]);
 
     applySnapshot(view, snapshot({ phase: 'playing' }));
     expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
@@ -465,7 +551,7 @@ describe('intro search → find → approach (AC-2)', () => {
     const view = createView();
 
     applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: 0 }));
-    expect(view.camera.position.toArray()).toEqual([36, 20, 24]);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 60]);
 
     for (const phase of ['intro', 'travel'] as const) {
       for (const phaseProgress of [0, 0.5, 1]) {
@@ -480,70 +566,221 @@ describe('intro search → find → approach (AC-2)', () => {
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
   });
 
-  it('pulls away during travel through (0,0,21.75) and (0,0,51) to (0,0,90)', () => {
+  it('keeps the view-axis swirl turning under reduced motion (AC-1)', () => {
     const view = createView();
+    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5, reducedMotion: true }));
+
+    view.update(1000);
+
+    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+    // RotZ(0.0152587890625): the exact composed doubles; the euler round-trip is one ulp
+    // below the ideal angle (see `starfield.test.ts`).
+    expect(starfieldPoints(view).quaternion.toArray()).toEqual([
+      0, 0, 0.007629320516597103, 0.9999708963107151,
+    ]);
+  });
+});
+
+describe('backdrop coverage and density (AC-1)', () => {
+  it('covers the real frustum corner rays at every pinned pose, aspect and swirl', () => {
+    const view = createView();
+    const poses = [
+      { phase: 'playing' as const, phaseProgress: 1, z: 12, scale: 1 },
+      { phase: 'intro' as const, phaseProgress: 0, z: 60, scale: 1 },
+      { phase: 'intro' as const, phaseProgress: 0.5, z: 18, scale: 1 },
+      { phase: 'travel' as const, phaseProgress: 0.5, z: 90, scale: 8 },
+    ];
+
+    for (const pose of poses) {
+      applySnapshot(view, snapshot({ phase: pose.phase, phaseProgress: pose.phaseProgress }));
+      view.update(0);
+
+      // The cone is anchored to the camera: at swirl 0 the pose is exactly the camera
+      // pose, with the travel scale only in the view plane.
+      expect(starfieldPoints(view).position.toArray()).toEqual([0, 0, pose.z]);
+      expect(starfieldPoints(view).quaternion.toArray()).toEqual([0, 0, 0, 1]);
+      expect(starfieldPoints(view).scale.toArray()).toEqual([pose.scale, pose.scale, 1]);
+
+      for (const aspect of SUPPORTED_ASPECTS) {
+        for (const swirl of [0, Math.PI / 4]) {
+          for (const [u, v] of cornerSlopes(view, aspect, swirl, pose.scale)) {
+            // The starfield-local corner slopes must fit in the square cone's inradius.
+            // Negative evidence for the r2 correction: with r1's rectangular cone the
+            // inverse-rotated |v| reached 1.0991 at 7/3 / swirl π/4 against TAN_Y = 0.5363
+            // (see build-log-T2 § Original blocker (r1)); the square's inradius 1.2513 ≥ the largest
+            // supported viewport circumradius 1.1840, so every swirl passes.
+            expect(Math.abs(u)).toBeLessThanOrEqual(STARFIELD_TAN);
+            expect(Math.abs(v)).toBeLessThanOrEqual(STARFIELD_TAN);
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps at least five stars in every 4 × 4 NDC cell at the sustained poses', () => {
+    const view = createSeededView();
+    // Seed 7 at 16:9, scale (1,1,1), square cone: row 0 = bottom; the anchored cone is
+    // pose-invariant, so rest, intro start, intro mid and travel end project the same sky.
+    const SUSTAINED_CELLS = [14, 14, 16, 15, 28, 28, 23, 16, 19, 14, 15, 16, 18, 19, 29, 18];
+    const poses = [
+      { phase: 'playing' as const, phaseProgress: 1 },
+      { phase: 'intro' as const, phaseProgress: 0 },
+      { phase: 'intro' as const, phaseProgress: 0.5 },
+      { phase: 'travel' as const, phaseProgress: 1 },
+    ];
+
+    for (const pose of poses) {
+      applySnapshot(view, snapshot({ phase: pose.phase, phaseProgress: pose.phaseProgress }));
+      view.update(0);
+      expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+
+      const { total, cells } = ndcStarCells(view, 16 / 9);
+      expect(cells).toEqual(SUSTAINED_CELLS);
+      expect(total).toBe(302);
+      for (const count of cells) {
+        expect(count).toBeGreaterThanOrEqual(5);
+      }
+    }
+  });
+
+  it('thins but never empties the viewport at the scale-8 turn-around', () => {
+    const view = createSeededView();
+    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5 }));
+    view.update(0);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 90]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([8, 8, 1]);
+
+    const { total, cells } = ndcStarCells(view, 16 / 9);
+
+    // Exact seeded count: 5 stars stay visible at the peak expansion (spec r2 floor ≥ 2;
+    // expected ≈ 5 — the accepted, brief expansion thinning, not an empty region).
+    expect(total).toBe(5);
+    expect(total).toBeGreaterThanOrEqual(2);
+    expect(cells).toEqual([0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+  });
+});
+
+describe('travel arrival path (AC-3)', () => {
+  it('follows the symmetric camera and backdrop table at every pinned progress', () => {
+    const view = createView();
+    const points = starfieldPoints(view);
 
     // The one-shot travel marker carries no state: the flight is snapshot-driven.
     view.applyIntents([{ kind: 'travelStarted' }], 0);
     expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
 
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.25 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 21.75]);
+    // z(p) = 12 + 78 · travelSwing(p) and S(p) = 1 + 7 · travelSwing(p): both halves of
+    // travelSwing meet at 1 at p = 0.5, so the camera peaks at 90 and the scale at (8,8,1)
+    // exactly at the turn-around and land back on the rest values at p = 1.
+    const table: ReadonlyArray<{ progress: number; z: number }> = [
+      { progress: 0, z: 12 },
+      { progress: 0.125, z: 21.75 },
+      { progress: 0.25, z: 51 },
+      { progress: 0.375, z: 80.25 },
+      { progress: 0.5, z: 90 },
+      { progress: 0.625, z: 80.25 },
+      { progress: 0.75, z: 51 },
+      { progress: 0.875, z: 21.75 },
+      { progress: 1, z: 12 },
+    ];
+    const observedZ: number[] = [];
+    const observedScales: number[][] = [];
 
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 51]);
+    for (const { progress } of table) {
+      applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: progress }));
+      view.update(16);
 
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 1 }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 90]);
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+      observedZ.push(view.camera.position.z);
+      observedScales.push(starfieldPoints(view).scale.toArray());
+      expect(starfieldPoints(view)).toBe(points);
+    }
 
-    applySnapshot(view, snapshot({ phase: 'playing' }));
-    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    expect(observedZ).toEqual([12, 21.75, 51, 80.25, 90, 80.25, 51, 21.75, 12]);
+    expect(observedScales).toEqual([
+      [1, 1, 1],
+      [1.875, 1.875, 1],
+      [4.5, 4.5, 1],
+      [7.125, 7.125, 1],
+      [8, 8, 1],
+      [7.125, 7.125, 1],
+      [4.5, 4.5, 1],
+      [1.875, 1.875, 1],
+      [1, 1, 1],
+    ]);
   });
-});
 
-describe('starfield travel expansion (AC-1)', () => {
-  it('drives the in-plane expansion from the travel progress and keeps it across progress-less frames', () => {
+  it('rebuilds the next cube once at the mid-travel levelChanged and lands at rest (AC-3)', () => {
     const view = createView();
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+    const nextStyleSnapshot = snapshot({
+      phase: 'travel',
+      phaseProgress: 0.5,
+      style: NEXT_STYLE,
+      levelIndex: 1,
+    });
+    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.375 }));
+    const before = cubeGroup(view);
+    const bodyDispose = vi.spyOn((before.children[0] as Mesh).geometry, 'dispose');
 
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.25 }));
+    applySnapshot(view, nextStyleSnapshot);
     view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([1.875, 1.875, 1]);
-
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5 }));
-    view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([4.5, 4.5, 1]);
-
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.75 }));
-    view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([7.125, 7.125, 1]);
-
-    // Frames that only advance time keep the expansion (no snapshot in between).
-    view.update(16);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([7.125, 7.125, 1]);
-
-    applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 1 }));
-    view.update(16);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 90]);
     expect(starfieldPoints(view).scale.toArray()).toEqual([8, 8, 1]);
 
-    applySnapshot(view, snapshot({ phase: 'playing' }));
+    // The engine fires `levelChanged` at the midpoint (T3): the scene rebuilds the cube in
+    // the next style while the camera is still far away at the turn-around.
+    view.applyIntents([{ kind: 'levelChanged', style: NEXT_STYLE }], 16);
+
+    const after = cubeGroup(view);
+    expect(after).not.toBe(before);
+    expect(view.scene.children).not.toContain(before);
+    expect(bodyDispose).toHaveBeenCalledTimes(1);
+    expect(((after.children[0] as Mesh).material as MeshStandardMaterial).color.getHexString()).toBe(
+      '1a0b0e',
+    );
+
+    // The follow-up snapshot carries the new style: it must not rebuild again.
+    applySnapshot(view, snapshot({ ...nextStyleSnapshot, phaseProgress: 0.75 }));
+    expect(cubeGroup(view)).toBe(after);
     view.update(16);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 51]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([4.5, 4.5, 1]);
+
+    // Landing: p = 1 puts the camera and the backdrop exactly on their rest values, and
+    // `playing` keeps them there.
+    applySnapshot(view, snapshot({ ...nextStyleSnapshot, phaseProgress: 1 }));
+    view.update(16);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+
+    applySnapshot(
+      view,
+      snapshot({ phase: 'playing', phaseProgress: 1, style: NEXT_STYLE, levelIndex: 1 }),
+    );
+    view.update(16);
+    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+    expect(cubeGroup(view)).toBe(after);
   });
 
-  it('drifts the starfield through update and never rebuilds it', () => {
+  it('swirls the anchored backdrop through update and never rebuilds it', () => {
     const view = createView();
     const points = starfieldPoints(view);
 
     view.update(1000);
-    expect(points.rotation.y).toBe(0.0152587890625);
+    // RotZ(0.0152587890625): the exact composed doubles (three's euler round-trip lands one
+    // ulp below the ideal angle).
+    expect(points.quaternion.toArray()).toEqual([0, 0, 0.007629320516597103, 0.9999708963107151]);
+    expect(points.position.toArray()).toEqual([0, 0, 12]);
 
     view.update(16);
     applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5 }));
     view.update(16);
 
     expect(starfieldPoints(view)).toBe(points);
-    expect(starfieldPoints(view).scale.toArray()).toEqual([4.5, 4.5, 1]);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([8, 8, 1]);
+    expect(starfieldPoints(view).position.toArray()).toEqual([0, 0, 90]);
   });
 });
 

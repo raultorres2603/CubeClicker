@@ -513,8 +513,8 @@ describe('attach', () => {
     const { scene, camera } = fake.renderer.renders[0]!;
     expect(scene).toBeInstanceOf(Scene);
     expect(camera.aspect).toBe(2);
-    // The first frame applies the intro search's opening pose (AC-2).
-    expect(camera.position.toArray()).toEqual([36, 20, 24]);
+    // The first frame applies the intro dolly's opening pose (AC-2).
+    expect(camera.position.toArray()).toEqual([0, 0, 60]);
   });
 
   it('keeps a square projection on an empty rect', () => {
