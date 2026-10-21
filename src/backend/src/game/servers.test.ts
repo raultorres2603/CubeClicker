@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { loadGameConfig } from './config.js';
 import {
   SLOT_SPACING,
+  type Position,
   type ServerState,
   computeMovePlan,
   createServerRegistry,
@@ -10,8 +11,8 @@ import {
   worldPosition,
 } from './servers.js';
 
-/** Builds a server fixture from an id and its members in slot order. */
-function server(id: number, ...members: string[]): ServerState {
+/** Builds a server fixture from an id and its explicit slot table (`null` = free slot). */
+function server(id: number, ...members: Array<string | null>): ServerState {
   return { id, members };
 }
 
@@ -146,7 +147,9 @@ describe('computeMovePlan', () => {
     const currentServerOf = new Map<string, number>();
     for (const entry of servers) {
       for (const member of entry.members) {
-        currentServerOf.set(member, entry.id);
+        if (member !== null) {
+          currentServerOf.set(member, entry.id);
+        }
       }
     }
 
@@ -195,15 +198,16 @@ describe('createServerRegistry', () => {
     ]);
   });
 
-  it('assigns a rejoin to the lowest-id free slot after churn', () => {
+  it('assigns a rejoin to the lowest-id free slot after churn without moving the survivor', () => {
     const registry = createServerRegistry(2);
     registry.assign('p1');
     registry.assign('p2');
     registry.assign('p3');
 
     expect(registry.removeMember('p1')).toEqual({ left: true, serverDestroyed: false });
-    expect(registry.assign('p4')).toEqual({ serverId: 1, slot: 2 });
-    expect(registry.servers()).toEqual([server(1, 'p2', 'p4'), server(2, 'p3')]);
+    // p2 keeps slot 2; the new join takes the vacated lowest slot 1.
+    expect(registry.assign('p4')).toEqual({ serverId: 1, slot: 1 });
+    expect(registry.servers()).toEqual([server(1, 'p4', 'p2'), server(2, 'p3')]);
   });
 
   it('reports a missing member without touching the registry', () => {
@@ -241,7 +245,7 @@ describe('createServerRegistry', () => {
     expect(registry.servers()).toEqual([server(1, 'p1')]);
   });
 
-  it('executes a planned move, destroys the vacated server and appends to the target', () => {
+  it('executes a planned move into the target’s lowest free slot and destroys the vacated server', () => {
     const registry = createServerRegistry(3);
     registry.assign('p1');
     registry.assign('p2');
@@ -250,10 +254,11 @@ describe('createServerRegistry', () => {
     registry.removeMember('p2');
 
     expect([...registry.plan()]).toEqual([['p4', 1]]);
-    expect(registry.moveMember('p4', 1)).toEqual({ slot: 3 });
+    // p2's slot 2 is the lowest free slot: p3 keeps slot 3.
+    expect(registry.moveMember('p4', 1)).toEqual({ slot: 2 });
 
     expect(registry.serverCount()).toBe(1);
-    expect(registry.servers()).toEqual([server(1, 'p1', 'p3', 'p4')]);
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p4', 'p3')]);
   });
 
   it('rejects a move to a detached server and leaves the member in place', () => {
@@ -281,10 +286,10 @@ describe('createServerRegistry', () => {
     registry.removeMember('p2');
 
     expect([...registry.plan()]).toEqual([['p4', 1]]);
-    expect(registry.moveMember('p4', 1)).toEqual({ slot: 3 });
+    expect(registry.moveMember('p4', 1)).toEqual({ slot: 2 });
 
     expect(registry.serverCount()).toBe(2);
-    expect(registry.servers()).toEqual([server(1, 'p1', 'p3', 'p4'), server(2, 'p5')]);
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p4', 'p3'), server(2, null, 'p5')]);
   });
 
   it('rejects a move into a full target and leaves the member in place', () => {
@@ -321,6 +326,90 @@ describe('createServerRegistry', () => {
 
     registry.removeMember('p2');
     expect([...registry.plan()]).toEqual([['p4', 1]]);
+  });
+});
+
+describe('stable slots (T1b)', () => {
+  /** Pinned X = 4 ring positions: R = 4·24/(2π) = 15.278874536821952; slot s → angle 2π·(s−1)/4. */
+  const X4_SLOT_1: Position = { x: 15.278874536821952, y: 0 };
+  const X4_SLOT_2: Position = { x: 9.355612398046502e-16, y: 15.278874536821952 };
+  const X4_SLOT_3: Position = { x: -15.278874536821952, y: 1.8711224796093003e-15 };
+  const X4_SLOT_4: Position = { x: -2.8066837194139503e-15, y: -15.278874536821952 };
+
+  it('pins the ring positions for X = 4 (all four slots)', () => {
+    expect(worldPosition(1, 4)).toEqual(X4_SLOT_1);
+    expect(worldPosition(2, 4)).toEqual(X4_SLOT_2);
+    expect(worldPosition(3, 4)).toEqual(X4_SLOT_3);
+    expect(worldPosition(4, 4)).toEqual(X4_SLOT_4);
+  });
+
+  it('keeps every surviving member’s slot when another member leaves', () => {
+    const registry = createServerRegistry(4);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+
+    expect(registry.removeMember('p2')).toEqual({ left: true, serverDestroyed: false });
+
+    // Slot 2 is an explicit hole: p3 is still slot 3 and p4 still slot 4 (no compaction).
+    expect(registry.servers()).toEqual([server(1, 'p1', null, 'p3', 'p4')]);
+    // The exact positions p3 and p4 sit at are unchanged by the removal.
+    expect(worldPosition(3, 4)).toEqual({ x: -15.278874536821952, y: 1.8711224796093003e-15 });
+    expect(worldPosition(4, 4)).toEqual({ x: -2.8066837194139503e-15, y: -15.278874536821952 });
+    // Slot 2 (the compacted position p3 used to drift to) is free and unused.
+    expect(worldPosition(2, 4)).toEqual({ x: 9.355612398046502e-16, y: 15.278874536821952 });
+  });
+
+  it('puts a new join on the vacated slot without moving the remaining members', () => {
+    const registry = createServerRegistry(4);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+    registry.removeMember('p2');
+
+    expect(registry.assign('p5')).toEqual({ serverId: 1, slot: 2 });
+    // p5 fills slot 2; p1/p3/p4 keep slots 1/3/4.
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p5', 'p3', 'p4')]);
+    expect(registry.serverCount()).toBe(1);
+  });
+
+  it('puts a mover on the target’s lowest free slot and only holes its old slot', () => {
+    const registry = createServerRegistry(4);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+    registry.assign('p5');
+    registry.assign('p6');
+
+    // p3 (slot 3) leaves; p3's slot is the target's lowest free slot and the only one.
+    expect(registry.removeMember('p3')).toEqual({ left: true, serverDestroyed: false });
+    expect([...registry.plan()]).toEqual([['p5', 1]]);
+
+    expect(registry.moveMember('p5', 1)).toEqual({ slot: 3 });
+    // Server 1: p4 keeps slot 4, p5 took slot 3. Server 2: p6 keeps slot 2, slot 1 is a hole.
+    expect(registry.servers()).toEqual([
+      server(1, 'p1', 'p2', 'p5', 'p4'),
+      server(2, null, 'p6'),
+    ]);
+  });
+
+  it('accepts a join on a hole that a dense table could not express', () => {
+    // X = 3: slot 2 is free, so the join lands there (not at "length + 1" = 3).
+    expect(pickServer([server(1, 'a', null, 'c')], 3, 2)).toEqual({
+      serverId: 1,
+      slot: 2,
+      created: false,
+    });
+  });
+
+  it('counts occupied slots, not the array length, when planning moves', () => {
+    // X = 2: server 1 has one member in slot 2 (slot 1 is a hole), so it has one free slot.
+    expect([...computeMovePlan([server(1, null, 'p1'), server(2, 'p2')], 2)]).toEqual([
+      ['p2', 1],
+    ]);
   });
 });
 

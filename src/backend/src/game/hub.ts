@@ -204,26 +204,31 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
-  /** Sends to every member of `serverId` that still has an open socket. */
+  /** Sends to every member of `serverId` that still has an open socket (holes skipped). */
   function broadcast(serverId: number, message: ServerMessage, except?: string): void {
     const server = registry.servers().find((candidate) => candidate.id === serverId);
     if (server === undefined) {
       return;
     }
     for (const playerId of server.members) {
-      if (playerId === except) {
+      if (playerId === null || playerId === except) {
         continue;
       }
       sendToPlayer(playerId, message);
     }
   }
 
-  /** The member's current placement, derived from the registry (never cached). */
+  /**
+   * The member's current placement, derived from the registry (never cached).
+   *
+   * The registry's `members` array is the server's slot table (index = slot − 1), so the
+   * index is the member's actual slot — a vacated slot next to them leaves it unchanged.
+   */
   function locationOf(playerId: string): { serverId: number; slot: number } | null {
     for (const server of registry.servers()) {
-      const index = server.members.indexOf(playerId);
-      if (index !== -1) {
-        return { serverId: server.id, slot: index + 1 };
+      const slotIndex = server.members.indexOf(playerId);
+      if (slotIndex !== -1) {
+        return { serverId: server.id, slot: slotIndex + 1 };
       }
     }
     return null;
@@ -255,13 +260,19 @@ export function createGameHub(deps: HubDeps): GameHub {
     };
   }
 
-  /** Every member of a server in slot order (the roster always includes the receiver). */
+  /** Every member of a server in slot order (holes skipped; the roster always includes the receiver). */
   function rosterFor(serverId: number): MemberState[] {
     const server = registry.servers().find((candidate) => candidate.id === serverId);
     if (server === undefined) {
       return [];
     }
-    return server.members.map((playerId) => memberState(members.get(playerId)!));
+    const roster: MemberState[] = [];
+    for (const playerId of server.members) {
+      if (playerId !== null) {
+        roster.push(memberState(members.get(playerId)!));
+      }
+    }
+    return roster;
   }
 
   function placementFor(member: Member): Placement {

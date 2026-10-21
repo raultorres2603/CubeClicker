@@ -178,6 +178,9 @@ const X2_SLOT_2: Position = { x: -7.639437268410976, y: 9.355612398046502e-16 };
 const X3_SLOT_1: Position = { x: 11.459155902616464, y: 0 };
 const X3_SLOT_2: Position = { x: -5.7295779513082294, y: 9.923920117592258 };
 const X3_SLOT_3: Position = { x: -5.729577951308237, y: -9.923920117592255 };
+const X4_SLOT_1: Position = { x: 15.278874536821952, y: 0 };
+const X4_SLOT_2: Position = { x: 9.355612398046502e-16, y: 15.278874536821952 };
+const X4_SLOT_3: Position = { x: -15.278874536821952, y: 1.8711224796093003e-15 };
 
 function explode(peer: FakePeer, id: string, level = 0): void {
   peer.receive(JSON.stringify({ type: 'explode', id, level }));
@@ -378,15 +381,15 @@ describe('reconnect grace', () => {
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
     ]);
 
-    // The freed slot is reusable, and the roster compresses to join order.
+    // p1's slot 1 is reusable; p2 keeps slot 2 (positions never shuffle).
     const third = harness.connect();
     harness.join(third);
     const welcome = welcomeOf(third);
     expect(welcome.serverId).toBe(1);
-    expect(welcome.position).toEqual(X2_SLOT_2);
+    expect(welcome.position).toEqual(X2_SLOT_1);
     expect(welcome.roster).toEqual([
-      memberOf('p2', 'Player 2', X2_SLOT_1),
-      memberOf('p3', 'Player 3', X2_SLOT_2),
+      memberOf('p3', 'Player 3', X2_SLOT_1),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
     ]);
   });
 
@@ -840,7 +843,7 @@ describe('cube completion', () => {
     third.clear();
     third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
 
-    const moved = memberOf('p3', 'Player 3', X2_SLOT_2, {
+    const moved = memberOf('p3', 'Player 3', X2_SLOT_1, {
       levelIndex: 1,
       gridSize: 5,
       styleId: 'crimson-alloy',
@@ -854,14 +857,15 @@ describe('cube completion', () => {
         token: thirdToken,
         serverId: 1,
         maxUsers: 2,
-        position: X2_SLOT_2,
+        position: X2_SLOT_1,
         self: {
           levelIndex: 1,
           gridSize: 5,
           styleId: 'crimson-alloy',
           removedIds: [],
         },
-        roster: [memberOf('p2', 'Player 2', X2_SLOT_1), moved],
+        // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
+        roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
       },
     ]);
     expect(second.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
@@ -933,7 +937,7 @@ describe('cube completion', () => {
     third.clear();
     fourth.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
 
-    const moved = memberOf('p4', 'Player 4', X3_SLOT_3, {
+    const moved = memberOf('p4', 'Player 4', X3_SLOT_2, {
       levelIndex: 1,
       gridSize: 5,
       styleId: 'crimson-alloy',
@@ -947,17 +951,18 @@ describe('cube completion', () => {
         token: fourthToken,
         serverId: 1,
         maxUsers: 3,
-        position: X3_SLOT_3,
+        position: X3_SLOT_2,
         self: {
           levelIndex: 1,
           gridSize: 5,
           styleId: 'crimson-alloy',
           removedIds: [],
         },
+        // p2's vacated slot 2 is the lowest free slot; p1/p3 keep slots 1/3.
         roster: [
           memberOf('p1', 'Player 1', X3_SLOT_1),
-          memberOf('p3', 'Player 3', X3_SLOT_2),
           moved,
+          memberOf('p3', 'Player 3', X3_SLOT_3),
         ],
       },
     ]);
@@ -966,5 +971,78 @@ describe('cube completion', () => {
     ]);
     expect(first.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
     expect(third.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
+  });
+});
+
+describe('stable slots (T1b)', () => {
+  it('keeps the surviving members’ positions when a member’s grace expires (X = 4)', () => {
+    const harness = createHarness({ maxUsersPerServer: 4 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const third = harness.connect();
+    harness.join(third);
+    expect(welcomeOf(first).position).toEqual(X4_SLOT_1);
+    expect(welcomeOf(second).position).toEqual(X4_SLOT_2);
+    expect(welcomeOf(third).position).toEqual(X4_SLOT_3);
+
+    // p2 (slot 2) disconnects and their grace expires exactly at the window.
+    second.drop();
+    first.clear();
+    third.clear();
+    harness.advance(harness.config.reconnectGraceMs);
+    expect(first.messages()).toEqual([{ type: 'memberLeft', playerId: 'p2', reason: 'left' }]);
+    expect(third.messages()).toEqual([{ type: 'memberLeft', playerId: 'p2', reason: 'left' }]);
+
+    // p3 completes: their position is still slot 3 — the vacated slot 2 did not shift them.
+    removeLevel(harness, third, allIds(3));
+    first.clear();
+    third.clear();
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const expected = [
+      {
+        type: 'levelAdvanced',
+        playerId: 'p3',
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'crimson-alloy',
+        position: X4_SLOT_3,
+        removedIds: [],
+      },
+    ] as const;
+    expect(first.messages()).toEqual(expected);
+    expect(third.messages()).toEqual(expected);
+  });
+
+  it('places a new join in the vacated slot and leaves the other members’ positions unchanged', () => {
+    const harness = createHarness({ maxUsersPerServer: 4 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const third = harness.connect();
+    harness.join(third);
+    second.drop();
+    harness.advance(harness.config.reconnectGraceMs);
+    first.clear();
+    third.clear();
+
+    const fourth = harness.connect();
+    harness.join(fourth);
+
+    const welcome = welcomeOf(fourth);
+    expect(welcome.playerId).toBe('p4');
+    expect(welcome.position).toEqual(X4_SLOT_2);
+    // Slot order, holes skipped: p1 slot 1, the new member slot 2, p3 still slot 3.
+    expect(welcome.roster).toEqual([
+      memberOf('p1', 'Player 1', X4_SLOT_1),
+      memberOf('p4', 'Player 4', X4_SLOT_2),
+      memberOf('p3', 'Player 3', X4_SLOT_3),
+    ]);
+    expect(third.messages()).toEqual([
+      { type: 'memberJoined', member: memberOf('p4', 'Player 4', X4_SLOT_2) },
+    ]);
   });
 });
