@@ -1340,13 +1340,13 @@ describe('intent application', () => {
 
     // Marked hidden (unpickable) at intent time, but the tile itself has not shrunk yet.
     expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(instanceScale(mesh, 0)).toEqual([1, 1, 0.25]);
+    expect(instanceScale(mesh, 0)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
 
-    // t = 50: the pop is expanding (factor 1.05, multiplier 1.15).
+    // t = 50: the pop is expanding (factor 1.05, multiplier 1.15) from the inset tile.
     view.update(50);
     expect(instanceScale(mesh, 0)).toEqual([
-      Math.fround(1 * 1.05),
-      Math.fround(1 * 1.05),
+      Math.fround(0.95 * 1.05),
+      Math.fround(0.95 * 1.05),
       Math.fround(0.25 * 1.05),
     ]);
     expect(instanceColor(mesh, 0)).toEqual([
@@ -1363,8 +1363,8 @@ describe('intent application', () => {
       ...FRONT_FIRST_TILE,
     ]);
 
-    // Every other tile is untouched.
-    expect(instanceScale(mesh, 1)[0]).toBe(Math.fround(1));
+    // Every other tile is untouched (its idle extent is the inset 0.95 of the cell).
+    expect(instanceScale(mesh, 1)[0]).toBe(Math.fround(0.95));
 
     // The burst plays in front of the tile: origin (−2, 2, 2.625) + 0.5 · (0, 0, 1).
     const positions = particlePositions(view);
@@ -1448,7 +1448,7 @@ describe('intent application', () => {
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
     view.update(50);
-    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(1.05));
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.95 * 1.05));
 
     applySnapshot(view, snapshot({ reducedMotion: true }));
 

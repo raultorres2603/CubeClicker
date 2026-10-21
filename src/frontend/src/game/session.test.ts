@@ -693,7 +693,7 @@ describe('pointer wiring', () => {
     // to be visible, and has not been zero-scaled away yet.
     const mesh = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
     const popping = instanceMatrix(mesh, 12);
-    expect(popping.elements[0]).toBe(Math.fround(1 * 1.016));
+    expect(popping.elements[0]).toBe(Math.fround(0.95 * 1.016));
     expect(new Vector3().setFromMatrixPosition(popping).toArray()).toEqual([0, 0, 2.625]);
 
     fake.scheduler.tick(192);
@@ -745,7 +745,7 @@ describe('pointer wiring', () => {
     expect(faceIds(session.getSnapshot(), 'front')).toHaveLength(25);
   });
 
-  it('maps taps and drags to the events each phase allows (injected engine)', () => {
+  it('maps taps and drags to the events each phase allows (injected engine, drags do nothing)', () => {
     const recording = createFakeEngine(snapshot({ phase: 'intro' }));
     const fake = createFakeEnv();
     const session = createGameSession({ env: fake.env, engine: recording.engine });
@@ -771,20 +771,96 @@ describe('pointer wiring', () => {
       { type: 'explodeMiniCube', id: 'front:2:2' },
     ]);
 
+    // Playing drags dispatch nothing at all — no rotation on either axis (AC-2).
     dragOn(fake.canvas, { x: 100, y: 100 }, { x: 220, y: 100 });
-    expect(recording.events).toEqual([
-      { type: 'introSkip' },
-      { type: 'explodeMiniCube', id: 'front:2:2' },
-      { type: 'rotate', axis: 'yaw', direction: 1 },
-    ]);
-
     dragOn(fake.canvas, { x: 100, y: 100 }, { x: 100, y: 220 });
     expect(recording.events).toEqual([
       { type: 'introSkip' },
       { type: 'explodeMiniCube', id: 'front:2:2' },
-      { type: 'rotate', axis: 'yaw', direction: 1 },
-      { type: 'rotate', axis: 'pitch', direction: 1 },
     ]);
+  });
+
+  it('ignores a playing drag: no rotation, no click, no publish (AC-2)', () => {
+    const fake = createFakeEnv();
+    const session = attachSession(fake);
+    fake.scheduler.tick(0);
+    skipIntro(fake, session, fake.canvas.rect);
+    fake.scheduler.tick(16);
+
+    const listener = vi.fn();
+    const unsubscribe = session.subscribe(listener);
+    const before = session.getSnapshot();
+    expect(before.phase).toBe('playing');
+    expect(before.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+
+    // 120 px rightward (yaw +1) and 120 px downward (pitch +1) are both classified drags.
+    dragOn(fake.canvas, { x: 400, y: 400 }, { x: 520, y: 400 });
+    dragOn(fake.canvas, { x: 400, y: 400 }, { x: 400, y: 520 });
+
+    // Nothing rotated, nothing exploded, nothing was published: the snapshot is the same
+    // object (the referential-stability contract), and later frames cannot rotate it.
+    expect(session.getSnapshot()).toBe(before);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(session.getSnapshot().rotationFrom).toBeNull();
+    expect(session.getSnapshot().stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(faceIds(session.getSnapshot(), 'front')).toHaveLength(25);
+    expect(listener).toHaveBeenCalledTimes(0);
+
+    fake.scheduler.tick(316);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    unsubscribe();
+  });
+
+  it('keeps fast, jittery clicks as independent taps and drops a 41 px drag (AC-2)', () => {
+    // Recording engine: the exact event sequence for two jittery clicks and a 41 px release.
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }));
+    const fake = createFakeEnv();
+    const session = createGameSession({ env: fake.env, engine: recording.engine });
+    session.attach(fake.canvas.surface);
+    fake.scheduler.tick(0);
+
+    // 5 px of jitter on the release: travel √50 ≈ 7.07 px is still a tap.
+    fake.canvas.emit('pointerdown', { clientX: 400, clientY: 400 });
+    fake.canvas.emit('pointerup', { clientX: 405, clientY: 405 });
+
+    // 60 ms later, a second independent tap on the neighbouring tile.
+    fake.clock.now = 60;
+    fake.scheduler.tick(60);
+    tapOn(fake.canvas, 460, 400);
+
+    // 41 px of travel (one pixel past the inclusive 40 px threshold) is a drag: nothing.
+    dragOn(fake.canvas, { x: 400, y: 400 }, { x: 441, y: 400 });
+
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:2:2' },
+      { type: 'explodeMiniCube', id: 'front:2:3' },
+    ]);
+    session.dispose();
+
+    // Real engine: the same three gestures yield two clicks and no rotation at all.
+    const real = createFakeEnv();
+    const realSession = attachSession(real);
+    real.scheduler.tick(0);
+    skipIntro(real, realSession, real.canvas.rect);
+    real.scheduler.tick(16);
+
+    real.canvas.emit('pointerdown', { clientX: 400, clientY: 400 });
+    real.canvas.emit('pointerup', { clientX: 405, clientY: 405 });
+    real.clock.now = 60;
+    real.scheduler.tick(60);
+    tapOn(real.canvas, 460, 400);
+
+    const beforeDrag = realSession.getSnapshot();
+    expect(beforeDrag.stats.clicks).toBe(2);
+    expect(faceIds(beforeDrag, 'front')).toHaveLength(23);
+    expect(faceIds(beforeDrag, 'front')).not.toContain('front:2:2');
+    expect(faceIds(beforeDrag, 'front')).not.toContain('front:2:3');
+
+    dragOn(real.canvas, { x: 400, y: 400 }, { x: 441, y: 400 });
+
+    expect(realSession.getSnapshot()).toBe(beforeDrag);
+    expect(realSession.getSnapshot().stats.clicks).toBe(2);
+    expect(realSession.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
   });
 
   it('ignores a pointer release without a press and cancels a running press', () => {

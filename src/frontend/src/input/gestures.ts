@@ -4,8 +4,9 @@
  * Pure function over plain numbers: no DOM, no listeners, no globals — the session
  * (T13) owns the Pointer Events, converts `clientX`/`clientY` into rect-relative
  * positions and applies the phase policy. This module only answers *what did the
- * player do?*: a `tap` (with the NDC position to pick with), a `drag` (one rotation
- * step), or `null` (an unclassifiable gesture, see below).
+ * player do?*: a `tap` (with the NDC position to pick with), a `drag` (ignored by the
+ * session — pointer rotation was removed; the `axis`/`direction` payload remains the
+ * classification contract), or `null` (an unclassifiable gesture, see below).
  *
  * **Threshold (AC-6).** Judged on the Euclidean pointer travel between the press and
  * the current position. Travel **up to and including** {@link TAP_DRAG_THRESHOLD_PX}
@@ -15,9 +16,10 @@
  * states the same inclusive form (plan-r3 correction of the mismatch the T11 build
  * log flagged).
  *
- * **Direction sign convention (consistent with `rotation.ts`'s frame).** `direction`
- * is the sign of the gesture's displacement along the dominant axis, which makes the
- * grabbed content follow the pointer:
+ * **Direction sign convention (classification only — the session ignores drags).** The
+ * payload keeps the predecessor's frame so the classification contract is unchanged.
+ * `direction` is the sign of the gesture's displacement along the dominant axis, which
+ * would make grabbed content follow the pointer:
  *
  * - drag towards the player's right (`dx > 0`) → `yaw +1`, i.e. `+90°` about `+Y`,
  *   which slides the front face to the player's right;

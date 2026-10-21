@@ -21,10 +21,12 @@
  * phase-agnostic and classifies only): during `intro` a tap skips and a drag does
  * nothing; while `playing` a tap picks the current front face through
  * `pickMiniCube(sceneView.camera, sceneView.cubeView, frontFace(snapshot.orientation), …)`
- * (a hit explodes that mini-cube, a miss or a non-front-face hit does nothing) and a drag
- * rotates one step; `travel` ignores pointer input entirely. Both scene handles are read
- * from the live scene view at pick time — `cubeView` through the rebuild-aware accessor,
- * so a `levelChanged` rebuild can never leave the pick with a disposed handle.
+ * (a hit explodes that mini-cube, a miss or a non-front-face hit does nothing) and a
+ * **drag does nothing at all** — pointer rotation was removed, so a drag never rotates
+ * and never explodes, at any time (mid-rotation included); `travel` ignores pointer input
+ * entirely. Both scene handles are read from the live scene view at pick time —
+ * `cubeView` through the rebuild-aware accessor, so a `levelChanged` rebuild can never
+ * leave the pick with a disposed handle.
  *
  * **three.js surface.** The only reference to three.js here is the type-only
  * `RendererAdapter` signature the plan pins; the session never imports or constructs it.
@@ -252,7 +254,12 @@ export function createGameSession(options: GameSessionOptions = {}): GameSession
         press = null;
       }
 
-      /** The phase policy: what one classified gesture means right now. */
+      /**
+       * The phase policy: what one classified gesture means right now.
+       *
+       * A drag is classified by `gestures.ts` but dispatches nothing in any phase — the
+       * pointer never rotates the cube (rotation is keyboard/auto only) and never explodes.
+       */
       function dispatchGesture(gesture: PointerGesture): void {
         if (gesture === null) {
           return;
@@ -269,7 +276,8 @@ export function createGameSession(options: GameSessionOptions = {}): GameSession
           return;
         }
         if (gesture.kind === 'drag') {
-          dispatchAndPublish({ type: 'rotate', axis: gesture.axis, direction: gesture.direction });
+          // Pointer rotation was removed (spec AC-2): a drag does nothing at all — no
+          // rotation, no explosion, no publish, so the snapshot identity is unchanged.
           return;
         }
         // Front-face gate: only the current front face is pickable (a hit on any other

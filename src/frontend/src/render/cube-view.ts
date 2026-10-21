@@ -7,14 +7,16 @@
  * `applyStyle`) and advance time through `update`; the view owns every geometry/material it
  * creates, so `dispose()` can release them exactly once.
  *
- * Mini-cube-built surface (spec AC-2). Each face is fully tiled by its mini-cubes, flush and
- * edge-to-edge: the body is a `CUBE_SIZE` cube centred on the group origin and every face
+ * Seamed mini-cube surface (spec AC-1). Each face is tiled by its mini-cubes with a thin
+ * uniform seam: the body is a `CUBE_SIZE` cube centred on the group origin and every face
  * carries a `gridSize²`-instance `InstancedMesh` whose instance index is
- * `row * gridSize + col` and whose tiles are `CUBE_SIZE / gridSize` wide (no plate, no gap).
- * The body stays behind the tile layer as the dark interior a player sees where tiles have
- * been removed. Tile thickness is the exported constant below — the single home for the
- * cube-view geometry numbers (the plan's non-grid effect constants live in `game/effects.ts`
- * and are imported, never redefined).
+ * `row * gridSize + col` and whose tiles are `0.95 × CUBE_SIZE / gridSize` wide. The tiles
+ * are inset inside their cells, so the body shows through the gaps between adjacent tiles
+ * as thin tile lines and through the half-seam rim around each face's perimeter — no plate,
+ * no extra geometry, no new drawable. The body is the dark interior a player sees in those
+ * seams and where tiles have been removed. Tile thickness is the exported constant below —
+ * the single home for the cube-view geometry numbers (the plan's non-grid effect constants
+ * live in `game/effects.ts` and are imported, never redefined).
  *
  * Pop-then-shrink removal (spec AC-4). `hideMiniCube` marks the id hidden (unpickable)
  * immediately and, unless the caller asks for `instant` (reduced motion), starts one plain
@@ -56,13 +58,16 @@ export const CUBE_HALF_SIZE = CUBE_SIZE / 2;
 export const MINI_CUBE_THICKNESS = 0.25;
 
 /**
- * Tile edge length as a fraction of the grid cell (spec AC-2).
+ * Tile edge length as a fraction of the grid cell (spec AC-1).
  *
- * `1` — the tiles are flush, edge-to-edge: `tileSize = CUBE_SIZE / gridSize`, so `gridSize`
- * tiles cover the face exactly and the outermost tiles reach the cube edges. The cube body
- * stays visible only where tiles have been removed (the dark interior).
+ * `0.95` — the tiles are inset inside their cells: `tileSize = 0.95 × CUBE_SIZE / gridSize`,
+ * so adjacent tiles are separated by a uniform seam of `0.05 × CUBE_SIZE / gridSize` world
+ * units and the outermost tiles leave a half-seam rim at the face perimeter. The cube body
+ * (the dark interior) shows through every seam as the tile lines — no plates, no new
+ * objects, nothing covers the body. The seam fraction is derived from this ratio
+ * (`1 − MINI_CUBE_TILE_RATIO`), never a second constant.
  */
-export const MINI_CUBE_TILE_RATIO = 1;
+export const MINI_CUBE_TILE_RATIO = 0.95;
 
 /** The view handed to the scene: meshes plus the intent/time entry points. */
 export interface CubeView {
@@ -210,8 +215,8 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
   }
 
   const cellSize = CUBE_SIZE / gridSize;
-  // Flush tiling (spec AC-2): the tile edge is the whole cell, so `gridSize` tiles cover the
-  // face edge-to-edge and the outermost tiles' outer faces land on the cube edges.
+  // Seamed tiling (spec AC-1): the tile edge is 95% of the cell, so the tiles keep their
+  // centres and leave a uniform 5% seam between neighbours and around the face perimeter.
   const tileSize = cellSize * MINI_CUBE_TILE_RATIO;
   const tileScale = new Vector3(tileSize, tileSize, MINI_CUBE_THICKNESS);
   const gridMid = (gridSize - 1) / 2;

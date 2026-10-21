@@ -29,17 +29,19 @@ import {
  * an instance-colour buffer or a material — no mocks except the `dispose` spies that count
  * disposal.
  *
- * Flush tiling (spec AC-2): the instance matrix is a `Float32Array`, so every geometry
+ * Seamed tiling (spec AC-1): the instance matrix is a `Float32Array`, so every geometry
  * value is asserted as the exact float32 value three stores (`Math.fround`, the pinned
- * pattern for three.js round-trips). The exact double spacing is `CUBE_SIZE / gridSize`;
- * for `gridSize = 7` the two outermost column pairs of a face land one float32 ulp below
- * `Math.fround(5 / 7)`, which is pinned explicitly below.
+ * pattern for three.js round-trips). The exact double cell is `CUBE_SIZE / gridSize` and
+ * the tile edge is `0.95 × cell`, so adjacent tiles are separated by the seam
+ * `0.05 × cell` (1/12, 0.05, 1/28 world units at N = 3/5/7) and the outermost tiles leave
+ * a half-seam rim. For `gridSize = 7` the two outermost column pairs of a face land one
+ * float32 ulp below `Math.fround(5 / 7)`, which is pinned explicitly below.
  */
 
 const STYLE = CUBE_STYLES[0]!;
 
-/** Flush tile edge for the default grid: `CUBE_SIZE / GRID_SIZE` = 1 (was 0.9 * cell). */
-const TILE_SIZE = CUBE_SIZE / GRID_SIZE;
+/** Inset tile edge for the default grid: `(CUBE_SIZE / GRID_SIZE) × 0.95` = 0.95. */
+const TILE_SIZE = (CUBE_SIZE / GRID_SIZE) * MINI_CUBE_TILE_RATIO;
 
 /** The tile edge as stored in the instance matrices (a `Float32Array`). */
 const TILE_SIZE_F32 = Math.fround(TILE_SIZE);
@@ -48,14 +50,22 @@ const TILE_SIZE_F32 = Math.fround(TILE_SIZE);
 const TILE_DISTANCE = CUBE_HALF_SIZE + MINI_CUBE_THICKNESS / 2;
 
 /**
- * The pinned per-grid layout (spec AC-2). Tile *centres* are unchanged from the
+ * The pinned per-grid layout (spec AC-1). Tile *centres* are unchanged from the
  * predecessor — `front:0:0` sits at `(−(N−1)/2 · 5/N, (N−1)/2 · 5/N, 2.625)` — only the
- * tile extent grew to the whole cell. `columnSteps` is the stored float32 spacing between
- * consecutive column centres (the ideal double spacing is exactly `CUBE_SIZE / gridSize`).
+ * tile extent shrank to the inset `0.95 × cell`. `columnSteps` is the stored float32
+ * spacing between consecutive column centres (the ideal double spacing is exactly
+ * `CUBE_SIZE / gridSize`); `seamGaps` is the edge-to-edge gap read back between adjacent
+ * tiles (ideal `cell × 0.05` — 1/12, 0.05 and 1/28 world units; storing the extent as a
+ * float32 moves the readback by a few float32 ulps, so the exact values are pinned);
+ * `outerRim` is the gap between the outermost tile's outer face and the cube edge (ideal
+ * half-seam: 1/24, 0.025, 1/56).
  */
-const FLUSH_LAYOUTS: ReadonlyArray<{
+const SEAMED_LAYOUTS: ReadonlyArray<{
   gridSize: number;
   cell: number;
+  tileEdge: number;
+  seamGaps: number[];
+  outerRim: number;
   frontFirst: [number, number, number];
   frontLast: [number, number, number];
   columnSteps: number[];
@@ -63,6 +73,9 @@ const FLUSH_LAYOUTS: ReadonlyArray<{
   {
     gridSize: 3,
     cell: 5 / 3,
+    tileEdge: Math.fround((5 / 3) * MINI_CUBE_TILE_RATIO),
+    seamGaps: [0.08333325386047363, 0.08333325386047363],
+    outerRim: 0.04166668653488159,
     frontFirst: [-1.6666666269302368, 1.6666666269302368, TILE_DISTANCE],
     frontLast: [1.6666666269302368, -1.6666666269302368, TILE_DISTANCE],
     columnSteps: [1.6666666269302368, 1.6666666269302368],
@@ -70,6 +83,14 @@ const FLUSH_LAYOUTS: ReadonlyArray<{
   {
     gridSize: 5,
     cell: 1,
+    tileEdge: Math.fround(1 * MINI_CUBE_TILE_RATIO),
+    seamGaps: [
+      0.050000011920928955,
+      0.050000011920928955,
+      0.050000011920928955,
+      0.050000011920928955,
+    ],
+    outerRim: 0.025000005960464478,
     frontFirst: [-2, 2, TILE_DISTANCE],
     frontLast: [2, -2, TILE_DISTANCE],
     columnSteps: [1, 1, 1, 1],
@@ -77,6 +98,16 @@ const FLUSH_LAYOUTS: ReadonlyArray<{
   {
     gridSize: 7,
     cell: 5 / 7,
+    tileEdge: Math.fround((5 / 7) * MINI_CUBE_TILE_RATIO),
+    seamGaps: [
+      0.03571420907974243,
+      0.03571432828903198,
+      0.03571432828903198,
+      0.03571432828903198,
+      0.03571432828903198,
+      0.03571420907974243,
+    ],
+    outerRim: 0.017857223749160767,
     frontFirst: [-2.142857074737549, 2.142857074737549, TILE_DISTANCE],
     frontLast: [2.142857074737549, -2.142857074737549, TILE_DISTANCE],
     // The outermost pairs round one ulp below Math.fround(5 / 7) = 0.7142857313156128.
@@ -185,12 +216,16 @@ function materialSpies(view: CubeView): Array<ReturnType<typeof vi.spyOn>> {
 }
 
 describe('cube geometry constants', () => {
-  it('pins the body and flush tile geometry values', () => {
+  it('pins the body and inset tile geometry values (AC-1)', () => {
     expect(CUBE_SIZE).toBe(5);
     expect(CUBE_HALF_SIZE).toBe(2.5);
     expect(MINI_CUBE_THICKNESS).toBe(0.25);
-    expect(MINI_CUBE_TILE_RATIO).toBe(1);
-    expect(TILE_SIZE).toBe(1);
+    expect(MINI_CUBE_TILE_RATIO).toBe(0.95);
+    // The seam fraction is derived from the ratio (never a second constant): the double
+    // difference `1 − 0.95` is 0.050000000000000044.
+    expect(1 - MINI_CUBE_TILE_RATIO).toBe(0.050000000000000044);
+    expect(TILE_SIZE).toBe(0.95);
+    expect(TILE_SIZE_F32).toBe(Math.fround(0.95));
     expect(TILE_DISTANCE).toBe(2.625);
   });
 
@@ -322,22 +357,23 @@ describe('createCubeView', () => {
     const one = createCubeView(STYLE, 1);
     expect(faceMesh(one, 'back').count).toBe(1);
     expect(instancePosition(faceMesh(one, 'back'), 0)).toEqual([0, 0, -TILE_DISTANCE]);
-    // A 1 × 1 grid is one flush tile covering the whole face: the whole cube edge.
-    expect(instanceAxis(faceMesh(one, 'back'), 0, 0)).toEqual([-CUBE_SIZE, 0, 0]);
-    expect(instanceAxis(faceMesh(one, 'back'), 0, 1)).toEqual([0, CUBE_SIZE, 0]);
+    // A 1 × 1 grid is one inset tile: 95% of the face edge, leaving the half-seam rim.
+    expect(instanceAxis(faceMesh(one, 'back'), 0, 0)).toEqual([-4.75, 0, 0]);
+    expect(instanceAxis(faceMesh(one, 'back'), 0, 1)).toEqual([0, 4.75, 0]);
   });
 });
 
-describe('flush tiling (AC-2)', () => {
-  it('sizes every tile to exactly one cell on its face axes (N = 3 and N = 7)', () => {
-    for (const { gridSize, cell } of FLUSH_LAYOUTS) {
+describe('seamed tiling (AC-1)', () => {
+  it('sizes every tile to 0.95 of a cell on its face axes (N = 3, 5, 7)', () => {
+    for (const { gridSize, tileEdge } of SEAMED_LAYOUTS) {
       const view = createCubeView(STYLE, gridSize);
 
       for (const { faceId, right, up, normal } of PINNED_AXES) {
         const mesh = faceMesh(view, faceId);
         for (const index of [0, Math.floor((gridSize * gridSize) / 2), gridSize * gridSize - 1]) {
-          expect(instanceAxis(mesh, index, 0)).toEqual(right.map((value) => Math.fround(value * cell)));
-          expect(instanceAxis(mesh, index, 1)).toEqual(up.map((value) => Math.fround(value * cell)));
+          expect(instanceAxis(mesh, index, 0)).toEqual(right.map((value) => Math.fround(value * tileEdge)));
+          expect(instanceAxis(mesh, index, 1)).toEqual(up.map((value) => Math.fround(value * tileEdge)));
+          // The inset never touches the thickness: the tile stays proud of the body.
           expect(instanceAxis(mesh, index, 2)).toEqual(
             normal.map((value) => Math.fround(value * MINI_CUBE_THICKNESS)),
           );
@@ -347,7 +383,7 @@ describe('flush tiling (AC-2)', () => {
   });
 
   it('keeps the pinned first/last centres and the exact cell spacing (N = 3, 5, 7)', () => {
-    for (const { gridSize, cell, frontFirst, frontLast, columnSteps } of FLUSH_LAYOUTS) {
+    for (const { gridSize, cell, frontFirst, frontLast, columnSteps } of SEAMED_LAYOUTS) {
       const view = createCubeView(STYLE, gridSize);
       const front = faceMesh(view, 'front');
 
@@ -377,21 +413,41 @@ describe('flush tiling (AC-2)', () => {
     }
   });
 
-  it('reaches the cube edges with the outermost tiles on every face (N = 3, 5, 7)', () => {
-    for (const { gridSize, cell } of FLUSH_LAYOUTS) {
+  it('leaves the uniform seam between adjacent tiles and the half-seam rim (N = 3, 5, 7)', () => {
+    for (const { gridSize, tileEdge, seamGaps, outerRim } of SEAMED_LAYOUTS) {
       const view = createCubeView(STYLE, gridSize);
-      const tileHalf = Math.fround(cell) / 2;
+      const half = tileEdge / 2;
 
       for (const { faceId, right, up } of PINNED_AXES) {
         const mesh = faceMesh(view, faceId);
+
+        // Columns run right: neighbours never touch — the gap between their facing edges
+        // is the seam (ideal `0.05 × cell`; the pinned readback carries the f32 storage).
+        const columnGaps: number[] = [];
+        for (let col = 0; col < gridSize - 1; col += 1) {
+          const leftEdge = along(instancePosition(mesh, col), right) + half;
+          const rightEdge = along(instancePosition(mesh, col + 1), right) - half;
+          columnGaps.push(rightEdge - leftEdge);
+        }
+        expect(columnGaps).toEqual(seamGaps);
+
+        // Rows run down the face: the same seam, mirrored on the up axis.
+        const rowGaps: number[] = [];
+        for (let row = 0; row < gridSize - 1; row += 1) {
+          const upperEdge = along(instancePosition(mesh, row * gridSize), up) - half;
+          const lowerEdge = along(instancePosition(mesh, (row + 1) * gridSize), up) + half;
+          rowGaps.push(upperEdge - lowerEdge);
+        }
+        expect(rowGaps).toEqual(seamGaps);
+
+        // The outermost tiles stop exactly half a seam short of the cube edge on every
+        // side: `CUBE_HALF_SIZE − seam/2` from the face centre (the perimeter rim).
         const first = instancePosition(mesh, 0);
         const last = instancePosition(mesh, gridSize * gridSize - 1);
-
-        // Columns run right; rows run down (the up axis is mirrored for the first/last tile).
-        expect(Math.fround(along(last, right) + tileHalf)).toBe(CUBE_HALF_SIZE);
-        expect(Math.fround(along(first, right) - tileHalf)).toBe(-CUBE_HALF_SIZE);
-        expect(Math.fround(along(first, up) + tileHalf)).toBe(CUBE_HALF_SIZE);
-        expect(Math.fround(along(last, up) - tileHalf)).toBe(-CUBE_HALF_SIZE);
+        expect(CUBE_HALF_SIZE - (along(last, right) + half)).toBe(outerRim);
+        expect(CUBE_HALF_SIZE + (along(first, right) - half)).toBe(outerRim);
+        expect(CUBE_HALF_SIZE - (along(first, up) + half)).toBe(outerRim);
+        expect(CUBE_HALF_SIZE + (along(last, up) - half)).toBe(outerRim);
       }
     }
   });
@@ -410,7 +466,7 @@ describe('flush tiling (AC-2)', () => {
     expect(instancePosition(faceMesh(view, 'front'), 23)).toEqual([1, -2, TILE_DISTANCE]);
   });
 
-  it('orients each tile on its face with the flush cell extent (N = 5)', () => {
+  it('orients each tile on its face with the inset cell extent (N = 5)', () => {
     const view = createCubeView(STYLE);
 
     for (const { faceId, right, up, normal } of PINNED_AXES) {
@@ -424,7 +480,7 @@ describe('flush tiling (AC-2)', () => {
       expect(instanceAxis(mesh, 12, 2)).toEqual(instanceAxis(mesh, 0, 2));
       expect(instanceAxis(mesh, 24, 0)).toEqual(instanceAxis(mesh, 0, 0));
     }
-    expect(TILE_SIZE_F32).toBe(1);
+    expect(TILE_SIZE_F32).toBe(Math.fround(0.95));
   });
 });
 
@@ -448,13 +504,13 @@ describe('hideMiniCube', () => {
     expect(instanceColor(faceMesh(view, 'front'), 0)).toEqual([1, 1, 1]);
   });
 
-  it('plays the pinned pop timeline on the flush tile (N = 5)', () => {
+  it('plays the pinned pop timeline on the inset tile (N = 5)', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
 
     view.hideMiniCube('front:0:0');
 
-    // t = 0: the pop starts at the tile's own (flush) size — nothing has changed yet.
+    // t = 0: the pop starts at the tile's own (inset) size — nothing has changed yet.
     expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
     expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, Math.fround(MINI_CUBE_THICKNESS)]);
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
@@ -489,15 +545,15 @@ describe('hideMiniCube', () => {
     expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
   });
 
-  it('scales the pop from the flush cell of a larger grid (N = 7)', () => {
+  it('scales the pop from the inset cell of a larger grid (N = 7)', () => {
     const view = createCubeView(STYLE, 7);
     const mesh = faceMesh(view, 'front');
-    const cell = CUBE_SIZE / 7;
+    const cell = (CUBE_SIZE / 7) * MINI_CUBE_TILE_RATIO;
 
     view.hideMiniCube('front:3:3');
     view.update(100);
 
-    // Peak: every face-axis extent is exactly `Math.fround((CUBE_SIZE / N) · factor)`.
+    // Peak: every face-axis extent is exactly `Math.fround(0.95 × cell × factor)`.
     expect(instanceAxis(mesh, 24, 0)).toEqual([Math.fround(cell * MINI_CUBE_POP_PEAK_SCALE), 0, 0]);
     expect(instanceAxis(mesh, 24, 1)).toEqual([0, Math.fround(cell * MINI_CUBE_POP_PEAK_SCALE), 0]);
     expect(instanceAxis(mesh, 24, 2)).toEqual([

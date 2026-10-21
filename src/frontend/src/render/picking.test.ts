@@ -10,9 +10,9 @@
  * The NDC literals come from the fixture camera: fov 50, square viewport, at the rest
  * position `(0, 0, 12)` looking at the origin — 9.375 world units in front of the front
  * tile plane (`12 - 2.625`). There, one world unit spans `1 / (9.375 * tan 25°) =
- * 0.2287474…` NDC. The tiles are flush (`MINI_CUBE_TILE_RATIO = 1`, spec AC-2), so on an
- * N × N grid each tile is `5 / N` world units wide and the face has no gaps: adjacent
- * tiles meet at their shared edge.
+ * 0.2287474…` NDC. The tiles are inset (`MINI_CUBE_TILE_RATIO = 0.95`, spec AC-1): on an
+ * N × N grid each tile is `0.95 × 5 / N` world units wide, so adjacent tiles are separated
+ * by a seam `0.05 × 5 / N` wide — a tap that lands in that seam is a miss.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -59,26 +59,53 @@ describe('pickMiniCube', () => {
     expect(pickMiniCube(camera, view, 'front', -0.22875, -0.22875)).toBe('front:3:1');
   });
 
-  it('hits a tile on both sides of a former grid gap (flush tiling, AC-2)', () => {
+  it('misses in the seam between two tiles and still hits just inside their edges (N = 5)', () => {
     const camera = createCamera();
     const view = createCubeView(STYLE);
 
-    // World x = 0.5 used to be the 0.1-wide gap between col 2 and col 3; the flush tiles
-    // now meet there, so both sides of the boundary pick a tile and neither is a null.
-    // NDC 0.11 → x ≈ 0.4809 (col 2), NDC 0.12 → x ≈ 0.5246 (col 3).
-    expect(pickMiniCube(camera, view, 'front', 0.11, 0)).toBe('front:2:2');
-    expect(pickMiniCube(camera, view, 'front', 0.12, 0)).toBe('front:2:3');
+    // The tiles are inset to 0.95 of their cell, so the former shared boundary at world
+    // x = 0.5 is now a 0.05-wide seam: the seam midpoint projects to NDC 0.114374 on the
+    // tile plane, and the tiles' 0.25 depth keeps the miss window at (0.110123, 0.118512)
+    // (the pick ray converges towards the face), so 0.1144 and 0.118 both miss.
+    expect(pickMiniCube(camera, view, 'front', 0.1144, 0)).toBeNull();
+    expect(pickMiniCube(camera, view, 'front', 0.118, 0)).toBeNull();
 
-    // Same on the row axis: NDC 0.11 → y ≈ 0.4809 (row 2), NDC 0.12 → y ≈ 0.5246 (row 1).
-    expect(pickMiniCube(camera, view, 'front', 0, 0.11)).toBe('front:2:2');
-    expect(pickMiniCube(camera, view, 'front', 0, 0.12)).toBe('front:1:2');
+    // Same on the row axis: NDC 0.1144 and 0.118 land in the row seam between row 2 and
+    // row 1.
+    expect(pickMiniCube(camera, view, 'front', 0, 0.1144)).toBeNull();
+    expect(pickMiniCube(camera, view, 'front', 0, 0.118)).toBeNull();
+
+    // Inset tiles still resolve just inside their edges: world x = 0.45 → col 2,
+    // world x = 0.55 → col 3 (0.2287474… NDC per world unit on the tile plane).
+    expect(pickMiniCube(camera, view, 'front', 0.10294, 0)).toBe('front:2:2');
+    expect(pickMiniCube(camera, view, 'front', 0.12581, 0)).toBe('front:2:3');
+  });
+
+  it('misses at the N = 3 and N = 7 seam midpoints and hits just inside the tiles', () => {
+    const camera = createCamera();
+
+    // N = 3: cell 5/3, so the seam between the centre tile and col 2 spans
+    // (0.79167, 0.875) and its midpoint is world x = 5/6 = 0.190623 NDC. World x = 0.75
+    // is inside the centre tile (0.171561) and world x = 0.90 inside col 2 (0.205873).
+    const three = createCubeView(STYLE, 3);
+    expect(pickMiniCube(camera, three, 'front', 0.190623, 0)).toBeNull();
+    expect(pickMiniCube(camera, three, 'front', 0.171561, 0)).toBe('front:1:1');
+    expect(pickMiniCube(camera, three, 'front', 0.205873, 0)).toBe('front:1:2');
+
+    // N = 7: cell 5/7, so the seam between col 3 and col 4 spans (0.33929, 0.375) and its
+    // midpoint is world x = 5/14 = 0.081696 NDC. World x = 0.30 is inside col 3 (0.068624)
+    // and world x = 0.40 inside col 4 (0.091499).
+    const seven = createCubeView(STYLE, 7);
+    expect(pickMiniCube(camera, seven, 'front', 0.081696, 0)).toBeNull();
+    expect(pickMiniCube(camera, seven, 'front', 0.068624, 0)).toBe('front:3:3');
+    expect(pickMiniCube(camera, seven, 'front', 0.091499, 0)).toBe('front:3:4');
   });
 
   it('returns null when the ray misses the cube', () => {
     const camera = createCamera();
     const view = createCubeView(STYLE);
 
-    // The flush 5 × 5 face spans ±2.5 world units = ±0.5719 NDC.
+    // The face spans ±2.5 world units = ±0.5719 NDC; ±0.9 is outside its silhouette.
     expect(pickMiniCube(camera, view, 'front', 0.9, 0.9)).toBeNull();
     expect(pickMiniCube(camera, view, 'front', -0.9, -0.9)).toBeNull();
     expect(pickMiniCube(camera, view, 'front', 0, 1)).toBeNull();
@@ -158,12 +185,13 @@ describe('pickMiniCube', () => {
     expect(pickMiniCube(camera, seven, 'front', 0.1634, 0)).toBe('front:3:4');
   });
 
-  it('decodes a 1 × 1 grid: the single flush tile covers the whole face', () => {
+  it('decodes a 1 × 1 grid: the single inset tile spans 95% of the face', () => {
     const camera = createCamera();
     const one = createCubeView(STYLE, 1);
 
     expect(pickMiniCube(camera, one, 'front', 0, 0)).toBe('front:0:0');
-    // The tile now spans the whole 5-unit face (±0.5719 NDC), so a corner still picks it.
+    // The inset tile spans ±2.375 world units (±0.5433 NDC), so the (0.5, 0.5) fixture
+    // stays inside it while the half-seam rim around the face is a miss.
     expect(pickMiniCube(camera, one, 'front', 0.5, 0.5)).toBe('front:0:0');
   });
 });
