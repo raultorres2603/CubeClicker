@@ -34,7 +34,7 @@ export function GameCanvas({ session }: { session: GameSession }): ReactElement 
     <canvas
       ref={canvasRef}
       tabIndex={0}
-      aria-label="Game canvas: click a mini-cube to explode it; drag or press the arrow keys to rotate the cube"
+      aria-label="Game canvas: click a mini-cube to explode it; press W, A, S, D or the arrow keys to rotate the cube"
       style={{ touchAction: 'none' }}
     />
   );

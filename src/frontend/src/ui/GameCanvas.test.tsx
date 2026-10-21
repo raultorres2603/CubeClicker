@@ -11,7 +11,7 @@ import { GameCanvas } from './GameCanvas';
  */
 
 const ARIA_LABEL =
-  'Game canvas: click a mini-cube to explode it; drag or press the arrow keys to rotate the cube';
+  'Game canvas: click a mini-cube to explode it; press W, A, S, D or the arrow keys to rotate the cube';
 
 /** A session fake that records attach calls; SSR must not trigger any. */
 function createSessionSpy(): { session: GameSession; attachCalls: () => number } {
