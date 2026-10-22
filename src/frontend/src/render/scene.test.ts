@@ -28,6 +28,7 @@ import {
   type MiniCubeId,
   type TravelDirection,
 } from '../game/types';
+import type { MemberState } from '../multiplayer/protocol';
 import { CUBE_HALF_SIZE } from './cube-view';
 import {
   createSceneView,
@@ -37,6 +38,7 @@ import {
   TRAVEL_DIRECTION_OFFSETS,
   travelCameraPose,
   type SceneView,
+  type SceneWorld,
 } from './scene';
 import { STARFIELD_TAN } from './starfield';
 
@@ -125,6 +127,36 @@ const DENSITY_SEED = 7;
 
 function createSeededView(): SceneView {
   return createSceneView({ style: STYLE, random: seededRandom(DENSITY_SEED) });
+}
+
+/** One remote server member (the wire shape; the scene's world receives no self entry). */
+function member(
+  playerId: string,
+  name: string,
+  x: number,
+  y: number,
+  overrides: Partial<MemberState> = {},
+): MemberState {
+  return {
+    playerId,
+    name,
+    position: { x, y },
+    levelIndex: 0,
+    gridSize: GRID_SIZE,
+    styleId: STYLE.id,
+    removedIds: [],
+    ...overrides,
+  };
+}
+
+/** One `welcome`/`worldEntered` world with the online defaults used below. */
+function serverWorld(overrides: Partial<SceneWorld> = {}): SceneWorld {
+  return {
+    maxUsers: 4,
+    ownPosition: { x: 24, y: 0 },
+    roster: [],
+    ...overrides,
+  };
 }
 
 /**
@@ -1673,5 +1705,628 @@ describe('frame updates and lifecycle', () => {
       expect(spy).toHaveBeenCalledWith();
     }
     expect(view.scene.children).toEqual([]);
+  });
+});
+
+describe('own position and server world (AC-12, AC-23, AC-24)', () => {
+  it('places the own cube at the injected position and opens at its rest pose', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+    expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    // No `welcome` yet: the remote world does not exist.
+    expect(view.worldView).toBeNull();
+    expect(view.scene.children).toHaveLength(5);
+  });
+
+  it('dollies the intro onto the own position, keeping the accepted z table', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    const table: ReadonlyArray<{
+      progress: number;
+      position: [number, number, number];
+    }> = [
+      { progress: 0, position: [24, 0, 60] },
+      { progress: 0.5, position: [24, 0, 18] },
+      { progress: 0.75, position: [24, 0, 12.75] },
+      { progress: 1, position: [24, 0, 12] },
+    ];
+
+    for (const { progress, position } of table) {
+      applySnapshot(view, snapshot({ phase: 'intro', phaseProgress: progress }));
+      expect(view.camera.position.toArray()).toEqual(position);
+      expect(lookTarget(view)).toEqual([24, 0, 0]);
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    }
+  });
+
+  it('enters the server world on welcome: own slot, authoritative capacity and roster', () => {
+    const view = createView();
+
+    view.enterWorld(
+      serverWorld({
+        maxUsers: 4,
+        ownPosition: { x: 24, y: 0 },
+        roster: [member('p2', 'Player 2', 12, 12)],
+      }),
+    );
+
+    expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
+    expect(view.worldView!.views().size).toBe(1);
+    expect(view.worldView!.views().get('p2')!.group.position.toArray()).toEqual([12, 12, 0]);
+    expect(view.scene.children).toHaveLength(6);
+
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+  });
+
+  it('passes the authoritative maxUsers to the world (an over-capacity roster is rejected)', () => {
+    const view = createView();
+
+    expect(() =>
+      view.enterWorld(
+        serverWorld({
+          maxUsers: 2,
+          roster: [
+            member('p2', 'Player 2', 12, 12),
+            member('p3', 'Player 3', 0, 12),
+          ],
+        }),
+      ),
+    ).toThrow(new RangeError('roster of 2 exceeds the 1 remote slots of a 2-member server'));
+
+    expect(view.worldView).toBeNull();
+    expect(cubeGroup(view).position.toArray()).toEqual([0, 0, 0]);
+  });
+
+  it('applies remote-cube broadcasts and advances their pops through update', () => {
+    const view = createView();
+    view.enterWorld(
+      serverWorld({ roster: [member('p2', 'Player 2', 0, 24)] }),
+    );
+    const remote = view.worldView!.views().get('p2')!;
+    const bodyDispose = vi.spyOn(remote.body.geometry, 'dispose');
+    const front = remote.faces.get('front')!;
+
+    view.applyWorldMessage({
+      type: 'miniCubeRemoved',
+      playerId: 'p2',
+      id: 'front:0:0',
+    });
+    expect(remote.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(instanceScale(front, 0)).toEqual([
+      Math.fround(0.95),
+      Math.fround(0.95),
+      0.25,
+    ]);
+
+    view.update(160);
+    expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
+
+    view.applyWorldMessage({
+      type: 'memberJoined',
+      member: member('p3', 'Player 3', 12, 12),
+    });
+    expect(view.worldView!.views().size).toBe(2);
+
+    view.applyWorldMessage({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+    expect(view.worldView!.views().has('p2')).toBe(false);
+    expect(view.worldView!.views().has('p3')).toBe(true);
+    expect(bodyDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('never builds a world after disposal', () => {
+    const view = createView();
+    view.dispose();
+
+    view.enterWorld(serverWorld({ roster: [member('p2', 'Player 2', 0, 24)] }));
+
+    expect(view.worldView).toBeNull();
+    expect(view.scene.children).toEqual([]);
+  });
+});
+
+describe('online destination travel (AC-12)', () => {
+  it('holds at the own rest pose while the server destination is unknown (Q-T8-2)', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: null,
+      }),
+    );
+
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('flies the accepted formula to the server-assigned destination', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+    const destination = { x: 0, y: 24 };
+    const table: ReadonlyArray<{
+      progress: number;
+      position: [number, number, number];
+      target: [number, number, number];
+    }> = [
+      { progress: 0, position: [24, 0, 12], target: [24, 0, 0] },
+      { progress: 0.25, position: [21, 3, 51], target: [21, 3, 0] },
+      { progress: 0.5, position: [12, 12, 90], target: [12, 12, 0] },
+      { progress: 0.75, position: [3, 21, 51], target: [3, 21, 0] },
+      { progress: 1, position: [0, 24, 12], target: [0, 24, 0] },
+    ];
+
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+
+    for (const { progress, position, target } of table) {
+      applySnapshot(
+        view,
+        snapshot({
+          phase: 'travel',
+          phaseProgress: progress,
+          travelKind: 'nextLevel',
+          travelDestination: destination,
+        }),
+      );
+      expect(view.camera.position.toArray()).toEqual(position);
+      expect(lookTarget(view)).toEqual(target);
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    }
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: destination,
+      }),
+    );
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([8, 8, 1]);
+  });
+
+  it('moves the own cube to the destination at the midpoint and swaps the world exactly once', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+    view.enterWorld(
+      serverWorld({
+        maxUsers: 4,
+        ownPosition: { x: 24, y: 0 },
+        roster: [member('p2', 'Player 2', 12, 12)],
+      }),
+    );
+    const oldWorld = view.worldView!;
+    const oldWorldDispose = vi.spyOn(oldWorld, 'dispose');
+    const oldWorldApply = vi.spyOn(oldWorld, 'applyMessage');
+    const oldRemoteDispose = vi.spyOn(oldWorld.views().get('p2')!.body.geometry, 'dispose');
+
+    view.queueWorldSwap({
+      maxUsers: 2,
+      ownPosition: { x: 0, y: 24 },
+      roster: [member('p3', 'Player 3', 0, 12, { levelIndex: 1, gridSize: 7 })],
+    });
+
+    // Still before the midpoint: the old world is live and the own cube has not moved.
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.25,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+      }),
+    );
+    expect(view.worldView).toBe(oldWorld);
+    expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
+    expect(view.camera.position.toArray()).toEqual([21, 3, 51]);
+
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        style: NEXT_STYLE,
+        gridSize: 7,
+        levelIndex: 1,
+      }),
+    );
+
+    expect(cubeGroup(view).position.toArray()).toEqual([0, 24, 0]);
+    expect(view.camera.position.toArray()).toEqual([12, 12, 90]);
+    expect(lookTarget(view)).toEqual([12, 12, 0]);
+    expect(view.worldView).not.toBe(oldWorld);
+    expect(view.scene.children).not.toContain(oldWorld.group);
+    expect(view.worldView!.views().has('p2')).toBe(false);
+    expect(view.worldView!.views().get('p3')!.group.position.toArray()).toEqual([0, 12, 0]);
+    expect(oldWorldDispose).toHaveBeenCalledTimes(1);
+    expect(oldRemoteDispose).toHaveBeenCalledTimes(1);
+    expect(view.scene.children).toHaveLength(6);
+    const newWorld = view.worldView!;
+    const newWorldDispose = vi.spyOn(newWorld, 'dispose');
+
+    // The replacement world receives the broadcasts; the disposed one never does.
+    view.applyWorldMessage({
+      type: 'miniCubeRemoved',
+      playerId: 'p3',
+      id: 'front:0:0',
+    });
+    expect(view.worldView!.views().get('p3')!.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(oldWorldApply).toHaveBeenCalledTimes(0);
+
+    // The swap happened once: the later travel frames and the landing rebuild nothing.
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.75,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        style: NEXT_STYLE,
+        gridSize: 7,
+        levelIndex: 1,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([3, 21, 51]);
+    expect(oldWorldDispose).toHaveBeenCalledTimes(1);
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 1,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        style: NEXT_STYLE,
+        gridSize: 7,
+        levelIndex: 1,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+    applySnapshot(
+      view,
+      snapshot({ phase: 'playing', style: NEXT_STYLE, gridSize: 7, levelIndex: 1 }),
+    );
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+    expect(lookTarget(view)).toEqual([0, 24, 0]);
+
+    view.dispose();
+    expect(oldWorldDispose).toHaveBeenCalledTimes(1);
+    expect(newWorldDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a same-server advance in place while the depth still swings', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+    const before = cubeGroup(view);
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 24, y: 0 },
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([24, 0, 90]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 24, y: 0 },
+        style: NEXT_STYLE,
+        gridSize: 7,
+        levelIndex: 1,
+      }),
+    );
+
+    expect(cubeGroup(view)).not.toBe(before);
+    expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
+    expect(view.worldView).toBeNull();
+  });
+
+  it('swaps the cube position instantly under reduced motion', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.25,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        reducedMotion: true,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        style: NEXT_STYLE,
+        gridSize: 7,
+        levelIndex: 1,
+        reducedMotion: true,
+      }),
+    );
+
+    expect(cubeGroup(view).position.toArray()).toEqual([0, 24, 0]);
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+    expect(lookTarget(view)).toEqual([0, 24, 0]);
+  });
+});
+
+describe('spectate and return flights (AC-17)', () => {
+  it('renders the T11 pose table from the own cube to the target and rests there', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+    const destination = { x: 0, y: 24 };
+    const table: ReadonlyArray<{
+      progress: number;
+      position: [number, number, number];
+      target: [number, number, number];
+    }> = [
+      { progress: 0, position: [24, 0, 12], target: [24, 0, 0] },
+      { progress: 0.25, position: [21, 3, 51], target: [21, 3, 0] },
+      { progress: 0.5, position: [12, 12, 90], target: [12, 12, 0] },
+      { progress: 0.75, position: [3, 21, 51], target: [3, 21, 0] },
+      { progress: 1, position: [0, 24, 12], target: [0, 24, 0] },
+    ];
+
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    const before = cubeGroup(view);
+
+    for (const { progress, position, target } of table) {
+      applySnapshot(
+        view,
+        snapshot({
+          phase: 'travel',
+          phaseProgress: progress,
+          travelKind: 'spectate',
+          travelDestination: destination,
+        }),
+      );
+      expect(view.camera.position.toArray()).toEqual(position);
+      expect(lookTarget(view)).toEqual(target);
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+      // A camera-only flight never rebuilds the own level.
+      expect(cubeGroup(view)).toBe(before);
+    }
+
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: true }));
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+    expect(lookTarget(view)).toEqual([0, 24, 0]);
+    expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+  });
+
+  it('flies the return from the target rest back to the own cube', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 1,
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 24 },
+      }),
+    );
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: true }));
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+
+    const table: ReadonlyArray<{
+      progress: number;
+      position: [number, number, number];
+      target: [number, number, number];
+    }> = [
+      { progress: 0, position: [0, 24, 12], target: [0, 24, 0] },
+      { progress: 0.25, position: [3, 21, 51], target: [3, 21, 0] },
+      { progress: 0.5, position: [12, 12, 90], target: [12, 12, 0] },
+      { progress: 0.75, position: [21, 3, 51], target: [21, 3, 0] },
+      { progress: 1, position: [24, 0, 12], target: [24, 0, 0] },
+    ];
+
+    for (const { progress, position, target } of table) {
+      applySnapshot(
+        view,
+        snapshot({
+          phase: 'travel',
+          phaseProgress: progress,
+          travelKind: 'return',
+          travelDestination: { x: 24, y: 0 },
+          spectating: true,
+        }),
+      );
+      expect(view.camera.position.toArray()).toEqual(position);
+      expect(lookTarget(view)).toEqual(target);
+      expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    }
+
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+  });
+
+  it('starts a second spectate flight from the cube currently being viewed', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 1,
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 24 },
+      }),
+    );
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: true }));
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0,
+        travelKind: 'spectate',
+        travelDestination: { x: 12, y: 12 },
+        spectating: true,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'spectate',
+        travelDestination: { x: 12, y: 12 },
+        spectating: true,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([6, 18, 90]);
+    expect(lookTarget(view)).toEqual([6, 18, 0]);
+  });
+
+  it('swaps position instantly for camera-only flights under reduced motion', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0,
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 24 },
+        reducedMotion: true,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+    expect(lookTarget(view)).toEqual([0, 24, 0]);
+
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: true, reducedMotion: true }));
+    expect(view.camera.position.toArray()).toEqual([0, 24, 12]);
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0,
+        travelKind: 'return',
+        travelDestination: { x: 24, y: 0 },
+        spectating: true,
+        reducedMotion: true,
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+
+    applySnapshot(view, snapshot({ phase: 'playing', reducedMotion: true }));
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('holds the rest pose when a camera-only flight carries no destination (defensive)', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'spectate',
+        travelDestination: null,
+      }),
+    );
+
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('keeps the offline origin rest pose unchanged with no own position (AC-24)', () => {
+    const view = createView();
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 0 },
+        reducedMotion: true,
+      }),
+    );
+    // A coincident camera-only flight is the constant rest pose (no pull-back).
+    expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
+    expect(lookTarget(view)).toEqual([0, 0, 0]);
   });
 });

@@ -28,10 +28,21 @@
  * the next cube spawns one {@link CUBE_SPACING} step in the drawn direction; at the travel
  * midpoint the old cube view is disposed and the new one is built at the new position.
  *
+ * Online integration (T12; spec § 5, § 6, § 9). The own cube sits at the server-assigned
+ * slot position (`ownPosition`), so the rest pose and the intro dolly are centred on it.
+ * A `nextLevel` travel is destination-driven: the flight interpolation is the accepted
+ * formula with `travelDestination − travelFrom` as its offset (the z table is retained),
+ * and while the online hold has no destination yet the camera stays at rest with progress
+ * 0. `spectate`/`return` flights render the T11 pose from the current rest to the target
+ * and never rebuild a level. The remote cubes live in a {@link WorldView}: it is built on
+ * `enterWorld` (after `welcome`, with the server's `maxUsers`) and replaced exactly at the
+ * level midpoint when a queued `worldEntered` swap is applied.
+ *
  * The scene receives values only; it never reads the engine (plan § Data flow) and it
  * owns every three.js object it creates, so `dispose()` can release them exactly once
  * (AC-15). Drawables stay bounded: one starfield `Points`, one cube view (body + ≤ 6
- * `InstancedMesh`) and one pooled particle `Points` (AC-16).
+ * `InstancedMesh`), one pooled particle `Points` and, online, one remote world of ≤ (X − 1)
+ * cube views (AC-16).
  */
 
 import {
@@ -62,9 +73,12 @@ import {
   type Phase,
   type TravelDirection,
 } from '../game/types';
+import type { MemberState, Position, ServerMessage } from '../multiplayer/protocol';
 import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
 import { createParticleSystem, type ParticleSystem } from './particles';
+import { travelCameraPose as spectateTravelPose } from './spectate-travel';
 import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
+import { createWorldView, type WorldView } from './world';
 
 /** Black backdrop behind the starfield (AC-3). */
 const BACKGROUND_COLOR = 0x000000;
@@ -157,11 +171,38 @@ export function travelCameraPose(
   outPosition: Vector3,
   outTarget: Vector3,
 ): void {
+  const offset = direction === null ? null : TRAVEL_DIRECTION_OFFSETS[direction];
+  writeTravelPose(
+    progress,
+    fromX,
+    fromY,
+    offset === null ? 0 : offset.x,
+    offset === null ? 0 : offset.y,
+    outPosition,
+    outTarget,
+  );
+}
+
+/**
+ * Writes the accepted travel pose for one explicit lateral offset into the caller-owned
+ * vectors (zero allocation per frame). This is the common core of the offline
+ * direction-driven flight ({@link travelCameraPose}) and the online destination-driven
+ * flight (`travelDestination − travelFrom`): the lateral interpolation is
+ * `easeInOutQuad(p)` and the retained symmetric depth is `12 + 78 · travelSwing(p)`.
+ */
+function writeTravelPose(
+  progress: number,
+  fromX: number,
+  fromY: number,
+  dx: number,
+  dy: number,
+  outPosition: Vector3,
+  outTarget: Vector3,
+): void {
   const clamped = Math.min(1, Math.max(0, progress));
   const lateral = easeInOutQuad(clamped);
-  const offset = direction === null ? null : TRAVEL_DIRECTION_OFFSETS[direction];
-  const x = fromX + (offset === null ? 0 : offset.x * lateral);
-  const y = fromY + (offset === null ? 0 : offset.y * lateral);
+  const x = fromX + dx * lateral;
+  const y = fromY + dy * lateral;
 
   outPosition.set(x, y, REST_Z + (TRAVEL_END_Z - REST_Z) * travelSwing(clamped));
   outTarget.set(x, y, 0);
@@ -198,6 +239,20 @@ interface FaceRemoval {
 }
 
 /**
+ * The authoritative server world the scene renders (T12; spec § 5, § 9). Values only:
+ * they arrive from `multiplayer/server-state.ts` after `welcome`/`worldEntered` and the
+ * scene never invents or re-derives a shared position.
+ */
+export interface SceneWorld {
+  /** Server capacity X — the remote world renders at most `X − 1` cubes (Q-T10-1). */
+  maxUsers: number;
+  /** The own member's server-assigned slot position (`rest pose = (px, py, 12)`). */
+  ownPosition: Position;
+  /** The server's other members in slot order; the own member is never in this list. */
+  roster: readonly MemberState[];
+}
+
+/**
  * The composed scene handed to the session/loop: the three.js root, the camera, the
  * per-frame inputs and the lifecycle hooks.
  */
@@ -216,6 +271,29 @@ export interface SceneView {
    */
   readonly cubeView: CubeView;
   /**
+   * The remote-cube world view, or `null` before the first `welcome` (offline defaults and
+   * the pre-welcome intro). It is rebuilt exactly once at a cross-server level midpoint.
+   */
+  readonly worldView: WorldView | null;
+  /**
+   * Enters a server world immediately (`welcome`/resume): builds the {@link WorldView} with
+   * the server's `maxUsers`, applies the remote roster, moves the own cube to
+   * `ownPosition` and clears any queued cross-server swap. Replaces a previous world by
+   * disposing it exactly once.
+   */
+  enterWorld(world: SceneWorld): void;
+  /**
+   * Queues a cross-server move (`worldEntered`): the replacement world is applied at the
+   * next level midpoint, together with the `levelChanged` rebuild. The old {@link WorldView}
+   * is disposed exactly once and the new one is built from the new roster.
+   */
+  queueWorldSwap(world: SceneWorld): void;
+  /**
+   * Applies one remote-cube server message (`miniCubeRemoved`, `levelAdvanced`,
+   * `memberJoined`, `memberLeft`) to the live {@link WorldView}; a no-op before `welcome`.
+   */
+  applyWorldMessage(msg: ServerMessage): void;
+  /**
    * Applies the engine's ordered effect intents: explosion → start the tile's pop and spawn
    * its burst in front of the face surface; `faceCleared` → start the face-removal
    * countdown; `levelChanged` → mark the cube rebuild pending (the next snapshot performs
@@ -225,8 +303,9 @@ export interface SceneView {
   /**
    * Applies one engine snapshot in the pinned order: motion setting, rebuild step (exactly
    * one rebuild when a level change is pending or the style/grid size changed), camera
-   * (intro dolly, directional travel flight, or the rest pose over the current cube), cube
-   * orientation and, under reduced motion, the instant settle of any running pop.
+   * (intro dolly, the destination-driven online flight or the drawn-directional offline
+   * flight, a spectate/return flight, or the rest pose over the current cube) and, under
+   * reduced motion, the instant settle of any running pop.
    *
    * `nowMs` is the frame time the plan's contract carries (the loop passes it); the
    * snapshot application itself is a pure function of the snapshot values — the flights
@@ -247,11 +326,14 @@ export interface SceneView {
  * @param options.gridSize tiles per face edge; defaults to the pinned `GRID_SIZE` (5).
  * @param options.random source for the starfield layout and the particle jitter; injected
  * so a seeded source makes the whole scene deterministic (defaults to `Math.random`).
+ * @param options.ownPosition the own member's server slot position; defaults to the
+ * offline origin `(0, 0)`, so the offline rest pose and intro stay exactly at `(0,0,12)`.
  */
 export function createSceneView(options: {
   style: CubeStyle;
   gridSize?: number;
   random?: () => number;
+  ownPosition?: Position;
 }): SceneView {
   const gridSize = options.gridSize ?? GRID_SIZE;
   const random = options.random ?? Math.random;
@@ -264,8 +346,12 @@ export function createSceneView(options: {
   keyLight.position.set(KEY_LIGHT_POSITION.x, KEY_LIGHT_POSITION.y, KEY_LIGHT_POSITION.z);
 
   const starfield: Starfield = createStarfield(random);
-  /** The current cube level's world position on the flat world plane (z = 0). */
-  const cubePosition = new Vector3(0, 0, 0);
+  /** The own cube's world position on the flat plane (z = 0). */
+  const cubePosition = new Vector3(
+    options.ownPosition?.x ?? 0,
+    options.ownPosition?.y ?? 0,
+    0,
+  );
   let cube: CubeView = createCubeView(options.style, gridSize);
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
@@ -273,8 +359,8 @@ export function createSceneView(options: {
   scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group);
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
-  camera.position.set(0, 0, REST_Z);
-  camera.lookAt(ORIGIN);
+  camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
+  camera.lookAt(cubePosition.x, cubePosition.y, 0);
 
   /**
    * The camera pose the starfield anchors to. The anchor holds the camera's live vectors
@@ -302,6 +388,14 @@ export function createSceneView(options: {
   const travelFrom = new Vector3();
   /** The drawn direction of the running travel, captured with {@link travelFrom}. */
   let travelDirection: TravelDirection | null = null;
+  /** The live remote-cube world (built after `welcome`); `null` offline / before welcome. */
+  let world: WorldView | null = null;
+  /** A `worldEntered` replacement waiting for the next level midpoint (AC-12). */
+  let pendingWorld: SceneWorld | null = null;
+  /** The last `spectate` target's rest position: the camera rests over it while spectating. */
+  let spectateTarget: Vector3 | null = null;
+  /** The snapshot's spectating flag (drives the playing rest pose). */
+  let spectating = false;
   const faceRemovals = new Map<FaceId, FaceRemoval>();
   const instanceMatrix = new Matrix4();
   const introPosition = new Vector3();
@@ -371,18 +465,98 @@ export function createSceneView(options: {
     faceRemovals.set(faceId, { elapsedMs: 0, durationMs: timingsFor(reducedMotion).faceFadeMs });
   }
 
-  /** Sets the camera to the rest pose over the current cube (AC-3). */
+  /** Sets the camera to the rest pose over a world-plane point (AC-3). */
+  function applyRestAt(x: number, y: number): void {
+    camera.position.set(x, y, REST_Z);
+    camera.lookAt(x, y, 0);
+  }
+
+  /** Sets the camera to the rest pose over the own cube (AC-3). */
   function applyRestPose(): void {
-    camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
-    camera.lookAt(cubePosition.x, cubePosition.y, 0);
+    applyRestAt(cubePosition.x, cubePosition.y);
+  }
+
+  /**
+   * The rest pose the current mode rests over: the spectated member's cube while
+   * spectating, the own cube otherwise (spec § 6).
+   */
+  function applyCurrentRestPose(): void {
+    if (spectating && spectateTarget !== null) {
+      applyRestAt(spectateTarget.x, spectateTarget.y);
+      return;
+    }
+    applyRestPose();
+  }
+
+  /** Builds a remote world; a roster that violates the server capacity is disposed at once. */
+  function buildWorld(state: SceneWorld): WorldView {
+    const built = createWorldView({ maxUsers: state.maxUsers, random });
+    try {
+      built.applyRoster(state.roster);
+    } catch (error) {
+      built.dispose();
+      throw error;
+    }
+    return built;
+  }
+
+  /** Disposes the live remote world exactly once and detaches it from the scene. */
+  function disposeWorld(): void {
+    if (world === null) {
+      return;
+    }
+    const previous = world;
+    world = null;
+    scene.remove(previous.group);
+    previous.dispose();
+  }
+
+  /**
+   * Enters a server world (welcome/resume): the fresh world is built first (so a rejected
+   * roster leaves the current world intact), then the previous world is disposed exactly
+   * once, the own cube moves to the server position and the pending swap is cleared.
+   */
+  function enterServerWorld(state: SceneWorld): void {
+    if (disposed) {
+      return;
+    }
+    const replacement = buildWorld(state);
+    disposeWorld();
+    pendingWorld = null;
+    spectateTarget = null;
+    cubePosition.set(state.ownPosition.x, state.ownPosition.y, 0);
+    cube.group.position.copy(cubePosition);
+    world = replacement;
+    scene.add(world.group);
+  }
+
+  /**
+   * Applies a queued cross-server move at the level midpoint: the old world is disposed
+   * exactly once and the new one is built from the new roster (AC-12). The own cube's
+   * final position is the server-assigned slot of the target world.
+   */
+  function applyPendingWorldSwap(): void {
+    const next = pendingWorld;
+    if (next === null) {
+      return;
+    }
+    pendingWorld = null;
+    const replacement = buildWorld(next);
+    disposeWorld();
+    cubePosition.set(next.ownPosition.x, next.ownPosition.y, 0);
+    cube.group.position.copy(cubePosition);
+    world = replacement;
+    scene.add(world.group);
   }
 
   /**
    * The pinned rebuild step (spec AC-3). Runs exactly once when a `levelChanged` is pending
    * or the snapshot's style id / grid size no longer matches the live cube view: the old
-   * view is disposed exactly once, the world position advances by the drawn direction's
-   * offset (only for a pending level change — a style/grid reconciliation rebuilds in
-   * place), and the fresh view is built at the snapshot's style and grid size.
+   * view is disposed exactly once, the world position advances to the snapshot's target
+   * (the drawn direction's offset offline, the server-assigned destination online — a
+   * style/grid reconciliation rebuilds in place), and the fresh view is built at the
+   * snapshot's style and grid size. A queued `worldEntered` swap is applied here, at the
+   * level midpoint, after the own cube has moved.
    */
   function rebuildCubeIfNeeded(snapshot: EngineSnapshot): void {
     const pending = pendingLevelChanged;
@@ -392,11 +566,22 @@ export function createSceneView(options: {
       return;
     }
     if (pending !== null) {
-      // `travelDirection` is null outside a travel (defensive): the offset is then zero.
-      const offset =
-        snapshot.travelDirection === null ? null : TRAVEL_DIRECTION_OFFSETS[snapshot.travelDirection];
-      cubePosition.x += offset === null ? 0 : offset.x;
-      cubePosition.y += offset === null ? 0 : offset.y;
+      const kind = snapshot.travelKind ?? null;
+      const destination = snapshot.travelDestination ?? null;
+      if (kind === 'nextLevel' && destination !== null) {
+        // Destination-driven online advance: the server assigned the slot (AC-12).
+        cubePosition.set(destination.x, destination.y, 0);
+      } else if (kind === 'spectate' || kind === 'return') {
+        // Camera-only flights never move the own cube.
+      } else {
+        // `travelDirection` is null outside a travel (defensive): the offset is then zero.
+        const offset =
+          snapshot.travelDirection === null
+            ? null
+            : TRAVEL_DIRECTION_OFFSETS[snapshot.travelDirection];
+        cubePosition.x += offset === null ? 0 : offset.x;
+        cubePosition.y += offset === null ? 0 : offset.y;
+      }
     }
     const previous = cube;
     // A pending removal belongs to the cube that is leaving; the new cube is untouched.
@@ -409,42 +594,124 @@ export function createSceneView(options: {
     scene.remove(previous.group);
     scene.add(cube.group);
     previous.dispose();
+    if (pending !== null) {
+      // The world swap rides the same level-change midpoint: the old world is disposed
+      // exactly once and the new roster is built at the server-assigned target position.
+      // A style/grid reconciliation (no level change) never swaps worlds.
+      applyPendingWorldSwap();
+    }
   }
 
   /**
-   * The intro dolly, the directional travel flight and the rest pose over the current cube
-   * (AC-2/AC-3), plus the starfield travel input the travel phase drives (AC-1/AC-3).
+   * The intro dolly, the travel flights and the rest pose over the current cube
+   * (AC-2/AC-3, AC-12, AC-17), plus the starfield travel input the travel phase drives
+   * (AC-1/AC-3).
    */
   function applyCamera(snapshot: EngineSnapshot): void {
     const progress = Math.min(1, Math.max(0, snapshot.phaseProgress));
+    const kind = snapshot.travelKind ?? null;
+    const destination = snapshot.travelDestination ?? null;
 
     // Capture the flight origin on the travel-start transition, before anything can move
     // `cubePosition` (the midpoint rebuild happens later in this same function's frame):
-    // the lateral offset must never be counted twice.
+    // neither the lateral offset nor a destination may be counted twice. A return flight
+    // starts from the rest the camera currently holds (the spectated cube), the others
+    // from the own cube.
     if (snapshot.phase === 'travel' && lastPhase !== 'travel') {
-      travelFrom.copy(cubePosition);
+      const restOrigin = spectateTarget;
+      if (restOrigin !== null && (kind === 'return' || spectating)) {
+        // A return (or a selection while already spectating) starts from the rest the
+        // camera currently holds: the spectated member's cube.
+        travelFrom.copy(restOrigin);
+      } else {
+        travelFrom.copy(cubePosition);
+      }
       travelDirection = snapshot.travelDirection;
+      if (kind === 'spectate' && destination !== null) {
+        spectateTarget = new Vector3(destination.x, destination.y, 0);
+      }
     }
 
     if (snapshot.reducedMotion) {
-      // No fly-through and no expansion: the camera rests over the current cube at every
-      // progress — the level swap is an instant positional change (spec AC-3).
+      // No fly-through and no expansion: the camera rests over its target at every
+      // progress. A camera-only flight is an instant positional swap (AC-17); a level
+      // travel swaps the cube (and therefore the rest pose) at the midpoint.
       travelProgress = 0;
-      applyRestPose();
+      if (
+        snapshot.phase === 'travel' &&
+        (kind === 'spectate' || kind === 'return') &&
+        destination !== null
+      ) {
+        applyRestAt(destination.x, destination.y);
+        return;
+      }
+      applyCurrentRestPose();
       return;
     }
     if (snapshot.phase === 'intro') {
       travelProgress = 0;
       introCameraPose(progress, introPosition, introTarget);
-      camera.position.copy(introPosition);
-      camera.lookAt(introTarget);
+      // The dolly targets the own server slot: offline the position is (0,0), so the
+      // accepted (0,0,60) → (0,0,12) table is unchanged (AC-24).
+      camera.position.set(
+        introPosition.x + cubePosition.x,
+        introPosition.y + cubePosition.y,
+        introPosition.z,
+      );
+      camera.lookAt(
+        introTarget.x + cubePosition.x,
+        introTarget.y + cubePosition.y,
+        introTarget.z,
+      );
       return;
     }
     if (snapshot.phase === 'travel') {
+      if (kind === 'nextLevel') {
+        if (destination === null) {
+          // The online hold: no destination yet, so no flight starts. The camera stays at
+          // the rest pose with progress 0 (Q-T8-2, AC-12).
+          travelProgress = 0;
+          applyCurrentRestPose();
+          return;
+        }
+        travelProgress = progress;
+        writeTravelPose(
+          progress,
+          travelFrom.x,
+          travelFrom.y,
+          destination.x - travelFrom.x,
+          destination.y - travelFrom.y,
+          travelPosition,
+          travelTarget,
+        );
+        camera.position.copy(travelPosition);
+        camera.lookAt(travelTarget);
+        return;
+      }
+      if (kind === 'spectate' || kind === 'return') {
+        if (destination === null) {
+          // Defensive: a camera-only flight always carries its server destination.
+          travelProgress = 0;
+          applyCurrentRestPose();
+          return;
+        }
+        travelProgress = progress;
+        const pose = spectateTravelPose(travelFrom, destination, progress);
+        camera.position.set(pose.position.x, pose.position.y, pose.position.z);
+        camera.lookAt(pose.lookTarget.x, pose.lookTarget.y, pose.lookTarget.z);
+        return;
+      }
       travelProgress = progress;
-      // Directional flight from the captured origin: lateral toward the drawn offset while
-      // the depth keeps the retained symmetric swing (12 → 90 → 12).
-      travelCameraPose(progress, travelFrom.x, travelFrom.y, travelDirection, travelPosition, travelTarget);
+      // Offline directional flight from the captured origin: lateral toward the drawn
+      // offset while the depth keeps the retained symmetric swing (12 → 90 → 12).
+      travelCameraPose(
+        progress,
+        travelFrom.x,
+        travelFrom.y,
+        travelDirection,
+        travelPosition,
+        travelTarget,
+      );
       camera.position.copy(travelPosition);
       camera.lookAt(travelTarget);
       return;
@@ -452,7 +719,7 @@ export function createSceneView(options: {
     travelProgress = 0;
     // A skip can leave the intro mid-pan; the rest pose is the position *and* the
     // orientation, so the camera always lands looking straight at the current cube.
-    applyRestPose();
+    applyCurrentRestPose();
   }
 
   /** Advances the face-removal countdowns; a completed countdown removes (and disposes) its face. */
@@ -475,6 +742,29 @@ export function createSceneView(options: {
       // Rebuild-aware: the rebuild step re-assigns the binding, so the getter always
       // answers with the cube view the scene currently holds (never a stale one).
       return cube;
+    },
+
+    get worldView(): WorldView | null {
+      return world;
+    },
+
+    enterWorld(state: SceneWorld): void {
+      enterServerWorld(state);
+    },
+
+    queueWorldSwap(state: SceneWorld): void {
+      if (disposed) {
+        return;
+      }
+      pendingWorld = {
+        maxUsers: state.maxUsers,
+        ownPosition: { x: state.ownPosition.x, y: state.ownPosition.y },
+        roster: [...state.roster],
+      };
+    },
+
+    applyWorldMessage(msg: ServerMessage): void {
+      world?.applyMessage(msg);
     },
 
     applyIntents(intents: EffectIntent[], nowMs: number): void {
@@ -503,6 +793,7 @@ export function createSceneView(options: {
       // applied here comes from the snapshot (removals/pops are driven by `update`'s dt).
       // Pinned order: motion setting → rebuild → camera → orientation → reduced settle.
       reducedMotion = snapshot.reducedMotion;
+      spectating = snapshot.spectating ?? false;
       rebuildCubeIfNeeded(snapshot);
       applyCamera(snapshot);
       const from = snapshot.rotationFrom ?? snapshot.orientation;
@@ -525,6 +816,8 @@ export function createSceneView(options: {
       starfield.update(dtMs, travelProgress, starfieldAnchor);
       particles.update(dtMs);
       advanceFaceRemovals(dtMs);
+      // Remote cubes and their pops advance on the same clock, after the own removals.
+      world?.update(dtMs);
       // Pops advance after the removals, so a face removed this frame never receives a write.
       cube.update(dtMs);
     },
@@ -538,6 +831,7 @@ export function createSceneView(options: {
       starfield.dispose();
       cube.dispose();
       particles.dispose();
+      disposeWorld();
       scene.clear();
     },
   };
