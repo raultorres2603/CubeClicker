@@ -12,15 +12,22 @@
 //   2. frontend GET /         → 200 + `text/html`
 //   3. two concurrent WebSocket clients, each receiving the pinned `hello` envelope with a
 //      parseable `serverTime` within 5s (the first frame on every connection)
-//   4. two clients `join` → both `welcome`s report `serverId 1`/`maxUsers 2`, the roster grows
-//      from 1 (A's welcome) to 2 (B's welcome), and A also receives `memberJoined`
-//   5. a third client `join`s → `welcome.serverId 2` (overflow with X = 2)
+//   4. two clients `join` → both `welcome`s report the same server id and `maxUsers 2`, the
+//      roster grows from 1 (A's welcome) to 2 (B's welcome), and A also receives `memberJoined`
+//   5. a third client `join`s → its `welcome.serverId` is the run's first server id + 1
+//      (overflow with X = 2)
 //   6. A's valid `explode` → `miniCubeRemoved` on A (ack) and B (broadcast)
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
 //
 // Checks 4–7 exercise the multiplayer hub. `compose.smoke.yaml` pins
 // `MAX_USERS_PER_SERVER=2` and `RECONNECT_GRACE_MS=1000` for the smoke-run backend so the
 // overflow and leave checks finish inside the smoke budget.
+//
+// Server ids are never reused (AC-3) and `compose run` reuses an already-running backend, so the
+// placement checks assert the run's own id chain (the first welcome's id, then the next id for
+// the overflow) instead of the literals 1/2. On a cold backend that chain is still 1 → 2. The run
+// also drains its members through the grace window before exiting, so the next run starts from an
+// empty registry (warm-backend idempotency; review finding F8).
 //
 // Readiness for (1) and (2) is polled within a bounded budget (`READY_TIMEOUT_MS`); the script
 // prints one PASS/FAIL line per check and exits non-zero if any check failed.
@@ -38,6 +45,12 @@ const MULTIPLAYER_TIMEOUT_MS = 5000;
 const MEMBER_LEFT_TIMEOUT_MS = 5000;
 /** Lower bound proving the leave went through the grace window instead of firing instantly. */
 const GRACE_LOWER_BOUND_MS = 900;
+/**
+ * End-of-run drain: the smoke backend's pinned grace window is 1000 ms, so waiting past it lets
+ * this run's members expire before the script exits. The next run then starts from an empty
+ * registry instead of joining the previous run's grace-retained members.
+ */
+const SMOKE_SETTLE_MS = 1500;
 
 const results = [];
 
@@ -182,8 +195,9 @@ function problemText(error) {
 }
 
 const JOIN_CHECK_LABEL =
-  'multiplayer join: two clients land on server 1 (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined';
-const OVERFLOW_CHECK_LABEL = 'multiplayer overflow: the third client lands on server 2 (X = 2)';
+  'multiplayer join: two clients land on the same server (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined';
+const OVERFLOW_CHECK_LABEL =
+  'multiplayer overflow: the third client lands on the next server id (X = 2)';
 const EXPLODE_CHECK_LABEL =
   "multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)";
 const LEAVE_CHECK_LABEL =
@@ -370,6 +384,15 @@ function welcomeProblems(label, welcome, serverId, maxUsers, rosterSize) {
   return problems;
 }
 
+/** The run-relative anchor: every server id must be a real id issued by this backend process. */
+function serverIdProblems(label, welcome) {
+  const serverId = welcome?.serverId;
+  if (typeof serverId !== 'number' || !Number.isInteger(serverId) || serverId < 1) {
+    return [`${label} welcome.serverId expected a positive integer, got ${JSON.stringify(serverId)}`];
+  }
+  return [];
+}
+
 /**
  * AC-26 end-to-end sequence against the smoke-run backend (X = 2, grace 1 s): join/roster,
  * overflow, an explode ack + broadcast, and a disconnect that expires through the grace window.
@@ -416,11 +439,19 @@ async function checkMultiplayerFlow() {
     const setupComplete = setupProblem === null;
 
     if (setupComplete) {
+      // Server ids are never reused, so the run anchors on its own first id (1 on a cold backend).
+      const runServerId = welcomeA.serverId;
       const problems = [
-        ...welcomeProblems('A', welcomeA, 1, 2, 1),
-        ...welcomeProblems('B', welcomeB, 1, 2, 2),
+        ...serverIdProblems('A', welcomeA),
+        ...serverIdProblems('B', welcomeB),
+        ...welcomeProblems('A', welcomeA, runServerId, 2, 1),
+        ...welcomeProblems('B', welcomeB, runServerId, 2, 2),
       ];
-      record(problems.length === 0, JOIN_CHECK_LABEL, problems.join('; '));
+      record(
+        problems.length === 0,
+        JOIN_CHECK_LABEL,
+        problems.length === 0 ? `server ${runServerId}` : problems.join('; '),
+      );
     } else {
       record(false, JOIN_CHECK_LABEL, setupProblem);
     }
@@ -429,6 +460,8 @@ async function checkMultiplayerFlow() {
       record(false, OVERFLOW_CHECK_LABEL, 'not run — the two-client join failed');
     } else {
       let problem = null;
+      let overflowServerId = null;
+      const expectedServerId = welcomeA.serverId + 1;
       try {
         const clientC = await connectAndJoin('client C');
         sockets.push(clientC);
@@ -438,13 +471,14 @@ async function checkMultiplayerFlow() {
           MULTIPLAYER_TIMEOUT_MS,
           'welcome',
         );
-        if (welcomeC.serverId !== 2) {
-          problem = `expected C welcome.serverId 2 (overflow at X = 2), got ${JSON.stringify(welcomeC.serverId)}`;
+        overflowServerId = welcomeC.serverId;
+        if (welcomeC.serverId !== expectedServerId) {
+          problem = `expected C welcome.serverId ${expectedServerId} (the run's first server ${welcomeA.serverId} + 1, overflow at X = 2), got ${JSON.stringify(welcomeC.serverId)}`;
         }
       } catch (error) {
         problem = problemText(error);
       }
-      record(problem === null, OVERFLOW_CHECK_LABEL, problem ?? '');
+      record(problem === null, OVERFLOW_CHECK_LABEL, problem ?? `server ${overflowServerId}`);
     }
 
     if (!setupComplete) {
@@ -509,6 +543,11 @@ async function checkMultiplayerFlow() {
   } finally {
     for (const socket of sockets) {
       socket.close();
+    }
+    if (sockets.length > 0) {
+      // Drain this run's members through the pinned 1 s smoke grace window so the next run starts
+      // from an empty registry (server ids keep increasing; the checks are run-relative).
+      await delay(SMOKE_SETTLE_MS);
     }
   }
 }
