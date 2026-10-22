@@ -9,8 +9,16 @@ import {
 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createBoard } from './board';
-import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
+import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
+import type { Transport, TransportStatus } from '../multiplayer/transport';
+import { createBoard, removeMiniCube } from './board';
+import {
+  createEngine,
+  type EngineSnapshot,
+  type GameEngine,
+  type GameEvent,
+  type NextLevelData,
+} from './engine';
 import { REDUCED_TIMINGS } from './effects';
 import { CUBE_STYLES } from './progression';
 import { createOrientation } from './rotation';
@@ -19,6 +27,7 @@ import {
   type CanvasLike,
   type GameSession,
   type MotionSource,
+  type OnlineGameSession,
   type RendererAdapter,
   type ResizeSource,
   type SessionEnvironment,
@@ -108,6 +117,8 @@ interface FakeEngine {
   advancements: number[];
   motionCalls: boolean[];
   randomSources: Array<() => number>;
+  nextLevels: NextLevelData[];
+  spectatingCalls: boolean[];
   setSnapshot(snapshot: EngineSnapshot): void;
 }
 
@@ -371,16 +382,31 @@ function createFakeEnv(
 }
 
 /** A recording engine: it logs every call and exposes a replaceable snapshot. */
-function createFakeEngine(initial: EngineSnapshot): FakeEngine {
+function createFakeEngine(
+  initial: EngineSnapshot,
+  options: { mutateExplosions?: boolean } = {},
+): FakeEngine {
   const events: GameEvent[] = [];
   const advancements: number[] = [];
   const motionCalls: boolean[] = [];
   const randomSources: Array<() => number> = [];
+  const nextLevels: NextLevelData[] = [];
+  const spectatingCalls: boolean[] = [];
   let snapshot = initial;
   return {
     engine: {
       dispatch(event) {
         events.push(event);
+        if (options.mutateExplosions === true && event.type === 'explodeMiniCube') {
+          const removal = removeMiniCube(snapshot.board, event.id);
+          if (removal.removed) {
+            snapshot = {
+              ...snapshot,
+              board: removal.board,
+              stats: { ...snapshot.stats, clicks: snapshot.stats.clicks + 1 },
+            };
+          }
+        }
       },
       advance(dtMs) {
         advancements.push(dtMs);
@@ -393,11 +419,19 @@ function createFakeEngine(initial: EngineSnapshot): FakeEngine {
       setRandomSource(source) {
         randomSources.push(source);
       },
+      completeNextLevel(data) {
+        nextLevels.push(data);
+      },
+      setSpectating(active) {
+        spectatingCalls.push(active);
+      },
     },
     events,
     advancements,
     motionCalls,
     randomSources,
+    nextLevels,
+    spectatingCalls,
     setSnapshot(next) {
       snapshot = next;
     },
@@ -515,6 +549,201 @@ function clearLevel(engine: GameEngine, gridSize: number): void {
       }
     }
   }
+}
+
+/** The multiplayer wire the session is wired to: records sends and replays frames/status. */
+interface FakeTransport {
+  transport: Transport;
+  sent: ClientMessage[];
+  connectCount(): number;
+  closeCount(): number;
+  messageHandlerCount(): number;
+  statusHandlerCount(): number;
+  emit(message: ServerMessage): void;
+  emitStatus(status: TransportStatus): void;
+}
+
+function createFakeTransport(): FakeTransport {
+  const messageHandlers = new Set<(message: ServerMessage) => void>();
+  const statusHandlers = new Set<(status: TransportStatus) => void>();
+  const sent: ClientMessage[] = [];
+  let connects = 0;
+  let closes = 0;
+  let currentStatus: TransportStatus | null = null;
+  const publishStatus = (status: TransportStatus): void => {
+    currentStatus = status;
+    for (const handler of [...statusHandlers]) {
+      handler(status);
+    }
+  };
+  return {
+    transport: {
+      connect() {
+        connects += 1;
+        publishStatus('connecting');
+      },
+      close() {
+        closes += 1;
+      },
+      send(message) {
+        sent.push(message);
+      },
+      onMessage(handler) {
+        messageHandlers.add(handler);
+        return () => {
+          messageHandlers.delete(handler);
+        };
+      },
+      onStatus(handler) {
+        statusHandlers.add(handler);
+        if (currentStatus !== null) {
+          handler(currentStatus);
+        }
+        return () => {
+          statusHandlers.delete(handler);
+        };
+      },
+    },
+    sent,
+    connectCount: () => connects,
+    closeCount: () => closes,
+    messageHandlerCount: () => messageHandlers.size,
+    statusHandlerCount: () => statusHandlers.size,
+    emit(message) {
+      for (const handler of [...messageHandlers]) {
+        handler(message);
+      }
+    },
+    emitStatus: publishStatus,
+  };
+}
+
+type WelcomeMessage = Extract<ServerMessage, { type: 'welcome' }>;
+type WorldEnteredMessage = Extract<ServerMessage, { type: 'worldEntered' }>;
+type LevelAdvancedMessage = Extract<ServerMessage, { type: 'levelAdvanced' }>;
+type StateSyncMessage = Extract<ServerMessage, { type: 'stateSync' }>;
+
+/** One roster member with the pinned defaults; overrides pin the case at hand. */
+function member(overrides: Partial<MemberState> = {}): MemberState {
+  return {
+    playerId: 'p2',
+    name: 'Player 2',
+    position: { x: 24, y: 0 },
+    levelIndex: 0,
+    gridSize: 5,
+    styleId: CUBE_STYLES[0]!.id,
+    removedIds: [],
+    ...overrides,
+  };
+}
+
+/** The own member as the server includes it in the welcome roster. */
+function selfMember(overrides: Partial<MemberState> = {}): MemberState {
+  return member({ playerId: 'p1', name: 'Player 1', position: { x: 0, y: 0 }, ...overrides });
+}
+
+/** A `welcome` frame with the pinned defaults; the roster defaults to the own member only. */
+function welcomeMessage(options: {
+  playerId?: string;
+  position?: Position;
+  levelIndex?: number;
+  gridSize?: number;
+  styleId?: string;
+  removedIds?: string[];
+  roster?: MemberState[];
+  serverId?: number;
+  maxUsers?: number;
+} = {}): WelcomeMessage {
+  const playerId = options.playerId ?? 'p1';
+  const position = options.position ?? { x: 0, y: 0 };
+  const levelIndex = options.levelIndex ?? 0;
+  const gridSize = options.gridSize ?? 5;
+  const styleId = options.styleId ?? CUBE_STYLES[0]!.id;
+  const removedIds = options.removedIds ?? [];
+  return {
+    type: 'welcome',
+    playerId,
+    name: 'Player 1',
+    token: 'token-1',
+    serverId: options.serverId ?? 1,
+    maxUsers: options.maxUsers ?? 4,
+    position,
+    self: { levelIndex, gridSize, styleId, removedIds },
+    roster:
+      options.roster ?? [
+        member({ playerId, name: 'Player 1', position, levelIndex, gridSize, styleId, removedIds }),
+      ],
+  };
+}
+
+/** A `worldEntered` frame for the mover; the roster defaults to the mover only. */
+function worldEnteredMessage(options: {
+  position?: Position;
+  levelIndex?: number;
+  gridSize?: number;
+  styleId?: string;
+  roster?: MemberState[];
+  serverId?: number;
+  maxUsers?: number;
+} = {}): WorldEnteredMessage {
+  const position = options.position ?? { x: 0, y: 24 };
+  const levelIndex = options.levelIndex ?? 1;
+  const gridSize = options.gridSize ?? 4;
+  const styleId = options.styleId ?? CUBE_STYLES[1]!.id;
+  return {
+    type: 'worldEntered',
+    playerId: 'p1',
+    name: 'Player 1',
+    token: 'token-1',
+    serverId: options.serverId ?? 2,
+    maxUsers: options.maxUsers ?? 2,
+    position,
+    self: { levelIndex, gridSize, styleId, removedIds: [] },
+    roster:
+      options.roster ?? [
+        member({ playerId: 'p1', name: 'Player 1', position, levelIndex, gridSize, styleId }),
+      ],
+  };
+}
+
+function levelAdvancedMessage(
+  overrides: Partial<LevelAdvancedMessage> = {},
+): LevelAdvancedMessage {
+  return {
+    type: 'levelAdvanced',
+    playerId: 'p1',
+    levelIndex: 1,
+    gridSize: 4,
+    styleId: CUBE_STYLES[1]!.id,
+    position: { x: 0, y: 0 },
+    removedIds: [],
+    ...overrides,
+  };
+}
+
+function stateSyncMessage(overrides: Partial<StateSyncMessage> = {}): StateSyncMessage {
+  return {
+    type: 'stateSync',
+    playerId: 'p1',
+    levelIndex: 0,
+    gridSize: 5,
+    styleId: CUBE_STYLES[0]!.id,
+    removedIds: [],
+    ...overrides,
+  };
+}
+
+/** A session wired to the fake transport, before any connection or frame. */
+function createOnlineSession(
+  fake: FakeEnv,
+  wire: FakeTransport,
+  engine?: GameEngine,
+): OnlineGameSession {
+  return createGameSession({
+    env: fake.env,
+    transport: wire.transport,
+    ...(engine === undefined ? {} : { engine }),
+  });
 }
 
 describe('attach', () => {
@@ -1116,5 +1345,712 @@ describe('dispose', () => {
     fake.scheduler.tick(16);
 
     expect(fake.renderer.renders).toHaveLength(2);
+  });
+});
+
+describe('multiplayer welcome and intro hold (AC-23, AC-12)', () => {
+  it('holds the intro at progress 0 until welcome, then adopts the server grid and own slot', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+
+    expect(wire.connectCount()).toBe(1);
+    const beforeWelcome = session.getMultiplayerSnapshot();
+    expect(beforeWelcome.status).toBe('connecting');
+    expect(beforeWelcome.world.serverId).toBe(0);
+    expect(beforeWelcome.world.self.playerId).toBe('');
+    expect(beforeWelcome.spectate).toEqual({ mode: 'none' });
+
+    wire.emitStatus('connected');
+    fake.scheduler.tick(0);
+    fake.scheduler.tick(2000);
+
+    // No welcome yet: the engine is frozen at the intro start and the starfield renders.
+    expect(session.getSnapshot().phase).toBe('intro');
+    expect(session.getSnapshot().phaseProgress).toBe(0);
+    expect(fake.renderer.renders).toHaveLength(2);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 60]);
+
+    // A tap before welcome may not skip the intro (the gate is closed).
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().phase).toBe('intro');
+
+    wire.emit(
+      welcomeMessage({
+        gridSize: 6,
+        position: { x: 24, y: 0 },
+        roster: [
+          selfMember({ position: { x: 24, y: 0 }, gridSize: 6 }),
+          member({ position: { x: 0, y: 24 }, gridSize: 6 }),
+        ],
+      }),
+    );
+
+    const released = session.getSnapshot();
+    expect(released.phase).toBe('intro');
+    expect(released.phaseProgress).toBe(0);
+    expect(released.gridSize).toBe(6);
+    expect(session.getMultiplayerSnapshot().status).toBe('connected');
+    expect(session.getMultiplayerSnapshot().world.self.cube).toEqual({
+      levelIndex: 0,
+      gridSize: 6,
+      styleId: 'obsidian-neon',
+      removedIds: [],
+    });
+    expect(session.getMultiplayerSnapshot().world.members.map((entry) => entry.playerId)).toEqual([
+      'p2',
+    ]);
+    // The session never writes the handshake: join/rejoin belong to the transport.
+    expect(wire.sent).toEqual([]);
+
+    fake.scheduler.tick(2016);
+
+    // The intro clock starts at the first frame after welcome (16 ms of the 2500 ms intro).
+    expect(session.getSnapshot().phaseProgress).toBe(16 / 2500);
+    const scene = fake.renderer.renders.at(-1)!.scene;
+    expect(faceMesh(scene, 'front').count).toBe(36);
+    expect(cubeGroup(scene).position.toArray()).toEqual([24, 0, 0]);
+  });
+
+  it('resumes the own cube, resets spectate and re-enters the world on a resume welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400); // intro skip
+    fake.scheduler.tick(16);
+    expect(session.getSnapshot().phase).toBe('playing');
+
+    // Fly to p2 and land in view mode.
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(session.getSnapshot().spectating).toBe(true);
+
+    wire.emitStatus('disconnected');
+    expect(session.getMultiplayerSnapshot().status).toBe('disconnected');
+    // While disconnected the flight/click gate is closed and the view is frozen.
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(0);
+    expect(session.spectateMember('p2')).toBe(false);
+    expect(session.returnToOwnCube()).toBe(false);
+
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        removedIds: ['front:0:0'],
+        roster: [selfMember({ removedIds: ['front:0:0'] }), member()],
+      }),
+    );
+
+    // The resume resets the view instantly (no flight), re-syncs the board and clears the
+    // spectate state; the local stats are not rolled back by the reconcile.
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(session.getMultiplayerSnapshot().world.self.cube.removedIds).toEqual(['front:0:0']);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+
+    fake.scheduler.tick(32);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    // Normal play resumes: the same tap that was gated now explodes front:2:3.
+    tapOn(fake.canvas, 460, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(2);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:3', level: 0 }]);
+  });
+});
+
+describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
+  it('forwards a successful explode, reports the sixth face and releases the held travel', () => {
+    // One tile left on the whole cube: the next tap clears the sixth face.
+    let board = createBoard(5);
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          const id: MiniCubeId = `${faceId}:${row}:${col}`;
+          if (id !== 'front:2:2') {
+            board = removeMiniCube(board, id).board;
+          }
+        }
+      }
+    }
+    const recording = createFakeEngine(snapshot({ phase: 'playing', board }), {
+      mutateExplosions: true,
+    });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    tapOn(fake.canvas, 400, 400);
+
+    expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:2:2' }]);
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'cubeCompleted', level: 0 },
+    ]);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+    // Between cubeCompleted and authority data a spectate request is refused (Q-T8-3).
+    expect(session.spectateMember('p2')).toBe(false);
+
+    wire.emit(levelAdvancedMessage({ gridSize: 4, position: { x: 24, y: 0 } }));
+
+    expect(recording.nextLevels).toEqual([
+      { gridSize: 4, style: CUBE_STYLES[1], destination: { x: 24, y: 0 } },
+    ]);
+    expect(session.getMultiplayerSnapshot().world.self.cube).toEqual({
+      levelIndex: 1,
+      gridSize: 4,
+      styleId: 'crimson-alloy',
+      removedIds: [],
+    });
+    // No second completion ever leaves for the same level.
+    wire.emit(levelAdvancedMessage({ gridSize: 4, position: { x: 24, y: 0 } }));
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'cubeCompleted', level: 0 },
+    ]);
+  });
+
+  it('treats a consistent ack as a no-op and reconciles stateSync without rollback', () => {
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }), {
+      mutateExplosions: true,
+    });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    // The server acked a click this client did not apply yet: reconcile it, never echo it.
+    wire.emit({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
+    expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:0:0' }]);
+    expect(recording.engine.getSnapshot().stats.clicks).toBe(1);
+
+    const reconciled = recording.engine.getSnapshot();
+    wire.emit({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
+    expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:0:0' }]);
+    expect(recording.engine.getSnapshot()).toBe(reconciled);
+
+    wire.emit(
+      stateSyncMessage({ removedIds: ['front:0:0', 'front:0:1', 'front:0:2'] }),
+    );
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:0:0' },
+      { type: 'explodeMiniCube', id: 'front:0:1' },
+      { type: 'explodeMiniCube', id: 'front:0:2' },
+    ]);
+    expect(recording.engine.getSnapshot().stats.clicks).toBe(3);
+    expect(wire.sent).toEqual([]);
+
+    // A different level/grid cannot be reconciled tile-by-tile without an engine seam.
+    wire.emit(
+      stateSyncMessage({ levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy' }),
+    );
+    expect(recording.events).toHaveLength(3);
+
+    // Remote authority never touches the own engine; the world store carries it.
+    wire.emit(
+      stateSyncMessage({
+        playerId: 'p2',
+        removedIds: ['front:1:1'],
+      }),
+    );
+    expect(recording.events).toHaveLength(3);
+    expect(session.getMultiplayerSnapshot().world.members[0]!.removedIds).toEqual(['front:1:1']);
+  });
+
+  it('releases the held online travel with levelAdvanced and advances at the midpoint (AC-12)', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage());
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400); // intro skip
+    fake.scheduler.tick(16);
+    expect(session.getSnapshot().phase).toBe('playing');
+
+    // Clear every tile but the front face's centre through the engine: no sends happen.
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    expect(wire.sent).toEqual([]);
+    tapOn(fake.canvas, 400, 400);
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'cubeCompleted', level: 0 },
+    ]);
+
+    fake.scheduler.tick(416); // face fade 400 ms: the online travel starts held
+    const held = session.getSnapshot();
+    expect(held.phase).toBe('travel');
+    expect(held.travelKind).toBe('nextLevel');
+    expect(held.travelDestination).toBeNull();
+    expect(held.phaseProgress).toBe(0);
+
+    wire.emit(
+      levelAdvancedMessage({
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'emerald-crystal',
+        position: { x: 24, y: 0 },
+      }),
+    );
+    expect(session.getSnapshot().travelDestination).toEqual({ x: 24, y: 0 });
+    expect(session.getSnapshot().phaseProgress).toBe(0);
+
+    fake.scheduler.tick(1666); // 1250 ms into the 2500 ms flight: the midpoint
+    const midpoint = session.getSnapshot();
+    expect(midpoint.levelIndex).toBe(1);
+    expect(midpoint.gridSize).toBe(3);
+    expect(midpoint.style.id).toBe('emerald-crystal');
+    const scene = fake.renderer.renders.at(-1)!.scene;
+    expect(cubeGroup(scene).position.toArray()).toEqual([24, 0, 0]);
+    expect(faceMesh(scene, 'front').count).toBe(9);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([12, 0, 90]);
+
+    fake.scheduler.tick(2916); // 2500 ms: playing again
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(session.getSnapshot().stats.clicks).toBe(150);
+  });
+
+  it('queues the worldEntered swap for the midpoint and applies the new world (AC-12)', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(416);
+    expect(session.getSnapshot().phase).toBe('travel');
+
+    wire.emit(
+      worldEnteredMessage({
+        position: { x: 0, y: 24 },
+        roster: [
+          selfMember({
+            position: { x: 0, y: 24 },
+            levelIndex: 1,
+            gridSize: 4,
+            styleId: 'crimson-alloy',
+          }),
+          member({
+            playerId: 'p3',
+            name: 'Player 3',
+            position: { x: 24, y: 0 },
+            levelIndex: 3,
+            gridSize: 6,
+            styleId: 'solar-gold',
+          }),
+        ],
+      }),
+    );
+
+    expect(session.getSnapshot().travelDestination).toEqual({ x: 0, y: 24 });
+    expect(session.getMultiplayerSnapshot().world.pendingWorldSwap).toEqual({
+      serverId: 2,
+      maxUsers: 2,
+      position: { x: 0, y: 24 },
+      self: { levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy', removedIds: [] },
+      roster: [
+        {
+          playerId: 'p1',
+          name: 'Player 1',
+          position: { x: 0, y: 24 },
+          levelIndex: 1,
+          gridSize: 4,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+        },
+        {
+          playerId: 'p3',
+          name: 'Player 3',
+          position: { x: 24, y: 0 },
+          levelIndex: 3,
+          gridSize: 6,
+          styleId: 'solar-gold',
+          removedIds: [],
+        },
+      ],
+    });
+
+    fake.scheduler.tick(1666); // midpoint
+
+    const swapped = session.getMultiplayerSnapshot().world;
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.maxUsers).toBe(2);
+    expect(swapped.self.position).toEqual({ x: 0, y: 24 });
+    expect(swapped.pendingWorldSwap).toBeNull();
+    expect(swapped.members.map((entry) => entry.playerId)).toEqual(['p3']);
+    const scene = fake.renderer.renders.at(-1)!.scene;
+    expect(cubeGroup(scene).position.toArray()).toEqual([0, 24, 0]);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 12, 90]);
+
+    fake.scheduler.tick(2916);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 24, 12]);
+  });
+
+  it('enters a worldEntered world immediately when no travel is waiting (defensive)', () => {
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }));
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    wire.emit(
+      worldEnteredMessage({
+        roster: [
+          selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }),
+          member({ playerId: 'p3', name: 'Player 3', position: { x: 24, y: 0 } }),
+        ],
+      }),
+    );
+
+    expect(recording.nextLevels).toEqual([
+      { gridSize: 4, style: CUBE_STYLES[1], destination: { x: 0, y: 24 } },
+    ]);
+    expect(session.getMultiplayerSnapshot().world.serverId).toBe(2);
+    expect(session.getMultiplayerSnapshot().world.members.map((entry) => entry.playerId)).toEqual([
+      'p3',
+    ]);
+
+    fake.scheduler.tick(0);
+    expect(cubeGroup(fake.renderer.renders.at(-1)!.scene).position.toArray()).toEqual([0, 24, 0]);
+  });
+});
+
+describe('multiplayer spectate (AC-18, AC-19)', () => {
+  function spectateSetup(): {
+    fake: FakeEnv;
+    wire: FakeTransport;
+    session: OnlineGameSession;
+  } {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400); // intro skip
+    fake.scheduler.tick(16);
+    return { fake, wire, session };
+  }
+
+  it('flies to a member, gates play while viewing, and flies home on return', () => {
+    const { fake, session } = spectateSetup();
+
+    expect(session.spectateMember('p2')).toBe(true);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({
+      mode: 'traveling',
+      target: 'p2',
+      destination: { x: 24, y: 0 },
+    });
+    const flight = session.getSnapshot();
+    expect(flight.phase).toBe('travel');
+    expect(flight.travelKind).toBe('spectate');
+    expect(flight.travelDestination).toEqual({ x: 24, y: 0 });
+    expect(flight.phaseProgress).toBe(0);
+    // One travel at a time: a second selection and a mid-flight return are refused.
+    expect(session.spectateMember('p2')).toBe(false);
+    expect(session.returnToOwnCube()).toBe(false);
+
+    fake.scheduler.tick(1266);
+    expect(session.getSnapshot().phaseProgress).toBe(0.5);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([12, 0, 90]);
+    expect(session.getSnapshot().levelIndex).toBe(0);
+
+    fake.scheduler.tick(2516);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(true);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([24, 0, 12]);
+    // Gameplay is view-only while spectating: taps and rotations dispatch nothing.
+    tapOn(fake.canvas, 400, 400);
+    fake.keys.emitKey('ArrowRight');
+    expect(session.getSnapshot().stats.clicks).toBe(0);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+
+    expect(session.returnToOwnCube()).toBe(true);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({
+      mode: 'returning',
+      destination: { x: 0, y: 0 },
+    });
+    expect(session.getSnapshot().travelKind).toBe('return');
+    expect(session.getSnapshot().travelDestination).toEqual({ x: 0, y: 0 });
+
+    fake.scheduler.tick(3766);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([12, 0, 90]);
+    fake.scheduler.tick(5016);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    // Home again: the same tap explodes the centre tile.
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+  });
+
+  it('auto-returns with the flight when the viewed member leaves (AC-19 a/b)', () => {
+    const { fake, wire, session } = spectateSetup();
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(1016); // mid-flight: the scene captures the target rest pose
+    fake.scheduler.tick(2516);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([24, 0, 12]);
+
+    wire.emit({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getMultiplayerSnapshot().world.members).toEqual([]);
+    expect(session.getSnapshot().travelKind).toBe('return');
+    expect(session.getSnapshot().travelDestination).toEqual({ x: 0, y: 0 });
+
+    fake.scheduler.tick(3766);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([12, 0, 90]);
+    fake.scheduler.tick(5016);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+  });
+
+  it('reverses home after landing when the target leaves mid-flight', () => {
+    const { fake, wire, session } = spectateSetup();
+    expect(session.spectateMember('p2')).toBe(true);
+
+    fake.scheduler.tick(1016);
+    expect(session.getSnapshot().phaseProgress).toBe(0.4);
+
+    wire.emit({ type: 'memberLeft', playerId: 'p2', reason: 'moved' });
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    // The engine cannot cancel a flight: it lands, then the deferred return starts.
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().phaseProgress).toBe(0.4);
+
+    fake.scheduler.tick(2600);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    fake.scheduler.tick(2616);
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().travelKind).toBe('return');
+    expect(session.getSnapshot().travelDestination).toEqual({ x: 0, y: 0 });
+    expect(session.getSnapshot().phaseProgress).toBe(16 / 2500);
+
+    fake.scheduler.tick(5100);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+  });
+
+  it('refuses unknown, own and offline selections (inert session surface)', () => {
+    const { session } = spectateSetup();
+    expect(session.spectateMember('ghost')).toBe(false);
+    expect(session.spectateMember('p1')).toBe(false);
+
+    const offline = createGameSession({ env: createFakeEnv().env });
+    expect(offline.spectateMember('p2')).toBe(false);
+    expect(offline.returnToOwnCube()).toBe(false);
+    offline.retryConnection();
+    expect(offline.getMultiplayerSnapshot().status).toBe('connecting');
+    expect(offline.getMultiplayerSnapshot().world.self.playerId).toBe('');
+    const unsubscribe = offline.subscribeMultiplayer(() => {
+      throw new Error('an offline session never publishes a multiplayer change');
+    });
+    unsubscribe();
+    expect(session.spectateMember('p2')).toBe(true);
+  });
+
+  it('resets the state machine when the engine refuses a camera-only travel', () => {
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }));
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    expect(session.spectateMember('p2')).toBe(false);
+
+    expect(recording.events).toEqual([
+      { type: 'travelTo', kind: 'spectate', destination: { x: 24, y: 0 } },
+    ]);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+  });
+});
+
+describe('multiplayer connection gating (AC-22)', () => {
+  it('gates every input while disconnected and resumes after welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+
+    wire.emitStatus('disconnected');
+
+    // Every gameplay path is gated: pointer, keyboard, spectate and return.
+    tapOn(fake.canvas, 460, 400);
+    fake.keys.emitKey('ArrowRight');
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(session.spectateMember('p2')).toBe(false);
+    expect(session.returnToOwnCube()).toBe(false);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+
+    // An open socket alone is not enough: the gate opens on welcome (resume).
+    wire.emitStatus('connected');
+    tapOn(fake.canvas, 460, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+
+    wire.emit(
+      welcomeMessage({
+        removedIds: ['front:0:0'],
+        roster: [selfMember({ removedIds: ['front:0:0'] }), member()],
+      }),
+    );
+    expect(session.getSnapshot().stats.clicks).toBe(2);
+
+    fake.scheduler.tick(32);
+    tapOn(fake.canvas, 460, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(3);
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'explode', id: 'front:2:3', level: 0 },
+    ]);
+  });
+
+  it('holds a running camera flight while the transport is down', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(1016);
+    expect(session.getSnapshot().phaseProgress).toBe(0.4);
+
+    wire.emitStatus('disconnected');
+    fake.scheduler.tick(2016);
+
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().phaseProgress).toBe(0.4);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([
+      7.6800000000000015, 0, 83.76,
+    ]);
+  });
+
+  it('publishes the multiplayer store only when status/world/spectate change', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+
+    const first = session.getMultiplayerSnapshot();
+    expect(session.getMultiplayerSnapshot()).toBe(first);
+
+    const listener = vi.fn();
+    const unsubscribe = session.subscribeMultiplayer(listener);
+
+    wire.emitStatus('connected');
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(session.getMultiplayerSnapshot().status).toBe('connected');
+
+    wire.emit({ type: 'hello', serverTime: '2026-10-22T00:00:00.000Z' });
+    wire.emit({ type: 'memberLeft', playerId: 'ghost', reason: 'left' });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    wire.emit(welcomeMessage());
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(session.getMultiplayerSnapshot().world.self.playerId).toBe('p1');
+
+    wire.emitStatus('exhausted');
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(session.getMultiplayerSnapshot().status).toBe('exhausted');
+
+    unsubscribe();
+    wire.emit({ type: 'memberJoined', member: member() });
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it('connects on attach, closes on dispose and reconnects on retry', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+
+    session.attach(fake.canvas.surface);
+    expect(wire.connectCount()).toBe(1);
+    expect(wire.messageHandlerCount()).toBe(1);
+    expect(wire.statusHandlerCount()).toBe(1);
+
+    wire.emitStatus('exhausted');
+    session.retryConnection();
+    expect(wire.closeCount()).toBe(1);
+    expect(wire.connectCount()).toBe(2);
+    expect(session.getMultiplayerSnapshot().status).toBe('connecting');
+
+    session.dispose();
+    expect(wire.closeCount()).toBe(2);
+    expect(wire.messageHandlerCount()).toBe(0);
+    expect(wire.statusHandlerCount()).toBe(0);
+
+    session.attach(fake.canvas.surface);
+    expect(wire.connectCount()).toBe(3);
+    expect(wire.messageHandlerCount()).toBe(1);
+    expect(wire.statusHandlerCount()).toBe(1);
   });
 });
