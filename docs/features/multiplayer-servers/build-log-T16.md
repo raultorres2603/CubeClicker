@@ -1,11 +1,12 @@
 # Build log — T16 — Verify & integrate
 
-Task: T16 (2026-10-22)
-Files changed: `docs/product/glossary.md`, `docs/features/multiplayer-servers/build-log-T16.md`
-What changed & why: added the AC-27 glossary terms (**game server**, **server member**, **spectating**) and extended **cube world position** with the online ring-slot definition; ran the full T16 verification suite and recorded raw evidence, a per-AC met/unmet table, the honest coverage residual, the manual browser checklist status, and the diff/branch audit.
+Task: T16 (2026-10-22); second verification pass 2026-10-22 after T17 (`caab534`)
+Files changed: first pass — `docs/product/glossary.md`, `docs/features/multiplayer-servers/build-log-T16.md`; second pass — `docs/features/multiplayer-servers/build-log-T16.md` only
+What changed & why: added the AC-27 glossary terms (**game server**, **server member**, **spectating**) and extended **cube world position** with the online ring-slot definition; ran the full T16 verification suite and recorded raw evidence, a per-AC met/unmet table, the honest coverage residual, the manual browser checklist status, and the diff/branch audit. The second pass re-ran the same gate after T17 and updates the AC-19/AC-22 rows (§ 1.1).
 
 Decisions:
-- Verification only: no source, test, compose, package or other doc file was modified. The two unmet ACs (AC-19, AC-22) are recorded precisely; the follow-up corrective task owns the fixes.
+- Verification only: no source, test, compose, package or other doc file was modified in either pass. In the first pass the two unmet ACs (AC-19, AC-22) were recorded precisely for the follow-up corrective task (T17); the second pass records their closure.
+- Second pass (post-T17): AC-19 and AC-22 are **met** with T17's engine/session/scene tests (§ 1.1, § 4). The only red command encountered was `npm run smoke` against the warm dev stack, which is the documented "fresh backend required" precondition (T15 § Decisions, Q-T15-1), not a code failure; stopping the stack first (T15's documented smoke procedure) produced `SMOKE PASS (8/8 checks)` (§ 1.1.2, F7).
 - AC-27's "no other term redefined" is read literally: only the `cube world position` entry changed and the three new entries were added. The stale parenthetical in `cube level` ("online occupancy of those positions is a future feature") was left untouched and is noted in § Findings.
 - Evidence locations are test names, not line numbers, except where a source/build-log line is needed to prove a gap. Test names are quoted exactly as they appear in the files.
 
@@ -26,7 +27,436 @@ Command transcripts below are the actual stdout/stderr of this run; the coverage
 
 ---
 
-## 2. Gate transcripts
+## 1.1 Second pass (post-T17) — 2026-10-22
+
+T17 (`caab534 fix: reset the view instantly on mid-flight resume and keep spectators viewing (T17)`) changed only `src/frontend/src/game/engine.ts`, `src/frontend/src/game/session.ts`, `engine.test.ts`, `session.test.ts`, `src/frontend/src/render/scene.test.ts` and its build log (6 files, +794/−4). No backend, compose, package, lockfile, config or threshold file changed. This pass re-ran the full T16 gate at that HEAD; § 2 below remains the first-pass transcript, and this section supersedes its numbers where they differ.
+
+| Item | Second-pass value |
+| --- | --- |
+| HEAD | `caab534cc9c173393525777eff52b9c71033f4e8` (`caab534`) |
+| Branch | `main` (tracking `origin/main`, **ahead 32**, no push performed) |
+| Node / npm / Podman | `v24.22.0` / `11.19.1` / `5.8.7` |
+| `npm ci` | **skipped** — `git diff --name-only 22c8298..HEAD -- package.json package-lock.json src/backend/package.json src/frontend/package.json` is empty, `node_modules` is present in the root and both workspaces, and `package-lock.json` keeps its pre-feature mtime `2026-10-18 19:51:26`; no dependency changed between the passes |
+| Raw logs | `/tmp/opencode/t16-pass2-{lint,typecheck,test,coverage,build,smoke,smoke-clean}.log` (ANSI colour escapes stripped below) |
+
+### 1.1.1 Gate results
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `npm run lint` | **0** | no diagnostics |
+| `npm run typecheck` | **0** | both workspaces |
+| `npm test` | **0** | 782 → **788 tests** (backend 180, frontend 602 → **608**) |
+| `npm run coverage` | **0** | backend **98.47 / 97.09 / 100 / 98.47**; frontend **99.11 / 98.29 / 99.26 / 99.11** (statements/branches/functions/lines, both ≥ 80) |
+| `npm run build` | **0** | initial JS **793.98 kB / gzip 216.30 kB** ≤ the pinned 350 KB budget |
+| `npm run smoke` | **0** | `SMOKE PASS (8/8 checks)` on the documented fresh-backend stack (§ 1.1.2) |
+
+#### `npm run lint` → exit 0
+
+```text
+$ npm run lint
+
+> lint
+> eslint .
+```
+
+#### `npm run typecheck` → exit 0
+
+```text
+$ npm run typecheck
+
+> typecheck
+> npm run typecheck --workspaces --if-present
+
+
+> typecheck
+> tsc --noEmit
+
+
+> typecheck
+> tsc --noEmit
+```
+
+#### `npm test` → exit 0 (788 tests)
+
+```text
+$ npm test
+
+> test
+> npm run test --workspaces --if-present
+
+
+> test
+> vitest run
+
+
+ RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/backend
+
+ ✓ src/game/cubes.test.ts (24 tests) 6ms
+ ✓ src/game/config.test.ts (13 tests) 5ms
+ ✓ src/game/servers.test.ts (36 tests) 7ms
+ ✓ src/game/players.test.ts (13 tests) 8ms
+ ✓ src/game/protocol.test.ts (56 tests) 7ms
+ ✓ src/game/hub.test.ts (31 tests) 40ms
+ ✓ src/app.test.ts (7 tests) 112ms
+
+ Test Files  7 passed (7)
+      Tests  180 passed (180)
+   Start at  11:19:59
+   Duration  446ms (transform 324ms, setup 0ms, collect 636ms, tests 184ms, environment 1ms, prepare 379ms)
+
+
+> test
+> vitest run
+
+
+ RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
+
+ ✓ src/multiplayer/spectate.test.ts (23 tests) 5ms
+ ✓ src/ui/theme.test.ts (2 tests) 4ms
+ ✓ src/render/webgl.test.ts (5 tests) 10ms
+ ✓ src/game/effects.test.ts (28 tests) 13ms
+ ✓ src/game/progression.test.ts (10 tests) 10ms
+ ✓ src/browser-env.test.ts (6 tests) 18ms
+ ✓ src/multiplayer/server-state.test.ts (31 tests) 15ms
+ ✓ src/ws/connection.test.ts (10 tests) 26ms
+ ✓ src/multiplayer/protocol.test.ts (112 tests) 17ms
+ ✓ src/multiplayer/transport.test.ts (14 tests) 11ms
+ ✓ src/render/spectate-travel.test.ts (7 tests) 5ms
+ ✓ src/game/rotation.test.ts (15 tests) 8ms
+ ✓ src/game/board.test.ts (18 tests) 21ms
+ ✓ src/ui/Hud.test.tsx (3 tests) 9ms
+ ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 12ms
+ ✓ src/ui/UserPanel.test.tsx (5 tests) 11ms
+ ✓ src/ui/GameCanvas.test.tsx (2 tests) 12ms
+ ✓ src/game/engine.test.ts (61 tests) 36ms
+ ✓ src/input/gestures.test.ts (21 tests) 7ms
+ ✓ src/input/keyboard.test.ts (13 tests) 12ms
+ ✓ src/render/particles.test.ts (19 tests) 20ms
+ ✓ src/render/cube-view.test.ts (32 tests) 59ms
+ ✓ src/render/picking.test.ts (12 tests) 37ms
+ ✓ src/render/starfield.test.ts (15 tests) 89ms
+ ✓ src/render/world.test.ts (19 tests) 52ms
+ ✓ src/App.test.tsx (8 tests) 25ms
+ ✓ src/render/scene.test.ts (69 tests) 133ms
+ ✓ src/game/session.test.ts (43 tests) 123ms
+
+ Test Files  28 passed (28)
+      Tests  608 passed (608)
+   Start at  11:20:00
+   Duration  720ms (transform 2.97s, setup 0ms, collect 7.52s, tests 799ms, environment 4ms, prepare 2.00s)
+```
+
+Deltas vs the first pass (§ 2.4): `engine.test.ts` 58 → **61** (+3), `session.test.ts` 41 → **43** (+2), `scene.test.ts` 68 → **69** (+1); backend unchanged at 180; frontend 602 → **608**; total 782 → **788**.
+
+#### `npm run coverage` → exit 0 (both workspaces ≥ 80 on all four metrics)
+
+```text
+$ npm run coverage
+
+> coverage
+> npm run coverage --workspaces --if-present
+
+
+> coverage
+> vitest run --coverage
+
+
+ RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/backend
+      Coverage enabled with v8
+
+ ✓ src/game/config.test.ts (13 tests) 7ms
+ ✓ src/game/cubes.test.ts (24 tests) 8ms
+ ✓ src/game/players.test.ts (13 tests) 7ms
+ ✓ src/game/servers.test.ts (36 tests) 7ms
+ ✓ src/game/hub.test.ts (31 tests) 26ms
+ ✓ src/game/protocol.test.ts (56 tests) 8ms
+ ✓ src/app.test.ts (7 tests) 125ms
+
+ Test Files  7 passed (7)
+      Tests  180 passed (180)
+   Start at  11:20:04
+   Duration  554ms (transform 232ms, setup 0ms, collect 586ms, tests 189ms, environment 1ms, prepare 534ms)
+
+ % Coverage report from v8
+--------------|---------|----------|---------|---------|------------------------
+File          | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s      
+--------------|---------|----------|---------|---------|------------------------
+All files     |   98.47 |    97.09 |     100 |   98.47 |                        
+ src          |     100 |      100 |     100 |     100 |                        
+  app.ts      |     100 |      100 |     100 |     100 |                        
+ src/game     |   98.38 |    96.87 |     100 |   98.38 |                        
+  config.ts   |     100 |      100 |     100 |     100 |                        
+  cubes.ts    |     100 |      100 |     100 |     100 |                        
+  hub.ts      |   96.62 |    92.79 |     100 |   96.62 | ...344,372-373,390-392 
+  players.ts  |     100 |      100 |     100 |     100 |                        
+  protocol.ts |     100 |      100 |     100 |     100 |                        
+  servers.ts  |     100 |      100 |     100 |     100 |                        
+--------------|---------|----------|---------|---------|------------------------
+
+> coverage
+> vitest run --coverage
+
+
+ RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
+      Coverage enabled with v8
+
+ ✓ src/game/progression.test.ts (10 tests) 6ms
+ ✓ src/ui/theme.test.ts (2 tests) 3ms
+ ✓ src/ws/connection.test.ts (10 tests) 15ms
+ ✓ src/multiplayer/server-state.test.ts (31 tests) 8ms
+ ✓ src/render/webgl.test.ts (5 tests) 12ms
+ ✓ src/multiplayer/spectate.test.ts (23 tests) 6ms
+ ✓ src/browser-env.test.ts (6 tests) 9ms
+ ✓ src/game/effects.test.ts (28 tests) 13ms
+ ✓ src/game/rotation.test.ts (15 tests) 9ms
+ ✓ src/multiplayer/protocol.test.ts (112 tests) 19ms
+ ✓ src/multiplayer/transport.test.ts (14 tests) 20ms
+ ✓ src/render/spectate-travel.test.ts (7 tests) 6ms
+ ✓ src/game/board.test.ts (18 tests) 22ms
+ ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 12ms
+ ✓ src/render/particles.test.ts (19 tests) 21ms
+ ✓ src/input/gestures.test.ts (21 tests) 11ms
+ ✓ src/input/keyboard.test.ts (13 tests) 13ms
+ ✓ src/ui/GameCanvas.test.tsx (2 tests) 15ms
+ ✓ src/ui/Hud.test.tsx (3 tests) 16ms
+ ✓ src/ui/UserPanel.test.tsx (5 tests) 13ms
+ ✓ src/render/cube-view.test.ts (32 tests) 63ms
+ ✓ src/render/starfield.test.ts (15 tests) 81ms
+ ✓ src/game/engine.test.ts (61 tests) 57ms
+ ✓ src/render/picking.test.ts (12 tests) 33ms
+ ✓ src/render/world.test.ts (19 tests) 46ms
+ ✓ src/App.test.tsx (8 tests) 21ms
+ ✓ src/game/session.test.ts (43 tests) 111ms
+ ✓ src/render/scene.test.ts (69 tests) 149ms
+
+ Test Files  28 passed (28)
+      Tests  608 passed (608)
+   Start at  11:20:05
+   Duration  920ms (transform 2.98s, setup 0ms, collect 7.68s, tests 812ms, environment 6ms, prepare 2.50s)
+
+ % Coverage report from v8
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   99.11 |    98.29 |   99.26 |   99.11 |                   
+ src               |     100 |      100 |     100 |     100 |                   
+  App.tsx          |     100 |      100 |     100 |     100 |                   
+  browser-env.ts   |     100 |      100 |     100 |     100 |                   
+ src/game          |   99.14 |    98.14 |     100 |   99.14 |                   
+  board.ts         |     100 |      100 |     100 |     100 |                   
+  effects.ts       |     100 |      100 |     100 |     100 |                   
+  engine.ts        |     100 |      100 |     100 |     100 |                   
+  progression.ts   |     100 |      100 |     100 |     100 |                   
+  rotation.ts      |     100 |      100 |     100 |     100 |                   
+  session.ts       |   98.08 |    95.76 |     100 |   98.08 | ...28-629,633-636 
+  types.ts         |     100 |      100 |     100 |     100 |                   
+ src/input         |     100 |      100 |     100 |     100 |                   
+  gestures.ts      |     100 |      100 |     100 |     100 |                   
+  keyboard.ts      |     100 |      100 |     100 |     100 |                   
+ src/multiplayer   |   99.73 |    99.24 |     100 |   99.73 |                   
+  protocol.ts      |     100 |      100 |     100 |     100 |                   
+  server-state.ts  |   99.18 |    97.22 |     100 |   99.18 | 119-120           
+  spectate.ts      |     100 |      100 |     100 |     100 |                   
+  transport.ts     |     100 |      100 |     100 |     100 |                   
+ src/render        |   99.83 |    97.85 |     100 |   99.83 |                   
+  cube-view.ts     |     100 |      100 |     100 |     100 |                   
+  particles.ts     |     100 |      100 |     100 |     100 |                   
+  picking.ts       |     100 |      100 |     100 |     100 |                   
+  scene.ts         |   99.54 |    98.41 |     100 |   99.54 | 757-758           
+  ...ate-travel.ts |     100 |      100 |     100 |     100 |                   
+  starfield.ts     |     100 |      100 |     100 |     100 |                   
+  webgl.ts         |     100 |      100 |     100 |     100 |                   
+  world.ts         |     100 |    93.58 |     100 |     100 | ...85,193,271-274 
+ src/ui            |   88.98 |      100 |   66.66 |   88.98 |                   
+  ...ionBanner.tsx |     100 |      100 |     100 |     100 |                   
+  GameCanvas.tsx   |    61.9 |      100 |     100 |    61.9 | 23-30             
+  Hud.tsx          |     100 |      100 |     100 |     100 |                   
+  UserPanel.tsx    |      90 |      100 |   33.33 |      90 | 48-49,71-73       
+  theme.ts         |     100 |      100 |     100 |     100 |                   
+ src/ws            |   95.34 |    92.85 |     100 |   95.34 |                   
+  connection.ts    |   95.34 |    92.85 |     100 |   95.34 | 53-54,99-100      
+-------------------|---------|----------|---------|---------|-------------------
+```
+
+| Workspace | Statements | Branches | Functions | Lines | Gate |
+| --- | --- | --- | --- | --- | --- |
+| `@cubeclicker/backend` | **98.47** | **97.09** | **100** | **98.47** | PASS (≥ 80 each) |
+| `@cubeclicker/frontend` | **99.11** | **98.29** | **99.26** | **99.11** | PASS (≥ 80 each) |
+
+First pass → second pass: backend identical; frontend 99.04/98.28/99.25/99.04 → **99.11/98.29/99.26/99.11**. `engine.ts` is **100/100/100/100** (the new cancel seam is fully exercised); `session.ts` 97.71/95.65/100/97.71 → **98.08/95.76/100/98.08**. The remaining `session.ts` uncovered ranges (`...28-629,633-636`) are the same pre-existing reconnection/attachment guards recorded in § 5; no threshold, exclusion or config changed.
+
+#### `npm run build` → exit 0 (initial JS gzip 216.30 KB)
+
+```text
+$ npm run build
+
+> build
+> npm run build --workspaces --if-present
+
+
+> build
+> tsc
+
+
+> build
+> vite build
+
+vite v7.3.7 building client environment for production...
+transforming...
+✓ 58 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.40 kB │ gzip:   0.27 kB
+dist/assets/index-DTvgIu_V.css    2.96 kB │ gzip:   0.94 kB
+dist/assets/index-DeHy2RIV.js   793.98 kB │ gzip: 216.30 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.25s
+```
+
+Exit **0**; initial JS gzip **216.30 KB** (same artifact hash as T17, +0.03 KB vs the first pass) ≤ the pinned `BUNDLE_BUDGET_GZ_KB = 350` (AC-24). The >500 KB chunk warning is the pre-existing three.js bundle warning, not a budget failure.
+
+### 1.1.2 `npm run smoke` — 8/8 PASS on the documented fresh-backend stack
+
+The **first** second-pass invocation ran against the warm dev stack left behind by T16's smoke run (backend container created `2026-10-22 10:38`, `Up 42 minutes`). `compose run` reuses running dependencies and the hub keeps `nextServerId` for the process lifetime (server ids are never reused, AC-3), so the first joins saw ids 3/4 instead of the hard-coded 1/2:
+
+```text
+$ npm run smoke
+
+> smoke
+> podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
+
+>>>> Executing external compose provider "/usr/local/bin/docker-compose". Please see podman-compose(1) for how to disable this message. <<<<
+
+ Container cubeclicker-frontend-1 Running 
+ Container cubeclicker-backend-1 Running 
+ Container cubeclicker-smoke-run-f18388a65c65 Creating 
+ Container cubeclicker-smoke-run-f18388a65c65 Created 
+smoke: backend=http://backend:8080 frontend=http://frontend:5173 ws=ws://backend:8080/ws readyTimeoutMs=30000
+PASS backend http://backend:8080/healthz responds 200 with {"status":"ok"}
+PASS frontend http://frontend:5173/ responds 200 with text/html
+PASS websocket client 1 received hello from ws://backend:8080/ws
+PASS websocket client 2 received hello from ws://backend:8080/ws
+FAIL multiplayer join: two clients land on server 1 (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined — A welcome.serverId expected 1, got 3; B welcome.serverId expected 1, got 3
+FAIL multiplayer overflow: the third client lands on server 2 (X = 2) — expected C welcome.serverId 2 (overflow at X = 2), got 4
+PASS multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)
+PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1002ms
+SMOKE FAIL (6/8 checks passed)
+
+Error: executing /usr/local/bin/docker-compose -f compose.yaml -f compose.smoke.yaml run --rm smoke: exit status 1
+```
+
+This is **not a code failure**: T17 changed no backend/compose file, and T15 already recorded the identical precondition — "**Fresh backend required.** The smoke check expects a fresh registry (server 1 then 2) … `run` reuses running dependencies" — plus open question Q-T15-1 ("the script does not reset state"). T15's documented procedure is to stop the stack first so the smoke command creates the backend from the merged smoke config. Re-run after exactly that:
+
+```text
+$ podman compose -f compose.yaml -f compose.smoke.yaml down
+ Container cubeclicker-frontend-1 Stopping 
+ Container cubeclicker-backend-1 Stopping 
+ Container cubeclicker-backend-1 Stopped 
+ Container cubeclicker-backend-1 Removing 
+ Container cubeclicker-backend-1 Removed 
+ Container cubeclicker-frontend-1 Stopped 
+ Container cubeclicker-frontend-1 Removing 
+ Container cubeclicker-frontend-1 Removed 
+ Network cubeclicker_default Removing 
+ Network cubeclicker_default Removed 
+
+$ npm run smoke
+
+> smoke
+> podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
+
+>>>> Executing external compose provider "/usr/local/bin/docker-compose". Please see podman-compose(1) for how to disable this message. <<<<
+
+ Network cubeclicker_default Creating 
+ Network cubeclicker_default Creating 
+ Network cubeclicker_default Created 
+ Network cubeclicker_default Created 
+ Container cubeclicker-frontend-1 Creating 
+ Container cubeclicker-backend-1 Creating 
+ Container cubeclicker-frontend-1 Created 
+ Container cubeclicker-backend-1 Created 
+ Container cubeclicker-frontend-1 Starting 
+ Container cubeclicker-backend-1 Starting 
+ Container cubeclicker-frontend-1 Started 
+ Container cubeclicker-backend-1 Started 
+ Container cubeclicker-smoke-run-68b73d0cf4c5 Creating 
+ Container cubeclicker-smoke-run-68b73d0cf4c5 Created 
+smoke: backend=http://backend:8080 frontend=http://frontend:5173 ws=ws://backend:8080/ws readyTimeoutMs=30000
+PASS backend http://backend:8080/healthz responds 200 with {"status":"ok"}
+PASS frontend http://frontend:5173/ responds 200 with text/html
+PASS websocket client 1 received hello from ws://backend:8080/ws
+PASS websocket client 2 received hello from ws://backend:8080/ws
+PASS multiplayer join: two clients land on server 1 (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined
+PASS multiplayer overflow: the third client lands on server 2 (X = 2)
+PASS multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)
+PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1003ms
+SMOKE PASS (8/8 checks)
+```
+
+Smoke exit: **0**. The base dev stack was restored afterwards with `podman compose up -d` (exit **0**), as T15 did. The warm-stack non-idempotency is recorded as observation **F7** (§ 7); a restart step or id-scoped assertions would be a `tests/e2e/smoke.mjs` change owned by a future task, not by this verification pass.
+
+### 1.1.3 Banned-matcher and storage/purity re-scan
+
+Same scope as § 2.8 — the 20 test files changed by the feature range `f8cf3e1^..HEAD` (T17 changed three **existing** test files and added none):
+
+```text
+$ FILES=$(git diff --name-only f8cf3e1^..HEAD | grep -E '\.(test|spec)\.(ts|tsx)$')
+$ echo "FILES=$(echo "$FILES" | wc -l)"
+FILES=20
+$ grep -nE 'expect\.(anything|any)\(|objectContaining|arrayContaining|stringContaining|stringMatching|toMatchObject|toHaveBeenCalled\(\)|toBeTruthy\(|toBeDefined\(|not\.toThrow\(|toMatchSnapshot|toMatchInlineSnapshot|toBeCloseTo|expect\.closeTo' $FILES
+banned_grep_exit=1   # NO MATCHES
+$ grep -nE '\.toHaveBeenCalled\(\)' $FILES
+called_grep_exit=1   # NO MATCHES
+$ grep -nE 'toMatchSnapshot|toMatchInlineSnapshot|expect\.hasAssertions|expect\.assertions' $FILES
+snapshot_grep_exit=1   # NO MATCHES
+```
+
+Argument-unchecked `toHaveBeenCalled()` is clean. The only call-count assertions are exact zero checks, reviewed and unchanged from § 2.8:
+
+```text
+src/frontend/src/game/session.test.ts:1036:    expect(listener).toHaveBeenCalledTimes(0);
+src/frontend/src/render/scene.test.ts:1031:      expect(dispose).toHaveBeenCalledTimes(0);
+src/frontend/src/render/scene.test.ts:1512:    expect(geometryDispose).toHaveBeenCalledTimes(0);
+src/frontend/src/render/scene.test.ts:1985:    expect(oldWorldApply).toHaveBeenCalledTimes(0);
+src/frontend/src/render/world.test.ts:365:    expect(disposeSpy).toHaveBeenCalledTimes(0);
+src/frontend/src/render/world.test.ts:369:    expect(disposeSpy).toHaveBeenCalledTimes(0);
+src/frontend/src/render/world.test.ts:373:    expect(disposeSpy).toHaveBeenCalledTimes(0);
+```
+
+Storage / persistence / purity greps (same commands as § 2.9):
+
+```text
+$ grep -rnE "document\.cookie|localStorage|sessionStorage" src/frontend/src --include='*.ts' --include='*.tsx' --exclude='*.test.*' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/\*|\*|//)'
+storage_exit=1   # NO MATCHES
+$ grep -rnE "\bfrom ['\"](node:)?fs|require\(['\"](node:)?fs|readFile|writeFile|createWriteStream|sqlite|database" src/backend/src --include='*.ts' --exclude='*.test.ts'
+fs_exit=1   # NO MATCHES
+$ grep -rnE "Math\.random|\b(window|document|navigator|globalThis)\." \
+    src/backend/src/game src/frontend/src/game src/frontend/src/multiplayer \
+    --include='*.ts' --exclude='*.test.ts' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/\*|\*|//)'
+random_dom_exit=1   # NO MATCHES
+$ git status --porcelain | grep -E '\.env'
+env_grep_exit=1
+$ git ls-files | grep -E '(^|/)\.env'
+env_ls_exit=1
+```
+
+No storage, filesystem, `Math.random`, DOM-global or `.env*` use was added by T17 or this pass; the production tree is unchanged by the second pass.
+
+### 1.1.4 AC table impact
+
+The § 4 rows for **AC-19** and **AC-22** are replaced with the met evidence; no other AC row was downgraded. The second-pass numbers in § 1.1.1 also refresh the AC-24 (788/788 tests, banned-matcher scan clean, gzip 216.30 ≤ 350) and AC-26 (smoke `8/8`) evidence references. The per-AC outcome is now **27/27 met** (AC-1 met-with-note; AC-10 met with the spec erratum noted).
+
+---
+
+## 2. Gate transcripts (first pass, pre-T17)
+
+These are the first-pass transcripts and remain the record of the T16 verification before the corrective task. § 1.1 already re-ran every command after T17; the AC-19/AC-22 conclusions below were superseded there.
 
 ### 2.1 `npm ci` → exit 0
 
@@ -601,21 +1031,23 @@ Legend: **met** = the AC's behavior is implemented and evidenced with concrete t
 | **AC-16** — "Users on Server" button & panel | **met** | `UserPanel.test.tsx` › "renders only the pinned toggle while closed"; "renders only the disabled own row when alone on the server (AC-16)" (exact SSR markup `Users on Server`, `aria-label="Users on server"`, `Player 1 (You)`); "lists the other members in slot order with 1-based cube levels (AC-16)" (exact `Player 2 · Cube 2`, `Player 3 · Cube 1`); `App.test.tsx` shell markup. |
 | **AC-17** — Spectate travel & view-only mode | **met** | `spectate-travel.test.ts` › "flies (0, 0, 12) → (24, 0, 12) through the pinned rows", "flies the non-axis-aligned (24, 0, 12) → (0, 24, 12) through the pinned rows", "keeps the identity camera quaternion at every pinned row"; `spectate.test.ts` › "starts a member flight with the server-assigned destination", "ignores a second selection while a travel is in flight (AC-17)", "enters viewing when the member flight lands"; `engine.test.ts` › "travels to a spectated cube without touching the level, the board or the stats", "ignores every gameplay input while spectating, leaving board, stats and orientation untouched"; `scene.test.ts` › "renders the T11 pose table from the own cube to the target and rests there", "swaps position instantly for camera-only flights under reduced motion"; `session.test.ts` › "flies to a member, gates play while viewing, and flies home on return" (tap + ArrowRight dispatch nothing; camera `[12,0,90]` mid-flight, `[24,0,12]` at rest). |
 | **AC-18** — Return to my cube | **met** | `UserPanel.test.tsx` › "renders Return to my cube exactly while spectating" (exact presence/absence markup); `App.test.tsx` › "renders Return to my cube in the shell exactly while spectating"; `spectate.test.ts` › "starts the flight home only while viewing", "refuses a return while the member flight is in flight (one travel at a time)"; `session.test.ts` › "flies to a member, gates play while viewing, and flies home on return" (return flight camera rows, then a tap explodes → `clicks` 1). |
-| **AC-19** — Spectate edge cases | **UNMET** | (a) met: `spectate.test.ts` › "reports an auto-return and drops to none when the viewed member leaves"; `session.test.ts` › "auto-returns with the flight when the viewed member leaves (AC-19 a/b)"; grace expiry proven in `hub.test.ts` › "removes the member at exactly the grace deadline…". (b) met: same tests with `reason: 'moved'` in `session.test.ts` › "reverses home after landing when the target leaves mid-flight"; `hub.test.ts` moved sequence. (c) **partial**: `world.test.ts` › "rebuilds a member on levelAdvanced exactly once at the new position and cube" pins the view count (1) and dispose-once, but **no test asserts that the spectator stays in `{ mode: 'viewing' }` after the target's same-server `levelAdvanced`** — every `levelAdvancedMessage` emitted in `session.test.ts` targets the self (`playerId: 'p1'`), and `spectate.test.ts` has no `levelAdvanced` case. Missing assertion: session/spectate state remains `{ mode: 'viewing', target }` (and `spectating: true`) after a remote `levelAdvanced`. (d) **partial**: `session.test.ts` › "resumes the own cube, resets spectate and re-enters the world on a resume welcome" covers a **landed** spectator (camera `[0,0,12]` next frame). The **mid-flight** reconnect case does not reset instantly: T13 build log deviation 4 (lines 367–372) states the engine has no travel-cancel/teleport seam, so the camera completes the flight; `session.ts` resets the spectate controller on resume but leaves the engine travel running. No test covers a resume while `phase === 'travel'`. (e) met: `world.test.ts` › "hides the exact tile, starts its pop and spawns the burst at the tile origin". |
+| **AC-19** — Spectate edge cases | **met** | (a) met: `spectate.test.ts` › "reports an auto-return and drops to none when the viewed member leaves"; `session.test.ts` › "auto-returns with the flight when the viewed member leaves (AC-19 a/b)"; grace expiry proven in `hub.test.ts` › "removes the member at exactly the grace deadline…". (b) met: same tests with `reason: 'moved'` in `session.test.ts` › "reverses home after landing when the target leaves mid-flight"; `hub.test.ts` moved sequence. (c) **met (T17)**: `session.test.ts` › "keeps viewing the target when their same-server cube advances (AC-19 c)" — after `levelAdvancedMessage({ playerId: 'p2', levelIndex: 2, gridSize: 6, styleId: 'emerald-crystal', position: { x: 24, y: 0 } })` the spectate state stays `{ mode: 'viewing', target: 'p2' }`, `spectating` is `true`, phase is `playing`, travel kind/destination are `null`, own level 0/grid 5 and stats `{ clicks: 0, facesDestroyed: 0 }` are untouched, the p2 world member is exactly `{ playerId: 'p2', name: 'Player 2', position: { x: 24, y: 0 }, levelIndex: 2, gridSize: 6, styleId: 'emerald-crystal', removedIds: [] }`, the camera remains `[24, 0, 12]` and `wire.sent` is `[]`; the view-rebuild half is `world.test.ts` › "rebuilds a member on levelAdvanced exactly once at the new position and cube". (d) **met (T17)**: engine `describe('travel cancel (AC-19 d, AC-22)')` › "cancels a spectate flight at once, keeping the own level and emitting no intent", "cancels a return flight and leaves the spectating gate to the caller", "never cancels the online nextLevel hold, an offline level travel or a rest state"; `session.test.ts` › "resets a mid-flight spectate to the own rest on a resume welcome (AC-19 d, AC-22)" (drop at progress 0.4, camera `[7.6800000000000015, 0, 83.76]` → resume `welcome` → phase `playing`, progress 1, travel fields `null`, `spectating` false, 24 front tiles with `removedIds: ['front:0:0']`, next frame `[0,0,12]`, still `[0,0,12]` at the abandoned flight's landing time, tap sends `{ type: 'explode', id: 'front:2:2', level: 0 }`); `scene.test.ts` › "rests at the own cube on the first snapshot after a mid-flight reset" (`[12,12,90]` mid-flight → `enterWorld` + `playing` → camera `[24,0,12]`, identity quaternion, cube group `[24,0,0]`, `update(16)` keeps starfield `[1,1,1]`). Negative control (T17 log § 5): the session test fails with `expected 'travel' to be 'playing'` without the T17 session change. (e) met: `world.test.ts` › "hides the exact tile, starts its pop and spawns the burst at the tile origin". |
 | **AC-20** — Message catalog & hello-first | **met** | `protocol.test.ts` codec matrix (happy paths for join/rejoin/explode/cubeCompleted; missing/wrong-type/unknown frame rejections; `MAX_MESSAGE_BYTES` 1024; hello envelope byte-shape); `hub.test.ts` › "answers not_joined to game messages before a successful join"; "answers bad_message for malformed, unknown and oversized frames"; "joins with identity…"; "rejects a second join or rejoin on a joined connection with bad_message"; "overflows … and keeps broadcasts server-scoped"; `app.test.ts` › "sends the pinned hello envelope to each concurrent client" and live handshake (hello first); frontend `multiplayer/protocol.test.ts` mirrors the catalog (112 tests, including the retained hello, placement shapes, all server messages, rejection matrices). |
 | **AC-21** — Heartbeat | **met** | `hub.test.ts` › "pings every 30 s and terminates at the second missed pong" (pings at 30 s/60 s/90 s; `close()` at the second miss); "resets the missed-pong count on every pong"; "keeps a socket alive when a pong arrives after two missed pings"; "closes sockets beyond the connection cap" (`MAX_CONNECTIONS`). |
-| **AC-22** — Connection states & offline behavior | **UNMET** | Banner: `ConnectionBanner.test.tsx` › "renders the pinned connecting copy", "…retrying copy…", "…exhausted copy with the pinned Retry button", "renders nothing while connected" (exact strings). Transport: `transport.test.ts` › "joins, keeps the token in memory and rejoins after the socket drops (AC-22)", "falls back to a fresh join after resume_failed…", "maps retry exhaustion to `exhausted` and restarts on close() + connect()". Gating/resume: `session.test.ts` › "gates every input while disconnected and resumes after welcome" (tap/ArrowRight/spectate/return dispatch nothing; board re-sync; next tap sends the exact explode) and "holds a running camera flight while the transport is down". **Unmet clause:** "the view resets to the own cube instantly" is only true for a landed spectator; a reconnect while a spectate/return flight is in `travel` still plays the remaining flight (same T13 deviation 4). The test covers the landed case (camera `[0,0,12]` on the next frame), not the mid-flight case. |
+| **AC-22** — Connection states & offline behavior | **met** | Banner: `ConnectionBanner.test.tsx` › "renders the pinned connecting copy", "…retrying copy…", "…exhausted copy with the pinned Retry button", "renders nothing while connected" (exact strings). Transport: `transport.test.ts` › "joins, keeps the token in memory and rejoins after the socket drops (AC-22)", "falls back to a fresh join after resume_failed…", "maps retry exhaustion to `exhausted` and restarts on close() + connect()". Gating/resume: `session.test.ts` › "gates every input while disconnected and resumes after welcome" (tap/ArrowRight/spectate/return dispatch nothing; board re-sync; next tap sends the exact explode) and "holds a running camera flight while the transport is down". **Mid-flight reset clause (T17 — the previously unmet part):** `session.test.ts` › "resets a mid-flight spectate to the own rest on a resume welcome (AC-19 d, AC-22)" clears spectate to `{ mode: 'none' }`, sets phase `playing` with travel fields `null` and `spectating` false, renders `[0,0,12]` on the next frame (still there at the abandoned flight's landing time), re-syncs the board (`removedIds: ['front:0:0']`) and dispatches the next tap as `{ type: 'explode', id: 'front:2:2', level: 0 }`; the engine cancel tests pin phase `playing`, progress `1`, zero intents and the non-cancellable `nextLevel`/offline-travel/rest guards; `scene.test.ts` › "rests at the own cube on the first snapshot after a mid-flight reset" proves the scene applies the next `playing` snapshot instantly. T17 log § 5 negative control (`expected 'travel' to be 'playing'` without the fix). |
 | **AC-23** — Intro after welcome; HUD server line | **met** | `session.test.ts` › "holds the intro at progress 0 until welcome, then adopts the server grid and own slot" (before welcome: phase `intro`, progress 0; after: grid/own slot adopted); `Hud.test.tsx` › "renders live counters, the 1-based cube level and the server id from its props" (`Server 1` exact markup); `App.test.tsx` › "binds the HUD to the engine snapshot and the server id to the multiplayer store (AC-11, AC-23)"; `scene.test.ts` › "dollies the intro onto the own position, keeping the accepted z table", "enters the server world on welcome…". |
-| **AC-24** — No weakening (supersession ledger) | **met** | Full suite 782/782 pass (§ 2.4); banned-matcher scan clean (§ 2.8); build succeeds with initial JS gzip **216.27 KB** ≤ 350 (§ 2.6); existing engine/scene/session tests were extended additively (deletion scan of the changed existing test files shows only import/comment restructuring and the ledgered App/Hud exact-markup re-pins, e.g. the `Server N` HUD line); snapshot referential stability retained (`engine.test.ts` "returns the same object until a value changes", `server-state.test.ts` referential-stability tests). |
+| **AC-24** — No weakening (supersession ledger) | **met** | First pass: full suite 782/782 pass (§ 2.4); second pass: **788/788** (§ 1.1.1). Banned-matcher scan clean (§ 2.8, re-run § 1.1.3); build succeeds with initial JS gzip **216.27 KB** first pass / **216.30 KB** second pass ≤ 350 (§ 2.6, § 1.1.1); existing engine/scene/session tests were extended additively (deletion scan of the changed existing test files shows only import/comment restructuring and the ledgered App/Hud exact-markup re-pins, e.g. the `Server N` HUD line; T17 added tests only); snapshot referential stability retained (`engine.test.ts` "returns the same object until a value changes", `server-state.test.ts` referential-stability tests). |
 | **AC-25** — Containerization impact | **met** | § 3.3: exact compose hunks only; § 3.2: Dockerfiles, healthchecks (image-based), ports, services and README unchanged; `compose.yaml` still `GET /ws` on 8080; `podman compose up` remains the single command. |
 | **AC-26** — Extended containerized smoke test | **met** | § 2.7: `SMOKE PASS (8/8 checks)` including hello-first for both clients, two joins on server 1 (`maxUsers 2`, roster 1 then 2, `memberJoined`), third client → server 2, A's explode → `miniCubeRemoved` on A (ack) and B (broadcast), B close → `memberLeft(left)` after the 1 s grace (1002 ms). Script records one PASS/FAIL line per check and exits non-zero on any failure. |
 | **AC-27** — Glossary terms | **met** | `docs/product/glossary.md`: new **game server** (logical room, lazy creation, destroy-on-empty, ids never reused), **server member** (assigned user, one cube on the ring, ephemeral identity, slot retention), **spectating** (view-only camera travel, return, auto-end on leave), and **cube world position** extended with the online slot formula + offline/online examples. No other term's definition/example was changed; the stale `cube level` parenthetical is noted in § 6 rather than edited, per "no other term redefined". |
 
-**Summary:** 25 ACs met (AC-1 met-with-note; AC-10 met with the spec erratum noted), **2 ACs unmet (AC-19, AC-22)**. All seven gate commands are green; the unmet statuses are behavior/evidence gaps, not command failures.
+**Summary:** **all 27 ACs met** (AC-1 met-with-note; AC-10 met with the spec erratum noted), including **AC-19 and AC-22**, which the first pass recorded as unmet and T17 (`caab534`) closed (§ 1.1). Second-pass gate: lint 0, typecheck 0, **788/788 tests**, coverage backend **98.47/97.09/100/98.47** and frontend **99.11/98.29/99.26/99.11**, build gzip **216.30 KB ≤ 350**, smoke **8/8** on the documented fresh-backend stack.
 
 ---
 
 ## 5. Coverage residual (honest, not an omission)
+
+The residual below is the first-pass narrative. The second-pass numbers are in § 1.1.1 and describe the same areas: `session.ts` improved to **98.08/95.76/100/98.08**, `server-state.ts` 97.22 branches and `world.ts` 93.58 branches show V8 run-to-run variance, and `engine.ts` is **100/100/100/100** (the T17 cancel seam is fully covered). No exclusion or threshold changed.
 
 The gate passes comfortably, but these are the real uncovered/limited areas and why they remain:
 
@@ -649,13 +1081,17 @@ The containerized smoke test (§ 2.7) covers the protocol-level equivalents of s
 
 ### F1 — AC-19(c): missing "spectator stays" assertion (evidence gap)
 
-`world.test.ts` proves the target's cube view rebuilds in place (view count 1, old view disposed exactly once, new position/grid/style). What is missing is an assertion for the other half of AC-19(c): after a remote `levelAdvanced` while the session is `{ mode: 'viewing', target: 'p2' }`, the spectate state must remain viewing (and `engine…spectating` must stay true). The production code does keep it (`handleLevelAdvanced` returns early for non-self and never touches the spectate controller), but no test pins it. **Status: unmet clause; test-only follow-up.**
+**Closed by T17 (`caab534`).** `session.test.ts` › "keeps viewing the target when their same-server cube advances (AC-19 c)" now pins the behavior (spectate stays `{ mode: 'viewing', target: 'p2' }`, `spectating` true, no travel, camera `[24,0,12]`, `wire.sent []`); see § 1.1 and the AC-19 row. The first-pass finding is kept below for the record.
+
+`world.test.ts` proves the target's cube view rebuilds in place (view count 1, old view disposed exactly once, new position/grid/style). What is missing is an assertion for the other half of AC-19(c): after a remote `levelAdvanced` while the session is `{ mode: 'viewing', target: 'p2' }`, the spectate state must remain viewing (and `engine…spectating` must stay true). The production code does keep it (`handleLevelAdvanced` returns early for non-self and never touches the spectate controller), but no test pins it. **Status: unmet clause at the first pass (closed by T17 — see the closure note above); test-only follow-up.**
 
 ### F2 — AC-19(d) / AC-22: mid-flight reconnect does not reset instantly (behavior gap)
 
+**Closed by T17 (`caab534`).** The engine `cancelTravel()` seam is called from the resume `welcome` path for `spectate`/`return` flights, and the engine/session/scene tests pin the instant reset (§ 1.1; T17 log § 3 and § 5 negative control). The first-pass finding is kept below for the record.
+
 T13 build-log deviation 4 (lines 367–372) is explicit: "Mid-flight reconnect cannot reset the view instantly. The engine has no travel-cancel teleport seam. AC-19(d) is met for a landed spectator … If the reconnect lands while a spectate flight is still in `travel`, the engine cannot be stopped; the camera completes the flight and the deferred return/normal state follows."
 
-Code path: on a resume `welcome`, `handleWelcome` calls `spectate.reset()` and `engine.setSpectating(false)`, but does not cancel the engine travel; `handleTravelArrival` then completes the flight (for a reset spectate mode it lands with `setSpectating(false)`). The tests cover only the landed spectator (`session.test.ts` "resumes the own cube, resets spectate and re-enters the world on a resume welcome", camera `[0,0,12]` on the next frame). **Status: unmet clause for AC-19(d) and AC-22.** This is a reachable case (drop + rejoin during the 2.5 s flight) and needs a product/engineering decision (see § 8).
+Code path: on a resume `welcome`, `handleWelcome` calls `spectate.reset()` and `engine.setSpectating(false)`, but does not cancel the engine travel; `handleTravelArrival` then completes the flight (for a reset spectate mode it lands with `setSpectating(false)`). The tests cover only the landed spectator (`session.test.ts` "resumes the own cube, resets spectate and re-enters the world on a resume welcome", camera `[0,0,12]` on the next frame). **Status: unmet clause for AC-19(d) and AC-22 at the first pass (closed by T17 — see the closure note above).** This is a reachable case (drop + rejoin during the 2.5 s flight) and needs a product/engineering decision (see § 8).
 
 ### F3 — AC-1 evidence note (not a failure)
 
@@ -671,11 +1107,17 @@ The registry boot emptiness and `/healthz` 200 body are separately asserted, and
 
 ### F6 — Branch and dirty working tree (observation, not a change)
 
-All feature commits are on `main`, not `feat/multiplayer-servers`; the branch is 30 commits ahead of `origin/main` and nothing was pushed. Unrelated pre-existing working-tree modifications (`.opencode/agents/*`, `docs/features/README.md`, `docs/features/cube-game-frontend/status.md`, and untracked predecessor feature docs) were present before T16 and were left untouched; only the two T16 files were staged.
+All feature commits are on `main`, not `feat/multiplayer-servers`; the branch is 30 commits ahead of `origin/main` at the first pass (32 after T17 `caab534` and this pass) and nothing was pushed. Unrelated pre-existing working-tree modifications (`.opencode/agents/*`, `docs/features/README.md`, `docs/features/cube-game-frontend/status.md`, and untracked predecessor feature docs) were present before T16 and were left untouched; only the two T16 files were staged in the first pass and only this log in the second pass.
+
+### F7 — Smoke harness is not idempotent on a warm backend (environment observation)
+
+`npm run smoke` assumes a fresh backend registry: `compose run` reuses running dependencies and the hub keeps `nextServerId` for the process lifetime (server ids are never reused, AC-3), so the hard-coded server ids 1/2 in `smoke.mjs` fail on a second run against the same container. The second pass observed exactly that (warm backend created by T16's smoke run → ids 3/4, 6/8 checks, § 1.1.2); T15 already recorded the precondition and Q-T15-1. The documented stop-then-smoke procedure produced 8/8 PASS. This is a `tests/e2e/smoke.mjs` / `compose.smoke.yaml` harness concern (T15-owned), not a T16/T17 code regression; a future task could add a backend restart/`--force-recreate` step or id-scoped assertions. Out of scope for this verification pass.
 
 ---
 
 ## 8. Follow-up work required to make AC-19(c), AC-19(d) and AC-22 met
+
+**Status: done in T17 (`caab534`).** Items 1–2 were implemented and evidenced there; item 3 is this second pass (§ 1.1). The text below is the first-pass follow-up specification, kept for the record.
 
 A corrective task (not T16) must own the files below; T16 only records the gap.
 
@@ -712,3 +1154,21 @@ docs: record T16 verification pass and glossary terms for multiplayer-servers (T
 ```
 
 No push. The pre-existing unrelated dirty files (§ 3.4) were not staged.
+
+### 9.1 Second pass commit (post-T17)
+
+Staged explicitly (never `git add .`):
+
+```text
+$ git add docs/features/multiplayer-servers/build-log-T16.md
+$ git diff --cached --name-only
+docs/features/multiplayer-servers/build-log-T16.md
+```
+
+Commit message:
+
+```text
+docs: record the post-T17 verification pass for multiplayer-servers (T16)
+```
+
+No push; no source or test file was staged. The pre-existing unrelated dirty files (§ 3.4) remain unstaged.
