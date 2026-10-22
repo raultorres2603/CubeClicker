@@ -11,5 +11,9 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | testing-criteria | Testing Acceptance Criteria | accepted | 2026-10-18 |
 | agent-model-tuning | Agent Model & Effort Tuning (OpenCode Go) | accepted | 2026-10-19 |
 | cube-game-frontend | Cube Game Frontend (first playable 3D experience) | accepted | 2026-10-19 |
+| cube-visual-polish | Cube Visual Polish (follow-up: travel expansion, intro cinematic, burst fronting, pop animation, cursor removal) | accepted | 2026-10-21 |
+| cube-visual-polish-followup | Cube Visual Polish Follow-up (backdrop coverage, framed intro dolly, travel arrival) | accepted | 2026-10-21 |
+| cube-world-transition | Cube World Transition (random mini-cube counts, mini-cube-built surface, directional travel) | accepted | 2026-10-21 |
+| cube-tile-lines-and-controls | Cube Tile Lines & Controls (seamed surface, no pointer rotation, WASD/arrows) | accepted | 2026-10-21 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

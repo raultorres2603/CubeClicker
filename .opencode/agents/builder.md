@@ -1,7 +1,6 @@
 ---
 description: Web implementation specialist. Implements one tasks.md task (or a small parallel-safe batch) with tests, verification evidence, and a commit, then reports. Use after a spec is approved.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash#high
 color: "#22c55e"
 steps: 80
 permissions:

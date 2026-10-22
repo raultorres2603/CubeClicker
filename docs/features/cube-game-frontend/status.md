@@ -62,7 +62,7 @@ First playable frontend of CubeClicker: a futuristic 3D cube with galaxy/starfie
 
 ## Blockers / open questions
 - none blocking. Backlog (post-acceptance):
-  - Manual browser visual pass not executed (environment): recommend `podman compose up` + the game shell checklist before merge/next feature.
+  - Manual browser visual pass executed 2026-10-20 (user, local stack): issues found — travel backdrop doesn't expand; explosion particles render behind the clicked mini-cube; plus design changes requested (intro search/find cinematic, pop-then-shrink click animation, remove cursor highlight) → follow-up feature `cube-visual-polish` opened.
   - `npm audit`: 4 advisories (2 moderate/2 critical) — pre-existing Vitest dev tooling, not `three`; semver-major fix out of scope.
   - Residual coverage (workspace bars met): `ui/GameCanvas.tsx:23–30` unexecuted under SSR (`src/ui` 79.48 statements); real GL context mocked in `webgl.test.ts`; `session.ts:173` branch; `picking.ts:88–89`; retained scaffold `ws/connection.ts` 95.34.
   - Audit trail: `02228ac` (T13 partial skeleton + feature docs, non-conventional message) and superseded hashes (T7 `5e7fddc`/`5709f45` → `b17058a`; T9 `6494791`→`4363f9a`; T8 `bbf403e`) retained by design — no history rewrite.

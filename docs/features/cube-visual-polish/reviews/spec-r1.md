@@ -1,0 +1,37 @@
+---
+feature: cube-visual-polish
+phase: spec
+iteration: 1
+verdict: approved
+blocking: 0
+nonblocking: 1
+---
+# Spec Review — r1
+
+## Summary
+✅ approved — The spec is exceptionally thorough, with every acceptance criterion binary-testable and all math verified. The supersession ledger is complete and honest, feasibility claims check out against the landed code, and the accessibility trade-off of cursor removal is documented transparently. One minor inaccuracy in the root-cause analysis of the starfield streak does not affect the spec's correctness or testability.
+
+## Findings
+| # | Severity | Location | Finding | Required action | Status |
+| --- | --- | --- | --- | --- | --- |
+| F1 | MINOR | spec.md § 1, line 50 | The spec states the starfield streak is "invisible (screen-space point size + z-stretch)" but `starfield.ts` uses `PointsMaterial({ sizeAttenuation: true })` (line 101), so point size DOES attenuate with distance — it's not screen-space. The z-elongation produces a tiny change (points get slightly smaller as they stretch), not zero change. | Update the root-cause statement to: "the z-elongation produces no visible radial expansion (points attenuate with distance, so z-stretch only makes them slightly smaller, not outward)" — the practical conclusion is unchanged, and the fix (uniform x/y expansion) is correct. | open |
+
+## Checklist results
+| Area | Result | Notes |
+| --- | --- | --- |
+| Completeness | ✅ | Every raw-request item maps to a binary-testable AC: background expansion → AC-1; intro search→find→approach → AC-2; burst in front → AC-3; pop+shrink+subtle colour → AC-4; cursor removal → AC-6. No scope invented beyond the request. |
+| Testability | ✅ | Every AC pins exact values at exact progress/times (e.g., AC-1: scale `(1.875, 1.875, 1)` at p=0.25; AC-2: 7-row pose table; AC-4: scale 1/1.05/1.1/0.55/0 at t=0/50/100/130/160 ms). All math verified by hand: intro poses (p=0.56 → `(4, 2, 26.25)` / `(0, 3.75, -5)` ✓; p=0.86 → `(0, 0, 13.75)` ✓), expansion formula (S(p) = 1+7q, values at 0/0.25/0.5/0.75/1 ✓), pop timeline (linear segments, midpoints ✓), burst offset (front:0:0 at `(-2, 2, 3.125)` with +1 yaw → `(3.125, 2, 2)` ✓). |
+| Boundaries | ✅ | Three tiers present (✅ Always / ⚠️ Ask first / 🚫 Never); non-goals listed (no game rules, no HUD, no backend, no new dependencies, no browser automation). |
+| Dependency graph | ✅ | T1 → T2 → T3 → T4 strictly sequential. Rationale (D-9): T2 imports T1's constants; T3 removes `cursor` field and must land after T2's scene stops reading it. No `[P]` tasks: every pair shares a compile-order constraint or touches a shared file. |
+| Parallel safety | ✅ | No `[P]` tasks. `files_owned` per task are disjoint (verified: T1 owns `effects.ts`/`particles.ts`; T2 owns `starfield.ts`/`cube-view.ts`/`scene.ts`/`picking.ts`; T3 owns `engine.ts`/`rotation.ts`/`keyboard.ts`/`GameCanvas.tsx`; T4 owns build logs only). No shared-file contact. |
+| Security | ✅ | No new dependencies, no user data, no storage, no network. Resource bounds unchanged (pop adds one static per-face `instanceColor` buffer — typed array, bounded). Test integrity as a control (coverage bar, concrete assertions, no banned matchers). |
+| Testing | ✅ | Strategy present: unit (pure math in `effects.test.ts`, key table in `keyboard.test.ts`) + integration (real three.js scene graph in `starfield.test.ts`/`cube-view.test.ts`/`scene.test.ts`). Commands exist: `npm run coverage --workspace @cubeclicker/frontend` (pre-gate), `npm run coverage` (final gate). Thresholds ≥ 80% per workspace. Assertion quality: concrete expected values, no banned matchers, no snapshot-only, no assertion-free. Reduced-motion behavior for every new effect (AC-1: scale stays `(1,1,1)`; AC-2: camera stays at rest; AC-4: instant zero-scale, no flash; AC-5: `settlePops` on live switch). Accessibility consequences of cursor removal stated honestly (Option B removes keyboard-complete explode, documented as the trade-off; Option A rejected as an accessibility trap). Resource bounds unchanged (AC-5: 10-cycle object-count baseline test). No browser-only acceptance (all ACs node-assertable). |
+| Consistency | ✅ | Aligns with the vision (visual polish, no game-rule changes). Reuses existing architecture (four-layer: pure `game/**` → render adapter → input mapping → session/UI shell). Contradicts nothing in `AGENTS.md` (coverage bar, concrete assertions, no banned matchers, scope discipline). Supersession ledger honest: only the five named predecessor ACs change (AC-3 travel visual, AC-5 instant hide/layering, AC-8 cursor, AC-22 intro path, AC-1 aria-label string); everything else stays in force. The plan explicitly states "this spec supersedes it, it does not edit it" (line 157). |
+| Risks | ✅ | Ambiguities that could surface mid-build are named and mitigated: Frustum gate assertions (pose-sensitive, hand-verified with ≥ 9° margin; report `blocked` if a pose fails); exact-float assertions on f32-backed matrices (assert `Math.fround` of the pinned product); `instanceColor` interplay with `applyStyle`/rebuild (buffers per-face, owned by mesh, `applyStyle` never touches them); pop records leaking across face removal/rebuild/dispose (`removeFace` filters by face, rebuild disposes view, `dispose` clears records); mid-chain red tree from snapshot-type change (D-6: engine-backed helper + strict T2→T3 order); bundle/coverage regressions from deleted code (removals shrink bundle, per-task coverage runs catch dips); scope creep into predecessor's artifacts (`git diff` on `docs/features/cube-game-frontend/**` must be empty at final gate). |
+
+## Notes / backlog (non-blocking)
+- **F1 (MINOR):** The root-cause statement "screen-space point size" is slightly inaccurate (`sizeAttenuation = true` means point size attenuates with distance), but the practical conclusion (no visible radial expansion) is correct, and the fix (uniform x/y expansion) is sound. This is a documentation clarity issue, not a spec defect.
+- **Frustum gate risk (INFO):** The intro pose Frustum assertions are the highest-risk area. The spec acknowledges this and mitigates by hand-verifying the poses with ≥ 9° margin and instructing the builder to report `blocked` if a pose fails. This is a sound mitigation. If the builder hits a Frustum failure, the spec provides a clear escalation path (pinned values change only via a spec revision, Q-4).
+- **Spec length (INFO):** The spec is 219 lines, which is long but justified by the five behaviors and the need to pin every value for testability. The structure (Summary → Scope → Supersessions → UX behavior → User stories → Acceptance criteria → Non-goals → Boundaries → Security → Real-time → Containerization → Testing strategy → Manual visual pass → Open questions → Assumptions) is clear and scannable.
+- **Manual visual pass (INFO):** The 9-step manual visual pass is a superset of the affected predecessor checklist steps, clearly marked "not an AC". This is a sound discipline: the manual pass verifies the visual feel, but acceptance is gated on the node-assertable ACs.
+- **Option B recommendation (INFO):** The spec recommends Option B (remove the whole keyboard selection cursor feature) over Option A (remove only the visual highlight, keep an invisible cursor). The rationale is honest: "an invisible cursor (Option A) is an accessibility trap; the user dislikes the visible highlight; arrow rotation preserves a keyboard path." This is a sound recommendation, and the spec makes it clear that choosing A would require a spec revision.

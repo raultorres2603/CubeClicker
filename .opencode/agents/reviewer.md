@@ -1,7 +1,6 @@
 ---
 description: Independent quality gate. Reviews specs before building and implementations against the spec after building; produces severity-ranked findings and a verdict. Never fixes code.
 mode: subagent
-model: opencode-go/qwen3.7-plus#max
 color: "#ef4444"
 steps: 50
 permissions:

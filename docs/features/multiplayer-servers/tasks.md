@@ -207,7 +207,7 @@ depends_on: T15, T5b
 files_owned: `tests/e2e/smoke.mjs`, `compose.smoke.yaml`, `docs/features/multiplayer-servers/build-log-T15b.md`
 verify: `npm run lint` → 0; `npm run typecheck` → 0; `npm test` → 0; `npm run coverage` → 0; `npm run smoke` twice in a row on a warm stack → both PASS
 acceptance: AC-25, AC-26 (repeatable)
-status: [ ]
+status: [x]
 
 Make `npm run smoke` idempotent on a warm backend (recreate/reset the backend for the smoke run or assert server ids relative to the run rather than absolute), then prove it by running the smoke twice consecutively without manual `down`/cleanup.
 
