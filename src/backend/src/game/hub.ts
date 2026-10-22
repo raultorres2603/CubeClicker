@@ -17,18 +17,20 @@
  * - `explode` is validated against the member's current level, then broadcast to every member
  *   of that server **including the origin** (ack); invalid requests get `error invalid_click`
  *   + `stateSync` to the origin only (AC-14);
- * - the explode rate limit is 30 attempts per trailing second, excess dropped, and at most one
- *   `error rate_limited` per second (AC-14);
+ * - the explode rate limit is a true trailing-second window: at most 30 admitted attempts
+ *   inside any 1000 ms interval, excess dropped, and at most one `error rate_limited` per
+ *   trailing second (AC-14);
  * - `cubeCompleted` is validated against the full `6·N²` board; accepted completions draw the
- *   next cube, execute the member's planned move (re-validated), and either broadcast
- *   `levelAdvanced` (same server) or `memberLeft (moved)` / `memberJoined` / `worldEntered`
- *   (cross-server) (AC-10/AC-11/AC-15);
+ *   next cube, execute the member's planned move (re-validated), **re-plan the remaining
+ *   donors immediately after a move** and either broadcast `levelAdvanced` (same server) or
+ *   `memberLeft (moved)` / `memberJoined` / `worldEntered` (cross-server) (AC-10/AC-11/AC-15);
  * - a socket close starts `RECONNECT_GRACE_MS` of grace: the member stays in the roster and
  *   keeps its cube; expiry removes them, broadcasts `memberLeft (left)` and destroys an
  *   emptied server (AC-3/AC-7);
  * - a transport ping is sent every `WS_HEARTBEAT_INTERVAL_MS`; two unanswered pings terminate
  *   the socket; a pong resets the counter (AC-21);
- * - more than `MAX_CONNECTIONS` attached sockets → the extra socket is closed immediately.
+ * - the connection cap is enforced before anything is sent: `hasCapacity()` lets the route
+ *   close an over-cap upgrade before `hello`, and `attach` keeps the same guard as a backstop.
  *
  * Time, randomness and timers are injected (`HubDeps`), so every boundary is deterministic in
  * tests: no wall-clock reads, no real sleeps.
@@ -73,7 +75,7 @@ import {
   type ServerRegistry,
 } from './servers.js';
 
-/** The trailing window of the explode rate limit: 30 attempts per second (AC-14). */
+/** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
 
 /**
@@ -116,6 +118,13 @@ export interface HubDeps {
 
 /** The hub surface (`app.ts` attaches sockets; nothing else is public). */
 export interface GameHub {
+  /**
+   * Whether one more socket may attach (`connectionCount() < MAX_CONNECTIONS`).
+   *
+   * The `/ws` route checks this **before** sending `hello`, so an over-cap upgrade is closed
+   * without ever starting the protocol (AC-20, F5).
+   */
+  hasCapacity(): boolean;
   /** Attaches one socket: registers the lifecycle listeners and the heartbeat. */
   attach(peer: Peer): void;
   /** Number of currently attached sockets (bounded by `config.maxConnections`). */
@@ -136,12 +145,10 @@ interface Connection {
   heartbeat: ReturnType<typeof setInterval> | null;
 }
 
-/** One member's explode quota for the current trailing window. */
+/** One member's explode quota for the trailing second. */
 interface RateWindow {
-  /** Clock time the current window started. */
-  start: number;
-  /** Explode attempts inside the current window (valid or not). */
-  count: number;
+  /** Timestamps (ms) of the attempts admitted inside the current trailing window. */
+  admitted: number[];
   /** When the last `rate_limited` error was sent, or `null`. */
   lastLimitedAt: number | null;
 }
@@ -161,8 +168,9 @@ interface Member {
  * Creates the hub state machine over the injected environment.
  *
  * The move plan is recomputed on the pinned membership triggers (join, socket close, grace
- * expiry, successful resume) and only read at completion, where the registry re-validates the
- * target (spec § 7) — a member can therefore never move spontaneously or twice for one trigger.
+ * expiry, successful resume) **and after every executed move** (F3), and only read at
+ * completion, where the registry re-validates the target (spec § 7) — a member can therefore
+ * never move spontaneously or twice for one trigger.
  */
 export function createGameHub(deps: HubDeps): GameHub {
   const { config } = deps;
@@ -430,7 +438,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       token: record.token,
       cube: createNextCube(null, styleForLevel, random),
       connection,
-      rate: { start: deps.now(), count: 0, lastLimitedAt: null },
+      rate: { admitted: [], lastLimitedAt: null },
     };
     members.set(member.playerId, member);
     tokens.set(member.token, member.playerId);
@@ -475,18 +483,19 @@ export function createGameHub(deps: HubDeps): GameHub {
   ): void {
     const now = deps.now();
     const rate = member.rate;
-    if (now - rate.start >= RATE_WINDOW_MS) {
-      rate.start = now;
-      rate.count = 0;
+    // True trailing-second window: forget every admitted attempt that is now at or before
+    // `now − 1000 ms`, so at most 30 attempts can sit inside any 1000 ms interval (F4).
+    while (rate.admitted.length > 0 && rate.admitted[0]! <= now - RATE_WINDOW_MS) {
+      rate.admitted.shift();
     }
-    if (rate.count >= config.clickRateLimitPerSecond) {
+    if (rate.admitted.length >= config.clickRateLimitPerSecond) {
       if (rate.lastLimitedAt === null || now - rate.lastLimitedAt >= RATE_WINDOW_MS) {
         rate.lastLimitedAt = now;
         sendError(connection, 'rate_limited');
       }
       return;
     }
-    rate.count += 1;
+    rate.admitted.push(now);
     if (!validateExplode(member.cube, id, level)) {
       sendError(connection, 'invalid_click');
       sendSync(connection, member);
@@ -521,6 +530,10 @@ export function createGameHub(deps: HubDeps): GameHub {
       broadcast(previous.serverId, levelAdvancedMessage(advance));
       return;
     }
+    // An executed move is itself a membership change: re-plan the remaining donors now, so
+    // a freed slot that appears or moves up the chain is planned without an unrelated trigger
+    // (F3). Their moves still execute only at their own completion.
+    recomputePlan();
     const location = locationOf(member.playerId)!;
     send(connection, worldEnteredMessage(placementFor(member)));
     broadcast(previous.serverId, memberLeftMessage(member.playerId, 'moved'));
@@ -561,8 +574,13 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   return {
+    hasCapacity(): boolean {
+      return connections.size < config.maxConnections;
+    },
+
     attach(peer: Peer): void {
-      // Safety bound: sockets beyond the cap are closed before any state is created for them.
+      // Backstop for direct hub users (the route checks `hasCapacity` before hello): a socket
+      // beyond the cap is closed before any state is created for it.
       if (connections.size >= config.maxConnections) {
         peer.close();
         return;

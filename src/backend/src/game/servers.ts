@@ -14,7 +14,8 @@
  * - join rule: the lowest-numbered server with a free slot, else a new server with a fresh
  *   monotonic id (spec § 4, AC-9);
  * - move plan: pack membership toward the lowest ids; donors are members of higher-id servers
- *   in slot order; a planned target is always strictly lower (spec § 4, AC-10);
+ *   taken in **join order** (a refilled hole can make slot order differ); a planned target is
+ *   always strictly lower (spec § 4, AC-10);
  * - empty servers are destroyed immediately and ids are never reused (spec § 1, AC-3).
  */
 
@@ -133,18 +134,31 @@ export function pickServer(
 }
 
 /**
+ * A global join sequence: `playerId →` the monotonic order in which the member joined.
+ *
+ * The registry maintains one for its live members; a fixture can supply one explicitly to
+ * exercise the spec § 4 donor rule (donors are taken in join order).
+ */
+export type JoinSequence = ReadonlyMap<string, number>;
+
+/**
  * The move plan for the current membership (spec § 4, AC-10).
  *
  * Destinations are the servers with free slots, considered in ascending id order; donors are
- * the members of higher-id servers taken in slot order (holes skipped). Each donor is planned
- * onto the lowest-id server with remaining capacity, but only when that target is strictly
- * lower than the donor's current server id — so a plan can never move a member up or keep them
- * in place. Deterministic and idempotent for a given membership state; the returned map
- * preserves plan order.
+ * the members of higher-id servers taken in **join order** when a sequence is supplied. A
+ * refilled hole can put a later join in a lower slot, so slot order is not join order — the
+ * registry always passes its tracked sequence (F6). Without a sequence the enumeration order
+ * (server id, then slot) is kept, which keeps plain fixtures deterministic.
+ *
+ * Each donor is planned onto the lowest-id server with remaining capacity, but only when that
+ * target is strictly lower than the donor's current server id — so a plan can never move a
+ * member up or keep them in place. Deterministic and idempotent for a given membership state;
+ * the returned map preserves plan order.
  */
 export function computeMovePlan(
   servers: readonly ServerState[],
   maxUsers: number,
+  joinSequence?: JoinSequence,
 ): Map<string, number> {
   const ordered = byId(servers);
   const freeSlots = new Map<number, number>();
@@ -155,23 +169,35 @@ export function computeMovePlan(
     }
   }
 
-  const plan = new Map<string, number>();
+  const donors: Array<{ playerId: string; serverId: number }> = [];
   for (const server of ordered) {
     for (const playerId of server.members) {
-      if (playerId === null) {
-        continue;
+      if (playerId !== null) {
+        donors.push({ playerId, serverId: server.id });
       }
-      const targetId = lowestServerWithFreeSlot(freeSlots);
-      if (targetId === null || targetId >= server.id) {
-        continue;
-      }
-      plan.set(playerId, targetId);
-      const remaining = freeSlots.get(targetId)! - 1;
-      if (remaining === 0) {
-        freeSlots.delete(targetId);
-      } else {
-        freeSlots.set(targetId, remaining);
-      }
+    }
+  }
+  if (joinSequence !== undefined) {
+    // Stable sort: an id missing from the sequence keeps its enumeration position at the end.
+    donors.sort(
+      (left, right) =>
+        (joinSequence.get(left.playerId) ?? Number.MAX_SAFE_INTEGER) -
+        (joinSequence.get(right.playerId) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
+
+  const plan = new Map<string, number>();
+  for (const donor of donors) {
+    const targetId = lowestServerWithFreeSlot(freeSlots);
+    if (targetId === null || targetId >= donor.serverId) {
+      continue;
+    }
+    plan.set(donor.playerId, targetId);
+    const remaining = freeSlots.get(targetId)! - 1;
+    if (remaining === 0) {
+      freeSlots.delete(targetId);
+    } else {
+      freeSlots.set(targetId, remaining);
     }
   }
   return plan;
@@ -212,7 +238,7 @@ export interface ServerRegistry {
    * target's lowest free slot and their old slot is vacated (nobody else shifts).
    */
   moveMember(playerId: string, targetServerId: number): { slot: number } | null;
-  /** Recomputes the move plan from the current membership. */
+  /** Recomputes the move plan from the current membership (donors in tracked join order). */
   plan(): Map<string, number>;
 }
 
@@ -224,6 +250,9 @@ export interface ServerRegistry {
  */
 export function createServerRegistry(maxUsersPerServer: number): ServerRegistry {
   const servers: ServerState[] = [];
+  /** Monotonic join sequence per live member (spec § 4: donors are taken in join order). */
+  const joinSequence = new Map<string, number>();
+  let joinCounter = 0;
   let nextId = 1;
 
   /** Finds a member's server and its 1-based slot (the slot table index is `slot − 1`). */
@@ -255,6 +284,8 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
       }
       const server = servers.find((candidate) => candidate.id === picked.serverId)!;
       place(server, picked.slot, joining);
+      joinCounter += 1;
+      joinSequence.set(joining, joinCounter);
       return { serverId: picked.serverId, slot: picked.slot };
     },
 
@@ -265,6 +296,7 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
       }
       const server = servers[where.serverIndex];
       vacate(server, where.slot);
+      joinSequence.delete(playerId);
       if (occupiedCount(server.members) === 0) {
         servers.splice(where.serverIndex, 1);
         return { left: true, serverDestroyed: true };
@@ -300,7 +332,7 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
     },
 
     plan(): Map<string, number> {
-      return computeMovePlan(servers, maxUsersPerServer);
+      return computeMovePlan(servers, maxUsersPerServer, joinSequence);
     },
   };
 }

@@ -586,10 +586,12 @@ describe('heartbeat', () => {
     expect(peer.closed).toBe(false);
   });
 
-  it('closes sockets beyond the connection cap', () => {
+  it('closes sockets beyond the connection cap and reports capacity', () => {
     const harness = createHarness({ maxConnections: 2 });
+    expect(harness.hub.hasCapacity()).toBe(true);
     const first = harness.connect();
     const second = harness.connect();
+    expect(harness.hub.hasCapacity()).toBe(false);
     const rejected = harness.connect();
 
     expect(rejected.closed).toBe(true);
@@ -598,6 +600,7 @@ describe('heartbeat', () => {
 
     first.drop();
     expect(harness.hub.connectionCount()).toBe(1);
+    expect(harness.hub.hasCapacity()).toBe(true);
     const accepted = harness.connect();
     expect(accepted.closed).toBe(false);
     expect(harness.hub.connectionCount()).toBe(2);
@@ -694,7 +697,7 @@ describe('explode broadcasts', () => {
     ]);
   });
 
-  it('drops the 31st explode in a trailing second and reports rate_limited at most once per second', () => {
+  it('drops the 31st explode in a trailing second and keeps the window closed until it ages out', () => {
     const harness = createHarness();
     const peer = harness.connect();
     harness.join(peer);
@@ -704,8 +707,8 @@ describe('explode broadcasts', () => {
     for (let index = 0; index < 30; index += 1) {
       explode(peer, ids[index]!);
     }
-    expect(peer.messages().filter((message) => message.type === 'miniCubeRemoved')).toHaveLength(
-      30,
+    expect(peer.messages()).toEqual(
+      ids.slice(0, 30).map((id) => ({ type: 'miniCubeRemoved', playerId: 'p1', id })),
     );
 
     peer.clear();
@@ -716,27 +719,87 @@ describe('explode broadcasts', () => {
     explode(peer, ids[31]!);
     expect(peer.messages()).toEqual([]);
 
-    // One millisecond before the window ends the attempt is still dropped silently.
+    // 999 ms after the first admitted attempt all 30 are still inside the trailing second.
     harness.advance(999);
     explode(peer, ids[31]!);
     expect(peer.messages()).toEqual([]);
 
-    // Exactly one second after the window started, the quota is fresh again.
+    // At exactly +1000 ms the t = 0 attempts are outside (now − 1000, now]: quota is fresh.
     harness.advance(1);
     explode(peer, ids[30]!);
     expect(peer.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
     ]);
+  });
 
+  it('keeps the window closed for a burst that a fixed one-second window would admit (F4)', () => {
+    const harness = createHarness();
+    const peer = harness.connect();
+    harness.join(peer);
+    const ids = allIds(3);
+    harness.advance(900);
     peer.clear();
-    for (let index = 31; index < 54; index += 1) {
+
+    for (let index = 0; index < 30; index += 1) {
       explode(peer, ids[index]!);
     }
-    for (let repeat = 0; repeat < 6; repeat += 1) {
-      explode(peer, ids[53]!);
-    }
+    expect(peer.messages()).toHaveLength(30);
+
+    // A fixed window anchored at join time (t = 0) would reset at t = 1000 and accept this
+    // click. The trailing window still contains the 30 attempts from t = 900 → dropped.
     peer.clear();
-    explode(peer, ids[53]!);
+    harness.advance(100);
+    explode(peer, ids[30]!);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'rate_limited' }]);
+
+    // Still inside the burst's trailing second at 999 ms after it.
+    peer.clear();
+    harness.advance(899);
+    explode(peer, ids[30]!);
+    expect(peer.messages()).toEqual([]);
+
+    // The burst ages out exactly one second after it was admitted.
+    harness.advance(1);
+    explode(peer, ids[30]!);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
+    ]);
+  });
+
+  it('reports rate_limited at most once per trailing second (F4)', () => {
+    const harness = createHarness({ clickRateLimitPerSecond: 2 });
+    const peer = harness.connect();
+    harness.join(peer);
+    const ids = allIds(3);
+    peer.clear();
+
+    explode(peer, ids[0]!);
+    explode(peer, ids[1]!);
+    expect(peer.messages()).toHaveLength(2);
+
+    peer.clear();
+    explode(peer, ids[2]!);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'rate_limited' }]);
+
+    // Dropped attempts inside the same second never repeat the error.
+    peer.clear();
+    harness.advance(400);
+    explode(peer, ids[2]!);
+    harness.advance(599);
+    explode(peer, ids[2]!);
+    expect(peer.messages()).toEqual([]);
+
+    // At +1000 ms the first two attempts age out: two are admitted, the third reports again.
+    harness.advance(1);
+    explode(peer, ids[2]!);
+    explode(peer, ids[3]!);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: ids[2]! },
+      { type: 'miniCubeRemoved', playerId: 'p1', id: ids[3]! },
+    ]);
+
+    peer.clear();
+    explode(peer, ids[4]!);
     expect(peer.messages()).toEqual([{ type: 'error', code: 'rate_limited' }]);
   });
 });
@@ -971,6 +1034,130 @@ describe('cube completion', () => {
     ]);
     expect(first.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
     expect(third.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
+  });
+
+  it('re-plans after every executed move so three servers pack completely (X = 2, AC-10, F3)', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 }); // draw 0 → every cube is 3×3
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const third = harness.connect();
+    harness.join(third);
+    const fourth = harness.connect();
+    harness.join(fourth);
+    const fifth = harness.connect();
+    harness.join(fifth);
+
+    // Initial packing: [1: p1, p2] [2: p3, p4] [3: p5].
+    expect(welcomeOf(first).serverId).toBe(1);
+    expect(welcomeOf(first).position).toEqual(X2_SLOT_1);
+    expect(welcomeOf(second).position).toEqual(X2_SLOT_2);
+    expect(welcomeOf(third).serverId).toBe(2);
+    expect(welcomeOf(third).position).toEqual(X2_SLOT_1);
+    expect(welcomeOf(fourth).serverId).toBe(2);
+    expect(welcomeOf(fourth).position).toEqual(X2_SLOT_2);
+    expect(welcomeOf(fifth).serverId).toBe(3);
+    expect(welcomeOf(fifth).position).toEqual(X2_SLOT_1);
+    const thirdToken = welcomeOf(third).token;
+    const fifthToken = welcomeOf(fifth).token;
+
+    // p1's grace expires: the plan names only p3 (the single free server-1 slot). Nothing
+    // moves yet — p3 moves only when their own cube completes.
+    first.drop();
+    second.clear();
+    third.clear();
+    fourth.clear();
+    fifth.clear();
+    harness.advance(harness.config.reconnectGraceMs);
+    expect(second.messages()).toEqual([{ type: 'memberLeft', playerId: 'p1', reason: 'left' }]);
+    expect(third.messages()).toEqual([]);
+    expect(fourth.messages()).toEqual([]);
+    expect(fifth.messages()).toEqual([]);
+
+    // p3 completes: the planned move executes into server 1's freed slot 1.
+    removeLevel(harness, third, allIds(3));
+    second.clear();
+    third.clear();
+    fourth.clear();
+    fifth.clear();
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const movedThird = memberOf('p3', 'Player 3', X2_SLOT_1, {
+      levelIndex: 1,
+      gridSize: 3,
+      styleId: 'crimson-alloy',
+      removedIds: [],
+    });
+    expect(third.messages()).toEqual([
+      {
+        type: 'worldEntered',
+        playerId: 'p3',
+        name: 'Player 3',
+        token: thirdToken,
+        serverId: 1,
+        maxUsers: 2,
+        position: X2_SLOT_1,
+        self: {
+          levelIndex: 1,
+          gridSize: 3,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+        },
+        roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
+      },
+    ]);
+    expect(second.messages()).toEqual([{ type: 'memberJoined', member: movedThird }]);
+    expect(fourth.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p3', reason: 'moved' },
+    ]);
+    expect(fifth.messages()).toEqual([]);
+
+    // The move re-planned the remaining donors immediately: p5 (server 3) now targets the
+    // hole p3 left on server 2; p4 has no strictly lower capacity and stays put.
+    removeLevel(harness, fifth, allIds(3));
+    second.clear();
+    third.clear();
+    fourth.clear();
+    fifth.clear();
+    fifth.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const movedFifth = memberOf('p5', 'Player 5', X2_SLOT_1, {
+      levelIndex: 1,
+      gridSize: 3,
+      styleId: 'crimson-alloy',
+      removedIds: [],
+    });
+    expect(fifth.messages()).toEqual([
+      {
+        type: 'worldEntered',
+        playerId: 'p5',
+        name: 'Player 5',
+        token: fifthToken,
+        serverId: 2,
+        maxUsers: 2,
+        position: X2_SLOT_1,
+        self: {
+          levelIndex: 1,
+          gridSize: 3,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+        },
+        roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
+      },
+    ]);
+    expect(fourth.messages()).toEqual([{ type: 'memberJoined', member: movedFifth }]);
+    // Server-scoped: the server-1 members hear nothing about the server-2 move.
+    expect(second.messages()).toEqual([]);
+    expect(third.messages()).toEqual([]);
+
+    // Servers 1 and 2 are full and server 3 was destroyed: the next join gets fresh id 4.
+    const sixth = harness.connect();
+    harness.join(sixth);
+    const sixthWelcome = welcomeOf(sixth);
+    expect(sixthWelcome.serverId).toBe(4);
+    expect(sixthWelcome.position).toEqual(X2_SLOT_1);
+    expect(sixthWelcome.roster).toEqual([memberOf('p6', 'Player 6', X2_SLOT_1)]);
   });
 });
 

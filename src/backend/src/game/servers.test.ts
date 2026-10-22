@@ -172,6 +172,24 @@ describe('computeMovePlan', () => {
     expect([...second]).toEqual([...first]);
     expect(servers).toEqual([server(1, 'p1'), server(2, 'p2', 'p3')]);
   });
+
+  it('takes donors in join order, not slot order, when the sequence says so (F6)', () => {
+    // Server 2 slot 1 holds p5 (joined after p4), slot 2 holds p4. Server 1 has one free slot.
+    const servers = [server(1, 'p1', null), server(2, 'p5', 'p4')];
+    const joinSequence = new Map([
+      ['p1', 1],
+      ['p4', 4],
+      ['p5', 5],
+    ]);
+
+    // Join order picks p4; slot enumeration alone would pick p5.
+    expect([...computeMovePlan(servers, 2, joinSequence)]).toEqual([['p4', 1]]);
+    expect([...computeMovePlan(servers, 2)]).toEqual([['p5', 1]]);
+
+    // A partial sequence (direct callers only; the registry always tracks every member)
+    // keeps unmapped donors in enumeration order after the mapped ones.
+    expect([...computeMovePlan(servers, 2, new Map([['p4', 4]]))]).toEqual([['p4', 1]]);
+  });
 });
 
 describe('createServerRegistry', () => {
@@ -410,6 +428,27 @@ describe('stable slots (T1b)', () => {
     expect([...computeMovePlan([server(1, null, 'p1'), server(2, 'p2')], 2)]).toEqual([
       ['p2', 1],
     ]);
+  });
+});
+
+describe('move-plan donor order across refilled holes (T5b)', () => {
+  it('plans the earlier join out of a server whose lower slot was refilled later (F6)', () => {
+    // X = 2. p3 leaves server 2, then p5 refills the hole in slot 1; p4 (join 4) stays in
+    // slot 2, so slot order (p5, p4) is now the reverse of join order (p4, p5).
+    const registry = createServerRegistry(2);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+    expect(registry.removeMember('p3')).toEqual({ left: true, serverDestroyed: false });
+    expect(registry.assign('p5')).toEqual({ serverId: 2, slot: 1 });
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p2'), server(2, 'p5', 'p4')]);
+
+    // A server-1 slot frees up: the registry's tracked join sequence picks p4 for it.
+    expect(registry.removeMember('p1')).toEqual({ left: true, serverDestroyed: false });
+    expect([...registry.plan()]).toEqual([['p4', 1]]);
+    expect(registry.moveMember('p4', 1)).toEqual({ slot: 1 });
+    expect(registry.servers()).toEqual([server(1, 'p4', 'p2'), server(2, 'p5')]);
   });
 });
 
