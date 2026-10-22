@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createEngine, type EffectIntent, type GameEngine } from './engine';
+import { createEngine, type EffectIntent, type GameEngine, type OnlineGameEngine } from './engine';
 import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
 import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
@@ -1072,5 +1072,386 @@ describe('reduced motion (AC-12)', () => {
     engine.advance(50);
 
     expect(engine.getSnapshot().phase).toBe('playing');
+  });
+});
+
+/**
+ * Builds an online engine, clears every mini-cube and steps into `travel`, returning the
+ * engine plus the intents produced by the sweep. The face fade is advanced explicitly so
+ * the caller's profile alone decides when the online hold begins.
+ */
+function sweepOnlineIntoTravel(
+  timings: Timings,
+  gridSize: number,
+  options: { reducedMotion?: boolean } = {},
+): { engine: OnlineGameEngine; startIntents: EffectIntent[] } {
+  const engine = createEngine({ ...options, online: true, timings, gridSize, random: flatRandom });
+  engine.dispatch({ type: 'introSkip' });
+  for (const faceId of FACE_IDS) {
+    for (const id of idsOfFace(faceId, gridSize)) {
+      engine.dispatch({ type: 'explodeMiniCube', id });
+    }
+  }
+  engine.advance(Math.max(1, timings.faceFadeMs));
+  const startIntents = engine.drainIntents();
+  return { engine, startIntents };
+}
+
+describe('online mode — the level advance holds for the server (AC-14, AC-23)', () => {
+  it('holds in travel at progress 0 with no travelStarted and keeps the finished level', () => {
+    const { engine, startIntents } = sweepOnlineIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    const held = engine.getSnapshot();
+    expect(held.phase).toBe('travel');
+    expect(held.phaseProgress).toBe(0);
+    expect(held.levelIndex).toBe(0);
+    expect(held.gridSize).toBe(GRID_SIZE);
+    expect(held.style).toBe(CUBE_STYLES[0]);
+    expect(held.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(held.travelDirection).toBeNull();
+    expect(held.travelKind).toBe('nextLevel');
+    expect(held.travelDestination).toBeNull();
+    expect(held.spectating).toBe(false);
+    expect(startIntents.filter((intent) => intent.kind === 'travelStarted')).toEqual([]);
+    expect(startIntents[startIntents.length - 1]).toEqual({ kind: 'faceCleared', faceId: 'bottom' });
+
+    engine.advance(10_000);
+
+    expect(engine.getSnapshot()).toBe(held);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('releases once with travelStarted and advances at the midpoint with the server cube', () => {
+    const { engine } = sweepOnlineIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    engine.drainIntents();
+
+    engine.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[4]!, destination: { x: 24, y: 0 } });
+
+    let snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0);
+    expect(snapshot.travelKind).toBe('nextLevel');
+    expect(snapshot.travelDestination).toEqual({ x: 24, y: 0 });
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.gridSize).toBe(GRID_SIZE);
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+    const destination = snapshot.travelDestination;
+
+    // Duplicate data before the midpoint neither re-fires travelStarted nor moves the clock.
+    engine.completeNextLevel({ gridSize: 6, style: CUBE_STYLES[1]!, destination: { x: -24, y: 0 } });
+    expect(engine.getSnapshot()).toBe(snapshot);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(1249);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phaseProgress).toBe(1249 / 2500);
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.travelDestination).toBe(destination);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(1);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0.5);
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.gridSize).toBe(3);
+    expect(snapshot.style).toBe(CUBE_STYLES[4]);
+    expect(snapshot.style.id).toBe('violet-nebula');
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(snapshot.rotationFrom).toBeNull();
+    expect(snapshot.travelDestination).toBe(destination);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([9, 9, 9, 9, 9, 9]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[4] }]);
+
+    // Late data for the same travel is stale: the level advanced exactly once.
+    engine.completeNextLevel({ gridSize: 7, style: CUBE_STYLES[2]!, destination: { x: 1, y: 2 } });
+    expect(engine.getSnapshot()).toBe(snapshot);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(1250);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.phaseProgress).toBe(1);
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.gridSize).toBe(3);
+    expect(snapshot.style).toBe(CUBE_STYLES[4]);
+    expect(snapshot.travelKind).toBeNull();
+    expect(snapshot.travelDestination).toBeNull();
+    expect(snapshot.travelDirection).toBeNull();
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('advances exactly once on a single advance that crosses the whole released travel', () => {
+    const { engine } = sweepOnlineIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    engine.drainIntents();
+    engine.completeNextLevel({ gridSize: 4, style: CUBE_STYLES[2]!, destination: { x: 0, y: 24 } });
+    engine.drainIntents();
+
+    engine.advance(2500);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.gridSize).toBe(4);
+    expect(snapshot.style).toBe(CUBE_STYLES[2]);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[2] }]);
+  });
+
+  it('keeps server data that arrives during the face fade and releases after it', () => {
+    const engine = createEngine({ online: true, gridSize: GRID_SIZE, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    for (const faceId of FACE_IDS) {
+      clearFace(engine, faceId, GRID_SIZE);
+    }
+    engine.drainIntents();
+
+    expect(engine.getSnapshot().phase).toBe('playing');
+
+    // A spectate request during the face fade is ignored: the pending level advance wins.
+    const fading = engine.getSnapshot();
+    engine.dispatch({ type: 'travelTo', kind: 'spectate', destination: { x: 1, y: 1 } });
+    expect(engine.getSnapshot()).toBe(fading);
+
+    engine.completeNextLevel({ gridSize: 6, style: CUBE_STYLES[3]!, destination: { x: -24, y: 0 } });
+    const duringFade = engine.getSnapshot();
+    expect(duringFade.phase).toBe('playing');
+    expect(duringFade.travelKind).toBeNull();
+    // A duplicate during the fade is ignored too.
+    engine.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[0]!, destination: { x: 0, y: 0 } });
+    expect(engine.getSnapshot()).toBe(duringFade);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(DEFAULT_TIMINGS.faceFadeMs);
+
+    let snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0);
+    expect(snapshot.travelKind).toBe('nextLevel');
+    expect(snapshot.travelDestination).toEqual({ x: -24, y: 0 });
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.gridSize).toBe(6);
+    expect(snapshot.style).toBe(CUBE_STYLES[3]);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      36, 36, 36, 36, 36, 36,
+    ]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[3] }]);
+  });
+
+  it('never draws a local grid or direction in online mode', () => {
+    const counter = countingRandom(0.9);
+    const engine = createEngine({
+      online: true,
+      gridSize: GRID_SIZE,
+      reducedMotion: true,
+      random: counter.random,
+    });
+    engine.dispatch({ type: 'introSkip' });
+    for (const faceId of FACE_IDS) {
+      clearFace(engine, faceId, GRID_SIZE);
+    }
+
+    engine.advance(REDUCED_TIMINGS.faceFadeMs);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(counter.draws()).toBe(0);
+
+    engine.completeNextLevel({ gridSize: 7, style: CUBE_STYLES[4]!, destination: { x: 24, y: 24 } });
+    engine.advance(REDUCED_TIMINGS.travelMs);
+
+    expect(counter.draws()).toBe(0);
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.levelIndex).toBe(1);
+    expect(snapshot.gridSize).toBe(7);
+    expect(snapshot.style).toBe(CUBE_STYLES[4]);
+    expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      49, 49, 49, 49, 49, 49,
+    ]);
+  });
+
+  it('ignores completeNextLevel when no online advance is waiting for it', () => {
+    const offline = createEngine({ gridSize: GRID_SIZE, random: flatRandom });
+    const offlineSnapshot = offline.getSnapshot();
+    offline.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[1]!, destination: { x: 24, y: 0 } });
+    expect(offline.getSnapshot()).toBe(offlineSnapshot);
+    expect(offline.drainIntents()).toEqual([]);
+
+    const online = createEngine({ online: true, gridSize: GRID_SIZE, random: flatRandom });
+    const intro = online.getSnapshot();
+    online.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[1]!, destination: { x: 24, y: 0 } });
+    expect(online.getSnapshot()).toBe(intro);
+
+    online.dispatch({ type: 'introSkip' });
+    const playing = online.getSnapshot();
+    online.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[1]!, destination: { x: 24, y: 0 } });
+    expect(online.getSnapshot()).toBe(playing);
+    expect(online.drainIntents()).toEqual([]);
+  });
+});
+
+describe('camera-only travel kinds (AC-17)', () => {
+  it('travels to a spectated cube without touching the level, the board or the stats', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    const before = engine.getSnapshot();
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'travelTo', kind: 'spectate', destination: { x: 24, y: 0 } });
+
+    let snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0);
+    expect(snapshot.travelKind).toBe('spectate');
+    expect(snapshot.travelDestination).toEqual({ x: 24, y: 0 });
+    expect(snapshot.travelDirection).toBeNull();
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.board).toBe(before.board);
+    expect(snapshot.stats).toBe(before.stats);
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+    const destination = snapshot.travelDestination;
+
+    // Stale level data during a camera flight is ignored (no online advance is pending).
+    engine.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[1]!, destination: { x: 0, y: 0 } });
+    expect(engine.getSnapshot()).toBe(snapshot);
+
+    engine.advance(1250);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.phaseProgress).toBe(0.5);
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.travelDestination).toBe(destination);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(1250);
+    snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.phaseProgress).toBe(1);
+    expect(snapshot.travelKind).toBeNull();
+    expect(snapshot.travelDestination).toBeNull();
+    expect(snapshot.levelIndex).toBe(0);
+    expect(snapshot.board).toBe(before.board);
+    expect(snapshot.stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('travels back home with the return kind', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'travelTo', kind: 'return', destination: { x: -24, y: 12 } });
+    expect(engine.getSnapshot().travelKind).toBe('return');
+    expect(engine.getSnapshot().travelDestination).toEqual({ x: -24, y: 12 });
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('playing');
+    expect(snapshot.travelKind).toBeNull();
+    expect(snapshot.travelDestination).toBeNull();
+    expect(snapshot.levelIndex).toBe(0);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('ignores a second travel request while one is running', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.dispatch({ type: 'travelTo', kind: 'spectate', destination: { x: 24, y: 0 } });
+    engine.drainIntents();
+    const traveling = engine.getSnapshot();
+
+    engine.dispatch({ type: 'travelTo', kind: 'return', destination: { x: 0, y: 0 } });
+
+    expect(engine.getSnapshot()).toBe(traveling);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+    expect(engine.getSnapshot().phase).toBe('playing');
+  });
+
+  it('ignores travelTo during the intro', () => {
+    const engine = createEngine({ random: flatRandom });
+    const before = engine.getSnapshot();
+
+    engine.dispatch({ type: 'travelTo', kind: 'spectate', destination: { x: 24, y: 0 } });
+
+    expect(engine.getSnapshot()).toBe(before);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('leaves the offline travel kind and destination empty', () => {
+    const { engine } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+
+    const snapshot = engine.getSnapshot();
+    expect(snapshot.phase).toBe('travel');
+    expect(snapshot.travelDirection).toBe('top');
+    expect(snapshot.travelKind).toBeNull();
+    expect(snapshot.travelDestination).toBeNull();
+    expect(snapshot.spectating).toBe(false);
+  });
+});
+
+describe('spectating input gate (AC-17)', () => {
+  it('ignores every gameplay input while spectating, leaving board, stats and orientation untouched', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.setSpectating(true);
+    const gated = engine.getSnapshot();
+    expect(gated.spectating).toBe(true);
+    expect(engine.getSnapshot()).toBe(gated);
+    engine.setSpectating(true);
+    expect(engine.getSnapshot()).toBe(gated);
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
+    engine.dispatch({ type: 'rotate', axis: 'pitch', direction: -1 });
+    engine.dispatch({ type: 'introSkip' });
+
+    expect(engine.getSnapshot()).toBe(gated);
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(25);
+    expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(engine.getSnapshot().rotationFrom).toBeNull();
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('still allows the return travel and re-enables input after spectating ends', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.setSpectating(true);
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'travelTo', kind: 'return', destination: { x: 0, y: 0 } });
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().travelKind).toBe('return');
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+    expect(engine.getSnapshot().phase).toBe('playing');
+
+    engine.setSpectating(false);
+    const active = engine.getSnapshot();
+    expect(active.spectating).toBe(false);
+    engine.setSpectating(false);
+    expect(engine.getSnapshot()).toBe(active);
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
+    expect(engine.drainIntents()).toHaveLength(1);
   });
 });

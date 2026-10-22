@@ -35,6 +35,20 @@
  * `levelChanged` while the camera is at the turn-around; `playing` resumes at
  * `timings.travelMs`, so the new cube is already built when the camera lands.
  *
+ * **Online mode (`EngineOptions.online`).** The sixth-face advance is server-authoritative
+ * (spec § Supersessions, AC-14/AC-23): after the same face fade the engine enters
+ * `travel` but holds — progress 0, camera at rest, no `travelStarted`, no local grid or
+ * direction draw — until {@link GameEngine.completeNextLevel} supplies the server's next
+ * cube. Data may also arrive during the face fade; it is kept and released when the fade
+ * ends. Releasing drains exactly one `travelStarted`, then the normal travel clock runs and
+ * the midpoint advance uses the server's `gridSize`/`style` (still exactly once, stats
+ * carried). Offline mode is unchanged and keeps its own draws.
+ *
+ * **Camera-only travel (`travelTo`).** `spectate`/`return` flights enter `travel` with a
+ * server-assigned destination, never advance a level and return to `playing` on completion.
+ * While {@link GameEngine.setSpectating} is active every gameplay event is ignored (clicks,
+ * rotations, intro skips); only a return travel may still be dispatched.
+ *
  * **Randomness (spec AC-1, AC-3).** Randomness enters only through the current random
  * source; this module never reads the platform RNG. The pinned draw order is: one grid
  * draw at creation (level 0), the explosion bursts' draws, one direction draw at travel
@@ -44,6 +58,7 @@
  * through {@link GameEngine.setRandomSource}.
  */
 
+import type { Position } from '../multiplayer/protocol';
 import { createBoard, remainingOnFace, removeMiniCube } from './board';
 import {
   TRAVEL_LEVEL_ADVANCE_P,
@@ -80,11 +95,29 @@ import {
   type TravelDirection,
 } from './types';
 
+/** A camera-only travel: to another member's cube (`spectate`) or back home (`return`). */
+export type CameraTravelKind = 'spectate' | 'return';
+
+/**
+ * The kind of the running travel: an online server-driven level advance (`nextLevel`), a
+ * camera-only flight (`spectate`/`return`), or `null` outside a travel and for the offline
+ * level travel (which keeps its drawn direction and no destination).
+ */
+export type TravelKind = 'nextLevel' | CameraTravelKind;
+
+/** The server's next cube, delivered at the online level advance (spec AC-14/AC-15). */
+export interface NextLevelData {
+  gridSize: number;
+  style: CubeStyle;
+  destination: Position;
+}
+
 /** Everything the player can do. Bound to the engine through `dispatch`. */
 export type GameEvent =
   | { type: 'introSkip' }
   | { type: 'explodeMiniCube'; id: MiniCubeId }
-  | { type: 'rotate'; axis: Axis; direction: -1 | 1 };
+  | { type: 'rotate'; axis: Axis; direction: -1 | 1 }
+  | { type: 'travelTo'; kind: CameraTravelKind; destination: Position };
 
 /**
  * One-shot effect for the render layer, drained in the order it was produced.
@@ -93,7 +126,8 @@ export type GameEvent =
  *   `burst` (empty under reduced motion).
  * - `faceCleared` — that face's plate fades and its geometry is released.
  * - `levelChanged` — rebuild the cube with `style`.
- * - `travelStarted` — the galaxy travel transition begins.
+ * - `travelStarted` — a travel transition begins: the level advance (offline, or online
+ *   once the server data releases the hold) or a camera-only spectate/return flight.
  */
 export type EffectIntent =
   | { kind: 'explosion'; id: MiniCubeId; faceId: FaceId; burst: Burst }
@@ -112,6 +146,12 @@ export interface EngineOptions {
   /** Random source for the grid/direction draws and the bursts; defaults to the LCG. */
   random?: () => number;
   timings?: Timings;
+  /**
+   * Online mode: the sixth-face advance holds after the face fade until
+   * {@link GameEngine.completeNextLevel} supplies the server's next cube; no local grid or
+   * direction draw is consumed. Offline (default) keeps the local draws unchanged.
+   */
+  online?: boolean;
 }
 
 /**
@@ -139,11 +179,36 @@ export interface EngineSnapshot {
    */
   gridSize: number;
   /**
-   * The drawn direction of the running travel; non-null exactly during `travel` and
-   * `null` in `intro`/`playing` (spec AC-3).
+   * The drawn direction of the running offline travel; non-null exactly during an offline
+   * `travel` and `null` in `intro`/`playing` and for every online travel (spec AC-3).
    */
   travelDirection: TravelDirection | null;
+  /**
+   * The kind of the running travel. `nextLevel` covers the online server-driven advance
+   * (including the pre-data hold, when `travelDestination` is still `null`); `spectate`/
+   * `return` are camera-only flights; `null` in `intro`/`playing` and for the offline
+   * level travel.
+   *
+   * Optional in this base contract only for source compatibility with pre-online snapshot
+   * fakes (owned by other tasks); every snapshot built by {@link createEngine} carries it
+   * (see {@link OnlineEngineSnapshot}).
+   */
+  travelKind?: TravelKind | null;
+  /** The server-assigned destination of the running travel; `null` without one. */
+  travelDestination?: Position | null;
+  /** True while the camera rests over another member's cube and every game input is gated. */
+  spectating?: boolean;
   reducedMotion: boolean;
+}
+
+/**
+ * The exact snapshot every {@link createEngine} snapshot satisfies: the online fields are
+ * always present (the compatibility optionals of {@link EngineSnapshot} are filled in).
+ */
+export interface OnlineEngineSnapshot extends EngineSnapshot {
+  travelKind: TravelKind | null;
+  travelDestination: Position | null;
+  spectating: boolean;
 }
 
 export interface GameEngine {
@@ -162,6 +227,24 @@ export interface GameEngine {
    * The session injects the host's `env.random` here at attach (spec Assumptions).
    */
   setRandomSource(random: () => number): void;
+  /**
+   * Online only: supplies the server's next cube and releases the held travel. Accepted
+   * while the face fade runs (the data is kept until the fade ends) and during the hold;
+   * ignored in every other state and after the first release.
+   *
+   * Optional in this base contract only for source compatibility with pre-online engine
+   * fakes (owned by other tasks); {@link createEngine} always implements it.
+   */
+  completeNextLevel?(data: NextLevelData): void;
+  /** View-only gate: while true every gameplay event is ignored (spectating mode). */
+  setSpectating?(active: boolean): void;
+}
+
+/** The engine {@link createEngine} returns: the online seams are always present. */
+export interface OnlineGameEngine extends GameEngine {
+  getSnapshot(): OnlineEngineSnapshot;
+  completeNextLevel(data: NextLevelData): void;
+  setSpectating(active: boolean): void;
 }
 
 /** One quarter turn in yaw counters. */
@@ -281,22 +364,36 @@ function faceIdOf(id: MiniCubeId): FaceId {
  * profiles); otherwise the active profile is `timingsFor(reducedMotion)` and follows
  * `setReducedMotion` live.
  */
-export function createEngine(options: EngineOptions = {}): GameEngine {
+export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   /** The injected grid size — skips every grid draw and applies to every level. */
   const gridSizeOverride = options.gridSize;
   /** The live random source; `setRandomSource` swaps it for every subsequent draw. */
   let random = options.random ?? createSeededRandom(LCG_SEED);
   const providedTimings = options.timings;
+  /** Online: the level advance is server-driven and holds for `completeNextLevel`. */
+  const online = options.online ?? false;
 
   let reducedMotion = options.reducedMotion ?? false;
   let phase: Phase = 'intro';
   let phaseElapsedMs = 0;
   let progression = createProgression();
+  /**
+   * The style the server assigned to the current level (`null` offline). It overrides the
+   * local style cycle until the next server-driven advance replaces it.
+   */
+  let styleOverride: CubeStyle | null = null;
   /** The current level's grid edge: drawn once per level unless one is injected. */
   let gridSize = gridSizeOverride ?? drawGridSize(random);
   let board = createBoard(gridSize);
   /** The running travel's drawn direction; cleared when `travel` ends (spec § 3). */
   let travelDirection: TravelDirection | null = null;
+  let travelKind: TravelKind | null = null;
+  let travelDestination: Position | null = null;
+  /** The server's next cube, held from arrival until the travel midpoint consumes it. */
+  let pendingNextLevel: NextLevelData | null = null;
+  /** Online: true once `completeNextLevel` released the travel clock (one `travelStarted`). */
+  let onlineTravelReleased = false;
+  let spectating = false;
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
@@ -304,7 +401,7 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
   /** Milliseconds left before the sixth-face clear becomes `travel`; `null` when not pending. */
   let faceFadeRemainingMs: number | null = null;
   let intents: EffectIntent[] = [];
-  let cachedSnapshot: EngineSnapshot | null = null;
+  let cachedSnapshot: OnlineEngineSnapshot | null = null;
 
   function currentTimings(): Timings {
     return providedTimings ?? timingsFor(reducedMotion);
@@ -334,19 +431,22 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     return Math.min(1, rotationElapsedMs / currentTimings().rotationMs);
   }
 
-  function buildSnapshot(): EngineSnapshot {
+  function buildSnapshot(): OnlineEngineSnapshot {
     return {
       phase,
       phaseProgress: phaseProgress(),
       stats: progression.stats,
       levelIndex: progression.levelIndex,
-      style: currentStyle(progression),
+      style: styleOverride ?? currentStyle(progression),
       orientation,
       rotationFrom,
       rotationProgress: rotationProgress(),
       board,
       gridSize,
       travelDirection,
+      travelKind,
+      travelDestination,
+      spectating,
       reducedMotion,
     };
   }
@@ -474,32 +574,81 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
     invalidate();
   }
 
-  function startTravel(): void {
-    faceFadeRemainingMs = null;
-    phase = 'travel';
-    phaseElapsedMs = 0;
-    // Exactly one direction draw per travel, from the current random source (spec § 3).
-    travelDirection = drawTravelDirection(random);
+  /** Copies a destination once, so the snapshot never has to rebuild it per frame. */
+  function copyDestination(destination: Position): Position {
+    return { x: destination.x, y: destination.y };
+  }
+
+  /**
+   * Releases a held online level travel with the server's data: exactly one
+   * `travelStarted`, the destination published, the travel clock allowed to run.
+   */
+  function releaseNextLevelTravel(data: NextLevelData): void {
+    travelDestination = copyDestination(data.destination);
+    onlineTravelReleased = true;
     intents.push({ kind: 'travelStarted' });
     invalidate();
   }
 
+  function startTravel(): void {
+    faceFadeRemainingMs = null;
+    phase = 'travel';
+    phaseElapsedMs = 0;
+    if (online) {
+      // Online: the server owns the grid draw and the destination, so no local draw
+      // happens here. Data that arrived during the face fade releases the hold at once.
+      travelDirection = null;
+      travelKind = 'nextLevel';
+      travelDestination = null;
+      onlineTravelReleased = false;
+      if (pendingNextLevel !== null) {
+        releaseNextLevelTravel(pendingNextLevel);
+      }
+    } else {
+      // Exactly one direction draw per travel, from the current random source (spec § 3).
+      travelDirection = drawTravelDirection(random);
+      intents.push({ kind: 'travelStarted' });
+    }
+    invalidate();
+  }
+
   /**
-   * The level advance itself (spec AC-3): progression +1, one grid draw (unless a grid
-   * size is injected), fresh board, default orientation, queued step/fade cleared, one
-   * `levelChanged` intent, snapshot invalidated. The phase switch stays with the caller —
-   * the advance happens at the travel midpoint while the phase is still `travel`.
+   * The level advance itself (spec AC-3): progression +1, the level's grid edge (the local
+   * draw unless the server supplied `next`), fresh board, default orientation, queued
+   * step/fade cleared, one `levelChanged` intent, snapshot invalidated. The phase switch
+   * stays with the caller — the advance happens at the travel midpoint while the phase is
+   * still `travel`.
    */
-  function advanceLevel(): void {
+  function advanceLevel(next: NextLevelData | null): void {
     progression = advanceProgression(progression);
-    gridSize = gridSizeOverride ?? drawGridSize(random);
+    if (next === null) {
+      gridSize = gridSizeOverride ?? drawGridSize(random);
+      styleOverride = null;
+    } else {
+      // Online authority: the server's N and style replace the local draw/cycle.
+      gridSize = next.gridSize;
+      styleOverride = next.style;
+    }
     board = createBoard(gridSize);
     orientation = createOrientation();
     rotationFrom = null;
     rotationElapsedMs = 0;
     queuedStep = null;
     faceFadeRemainingMs = null;
-    intents.push({ kind: 'levelChanged', style: currentStyle(progression) });
+    intents.push({ kind: 'levelChanged', style: next?.style ?? currentStyle(progression) });
+    invalidate();
+  }
+
+  /** A camera-only flight: no level data, no draw, no level advance on arrival. */
+  function startCameraTravel(kind: CameraTravelKind, destination: Position): void {
+    phase = 'travel';
+    phaseElapsedMs = 0;
+    travelDirection = null;
+    travelKind = kind;
+    travelDestination = copyDestination(destination);
+    pendingNextLevel = null;
+    onlineTravelReleased = false;
+    intents.push({ kind: 'travelStarted' });
     invalidate();
   }
 
@@ -528,20 +677,40 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
    * (`travelMs · TRAVEL_LEVEL_ADVANCE_P`, with a zero midpoint firing immediately) and
    * the phase switches to `playing` at `travelMs`. A single advance that crosses both
    * thresholds therefore fires the level advance first, then the phase switch.
+   *
+   * In online mode nothing runs until `completeNextLevel` released the hold (the progress
+   * stays 0 and the snapshot keeps its identity), and the midpoint advance uses the
+   * server's data instead of a local draw. `spectate`/`return` flights never advance a
+   * level; they only run the clock and hand back to `playing`.
    */
   function advanceTravel(dtMs: number): void {
+    if (travelKind === 'nextLevel' && !onlineTravelReleased) {
+      return;
+    }
     const before = phaseElapsedMs;
     phaseElapsedMs += dtMs;
     const timings = currentTimings();
     const midpointMs = timings.travelMs * TRAVEL_LEVEL_ADVANCE_P;
     if (phaseElapsedMs >= midpointMs && (before < midpointMs || midpointMs <= 0)) {
-      advanceLevel();
+      if (travelKind === 'nextLevel' && pendingNextLevel !== null) {
+        const next = pendingNextLevel;
+        pendingNextLevel = null;
+        advanceLevel(next);
+      } else if (travelKind === null) {
+        // Offline level travel keeps its local draw.
+        advanceLevel(null);
+      }
+      // `spectate`/`return`: camera-only, so the midpoint is just camera math.
     }
     if (phaseElapsedMs >= timings.travelMs) {
       phase = 'playing';
       phaseElapsedMs = 0;
-      // The direction is a `travel`-only value: `null` in `intro`/`playing` (spec AC-3).
+      // Travel-only values: `null` in `intro`/`playing` (spec AC-3).
       travelDirection = null;
+      travelKind = null;
+      travelDestination = null;
+      pendingNextLevel = null;
+      onlineTravelReleased = false;
       invalidate();
       return;
     }
@@ -557,6 +726,19 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
         return;
       }
       if (phase === 'travel') {
+        return;
+      }
+      // The return flight must stay reachable while spectating; every gameplay event below
+      // is view-only gated (spec AC-17 — clicks, WASD/arrows and rotations dispatch nothing).
+      if (event.type === 'travelTo') {
+        // A sixth-face advance is already pending (face fade or online hold): one
+        // transition at a time, and the held server data must not be overwritten.
+        if (faceFadeRemainingMs === null) {
+          startCameraTravel(event.kind, event.destination);
+        }
+        return;
+      }
+      if (spectating) {
         return;
       }
       switch (event.type) {
@@ -592,7 +774,7 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
       return drained;
     },
 
-    getSnapshot(): EngineSnapshot {
+    getSnapshot(): OnlineEngineSnapshot {
       if (cachedSnapshot === null) {
         cachedSnapshot = buildSnapshot();
       }
@@ -615,6 +797,37 @@ export function createEngine(options: EngineOptions = {}): GameEngine {
       // Only future draws change; nothing in the snapshot reads randomness, so the
       // published snapshot keeps its identity.
       random = source;
+    },
+
+    completeNextLevel(data: NextLevelData): void {
+      // Only an online advance that is waiting for the server can be released, and only
+      // once: stale or duplicate data is ignored without changing the snapshot.
+      if (!online || pendingNextLevel !== null) {
+        return;
+      }
+      const next: NextLevelData = {
+        gridSize: data.gridSize,
+        style: data.style,
+        destination: copyDestination(data.destination),
+      };
+      if (phase === 'travel' && travelKind === 'nextLevel' && !onlineTravelReleased) {
+        pendingNextLevel = next;
+        releaseNextLevelTravel(next);
+        return;
+      }
+      if (phase === 'playing' && faceFadeRemainingMs !== null) {
+        // The server answered before the face fade elapsed: hold the data, release when
+        // `startTravel` runs (the fade pacing is retained).
+        pendingNextLevel = next;
+      }
+    },
+
+    setSpectating(active: boolean): void {
+      if (spectating === active) {
+        return;
+      }
+      spectating = active;
+      invalidate();
     },
   };
 }
