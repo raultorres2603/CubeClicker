@@ -1,6 +1,11 @@
 # Containerized smoke test — opt-in override, never started by a plain `podman compose up`.
 # Run: podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
 services:
+  backend:
+    environment:
+      MAX_USERS_PER_SERVER: "2"
+      RECONNECT_GRACE_MS: "1000"
+
   smoke:
     image: docker.io/library/node:24-alpine
     working_dir: /smoke
