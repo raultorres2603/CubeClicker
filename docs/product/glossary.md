@@ -17,7 +17,7 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### cube level
 
-**Definition:** A single cube in the run, made of six **faces** of N² **mini-cubes** each (6N² mini-cubes per cube level), where N is the level's random grid size — every cube level draws its own N in 3 to 7. Clearing every face completes the cube level: the game travels to the next cube level, which spawns at a random **cube world position** — left, right, above or below the finished cube, 24 world units away — as a fresh cube in a new style and with its own random grid size, while the player's stats carry over (online occupancy of those positions is a future feature).
+**Definition:** A single cube in the run, made of six **faces** of N² **mini-cubes** each (6N² mini-cubes per cube level), where N is the level's random grid size — every cube level draws its own N in 3 to 7. Clearing every face completes the cube level: the game travels to the next cube level, which spawns at a random **cube world position** — left, right, above or below the finished cube, 24 world units away — as a fresh cube in a new style and with its own random grid size, while the player's stats carry over (in online play the next cube level's position is the server-assigned ring slot — see **cube world position**).
 **Example:** Destroying the last mini-cube of the sixth face completes the cube level and travels to the next cube.
 
 ### cube world position
