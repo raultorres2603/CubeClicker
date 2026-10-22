@@ -151,16 +151,19 @@ function shellHtml({
   stats?: GameStats;
   levelIndex?: number;
 }): string {
+  // `serverId` doubles as the welcomed signal (F7): before the first `welcome` the shell
+  // renders the stats without the server line and no users panel at all.
+  const welcomed = serverId > 0;
   return (
     `<main><canvas tabindex="0" aria-label="${ARIA_LABEL}" style="touch-action:none"></canvas>` +
     '<section aria-label="Game statistics">' +
     `<p>Clicks: <span data-stat="clicks">${stats.clicks}</span></p>` +
     `<p>Faces destroyed: <span data-stat="faces-destroyed">${stats.facesDestroyed}</span></p>` +
     `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
-    `<p>Server <span data-stat="server">${serverId}</span></p>` +
+    (welcomed ? `<p>Server <span data-stat="server">${serverId}</span></p>` : '') +
     '</section>' +
     banner +
-    panel +
+    (welcomed ? panel : '') +
     `<div class="phase-announcement" role="status" aria-live="polite">${regionText}</div>` +
     '</main>'
   );
@@ -178,8 +181,33 @@ describe('App', () => {
       }),
     );
     // The default production session is online: it starts in `connecting` and has no
-    // server assigned until the first `welcome` (spec § 9).
-    expect(occurrences(html, '<p>Server <span data-stat="server">0</span></p>')).toBe(1);
+    // server assigned until the first `welcome` (spec § 9). Pre-welcome the shell shows no
+    // `Server 0` line and no users panel (F7).
+    expect(html).not.toContain('data-stat="server"');
+    expect(html).not.toContain('Users on Server');
+    expect(occurrences(html, '<section aria-label="Game statistics">')).toBe(1);
+  });
+
+  it('keeps the stats visible without a server line before the first welcome (F7)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        session={sessionFor(
+          snapshotFor('playing', { clicks: 3, facesDestroyed: 1 }, 2),
+          multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
+        )}
+      />,
+    );
+
+    expect(html).toBe(
+      shellHtml({
+        serverId: 0,
+        banner: '',
+        stats: { clicks: 3, facesDestroyed: 1 },
+        levelIndex: 2,
+        regionText: '',
+      }),
+    );
+    expect(html).toContain('<p>Cube <span data-stat="cube">3</span></p>');
   });
 
   it('renders the travel phase copy in the same single live region', () => {

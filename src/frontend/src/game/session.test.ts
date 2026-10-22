@@ -14,6 +14,7 @@ import type { Transport, TransportStatus } from '../multiplayer/transport';
 import { createBoard, removeMiniCube } from './board';
 import {
   createEngine,
+  type AuthoritativeCubeState,
   type EngineSnapshot,
   type GameEngine,
   type GameEvent,
@@ -118,6 +119,7 @@ interface FakeEngine {
   motionCalls: boolean[];
   randomSources: Array<() => number>;
   nextLevels: NextLevelData[];
+  cubeAdoptions: AuthoritativeCubeState[];
   spectatingCalls: boolean[];
   setSnapshot(snapshot: EngineSnapshot): void;
 }
@@ -391,6 +393,7 @@ function createFakeEngine(
   const motionCalls: boolean[] = [];
   const randomSources: Array<() => number> = [];
   const nextLevels: NextLevelData[] = [];
+  const cubeAdoptions: AuthoritativeCubeState[] = [];
   const spectatingCalls: boolean[] = [];
   let snapshot = initial;
   return {
@@ -422,6 +425,16 @@ function createFakeEngine(
       completeNextLevel(data) {
         nextLevels.push(data);
       },
+      adoptCubeState(cube) {
+        // Recording only: the engine contract is owned by `engine.test.ts`; the session
+        // tests here pin *which* exact cube the session hands over.
+        cubeAdoptions.push({
+          levelIndex: cube.levelIndex,
+          gridSize: cube.gridSize,
+          style: cube.style,
+          removedIds: [...cube.removedIds],
+        });
+      },
       setSpectating(active) {
         spectatingCalls.push(active);
       },
@@ -431,6 +444,7 @@ function createFakeEngine(
     motionCalls,
     randomSources,
     nextLevels,
+    cubeAdoptions,
     spectatingCalls,
     setSnapshot(next) {
       snapshot = next;
@@ -645,6 +659,7 @@ function selfMember(overrides: Partial<MemberState> = {}): MemberState {
 /** A `welcome` frame with the pinned defaults; the roster defaults to the own member only. */
 function welcomeMessage(options: {
   playerId?: string;
+  name?: string;
   position?: Position;
   levelIndex?: number;
   gridSize?: number;
@@ -655,6 +670,7 @@ function welcomeMessage(options: {
   maxUsers?: number;
 } = {}): WelcomeMessage {
   const playerId = options.playerId ?? 'p1';
+  const name = options.name ?? 'Player 1';
   const position = options.position ?? { x: 0, y: 0 };
   const levelIndex = options.levelIndex ?? 0;
   const gridSize = options.gridSize ?? 5;
@@ -663,7 +679,7 @@ function welcomeMessage(options: {
   return {
     type: 'welcome',
     playerId,
-    name: 'Player 1',
+    name,
     token: 'token-1',
     serverId: options.serverId ?? 1,
     maxUsers: options.maxUsers ?? 4,
@@ -671,7 +687,7 @@ function welcomeMessage(options: {
     self: { levelIndex, gridSize, styleId, removedIds },
     roster:
       options.roster ?? [
-        member({ playerId, name: 'Player 1', position, levelIndex, gridSize, styleId, removedIds }),
+        member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
       ],
   };
 }
@@ -1519,7 +1535,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
     ]);
   });
 
-  it('treats a consistent ack as a no-op and reconciles stateSync without rollback', () => {
+  it('treats a consistent ack as a no-op and hands stateSync to the adoption seam', () => {
     const recording = createFakeEngine(snapshot({ phase: 'playing' }), {
       mutateExplosions: true,
     });
@@ -1540,22 +1556,34 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
     expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:0:0' }]);
     expect(recording.engine.getSnapshot()).toBe(reconciled);
 
+    // The full sync is not replayed tile by tile: the session hands the exact cube over.
     wire.emit(
       stateSyncMessage({ removedIds: ['front:0:0', 'front:0:1', 'front:0:2'] }),
     );
-    expect(recording.events).toEqual([
-      { type: 'explodeMiniCube', id: 'front:0:0' },
-      { type: 'explodeMiniCube', id: 'front:0:1' },
-      { type: 'explodeMiniCube', id: 'front:0:2' },
+    expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:0:0' }]);
+    expect(recording.cubeAdoptions).toEqual([
+      { levelIndex: 0, gridSize: 5, style: CUBE_STYLES[0], removedIds: [] },
+      {
+        levelIndex: 0,
+        gridSize: 5,
+        style: CUBE_STYLES[0],
+        removedIds: ['front:0:0', 'front:0:1', 'front:0:2'],
+      },
     ]);
-    expect(recording.engine.getSnapshot().stats.clicks).toBe(3);
     expect(wire.sent).toEqual([]);
 
-    // A different level/grid cannot be reconciled tile-by-tile without an engine seam.
-    wire.emit(
-      stateSyncMessage({ levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy' }),
-    );
-    expect(recording.events).toHaveLength(3);
+    // A different level/grid/style is adopted too instead of being ignored.
+    wire.emit(stateSyncMessage({ levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy' }));
+    expect(recording.cubeAdoptions).toEqual([
+      { levelIndex: 0, gridSize: 5, style: CUBE_STYLES[0], removedIds: [] },
+      {
+        levelIndex: 0,
+        gridSize: 5,
+        style: CUBE_STYLES[0],
+        removedIds: ['front:0:0', 'front:0:1', 'front:0:2'],
+      },
+      { levelIndex: 1, gridSize: 4, style: CUBE_STYLES[1], removedIds: [] },
+    ]);
 
     // Remote authority never touches the own engine; the world store carries it.
     wire.emit(
@@ -1564,7 +1592,8 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
         removedIds: ['front:1:1'],
       }),
     );
-    expect(recording.events).toHaveLength(3);
+    expect(recording.cubeAdoptions).toHaveLength(3);
+    expect(recording.events).toEqual([{ type: 'explodeMiniCube', id: 'front:0:0' }]);
     expect(session.getMultiplayerSnapshot().world.members[0]!.removedIds).toEqual(['front:1:1']);
   });
 
@@ -1752,6 +1781,284 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
 
     fake.scheduler.tick(0);
     expect(cubeGroup(fake.renderer.renders.at(-1)!.scene).position.toArray()).toEqual([0, 24, 0]);
+  });
+});
+
+describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
+  /** A connected online session on the real engine, playing after the intro skip. */
+  function playingSession(): {
+    engine: GameEngine;
+    fake: FakeEnv;
+    wire: FakeTransport;
+    session: OnlineGameSession;
+  } {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400); // intro skip
+    fake.scheduler.tick(16);
+    return { engine, fake, wire, session };
+  }
+
+  it('restores a locally removed tile the server still has and forwards the next tap again', () => {
+    const { fake, wire, session } = playingSession();
+
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(faceIds(session.getSnapshot(), 'front')).toHaveLength(24);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+
+    // The server still has the tile this client exploded (a rejected/lost click): the sync
+    // must put it back, not leave the local extra in place.
+    wire.emit(stateSyncMessage({ removedIds: [] }));
+
+    const restored = session.getSnapshot();
+    expect(restored.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(faceIds(restored, 'front')).toHaveLength(25);
+    expect(faceIds(restored, 'front')).toContain('front:2:2');
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+
+    fake.scheduler.tick(32);
+    // The rebuild recreated the tile: the instance is visible at its cell again.
+    const restoredFront = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
+    const restoredTile = instanceMatrix(restoredFront, 12);
+    expect(restoredTile.elements[0]).toBe(Math.fround(0.95));
+    expect(new Vector3().setFromMatrixPosition(restoredTile).toArray()).toEqual([0, 0, 2.625]);
+
+    // The restored tile is playable again and forwards the same optimistic message.
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 2, facesDestroyed: 0 });
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'explode', id: 'front:2:2', level: 0 },
+    ]);
+  });
+
+  it('removes the authoritative ids of a stateSync exactly and never echoes them', () => {
+    const { fake, wire, session } = playingSession();
+
+    wire.emit(stateSyncMessage({ removedIds: ['front:0:0', 'front:0:1'] }));
+
+    const synced = session.getSnapshot();
+    expect(synced.stats).toEqual({ clicks: 2, facesDestroyed: 0 });
+    expect(faceIds(synced, 'front')).toEqual([
+      'front:0:2',
+      'front:0:3',
+      'front:0:4',
+      'front:1:0',
+      'front:1:1',
+      'front:1:2',
+      'front:1:3',
+      'front:1:4',
+      'front:2:0',
+      'front:2:1',
+      'front:2:2',
+      'front:2:3',
+      'front:2:4',
+      'front:3:0',
+      'front:3:1',
+      'front:3:2',
+      'front:3:3',
+      'front:3:4',
+      'front:4:0',
+      'front:4:1',
+      'front:4:2',
+      'front:4:3',
+      'front:4:4',
+    ]);
+    // Authoritative removals are never forwarded back to the server.
+    expect(wire.sent).toEqual([]);
+
+    fake.scheduler.tick(32);
+    expect(faceMesh(fake.renderer.renders.at(-1)!.scene, 'front').count).toBe(25);
+    // The drained intent hides the tile: after its 160 ms pop the instance is zero-scaled.
+    fake.scheduler.tick(192);
+    const hidden = instanceMatrix(faceMesh(fake.renderer.renders.at(-1)!.scene, 'front'), 0);
+    expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
+    expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([-2, 2, 2.625]);
+
+    // A duplicate sync is a no-op: the same snapshot object and no extra intents.
+    const before = session.getSnapshot();
+    wire.emit(stateSyncMessage({ removedIds: ['front:0:0', 'front:0:1'] }));
+    expect(session.getSnapshot()).toBe(before);
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('adopts a different level, grid and style from stateSync exactly (AC-14)', () => {
+    const { fake, wire, session } = playingSession();
+
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    wire.emit(
+      stateSyncMessage({
+        levelIndex: 1,
+        gridSize: 4,
+        styleId: 'crimson-alloy',
+        removedIds: ['front:1:1'],
+      }),
+    );
+
+    const synced = session.getSnapshot();
+    expect(synced.levelIndex).toBe(1);
+    expect(synced.gridSize).toBe(4);
+    expect(synced.style.id).toBe('crimson-alloy');
+    // Stats are session-local: the fresh cube never rolls the previous clicks back.
+    expect(synced.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(synced.travelKind).toBeNull();
+    expect(synced.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      15, 16, 16, 16, 16, 16,
+    ]);
+    expect(faceIds(synced, 'front')).toHaveLength(15);
+    expect(faceIds(synced, 'front')).not.toContain('front:1:1');
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+
+    // Frame one drains the rebuild (the fresh view is fully visible); frame two replays the
+    // authoritative removal, and once its pop elapses the instance is zero-scaled.
+    fake.scheduler.tick(32);
+    const rebuilt = fake.renderer.renders.at(-1)!.scene;
+    expect(faceMesh(rebuilt, 'front').count).toBe(16);
+    fake.scheduler.tick(48);
+    fake.scheduler.tick(208);
+    const rendered = fake.renderer.renders.at(-1)!.scene;
+    const hidden = instanceMatrix(faceMesh(rendered, 'front'), 5);
+    expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
+    expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([-0.625, 0.625, 2.625]);
+    const visible = instanceMatrix(faceMesh(rendered, 'front'), 0);
+    expect(visible.elements[0]).toBe(Math.fround(1.1875));
+    expect(faceMesh(rendered, 'top').count).toBe(16);
+  });
+
+  it('adopts a fresh level-0 cube when a resume fails and the client rejoins as a new identity', () => {
+    const { engine, fake, wire, session } = playingSession();
+
+    // Finish level 0 through the real level advance so the client holds a level-1 cube.
+    clearLevel(engine, 5);
+    fake.scheduler.tick(416);
+    expect(session.getSnapshot().phase).toBe('travel');
+    expect(session.getSnapshot().travelKind).toBe('nextLevel');
+    wire.emit(levelAdvancedMessage({ gridSize: 4, styleId: 'crimson-alloy' }));
+    fake.scheduler.tick(1666); // midpoint
+    fake.scheduler.tick(2916); // landed
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().levelIndex).toBe(1);
+    expect(session.getSnapshot().gridSize).toBe(4);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+
+    // `resume_failed` is transport-level: the session sees a new identity's `welcome`, which
+    // restarts it at level 0 on a full cube with the old stats.
+    wire.emitStatus('disconnected');
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        playerId: 'p3',
+        name: 'Player 3',
+        roster: [
+          selfMember({ playerId: 'p3', name: 'Player 3' }),
+          member({ playerId: 'p2', name: 'Player 2' }),
+        ],
+      }),
+    );
+
+    const rejoined = session.getSnapshot();
+    expect(rejoined.phase).toBe('playing');
+    expect(rejoined.levelIndex).toBe(0);
+    expect(rejoined.gridSize).toBe(5);
+    expect(rejoined.style.id).toBe('obsidian-neon');
+    expect(rejoined.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(rejoined.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      25, 25, 25, 25, 25, 25,
+    ]);
+    expect(rejoined.travelKind).toBeNull();
+    expect(session.getMultiplayerSnapshot().world.self.playerId).toBe('p3');
+
+    fake.scheduler.tick(2948);
+    expect(faceMesh(fake.renderer.renders.at(-1)!.scene, 'front').count).toBe(25);
+
+    // The fresh cube is playable at level 0 and the wire carries the new level.
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 151, facesDestroyed: 6 });
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
+  });
+
+  it('releases the held nextLevel travel when a resume welcome answers the completion (F2)', () => {
+    const { engine, fake, wire, session } = playingSession();
+
+    // One tile left on the whole cube: the next tap is the sixth face and sends the completion.
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    tapOn(fake.canvas, 400, 400);
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'cubeCompleted', level: 0 },
+    ]);
+
+    fake.scheduler.tick(416); // the face fade elapsed: the online travel runs held
+    const held = session.getSnapshot();
+    expect(held.phase).toBe('travel');
+    expect(held.travelKind).toBe('nextLevel');
+    expect(held.phaseProgress).toBe(0);
+
+    // The socket drops before the server answers; a resume restores the same identity but
+    // the completion is over: the authoritative cube must release the non-cancellable hold.
+    wire.emitStatus('disconnected');
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        levelIndex: 1,
+        gridSize: 4,
+        styleId: 'crimson-alloy',
+        roster: [
+          selfMember({ levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy' }),
+          member(),
+        ],
+      }),
+    );
+
+    const resumed = session.getSnapshot();
+    expect(resumed.phase).toBe('playing');
+    expect(resumed.phaseProgress).toBe(1);
+    expect(resumed.travelKind).toBeNull();
+    expect(resumed.travelDestination).toBeNull();
+    expect(resumed.levelIndex).toBe(1);
+    expect(resumed.gridSize).toBe(4);
+    expect(resumed.style.id).toBe('crimson-alloy');
+    expect(resumed.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(resumed.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
+    expect(session.getMultiplayerSnapshot().world.self.cube).toEqual({
+      levelIndex: 1,
+      gridSize: 4,
+      styleId: 'crimson-alloy',
+      removedIds: [],
+    });
+
+    // The released hold never flies: the old 2500 ms window leaves the session playing.
+    fake.scheduler.tick(2916);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().levelIndex).toBe(1);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    // Play is live on the adopted 4×4 cube: the quarter-offset tap hits front:1:1.
+    tapOn(fake.canvas, 362, 362);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 151, facesDestroyed: 6 });
+    expect(wire.sent).toEqual([
+      { type: 'explode', id: 'front:2:2', level: 0 },
+      { type: 'cubeCompleted', level: 0 },
+      { type: 'explode', id: 'front:1:1', level: 1 },
+    ]);
   });
 });
 

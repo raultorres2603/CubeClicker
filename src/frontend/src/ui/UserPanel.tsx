@@ -19,10 +19,16 @@ import type { MemberState } from '../multiplayer/protocol';
  * environment, so the open panel is asserted by rendering it open instead of clicking.
  * It is never passed in production.
  *
+ * **Pre-welcome gating (AC-16/F7).** The panel only exists once a server identity has been
+ * assigned (`welcomed`): before the first `welcome` the own name is blank and there is no
+ * server to list, so rendering the toggle, the own row or the return command would show
+ * placeholders.
+ *
  * The panel contributes no live-region semantics: the shell's single phase
  * announcement stays the only `role="status"` region.
  */
 export function UserPanel({
+  welcomed,
   selfName,
   members,
   spectating,
@@ -30,14 +36,19 @@ export function UserPanel({
   onReturn,
   defaultOpen = false,
 }: {
+  welcomed: boolean;
   selfName: string;
   members: readonly MemberState[];
   spectating: boolean;
   onSpectate: (playerId: string) => void;
   onReturn: () => void;
   defaultOpen?: boolean;
-}): ReactElement {
+}): ReactElement | null {
   const [open, setOpen] = useState(defaultOpen);
+
+  if (!welcomed) {
+    return null;
+  }
 
   return (
     <div className="user-panel">

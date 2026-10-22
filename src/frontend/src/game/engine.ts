@@ -52,6 +52,15 @@
  * resume can reset the view to the own rest pose instantly (AC-19 d/AC-22); the server-driven
  * `nextLevel` advance and the offline level travel are never cancelled.
  *
+ * **Authoritative adoption (`adoptCubeState`).** `welcome`/`stateSync` deliver the server's
+ * exact own-cube state (level, grid, style and removed-id set, AC-14/AC-22). The engine
+ * replaces the board in both directions — tiles the authority says still exist are restored,
+ * tiles it says are gone are removed — adopts a different level/grid/style, keeps the
+ * session-local stats, and releases any pending level travel or face fade (a completion the
+ * authority answered while the socket was down must not strand the engine). Because a fresh
+ * board is fully visible, a rebuild replays the authoritative removals as burst-free
+ * removal intents on the following frame so the rendered board matches the engine exactly.
+ *
  * **Randomness (spec AC-1, AC-3).** Randomness enters only through the current random
  * source; this module never reads the platform RNG. The pinned draw order is: one grid
  * draw at creation (level 0), the explosion bursts' draws, one direction draw at travel
@@ -113,6 +122,17 @@ export interface NextLevelData {
   gridSize: number;
   style: CubeStyle;
   destination: Position;
+}
+
+/**
+ * The exact own-cube state the server reports in `welcome.self` and `stateSync` (spec AC-14,
+ * AC-22): the level, its grid edge, the assigned style and every removed mini-cube id.
+ */
+export interface AuthoritativeCubeState {
+  levelIndex: number;
+  gridSize: number;
+  style: CubeStyle;
+  removedIds: readonly MiniCubeId[];
 }
 
 /** Everything the player can do. Bound to the engine through `dispatch`. */
@@ -250,6 +270,16 @@ export interface GameEngine {
    * fakes (owned by other tasks); {@link createEngine} always implements it.
    */
   cancelTravel?(): void;
+  /**
+   * Replaces the own board with the server's exact cube state (AC-14/AC-22): restores ids the
+   * authority says exist, removes ids it says are gone, adopts a different level/grid/style
+   * and releases a pending level travel or face fade. Session-local stats are never rolled
+   * back.
+   *
+   * Optional in this base contract only for source compatibility with pre-online engine
+   * fakes (owned by other tasks); {@link createEngine} always implements it.
+   */
+  adoptCubeState?(cube: AuthoritativeCubeState): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -259,6 +289,7 @@ export interface OnlineGameEngine extends GameEngine {
   getSnapshot(): OnlineEngineSnapshot;
   completeNextLevel(data: NextLevelData): void;
   cancelTravel(): void;
+  adoptCubeState(cube: AuthoritativeCubeState): void;
   setSpectating(active: boolean): void;
 }
 
@@ -372,6 +403,11 @@ function faceIdOf(id: MiniCubeId): FaceId {
   return id.slice(0, id.indexOf(':')) as FaceId;
 }
 
+/** True when the id is still present on the board (the authoritative restore lookup). */
+function boardHasId(board: Board, id: MiniCubeId): boolean {
+  return board.faces.some((face) => face.miniCubes.some((miniCube) => miniCube.id === id));
+}
+
 /**
  * Creates one engine session.
  *
@@ -408,6 +444,13 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   let pendingNextLevel: NextLevelData | null = null;
   /** Online: true once `completeNextLevel` released the travel clock (one `travelStarted`). */
   let onlineTravelReleased = false;
+  /**
+   * The authoritative removals to replay after an adoption rebuilt the cube view. The scene
+   * rebuilds from the snapshot (fully visible), so the engine hides the removed tiles again
+   * on the following frame; `boardReplayArmed` marks the frame the rebuild was drained in.
+   */
+  let pendingBoardReplay: { removedIds: MiniCubeId[]; clearedFaceIds: FaceId[] } | null = null;
+  let boardReplayArmed = false;
   let spectating = false;
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
@@ -667,6 +710,108 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     invalidate();
   }
 
+  /** The burst of an authoritative reconciliation: hides the tile without particles. */
+  function replayBurst(): Burst {
+    return { particles: [], lifetimeMs: currentTimings().explosionMs };
+  }
+
+  /**
+   * Applies one authoritative removal without auto-rotation or auto-settle: the id leaves the
+   * board and the click/face counters follow the accepted reconcile semantics. The scene
+   * intent is optional: an adoption that rebuilds the cube view replays its removals after
+   * the rebuild instead of hiding tiles on the view being discarded.
+   */
+  function removeForAuthority(id: MiniCubeId, emitIntent: boolean): boolean {
+    const removal = removeMiniCube(board, id);
+    if (!removal.removed) {
+      return false;
+    }
+    board = removal.board;
+    progression = recordClick(progression);
+    const faceId = faceIdOf(id);
+    if (removal.faceCleared) {
+      progression = recordFaceDestroyed(progression);
+    }
+    if (emitIntent) {
+      intents.push({ kind: 'explosion', id, faceId, burst: replayBurst() });
+      if (removal.faceCleared) {
+        intents.push({ kind: 'faceCleared', faceId });
+      }
+    }
+    return true;
+  }
+
+  /** The exact board and removal sets of an authoritative cube (invalid ids ignored). */
+  function authoritativeBoard(cube: AuthoritativeCubeState): {
+    board: Board;
+    removedIds: MiniCubeId[];
+    clearedFaceIds: FaceId[];
+  } {
+    let next = createBoard(cube.gridSize);
+    const removedIds: MiniCubeId[] = [];
+    for (const id of cube.removedIds) {
+      const removal = removeMiniCube(next, id);
+      if (removal.removed) {
+        next = removal.board;
+        removedIds.push(id);
+      }
+    }
+    return {
+      board: next,
+      removedIds,
+      clearedFaceIds: next.faces
+        .filter((face) => face.miniCubes.length === 0)
+        .map((face) => face.id),
+    };
+  }
+
+  /**
+   * Releases the level travel / face fade an authoritative adoption supersedes: the server's
+   * cube is the only continuation left, so a held `nextLevel` travel must not keep the
+   * engine frozen (F2). Returns whether anything was released.
+   */
+  function releaseAuthorityTravel(): boolean {
+    const held = phase === 'travel' || faceFadeRemainingMs !== null || pendingNextLevel !== null;
+    if (!held) {
+      return false;
+    }
+    if (phase === 'travel') {
+      phase = 'playing';
+      phaseElapsedMs = 0;
+    }
+    faceFadeRemainingMs = null;
+    travelDirection = null;
+    travelKind = null;
+    travelDestination = null;
+    pendingNextLevel = null;
+    onlineTravelReleased = false;
+    return true;
+  }
+
+  /**
+   * Replays the authoritative removals once the scene has rebuilt the fresh cube view: the
+   * first `advance` after an adoption is the frame that drains the `levelChanged` rebuild,
+   * the next one hides the removed tiles (one frame later, so the rebuild cannot undo it).
+   */
+  function flushBoardReplay(): void {
+    if (pendingBoardReplay === null) {
+      return;
+    }
+    if (!boardReplayArmed) {
+      boardReplayArmed = true;
+      return;
+    }
+    const replay = pendingBoardReplay;
+    pendingBoardReplay = null;
+    boardReplayArmed = false;
+    for (const id of replay.removedIds) {
+      intents.push({ kind: 'explosion', id, faceId: faceIdOf(id), burst: replayBurst() });
+    }
+    for (const faceId of replay.clearedFaceIds) {
+      intents.push({ kind: 'faceCleared', faceId });
+    }
+  }
+
   function advanceIntro(dtMs: number): void {
     phaseElapsedMs += dtMs;
     if (phaseElapsedMs >= currentTimings().introMs) {
@@ -772,6 +917,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       if (dtMs <= 0) {
         return;
       }
+      flushBoardReplay();
       if (phase === 'intro') {
         advanceIntro(dtMs);
         return;
@@ -834,6 +980,61 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         // The server answered before the face fade elapsed: hold the data, release when
         // `startTravel` runs (the fade pacing is retained).
         pendingNextLevel = next;
+      }
+    },
+
+    adoptCubeState(cube: AuthoritativeCubeState): void {
+      const target = authoritativeBoard(cube);
+      const styleBefore = styleOverride ?? currentStyle(progression);
+      const levelDiffers = cube.levelIndex !== progression.levelIndex;
+      const gridDiffers = cube.gridSize !== gridSize;
+      const styleDiffers = cube.style.id !== styleBefore.id;
+      // A tile the authority still has but the local board removed needs a fresh view: the
+      // scene has no "show tile again" seam, so any restore rebuilds the cube view.
+      const restoreNeeded =
+        !levelDiffers &&
+        !gridDiffers &&
+        !styleDiffers &&
+        target.board.faces.some((face) =>
+          face.miniCubes.some((miniCube) => !boardHasId(board, miniCube.id)),
+        );
+      const rebuild = levelDiffers || gridDiffers || styleDiffers || restoreNeeded;
+
+      // Preserve the accepted reconcile accounting: on the same cube, authority removals the
+      // client had not applied yet count as removals (stats are session-local and never
+      // rolled back). A different level/grid is a different cube: its removal set says
+      // nothing about clicks this client made, so it only replaces the board.
+      const sameLevelAndGrid = !levelDiffers && !gridDiffers;
+      let removalApplied = false;
+      for (const id of target.removedIds) {
+        if (sameLevelAndGrid && removeForAuthority(id, !rebuild)) {
+          removalApplied = true;
+        }
+      }
+
+      if (rebuild) {
+        progression = { levelIndex: cube.levelIndex, stats: progression.stats };
+        gridSize = cube.gridSize;
+        styleOverride = cube.style;
+        board = target.board;
+        if (levelDiffers) {
+          // A different level is a fresh cube, exactly like `advanceLevel`: default view.
+          orientation = createOrientation();
+          rotationFrom = null;
+          rotationElapsedMs = 0;
+          queuedStep = null;
+        }
+        intents.push({ kind: 'levelChanged', style: cube.style });
+        pendingBoardReplay = {
+          removedIds: target.removedIds,
+          clearedFaceIds: target.clearedFaceIds,
+        };
+        boardReplayArmed = false;
+      }
+
+      const released = releaseAuthorityTravel();
+      if (removalApplied || rebuild || released) {
+        invalidate();
       }
     },
 

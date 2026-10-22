@@ -65,6 +65,12 @@ function announcementFor(
  * the session, so server rendering stays side-effect-free. `session` is an injection seam
  * for SSR tests (this workspace has no DOM test environment, plan D-5); tests pass a fake
  * `OnlineGameSession`.
+ *
+ * **Pre-welcome gating (F7).** `world.serverId` is `0` until the first `welcome`, so it is
+ * the shell's welcomed/server-identity signal. Before it, the `Server N` line would read
+ * `Server 0` and the users panel would list a blank own row; the shell renders the accepted
+ * stats lines without the server line and the panel renders nothing. `Hud.tsx` is not part
+ * of this task's files, so the stats-only header is composed here for that one state.
  */
 export function App({ session: injectedSession }: { session?: OnlineGameSession } = {}): ReactElement {
   const [session] = useState<OnlineGameSession>(
@@ -80,13 +86,30 @@ export function App({ session: injectedSession }: { session?: OnlineGameSession 
     session.getMultiplayerSnapshot,
     session.getMultiplayerSnapshot,
   );
+  const welcomed = world.serverId > 0;
 
   return (
     <main>
       <GameCanvas session={session} />
-      <Hud stats={snapshot.stats} levelIndex={snapshot.levelIndex} serverId={world.serverId} />
+      {welcomed ? (
+        <Hud stats={snapshot.stats} levelIndex={snapshot.levelIndex} serverId={world.serverId} />
+      ) : (
+        <section aria-label="Game statistics">
+          <p>
+            Clicks: <span data-stat="clicks">{snapshot.stats.clicks}</span>
+          </p>
+          <p>
+            Faces destroyed:{' '}
+            <span data-stat="faces-destroyed">{snapshot.stats.facesDestroyed}</span>
+          </p>
+          <p>
+            Cube <span data-stat="cube">{snapshot.levelIndex + 1}</span>
+          </p>
+        </section>
+      )}
       <ConnectionBanner status={status} onRetry={session.retryConnection} />
       <UserPanel
+        welcomed={welcomed}
         selfName={world.self.name}
         members={world.members}
         spectating={spectate.mode === 'viewing'}

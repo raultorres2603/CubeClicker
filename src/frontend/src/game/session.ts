@@ -28,8 +28,9 @@
  *   and the scene enters the server world at the own slot position (AC-23);
  * - own-cube play stays optimistic: a successful `explodeMiniCube` is forwarded as
  *   `explode { id, level }`; the server's `miniCubeRemoved` ack is a no-op when the local
- *   board already matches, and `stateSync` reconciles the local board to the authoritative
- *   removed set (stats are never rolled back — AC-14);
+ *   board already matches, and `stateSync`/`welcome` adopt the authoritative cube exactly in
+ *   both directions (restored and removed tiles, level/grid/style) — stats are never rolled
+ *   back (AC-14);
  * - clearing the sixth face sends `cubeCompleted { level }` and the engine (created in
  *   online mode) holds the level travel until the server's `levelAdvanced`/`worldEntered`
  *   data releases it; `worldEntered` also queues the scene's midpoint world swap and the
@@ -39,8 +40,9 @@
  *   (return, own position)` → arrival → `setSpectating(false)` (AC-18, AC-19);
  * - while the transport is not connected every gameplay input dispatch is gated and the
  *   engine is frozen, so a level travel holds; a resume `welcome` abandons a running
- *   camera-only flight (the engine returns to `playing` with no intents), re-syncs the own
- *   cube, resets spectate and re-enters the world instantly (AC-22, AC-19 d).
+ *   camera-only flight (the engine returns to `playing` with no intents), adopts the
+ *   authoritative own cube (which also releases a held level travel) and re-enters the world
+ *   instantly (AC-22, AC-19 d).
  *
  * Without a transport the session keeps its offline behaviour unchanged: no transport is
  * connected, no message is reduced, and `canRun()` is always true. The T14-facing
@@ -337,15 +339,20 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   }
 
   /**
-   * Reconciles the own board to an authoritative cube: every removed id still present
-   * locally is dispatched through the engine (the only board-removal seam). A local id the
-   * authority does not have cannot be restored — the engine has no add seam (documented
-   * deviation); stats are never rolled back (AC-14).
+   * Adopts an authoritative cube exactly (AC-14/AC-22): the engine restores tiles the server
+   * still has, removes the authoritative extras, adopts a different level/grid/style and
+   * releases a held level travel. Stats are never rolled back. Pre-online engine fakes
+   * without the adoption seam fall back to the removal-only reconcile (their tests own that
+   * contract; the real engine always implements it).
    */
   function reconcileCube(cube: CubeState): void {
-    const snapshot = engine.getSnapshot();
-    if (cube.levelIndex !== snapshot.levelIndex || cube.gridSize !== snapshot.gridSize) {
-      // A different level/grid cannot be reconciled tile-by-tile without a level seam.
+    if (engine.adoptCubeState !== undefined) {
+      engine.adoptCubeState({
+        levelIndex: cube.levelIndex,
+        gridSize: cube.gridSize,
+        style: resolveStyle(cube.styleId, cube.levelIndex),
+        removedIds: cube.removedIds as MiniCubeId[],
+      });
       return;
     }
     for (const id of cube.removedIds) {
@@ -384,7 +391,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     // A resume (same identity) resets the local-only view; a fresh join has nothing to
     // reset. A camera-only flight is abandoned first, so the next frame renders the own
     // rest pose without the remaining flight frames (AC-19 d / AC-22); the gate must be
-    // lifted before the board reconcile: a spectating engine ignores removals.
+    // lifted before the board reconcile: a spectating engine ignores removals. The adoption
+    // that follows also releases a held `nextLevel` travel with the authoritative cube (F2).
     if (previousSelfId.length > 0 && previousSelfId === message.playerId) {
       const snapshot = engine.getSnapshot();
       const travelKind = snapshot.travelKind ?? null;
@@ -475,7 +483,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     applyAuthoritativeRemoval(message.id);
   }
 
-  /** `stateSync`: the server's full board replaces the own board's removed set (no rollback). */
+  /** `stateSync`: the server's full cube replaces the own board exactly (no stat rollback). */
   function handleStateSync(message: Extract<ServerMessage, { type: 'stateSync' }>): void {
     if (message.playerId !== world.self.playerId) {
       return;

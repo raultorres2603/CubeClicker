@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createEngine, type EffectIntent, type GameEngine, type OnlineGameEngine } from './engine';
+import {
+  createEngine,
+  type AuthoritativeCubeState,
+  type EffectIntent,
+  type GameEngine,
+  type OnlineGameEngine,
+} from './engine';
 import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
 import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
@@ -77,6 +83,11 @@ function clearFace(engine: GameEngine, faceId: FaceId, gridSize: number): void {
 /** An explosion intent for one id of one face, in the default profile. */
 function explosion(id: MiniCubeId, faceId: FaceId): EffectIntent {
   return { kind: 'explosion', id, faceId, burst: FLAT_BURST };
+}
+
+/** The burst an authoritative adoption replay carries: no particles, default lifetime. */
+function replayExplosion(id: MiniCubeId, faceId: FaceId): EffectIntent {
+  return { kind: 'explosion', id, faceId, burst: { particles: [], lifetimeMs: 350 } };
 }
 
 /**
@@ -1297,6 +1308,218 @@ describe('online mode — the level advance holds for the server (AC-14, AC-23)'
     online.completeNextLevel({ gridSize: 3, style: CUBE_STYLES[1]!, destination: { x: 24, y: 0 } });
     expect(online.getSnapshot()).toBe(playing);
     expect(online.drainIntents()).toEqual([]);
+  });
+});
+
+describe('authoritative cube adoption (AC-14, AC-22)', () => {
+  it('adopts the removed set of the same cube exactly and forwards the removal intent', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 3,
+      style: CUBE_STYLES[0]!,
+      removedIds: ['front:0:0'],
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.levelIndex).toBe(0);
+    expect(adopted.gridSize).toBe(3);
+    expect(adopted.style).toBe(CUBE_STYLES[0]);
+    expect(adopted.phase).toBe('playing');
+    expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      8, 9, 9, 9, 9, 9,
+    ]);
+    expect(adopted.board.faces[0]!.miniCubes.map((miniCube) => miniCube.id)).toEqual(
+      idsOfFace('front', 3).filter((id) => id !== 'front:0:0'),
+    );
+    // The authority removal the client had not applied counts, as the accepted reconcile does.
+    expect(adopted.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(engine.drainIntents()).toEqual([replayExplosion('front:0:0', 'front')]);
+  });
+
+  it('reports a face cleared by an authoritative removal without auto-rotating', () => {
+    const engine = createEngine({ online: true, gridSize: 1, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 1,
+      style: CUBE_STYLES[0]!,
+      removedIds: ['front:0:0'],
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.stats).toEqual({ clicks: 1, facesDestroyed: 1 });
+    expect(adopted.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([0, 1, 1, 1, 1, 1]);
+    expect(engine.drainIntents()).toEqual([
+      replayExplosion('front:0:0', 'front'),
+      { kind: 'faceCleared', faceId: 'front' },
+    ]);
+  });
+
+  it('restores a locally missing tile with a fresh cube view (local extra is not authoritative)', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:1:1' });
+    engine.drainIntents();
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 3,
+      style: CUBE_STYLES[0]!,
+      removedIds: [],
+    });
+
+    const adopted = engine.getSnapshot();
+    // The server still has the tile the client removed: the whole board matches it again.
+    expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      9, 9, 9, 9, 9, 9,
+    ]);
+    // Stats are session-local and never rolled back.
+    expect(adopted.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    // A restore needs a fresh view: the scene rebuilds from the `levelChanged` snapshot.
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[0] }]);
+
+    engine.advance(16);
+    expect(engine.drainIntents()).toEqual([]);
+    engine.advance(16);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('adopts a different level, grid and style exactly and replays its removals after the rebuild', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.drainIntents();
+
+    engine.adoptCubeState({
+      levelIndex: 1,
+      gridSize: 4,
+      style: CUBE_STYLES[2]!,
+      removedIds: ['front:0:0', 'front:1:1'],
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.phase).toBe('playing');
+    expect(adopted.levelIndex).toBe(1);
+    expect(adopted.gridSize).toBe(4);
+    expect(adopted.style).toBe(CUBE_STYLES[2]);
+    expect(adopted.style.id).toBe('emerald-crystal');
+    expect(adopted.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(adopted.travelKind).toBeNull();
+    expect(adopted.travelDestination).toBeNull();
+    expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      14, 16, 16, 16, 16, 16,
+    ]);
+    expect(adopted.board.faces[0]!.miniCubes.map((miniCube) => miniCube.id)).toEqual(
+      idsOfFace('front', 4).filter((id) => id !== 'front:0:0' && id !== 'front:1:1'),
+    );
+    // The old cube's stats survive; the new cube's removal set is not click accounting.
+    expect(adopted.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[2] }]);
+
+    // The scene drains the rebuild on the first frame; the removal replay follows one frame
+    // later so the fresh (fully visible) view cannot undo it.
+    engine.advance(16);
+    expect(engine.drainIntents()).toEqual([]);
+    engine.advance(16);
+    expect(engine.drainIntents()).toEqual([
+      replayExplosion('front:0:0', 'front'),
+      replayExplosion('front:1:1', 'front'),
+    ]);
+    engine.advance(16);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('releases the held nextLevel travel with the authoritative cube (F2)', () => {
+    const { engine } = sweepOnlineIntoTravel(ARRIVAL_TIMINGS, 3);
+    engine.drainIntents();
+    const held = engine.getSnapshot();
+    expect(held.phase).toBe('travel');
+    expect(held.travelKind).toBe('nextLevel');
+    expect(held.stats).toEqual({ clicks: 54, facesDestroyed: 6 });
+
+    engine.adoptCubeState({
+      levelIndex: 1,
+      gridSize: 4,
+      style: CUBE_STYLES[1]!,
+      removedIds: [],
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.phase).toBe('playing');
+    expect(adopted.phaseProgress).toBe(1);
+    expect(adopted.travelKind).toBeNull();
+    expect(adopted.travelDestination).toBeNull();
+    expect(adopted.travelDirection).toBeNull();
+    expect(adopted.levelIndex).toBe(1);
+    expect(adopted.gridSize).toBe(4);
+    expect(adopted.style).toBe(CUBE_STYLES[1]);
+    expect(adopted.stats).toEqual({ clicks: 54, facesDestroyed: 6 });
+    expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([
+      16, 16, 16, 16, 16, 16,
+    ]);
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
+
+    // The abandoned clock never resumes: time only runs the playing state.
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+  });
+
+  it('releases a running face fade so the old completion cannot start a travel (F2)', () => {
+    const engine = createEngine({ online: true, gridSize: 1, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    for (const faceId of FACE_IDS) {
+      engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:0:0` });
+    }
+    engine.drainIntents();
+    expect(engine.getSnapshot().phase).toBe('playing');
+
+    engine.adoptCubeState({
+      levelIndex: 1,
+      gridSize: 2,
+      style: CUBE_STYLES[1]!,
+      removedIds: [],
+    });
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.getSnapshot().gridSize).toBe(2);
+    engine.drainIntents();
+
+    engine.advance(DEFAULT_TIMINGS.faceFadeMs);
+
+    const afterFade = engine.getSnapshot();
+    expect(afterFade.phase).toBe('playing');
+    expect(afterFade.levelIndex).toBe(1);
+    expect(afterFade.travelKind).toBeNull();
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('treats a repeated identical adoption as a no-op', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    const cube: AuthoritativeCubeState = {
+      levelIndex: 1,
+      gridSize: 4,
+      style: CUBE_STYLES[1]!,
+      removedIds: ['front:0:0'],
+    };
+
+    engine.adoptCubeState(cube);
+    engine.drainIntents();
+    const adopted = engine.getSnapshot();
+
+    engine.adoptCubeState(cube);
+
+    expect(engine.getSnapshot()).toBe(adopted);
+    expect(engine.drainIntents()).toEqual([]);
   });
 });
 

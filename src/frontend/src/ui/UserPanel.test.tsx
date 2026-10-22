@@ -23,9 +23,27 @@ function member(playerId: string, name: string, levelIndex: number): MemberState
 }
 
 describe('UserPanel', () => {
+  it('renders nothing before the first welcome assigns a server identity (F7)', () => {
+    const html = renderToStaticMarkup(
+      <UserPanel
+        welcomed={false}
+        selfName=""
+        members={[]}
+        spectating={false}
+        onSpectate={() => {}}
+        onReturn={() => {}}
+        defaultOpen
+      />,
+    );
+
+    // No toggle, no blank own row and no return command: the server is unknown yet.
+    expect(html).toBe('');
+  });
+
   it('renders only the pinned toggle while closed', () => {
     const html = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[]}
         spectating={false}
@@ -44,6 +62,7 @@ describe('UserPanel', () => {
   it('renders only the disabled own row when alone on the server (AC-16)', () => {
     const html = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[]}
         spectating={false}
@@ -66,6 +85,7 @@ describe('UserPanel', () => {
   it('lists the other members in slot order with 1-based cube levels (AC-16)', () => {
     const html = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[member('p2', 'Player 2', 1), member('p3', 'Player 3', 0)]}
         spectating={false}
@@ -90,6 +110,7 @@ describe('UserPanel', () => {
   it('renders Return to my cube exactly while spectating (AC-18)', () => {
     const spectating = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[member('p2', 'Player 2', 0)]}
         spectating
@@ -107,6 +128,7 @@ describe('UserPanel', () => {
 
     const notSpectating = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[member('p2', 'Player 2', 0)]}
         spectating={false}
@@ -121,6 +143,7 @@ describe('UserPanel', () => {
   it('contributes no live-region semantics (the shell has exactly one)', () => {
     const html = renderToStaticMarkup(
       <UserPanel
+        welcomed
         selfName="Player 1"
         members={[member('p2', 'Player 2', 0)]}
         spectating
