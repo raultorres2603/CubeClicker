@@ -1829,6 +1829,53 @@ describe('multiplayer spectate (AC-18, AC-19)', () => {
     expect(session.getSnapshot().stats.clicks).toBe(1);
   });
 
+  it('keeps viewing the target when their same-server cube advances (AC-19 c)', () => {
+    const { fake, wire, session } = spectateSetup();
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(1016);
+    fake.scheduler.tick(2516);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([24, 0, 12]);
+
+    wire.emit(
+      levelAdvancedMessage({
+        playerId: 'p2',
+        levelIndex: 2,
+        gridSize: 6,
+        styleId: CUBE_STYLES[2]!.id,
+        position: { x: 24, y: 0 },
+      }),
+    );
+
+    // A remote same-server advance never moves the spectator: no travel starts and the
+    // own cube/board/stats are untouched.
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(session.getSnapshot().spectating).toBe(true);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().travelKind).toBeNull();
+    expect(session.getSnapshot().travelDestination).toBeNull();
+    expect(session.getSnapshot().levelIndex).toBe(0);
+    expect(session.getSnapshot().gridSize).toBe(5);
+    expect(session.getSnapshot().stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(session.getMultiplayerSnapshot().world.members).toEqual([
+      {
+        playerId: 'p2',
+        name: 'Player 2',
+        position: { x: 24, y: 0 },
+        levelIndex: 2,
+        gridSize: 6,
+        styleId: 'emerald-crystal',
+        removedIds: [],
+      },
+    ]);
+
+    // The next frame still rests over the target's cube.
+    fake.scheduler.tick(2532);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(wire.sent).toEqual([]);
+  });
+
   it('auto-returns with the flight when the viewed member leaves (AC-19 a/b)', () => {
     const { fake, wire, session } = spectateSetup();
     expect(session.spectateMember('p2')).toBe(true);
@@ -1992,6 +2039,68 @@ describe('multiplayer connection gating (AC-22)', () => {
     expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([
       7.6800000000000015, 0, 83.76,
     ]);
+  });
+
+  it('resets a mid-flight spectate to the own rest on a resume welcome (AC-19 d, AC-22)', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(1016);
+    const flight = session.getSnapshot();
+    expect(flight.phase).toBe('travel');
+    expect(flight.travelKind).toBe('spectate');
+    expect(flight.phaseProgress).toBe(0.4);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([
+      7.6800000000000015, 0, 83.76,
+    ]);
+
+    // The socket drops mid-flight; the resume restores the same identity with one
+    // authoritative removal. Not a single remaining flight frame may play.
+    wire.emitStatus('disconnected');
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        removedIds: ['front:0:0'],
+        roster: [selfMember({ removedIds: ['front:0:0'] }), member()],
+      }),
+    );
+
+    const resumed = session.getSnapshot();
+    expect(resumed.phase).toBe('playing');
+    expect(resumed.phaseProgress).toBe(1);
+    expect(resumed.travelKind).toBeNull();
+    expect(resumed.travelDestination).toBeNull();
+    expect(resumed.spectating).toBe(false);
+    expect(resumed.levelIndex).toBe(0);
+    expect(resumed.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(faceIds(resumed, 'front')).toHaveLength(24);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getMultiplayerSnapshot().world.self.cube.removedIds).toEqual(['front:0:0']);
+
+    const rendersAfterResume = fake.renderer.renders.length;
+    fake.scheduler.tick(1032);
+    expect(fake.renderer.renders).toHaveLength(rendersAfterResume + 1);
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    // The abandoned flight would have landed at 2516 ms; it is gone and the view stays home.
+    fake.scheduler.tick(2516);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().travelKind).toBeNull();
+    expect(fake.renderer.renders.at(-1)!.camera.position.toArray()).toEqual([0, 0, 12]);
+
+    // Normal play resumes: the centre tap explodes and forwards again.
+    tapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(2);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
   });
 
   it('publishes the multiplayer store only when status/world/spectate change', () => {

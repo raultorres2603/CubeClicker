@@ -38,8 +38,9 @@
  *   destination)` → arrival → `setSpectating(true)`; return / target left → `travelTo
  *   (return, own position)` → arrival → `setSpectating(false)` (AC-18, AC-19);
  * - while the transport is not connected every gameplay input dispatch is gated and the
- *   engine is frozen, so a level travel holds; a resume `welcome` re-syncs the own cube,
- *   resets spectate and re-enters the world instantly (AC-22, AC-19 d).
+ *   engine is frozen, so a level travel holds; a resume `welcome` abandons a running
+ *   camera-only flight (the engine returns to `playing` with no intents), re-syncs the own
+ *   cube, resets spectate and re-enters the world instantly (AC-22, AC-19 d).
  *
  * Without a transport the session keeps its offline behaviour unchanged: no transport is
  * connected, no message is reduced, and `canRun()` is always true. The T14-facing
@@ -381,9 +382,15 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       adoptedInitialCube = true;
     }
     // A resume (same identity) resets the local-only view; a fresh join has nothing to
-    // reset. The gate must be lifted before the board reconcile: a spectating engine
-    // ignores removals (AC-19 d).
+    // reset. A camera-only flight is abandoned first, so the next frame renders the own
+    // rest pose without the remaining flight frames (AC-19 d / AC-22); the gate must be
+    // lifted before the board reconcile: a spectating engine ignores removals.
     if (previousSelfId.length > 0 && previousSelfId === message.playerId) {
+      const snapshot = engine.getSnapshot();
+      const travelKind = snapshot.travelKind ?? null;
+      if (snapshot.phase === 'travel' && (travelKind === 'spectate' || travelKind === 'return')) {
+        engine.cancelTravel?.();
+      }
       spectate.reset();
       engine.setSpectating?.(false);
     }

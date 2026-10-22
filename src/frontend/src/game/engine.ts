@@ -48,6 +48,9 @@
  * server-assigned destination, never advance a level and return to `playing` on completion.
  * While {@link GameEngine.setSpectating} is active every gameplay event is ignored (clicks,
  * rotations, intro skips); only a return travel may still be dispatched.
+ * {@link GameEngine.cancelTravel} abandons a running camera-only flight without intents so a
+ * resume can reset the view to the own rest pose instantly (AC-19 d/AC-22); the server-driven
+ * `nextLevel` advance and the offline level travel are never cancelled.
  *
  * **Randomness (spec AC-1, AC-3).** Randomness enters only through the current random
  * source; this module never reads the platform RNG. The pinned draw order is: one grid
@@ -236,6 +239,17 @@ export interface GameEngine {
    * fakes (owned by other tasks); {@link createEngine} always implements it.
    */
   completeNextLevel?(data: NextLevelData): void;
+  /**
+   * Abandons a running camera-only travel (`spectate`/`return`): the phase returns to
+   * `playing`, the travel fields are cleared and no intent is emitted, so the next snapshot
+   * rests over the own cube. The server-driven `nextLevel` hold and the offline level
+   * travel are never cancelled (their level data must survive); every other state is a
+   * no-op.
+   *
+   * Optional in this base contract only for source compatibility with pre-online engine
+   * fakes (owned by other tasks); {@link createEngine} always implements it.
+   */
+  cancelTravel?(): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -244,6 +258,7 @@ export interface GameEngine {
 export interface OnlineGameEngine extends GameEngine {
   getSnapshot(): OnlineEngineSnapshot;
   completeNextLevel(data: NextLevelData): void;
+  cancelTravel(): void;
   setSpectating(active: boolean): void;
 }
 
@@ -820,6 +835,24 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         // `startTravel` runs (the fade pacing is retained).
         pendingNextLevel = next;
       }
+    },
+
+    cancelTravel(): void {
+      // Resume reset (AC-19 d/AC-22): only a camera-only flight may be abandoned. The
+      // online `nextLevel` hold owns the server's next cube and the offline level travel
+      // owns the next level, so both always run to completion.
+      if (phase !== 'travel' || travelKind === null || travelKind === 'nextLevel') {
+        return;
+      }
+      // No intent is emitted: the scene reads the phase and rests over the own cube.
+      phase = 'playing';
+      phaseElapsedMs = 0;
+      travelDirection = null;
+      travelKind = null;
+      travelDestination = null;
+      pendingNextLevel = null;
+      onlineTravelReleased = false;
+      invalidate();
     },
 
     setSpectating(active: boolean): void {

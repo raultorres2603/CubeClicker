@@ -1455,3 +1455,113 @@ describe('spectating input gate (AC-17)', () => {
     expect(engine.drainIntents()).toHaveLength(1);
   });
 });
+
+describe('travel cancel (AC-19 d, AC-22)', () => {
+  it('cancels a spectate flight at once, keeping the own level and emitting no intent', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    const before = engine.getSnapshot();
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'travelTo', kind: 'spectate', destination: { x: 24, y: 0 } });
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+    engine.advance(1000);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().phaseProgress).toBe(0.4);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.cancelTravel();
+
+    const cancelled = engine.getSnapshot();
+    expect(cancelled.phase).toBe('playing');
+    expect(cancelled.phaseProgress).toBe(1);
+    expect(cancelled.travelKind).toBeNull();
+    expect(cancelled.travelDestination).toBeNull();
+    expect(cancelled.travelDirection).toBeNull();
+    expect(cancelled.levelIndex).toBe(0);
+    expect(cancelled.gridSize).toBe(GRID_SIZE);
+    expect(cancelled.board).toBe(before.board);
+    expect(cancelled.stats).toEqual({ clicks: 0, facesDestroyed: 0 });
+    expect(cancelled.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(cancelled.spectating).toBe(false);
+    expect(engine.drainIntents()).toEqual([]);
+
+    // The abandoned flight never resumes: time only runs the playing clock.
+    engine.advance(DEFAULT_TIMINGS.travelMs);
+    expect(engine.getSnapshot()).toBe(cancelled);
+
+    // Play is live again at the own cube.
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
+  });
+
+  it('cancels a return flight and leaves the spectating gate to the caller', () => {
+    const engine = createEngine({ random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.setSpectating(true);
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'travelTo', kind: 'return', destination: { x: 0, y: 0 } });
+    expect(engine.drainIntents()).toEqual([{ kind: 'travelStarted' }]);
+    engine.advance(625);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    expect(engine.getSnapshot().phaseProgress).toBe(0.25);
+    expect(engine.drainIntents()).toEqual([]);
+
+    engine.cancelTravel();
+
+    const cancelled = engine.getSnapshot();
+    expect(cancelled.phase).toBe('playing');
+    expect(cancelled.phaseProgress).toBe(1);
+    expect(cancelled.travelKind).toBeNull();
+    expect(cancelled.travelDestination).toBeNull();
+    expect(cancelled.spectating).toBe(true);
+    expect(cancelled.levelIndex).toBe(0);
+    expect(engine.drainIntents()).toEqual([]);
+
+    // The session clears the gate itself; play then resumes at the own cube.
+    engine.setSpectating(false);
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    expect(engine.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
+  });
+
+  it('never cancels the online nextLevel hold, an offline level travel or a rest state', () => {
+    const { engine: held } = sweepOnlineIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    held.drainIntents();
+    const heldSnapshot = held.getSnapshot();
+    expect(heldSnapshot.travelKind).toBe('nextLevel');
+
+    held.cancelTravel();
+
+    expect(held.getSnapshot()).toBe(heldSnapshot);
+    expect(held.drainIntents()).toEqual([]);
+    // The held server data still releases the level travel after the refused cancel.
+    held.completeNextLevel({
+      gridSize: 3,
+      style: CUBE_STYLES[4]!,
+      destination: { x: 24, y: 0 },
+    });
+    expect(held.getSnapshot().travelKind).toBe('nextLevel');
+    expect(held.getSnapshot().travelDestination).toEqual({ x: 24, y: 0 });
+
+    const { engine: offline } = sweepIntoTravel(ARRIVAL_TIMINGS, GRID_SIZE);
+    offline.drainIntents();
+    const offlineSnapshot = offline.getSnapshot();
+    expect(offlineSnapshot.travelKind).toBeNull();
+
+    offline.cancelTravel?.();
+
+    expect(offline.getSnapshot()).toBe(offlineSnapshot);
+    offline.advance(DEFAULT_TIMINGS.travelMs);
+    expect(offline.getSnapshot().phase).toBe('playing');
+    expect(offline.getSnapshot().levelIndex).toBe(1);
+
+    const playing = createEngine({ random: flatRandom });
+    playing.dispatch({ type: 'introSkip' });
+    const playingSnapshot = playing.getSnapshot();
+    playing.cancelTravel();
+    expect(playing.getSnapshot()).toBe(playingSnapshot);
+  });
+});

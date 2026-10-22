@@ -2330,3 +2330,40 @@ describe('spectate and return flights (AC-17)', () => {
     expect(lookTarget(view)).toEqual([0, 0, 0]);
   });
 });
+
+describe('resume reset during a flight (AC-19 d, AC-22)', () => {
+  it('rests at the own cube on the first snapshot after a mid-flight reset', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 24, y: 0 },
+    });
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 24 },
+      }),
+    );
+    expect(view.camera.position.toArray()).toEqual([12, 12, 90]);
+    expect(lookTarget(view)).toEqual([12, 12, 0]);
+
+    // A resume re-enters the world (the session cancels the engine travel first) and the
+    // very next snapshot is `playing`: the camera is home at once, with no remaining flight.
+    view.enterWorld(serverWorld({ ownPosition: { x: 24, y: 0 } }));
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: false }));
+
+    expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
+    expect(lookTarget(view)).toEqual([24, 0, 0]);
+    expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
+
+    // No residual flight: time alone keeps the starfield at its rest scale.
+    view.update(16);
+    expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
+  });
+});
