@@ -99,6 +99,8 @@ const MEMBER_1 = {
   gridSize: 3,
   styleId: 'obsidian-neon',
   removedIds: [],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 /** A full placement frame; `welcome` is the token's only issuer (AC-22). */
@@ -111,7 +113,7 @@ function welcome(playerId: string, token: string): ServerMessage {
     serverId: 1,
     maxUsers: 10,
     position: SLOT_1,
-    self: { levelIndex: 0, gridSize: 3, styleId: 'obsidian-neon', removedIds: [] },
+    self: { levelIndex: 0, gridSize: 3, styleId: 'obsidian-neon', removedIds: [], yawSteps: 0, pitchSteps: 0 },
     roster: [MEMBER_1],
   };
 }

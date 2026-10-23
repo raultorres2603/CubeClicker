@@ -145,6 +145,8 @@ function member(
     gridSize: GRID_SIZE,
     styleId: STYLE.id,
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
     ...overrides,
   };
 }

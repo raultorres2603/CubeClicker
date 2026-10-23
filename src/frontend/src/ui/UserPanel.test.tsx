@@ -19,6 +19,8 @@ function member(playerId: string, name: string, levelIndex: number): MemberState
     gridSize: 3,
     styleId: 'obsidian-neon',
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
   };
 }
 

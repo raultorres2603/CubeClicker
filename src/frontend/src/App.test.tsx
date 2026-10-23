@@ -77,6 +77,8 @@ function member(playerId: string, name: string, levelIndex: number): MemberState
     gridSize: 3,
     styleId: 'obsidian-neon',
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
   };
 }
 
@@ -96,7 +98,7 @@ function worldFor({
       playerId: 'p1',
       name: selfName,
       position: { x: 24, y: 0 },
-      cube: { levelIndex: 0, gridSize: 3, styleId: 'obsidian-neon', removedIds: [] },
+      cube: { levelIndex: 0, gridSize: 3, styleId: 'obsidian-neon', removedIds: [], yawSteps: 0, pitchSteps: 0 },
     },
     members,
     pendingWorldSwap: null,
