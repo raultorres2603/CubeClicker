@@ -78,7 +78,7 @@ export function createWorldState(): WorldState {
       playerId: '',
       name: '',
       position: { x: 0, y: 0 },
-      cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [] },
+      cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [], yawSteps: 0, pitchSteps: 0 },
     },
     members: [],
     pendingWorldSwap: null,
@@ -91,21 +91,15 @@ function copyPosition(position: Position): Position {
 
 function copyCube(cube: CubeState): CubeState {
   return {
-    levelIndex: cube.levelIndex,
-    gridSize: cube.gridSize,
-    styleId: cube.styleId,
+    ...cube,
     removedIds: [...cube.removedIds],
   };
 }
 
 function copyMember(member: MemberState): MemberState {
   return {
-    playerId: member.playerId,
-    name: member.name,
+    ...member,
     position: copyPosition(member.position),
-    levelIndex: member.levelIndex,
-    gridSize: member.gridSize,
-    styleId: member.styleId,
     removedIds: [...member.removedIds],
   };
 }
@@ -217,6 +211,8 @@ function withAdvanced(
     gridSize: msg.gridSize,
     styleId: msg.styleId,
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
   };
   if (msg.playerId === state.self.playerId) {
     return {
@@ -239,6 +235,8 @@ function withAdvanced(
             gridSize: cube.gridSize,
             styleId: cube.styleId,
             removedIds: [],
+            yawSteps: 0,
+            pitchSteps: 0,
           }
         : current,
     ),
@@ -255,6 +253,8 @@ function withSync(
     gridSize: msg.gridSize,
     styleId: msg.styleId,
     removedIds: [...msg.removedIds],
+    yawSteps: msg.yawSteps,
+    pitchSteps: msg.pitchSteps,
   };
   if (msg.playerId === state.self.playerId) {
     return { ...state, self: { ...state.self, cube } };
@@ -273,7 +273,48 @@ function withSync(
             gridSize: cube.gridSize,
             styleId: cube.styleId,
             removedIds: [...cube.removedIds],
+            yawSteps: cube.yawSteps,
+            pitchSteps: cube.pitchSteps,
           }
+        : current,
+    ),
+  };
+}
+
+/**
+ * `cubeRotated`: update the matching member's (or, defensively, self's) settled
+ * orientation. Unknown members are a no-op. Identical orientation is a no-op (same
+ * reference) so repeated broadcasts do not churn the store.
+ */
+function withRotated(state: WorldState, msg: Extract<ServerMessage, { type: 'cubeRotated' }>): WorldState {
+  if (msg.playerId === state.self.playerId) {
+    if (
+      state.self.cube.yawSteps === msg.yawSteps &&
+      state.self.cube.pitchSteps === msg.pitchSteps
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      self: {
+        ...state.self,
+        cube: { ...state.self.cube, yawSteps: msg.yawSteps, pitchSteps: msg.pitchSteps },
+      },
+    };
+  }
+  const index = state.members.findIndex((current) => current.playerId === msg.playerId);
+  if (index === -1) {
+    return state;
+  }
+  const target = state.members[index]!;
+  if (target.yawSteps === msg.yawSteps && target.pitchSteps === msg.pitchSteps) {
+    return state;
+  }
+  return {
+    ...state,
+    members: state.members.map((current, position) =>
+      position === index
+        ? { ...current, yawSteps: msg.yawSteps, pitchSteps: msg.pitchSteps }
         : current,
     ),
   };
@@ -285,8 +326,8 @@ function withSync(
  * Handled: `welcome` (seed identity/placement/roster, clear any pending swap),
  * `worldEntered` (record the pending swap), `memberJoined`/`memberLeft` (roster),
  * `miniCubeRemoved` (board delta), `levelAdvanced` (fresh cube + position), `stateSync`
- * (authoritative board). `hello` and `error` carry no world state and return the same
- * reference.
+ * (authoritative board), `cubeRotated` (orientation). `hello` and `error` carry no world
+ * state and return the same reference.
  */
 export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldState {
   switch (msg.type) {
@@ -330,6 +371,9 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
     case 'stateSync':
       return withSync(state, msg);
+
+    case 'cubeRotated':
+      return withRotated(state, msg);
 
     default:
       // `hello` (liveness only) and `error` (banner/telemetry) carry no world state.

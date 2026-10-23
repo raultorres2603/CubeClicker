@@ -21,6 +21,8 @@ const SELF_MEMBER: MemberState = {
   gridSize: 5,
   styleId: 'emerald-crystal',
   removedIds: ['front:0:0'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P2_MEMBER: MemberState = {
@@ -31,6 +33,8 @@ const P2_MEMBER: MemberState = {
   gridSize: 3,
   styleId: 'obsidian-neon',
   removedIds: [],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P3_MEMBER: MemberState = {
@@ -41,6 +45,8 @@ const P3_MEMBER: MemberState = {
   gridSize: 4,
   styleId: 'crimson-alloy',
   removedIds: ['back:1:1'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 /** The mover's next cube after completing on server 1 (a cross-server move). */
@@ -52,6 +58,8 @@ const MOVED_SELF_MEMBER: MemberState = {
   gridSize: 7,
   styleId: 'violet-nebula',
   removedIds: [],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 /** p2 as seen on server 2, where it holds slot 1 (the ring restarts per server). */
@@ -70,6 +78,8 @@ const WELCOME: ServerMessage = {
     gridSize: 5,
     styleId: 'emerald-crystal',
     removedIds: ['front:0:0'],
+    yawSteps: 0,
+    pitchSteps: 0,
   },
   roster: [SELF_MEMBER, P2_MEMBER, P3_MEMBER],
 };
@@ -88,6 +98,8 @@ const WORLD_ENTERED: ServerMessage = {
     gridSize: 7,
     styleId: 'violet-nebula',
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
   },
   roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
 };
@@ -105,6 +117,8 @@ const SEEDED: WorldState = {
       gridSize: 5,
       styleId: 'emerald-crystal',
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     },
   },
   members: [P2_MEMBER, P3_MEMBER],
@@ -124,7 +138,7 @@ describe('createWorldState', () => {
         playerId: '',
         name: '',
         position: { x: 0, y: 0 },
-        cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [] },
+        cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       },
       members: [],
       pendingWorldSwap: null,
@@ -292,6 +306,8 @@ describe('reduceWorldState — levelAdvanced', () => {
       gridSize: 6,
       styleId: 'solar-gold',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(state.members[1]).toEqual(P3_MEMBER);
   });
@@ -312,7 +328,7 @@ describe('reduceWorldState — levelAdvanced', () => {
       playerId: 'p1',
       name: 'Player 1',
       position: SLOT_3,
-      cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [] },
+      cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
     });
     expect(next.members).toBe(state.members);
   });
@@ -343,6 +359,8 @@ describe('reduceWorldState — stateSync', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: ['front:0:0', 'front:0:1', 'left:3:3'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     expect(state.members[0]).toEqual({
@@ -353,6 +371,8 @@ describe('reduceWorldState — stateSync', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: ['front:0:0', 'front:0:1', 'left:3:3'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
   });
 
@@ -364,6 +384,8 @@ describe('reduceWorldState — stateSync', () => {
       gridSize: 5,
       styleId: 'emerald-crystal',
       removedIds: ['front:0:0', 'front:0:1'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     expect(state.self.cube.removedIds).toEqual(['front:0:0', 'front:0:1']);
@@ -380,6 +402,8 @@ describe('reduceWorldState — stateSync', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
       }),
     ).toBe(state);
   });
@@ -446,7 +470,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
       serverId: 2,
       maxUsers: 10,
       position: SLOT_2,
-      self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [] },
+      self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
     });
     expect(pending.serverId).toBe(1);
@@ -476,7 +500,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
         playerId: 'p1',
         name: 'Player 1',
         position: SLOT_2,
-        cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [] },
+        cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       },
       members: [P2_MEMBER_SERVER_2],
       pendingWorldSwap: null,
@@ -497,5 +521,138 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
     expect(after.members).toEqual([P3_MEMBER]);
     expect(after.serverId).toBe(1);
     expect(after.pendingWorldSwap).toBeNull();
+  });
+});
+
+describe('reduceWorldState — cubeRotated', () => {
+  it('updates a remote member’s orientation', () => {
+    const state = reduceWorldState(seeded(), {
+      type: 'cubeRotated',
+      playerId: 'p2',
+      yawSteps: 2,
+      pitchSteps: 1,
+    });
+
+    expect(state.members[0].yawSteps).toBe(2);
+    expect(state.members[0].pitchSteps).toBe(1);
+    expect(state.members[1].yawSteps).toBe(0);
+  });
+
+  it('updates the own cube orientation defensively', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'cubeRotated',
+      playerId: 'p1',
+      yawSteps: 3,
+      pitchSteps: -1,
+    });
+
+    expect(next.self.cube.yawSteps).toBe(3);
+    expect(next.self.cube.pitchSteps).toBe(-1);
+    expect(next.members).toBe(state.members);
+  });
+
+  it('is a no-op for an unknown member', () => {
+    const state = seeded();
+
+    expect(reduceWorldState(state, { type: 'cubeRotated', playerId: 'p9', yawSteps: 1, pitchSteps: 0 })).toBe(
+      state,
+    );
+  });
+
+  it('is a no-op when the orientation is unchanged', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, { type: 'cubeRotated', playerId: 'p2', yawSteps: 0, pitchSteps: 0 }),
+    ).toBe(state);
+  });
+});
+
+describe('reduceWorldState — orientation sync', () => {
+  it('stores orientation from welcome', () => {
+    const welcome: ServerMessage = {
+      type: 'welcome',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 1,
+      maxUsers: 10,
+      position: SLOT_1,
+      self: { levelIndex: 2, gridSize: 5, styleId: 'emerald-crystal', removedIds: ['front:0:0'], yawSteps: 1, pitchSteps: 1 },
+      roster: [
+        { ...SELF_MEMBER, yawSteps: 1, pitchSteps: 1 },
+        { ...P2_MEMBER, yawSteps: 2, pitchSteps: -1 },
+      ],
+    };
+    const state = reduceWorldState(createWorldState(), welcome);
+
+    expect(state.self.cube.yawSteps).toBe(1);
+    expect(state.self.cube.pitchSteps).toBe(1);
+    expect(state.members[0].yawSteps).toBe(2);
+    expect(state.members[0].pitchSteps).toBe(-1);
+  });
+
+  it('stores orientation from memberJoined', () => {
+    const state = reduceWorldState(seeded(), {
+      type: 'memberJoined',
+      member: { ...P2_MEMBER, yawSteps: 3, pitchSteps: 1 },
+    });
+
+    expect(state.members[0].yawSteps).toBe(3);
+    expect(state.members[0].pitchSteps).toBe(1);
+  });
+
+  it('adopts orientation from stateSync for self', () => {
+    const state = reduceWorldState(seeded(), {
+      type: 'stateSync',
+      playerId: 'p1',
+      levelIndex: 2,
+      gridSize: 5,
+      styleId: 'emerald-crystal',
+      removedIds: ['front:0:0'],
+      yawSteps: 2,
+      pitchSteps: -1,
+    });
+
+    expect(state.self.cube.yawSteps).toBe(2);
+    expect(state.self.cube.pitchSteps).toBe(-1);
+  });
+
+  it('adopts orientation from stateSync for a member', () => {
+    const state = reduceWorldState(seeded(), {
+      type: 'stateSync',
+      playerId: 'p2',
+      levelIndex: 0,
+      gridSize: 3,
+      styleId: 'obsidian-neon',
+      removedIds: [],
+      yawSteps: 3,
+      pitchSteps: 1,
+    });
+
+    expect(state.members[0].yawSteps).toBe(3);
+    expect(state.members[0].pitchSteps).toBe(1);
+  });
+
+  it('resets orientation to identity on levelAdvanced', () => {
+    const rotated = reduceWorldState(seeded(), {
+      type: 'cubeRotated',
+      playerId: 'p2',
+      yawSteps: 2,
+      pitchSteps: 1,
+    });
+    const advanced = reduceWorldState(rotated, {
+      type: 'levelAdvanced',
+      playerId: 'p2',
+      levelIndex: 1,
+      gridSize: 6,
+      styleId: 'solar-gold',
+      position: SLOT_3,
+      removedIds: [],
+    });
+
+    expect(advanced.members[0].yawSteps).toBe(0);
+    expect(advanced.members[0].pitchSteps).toBe(0);
   });
 });
