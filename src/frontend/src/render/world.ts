@@ -45,6 +45,7 @@
 import { Group, InstancedMesh, Matrix4, Vector3 } from 'three';
 
 import { BURST_ORIGIN_OFFSET, createBurst, timingsFor } from '../game/effects';
+import { interpolateRotation, type Orientation } from '../game/rotation';
 import { CUBE_STYLES } from '../game/progression';
 import { FACE_IDS, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
 import type { MemberState, ServerMessage } from '../multiplayer/protocol';
@@ -57,6 +58,9 @@ import { createParticleSystem, type ParticleSystem } from './particles';
  * (the spec keeps remote-cube rendering independent of a spectator's motion preference).
  */
 const FACE_REMOVAL_MS = timingsFor(false).faceFadeMs;
+
+/** Duration of a remote cube rotation animation (default profile, 300 ms). */
+const REMOTE_ROTATION_MS = timingsFor(false).rotationMs;
 
 /** The world view handed to the scene: remote cube handles plus the lifecycle hooks. */
 export interface WorldView {
@@ -103,6 +107,14 @@ interface MemberCube {
   readonly hiddenPerFace: Map<FaceId, number>;
   /** Faces whose 0-remaining transition started: elapsed ms of the removal countdown. */
   readonly faceRemovalElapsed: Map<FaceId, number>;
+  /** Settled target orientation for this member (quarter-turn counters). */
+  orientation: Orientation;
+  /** Source orientation of an in-flight rotation, or `null` when settled. */
+  rotationFrom: Orientation | null;
+  /** Elapsed ms of the in-flight rotation. */
+  rotationElapsedMs: number;
+  /** Duration of the remote rotation animation (default profile, 300 ms). */
+  readonly rotationDurationMs: number;
 }
 
 /** The style for a wire style id; an unknown id falls back to the pinned first style. */
@@ -124,6 +136,8 @@ function copyMember(member: MemberState): MemberState {
     gridSize: member.gridSize,
     styleId: member.styleId,
     removedIds: [...member.removedIds],
+    yawSteps: member.yawSteps,
+    pitchSteps: member.pitchSteps,
   };
 }
 
@@ -199,15 +213,42 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
     }
   }
 
+  function orientationOf(member: MemberState): Orientation {
+    return { yawSteps: member.yawSteps, pitchSteps: member.pitchSteps };
+  }
+
+  function applyOrientationToGroup(view: CubeView, orientation: Orientation): void {
+    const rot = interpolateRotation(orientation, orientation, 1);
+    view.group.rotation.set(rot.pitch, rot.yaw, 0);
+  }
+
+  function currentDisplayed(mc: MemberCube): Orientation {
+    if (mc.rotationFrom === null) {
+      return { yawSteps: mc.orientation.yawSteps, pitchSteps: mc.orientation.pitchSteps };
+    }
+    const t =
+      mc.rotationDurationMs <= 0
+        ? 1
+        : Math.min(1, mc.rotationElapsedMs / mc.rotationDurationMs);
+    const rot = interpolateRotation(mc.rotationFrom, mc.orientation, t);
+    return { yawSteps: rot.yaw / (Math.PI / 2), pitchSteps: rot.pitch / (Math.PI / 2) };
+  }
+
   function build(member: MemberState): MemberCube {
+    const orientation = orientationOf(member);
     const view = createCubeView(styleFor(member.styleId), member.gridSize);
     view.group.position.set(member.position.x, member.position.y, 0);
+    applyOrientationToGroup(view, orientation);
     const memberCube: MemberCube = {
       member: copyMember(member),
       view,
       hidden: new Set(),
       hiddenPerFace: new Map(FACE_IDS.map((faceId) => [faceId, 0])),
       faceRemovalElapsed: new Map(),
+      orientation,
+      rotationFrom: null,
+      rotationElapsedMs: 0,
+      rotationDurationMs: REMOTE_ROTATION_MS,
     };
     group.add(view.group);
     for (const id of member.removedIds) {
@@ -239,6 +280,16 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
     // Roster snapshots are state, not events — newly learned ids appear without a pop.
     existing.member = copyMember(member);
     existing.view.group.position.set(member.position.x, member.position.y, 0);
+    // Orientation: animate only when the reported orientation differs from the settled target.
+    const nextOrientation = orientationOf(member);
+    if (
+      nextOrientation.yawSteps !== existing.orientation.yawSteps ||
+      nextOrientation.pitchSteps !== existing.orientation.pitchSteps
+    ) {
+      existing.rotationFrom = currentDisplayed(existing);
+      existing.rotationElapsedMs = 0;
+      existing.orientation = nextOrientation;
+    }
     for (const id of member.removedIds) {
       hideInitialTile(existing, id);
     }
@@ -335,6 +386,8 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
               gridSize: msg.gridSize,
               styleId: msg.styleId,
               removedIds: [],
+              yawSteps: 0,
+              pitchSteps: 0,
             });
           }
           break;
@@ -345,6 +398,28 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
         case 'memberLeft':
           drop(msg.playerId);
           break;
+        case 'cubeRotated': {
+          const memberCube = members.get(msg.playerId);
+          if (memberCube === undefined) {
+            break;
+          }
+          const nextOrientation: Orientation = {
+            yawSteps: msg.yawSteps,
+            pitchSteps: msg.pitchSteps,
+          };
+          if (
+            nextOrientation.yawSteps === memberCube.orientation.yawSteps &&
+            nextOrientation.pitchSteps === memberCube.orientation.pitchSteps
+          ) {
+            break;
+          }
+          memberCube.rotationFrom = currentDisplayed(memberCube);
+          memberCube.rotationElapsedMs = 0;
+          memberCube.orientation = nextOrientation;
+          memberCube.member.yawSteps = msg.yawSteps;
+          memberCube.member.pitchSteps = msg.pitchSteps;
+          break;
+        }
         default:
           // `hello`/`welcome`/`worldEntered`/`stateSync`/`error` carry no remote-cube
           // delta this view owns; the scene/session handles them.
@@ -359,6 +434,23 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
       const advance = Math.max(0, dtMs);
       nowMs += advance;
       for (const memberCube of members.values()) {
+        // Advance any in-flight remote rotation and apply the interpolated orientation.
+        if (memberCube.rotationFrom !== null) {
+          memberCube.rotationElapsedMs += advance;
+          const t =
+            memberCube.rotationDurationMs <= 0
+              ? 1
+              : Math.min(1, memberCube.rotationElapsedMs / memberCube.rotationDurationMs);
+          const rot = interpolateRotation(memberCube.rotationFrom, memberCube.orientation, t);
+          memberCube.view.group.rotation.set(rot.pitch, rot.yaw, 0);
+          if (t >= 1) {
+            memberCube.rotationFrom = null;
+            memberCube.rotationElapsedMs = 0;
+          }
+        } else {
+          const rot = interpolateRotation(memberCube.orientation, memberCube.orientation, 1);
+          memberCube.view.group.rotation.set(rot.pitch, rot.yaw, 0);
+        }
         // Removals first (like `scene.ts`): a face detached this frame receives no pop write.
         for (const [faceId, elapsed] of memberCube.faceRemovalElapsed) {
           const next = elapsed + advance;

@@ -78,6 +78,8 @@ function member(
     gridSize: 5,
     styleId: OBSIDIAN.id,
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
     ...overrides,
   };
 }
@@ -454,6 +456,8 @@ describe('applyMessage', () => {
       gridSize: 7,
       styleId: 'solar-gold',
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     } satisfies ServerMessage);
 
     expect(world.views().get('p2')).toBe(view);
@@ -521,5 +525,121 @@ describe('picker isolation', () => {
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();
     expect(pickMiniCube(camera, own, 'front', 0, 0)).toBe('front:2:2');
+  });
+});
+
+describe('remote rotation (T6)', () => {
+  it('starts at the current orientation and settles on cubeRotated', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 1, pitchSteps: 0 });
+
+    expect(view.group.rotation.y).toBe(0);
+    expect(view.group.rotation.x).toBe(0);
+
+    world.update(150);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI / 4, 5);
+    expect(view.group.rotation.x).toBe(0);
+
+    world.update(150);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
+    expect(view.group.rotation.x).toBe(0);
+  });
+
+  it('is a no-op for an unknown member', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+    const beforeY = view.group.rotation.y;
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p9', yawSteps: 1, pitchSteps: 0 });
+
+    expect(world.views().size).toBe(1);
+    expect(world.views().get('p2')).toBe(view);
+    expect(view.group.rotation.y).toBe(beforeY);
+  });
+
+  it('does not dispose or rebuild the view on cubeRotated', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+    const disposeSpy = vi.spyOn(view.body.geometry, 'dispose');
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 2, pitchSteps: 1 });
+
+    expect(world.views().get('p2')).toBe(view);
+    expect(disposeSpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('does not restart on a repeated identical orientation', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 1, pitchSteps: 0 });
+    world.update(300);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 1, pitchSteps: 0 });
+    world.update(50);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
+  });
+
+  it('applies a non-zero initial orientation from a roster without animation', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2, { yawSteps: 2, pitchSteps: 1 })]);
+    const view = world.views().get('p2')!;
+
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI, 5);
+    expect(view.group.rotation.x).toBeCloseTo(Math.PI / 2, 5);
+  });
+
+  it('animates an existing member when a roster reports a new orientation', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+
+    world.applyRoster([member('p2', SLOT_2, { yawSteps: 1, pitchSteps: 0 })]);
+
+    expect(view.group.rotation.y).toBe(0);
+    world.update(300);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI / 2, 5);
+  });
+
+  it('resets orientation to identity on levelAdvanced', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2, { yawSteps: 1, pitchSteps: 0 })]);
+
+    world.applyMessage({
+      type: 'levelAdvanced',
+      playerId: 'p2',
+      levelIndex: 1,
+      gridSize: 5,
+      styleId: OBSIDIAN.id,
+      position: SLOT_9,
+      removedIds: [],
+    });
+
+    const next = world.views().get('p2')!;
+    expect(next.group.rotation.y).toBe(0);
+    expect(next.group.rotation.x).toBe(0);
+  });
+
+  it('converges after a dropped packet on the next accepted cubeRotated', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 2, pitchSteps: 0 });
+    world.update(300);
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI, 5);
+
+    world.applyMessage({ type: 'cubeRotated', playerId: 'p2', yawSteps: 1, pitchSteps: 0 });
+    expect(view.group.rotation.y).toBeCloseTo(Math.PI, 5);
+
+    world.update(150);
+    expect(view.group.rotation.y).toBeCloseTo((3 * Math.PI) / 4, 5);
   });
 });
