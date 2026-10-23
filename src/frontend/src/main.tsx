@@ -8,4 +8,5 @@ if (rootElement === null) {
   throw new Error('CubeClicker: #root element is missing from index.html');
 }
 
+// Viewport sizing lives in app.css; resize handling is owned by the session (browser-env).
 createRoot(rootElement).render(<App />);

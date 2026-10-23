@@ -19,7 +19,14 @@
 html,
 body,
 #root {
+  width: 100%;
+  width: 100vw;
   height: 100%;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 body {
@@ -33,7 +40,11 @@ body {
 main {
   position: relative;
   width: 100%;
+  width: 100vw;
   height: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 /* The canvas owns the viewport; the session sizes the renderer from its box (AC-13). */
@@ -55,8 +66,8 @@ main > canvas:focus-visible {
 /* HUD panel — the only <section> inside <main> (ui/Hud.tsx). */
 main > section {
   position: absolute;
-  top: 1rem;
-  left: 1rem;
+  top: calc(1rem + env(safe-area-inset-top, 0px));
+  left: calc(1rem + env(safe-area-inset-left, 0px));
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -88,7 +99,7 @@ main > section [data-stat] {
 .phase-announcement {
   position: absolute;
   left: 50%;
-  bottom: 1.5rem;
+  bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   padding: 0.5rem 1rem;
   border: 1px solid rgba(124, 246, 255, 0.28);
@@ -114,7 +125,7 @@ main > section [data-stat] {
  */
 .connection-banner {
   position: absolute;
-  top: 1rem;
+  top: calc(1rem + env(safe-area-inset-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -138,17 +149,19 @@ main > section [data-stat] {
 /* Users on Server panel (AC-16/AC-18): top-right stack over the scene. */
 .user-panel {
   position: absolute;
-  top: 1rem;
-  right: 1rem;
+  top: calc(1rem + env(safe-area-inset-top, 0px));
+  right: calc(1rem + env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 0.5rem;
-  max-width: min(20rem, calc(100vw - 2rem));
+  max-width: min(20rem, calc(100vw - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
 }
 
 .user-panel > button,
 .connection-banner button {
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.45rem 0.85rem;
   border: 1px solid rgba(124, 246, 255, 0.42);
   border-radius: 0.5rem;
