@@ -133,6 +133,9 @@ export interface AuthoritativeCubeState {
   gridSize: number;
   style: CubeStyle;
   removedIds: readonly MiniCubeId[];
+  /** Settled orientation to adopt (defaults to identity when omitted). */
+  yawSteps?: number;
+  pitchSteps?: number;
 }
 
 /** Everything the player can do. Bound to the engine through `dispatch`. */
@@ -1000,6 +1003,16 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         );
       const rebuild = levelDiffers || gridDiffers || styleDiffers || restoreNeeded;
 
+      // The server's settled orientation for this cube (identity when omitted).
+      const adoptedYawSteps = cube.yawSteps ?? 0;
+      const adoptedPitchSteps = cube.pitchSteps ?? 0;
+      const beforeOrientation = orientation;
+      const beforeRotationFrom = rotationFrom;
+      const beforeQueuedStep = queuedStep;
+      const orientationChanged =
+        beforeOrientation.yawSteps !== adoptedYawSteps ||
+        beforeOrientation.pitchSteps !== adoptedPitchSteps;
+
       // Preserve the accepted reconcile accounting: on the same cube, authority removals the
       // client had not applied yet count as removals (stats are session-local and never
       // rolled back). A different level/grid is a different cube: its removal set says
@@ -1017,23 +1030,35 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         gridSize = cube.gridSize;
         styleOverride = cube.style;
         board = target.board;
-        if (levelDiffers) {
-          // A different level is a fresh cube, exactly like `advanceLevel`: default view.
-          orientation = createOrientation();
-          rotationFrom = null;
-          rotationElapsedMs = 0;
-          queuedStep = null;
-        }
+        // Adopt the server's settled orientation and drop any in-flight/queued rotation:
+        // adoption is authoritative and never animates.
+        orientation = { yawSteps: adoptedYawSteps, pitchSteps: adoptedPitchSteps };
+        rotationFrom = null;
+        rotationElapsedMs = 0;
+        queuedStep = null;
         intents.push({ kind: 'levelChanged', style: cube.style });
         pendingBoardReplay = {
           removedIds: target.removedIds,
           clearedFaceIds: target.clearedFaceIds,
         };
         boardReplayArmed = false;
+      } else {
+        // Same-cube correction: adopt the orientation as settled too (no animation).
+        orientation = { yawSteps: adoptedYawSteps, pitchSteps: adoptedPitchSteps };
+        rotationFrom = null;
+        rotationElapsedMs = 0;
+        queuedStep = null;
       }
 
       const released = releaseAuthorityTravel();
-      if (removalApplied || rebuild || released) {
+      if (
+        removalApplied ||
+        rebuild ||
+        released ||
+        orientationChanged ||
+        beforeRotationFrom !== null ||
+        beforeQueuedStep !== null
+      ) {
         invalidate();
       }
     },

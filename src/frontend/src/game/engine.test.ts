@@ -1322,6 +1322,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 3,
       style: CUBE_STYLES[0]!,
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     const adopted = engine.getSnapshot();
@@ -1350,6 +1352,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 1,
       style: CUBE_STYLES[0]!,
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     const adopted = engine.getSnapshot();
@@ -1374,6 +1378,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 3,
       style: CUBE_STYLES[0]!,
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     const adopted = engine.getSnapshot();
@@ -1403,6 +1409,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 4,
       style: CUBE_STYLES[2]!,
       removedIds: ['front:0:0', 'front:1:1'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     const adopted = engine.getSnapshot();
@@ -1450,6 +1458,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 4,
       style: CUBE_STYLES[1]!,
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     const adopted = engine.getSnapshot();
@@ -1487,6 +1497,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 2,
       style: CUBE_STYLES[1]!,
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(engine.getSnapshot().levelIndex).toBe(1);
     expect(engine.getSnapshot().gridSize).toBe(2);
@@ -1510,6 +1522,8 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       gridSize: 4,
       style: CUBE_STYLES[1]!,
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     };
 
     engine.adoptCubeState(cube);
@@ -1518,6 +1532,87 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
 
     engine.adoptCubeState(cube);
 
+    expect(engine.getSnapshot()).toBe(adopted);
+    expect(engine.drainIntents()).toEqual([]);
+  });
+
+  it('adopts a non-zero orientation on a same-cube correction (settled, no animation)', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    // Put the engine into a mid-rotation so adoption must settle it.
+    engine.dispatch({ type: 'rotate', axis: 'yaw', direction: 1 });
+    engine.drainIntents();
+    expect(engine.getSnapshot().rotationFrom).not.toBeNull();
+
+    const before = engine.getSnapshot();
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 3,
+      style: CUBE_STYLES[0]!,
+      removedIds: [],
+      yawSteps: 2,
+      pitchSteps: -1,
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.orientation).toEqual({ yawSteps: 2, pitchSteps: -1 });
+    expect(adopted.rotationFrom).toBeNull();
+    expect(adopted.rotationProgress).toBe(1);
+    expect(adopted.stats).toEqual(before.stats);
+    // No board rebuild, no removals: no intents beyond the orientation change.
+    expect(engine.drainIntents()).toEqual([]);
+    // The snapshot is invalidated because the orientation changed.
+    expect(adopted).not.toBe(before);
+  });
+
+  it('adopts the orientation on a different-level rebuild', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.drainIntents();
+
+    engine.adoptCubeState({
+      levelIndex: 1,
+      gridSize: 4,
+      style: CUBE_STYLES[2]!,
+      removedIds: [],
+      yawSteps: 3,
+      pitchSteps: 1,
+    });
+
+    const adopted = engine.getSnapshot();
+    expect(adopted.levelIndex).toBe(1);
+    expect(adopted.orientation).toEqual({ yawSteps: 3, pitchSteps: 1 });
+    expect(adopted.rotationFrom).toBeNull();
+    expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[2] }]);
+  });
+
+  it('is idempotent when only the orientation differs then matches', () => {
+    const engine = createEngine({ online: true, gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 3,
+      style: CUBE_STYLES[0]!,
+      removedIds: [],
+      yawSteps: 1,
+      pitchSteps: 0,
+    });
+    engine.drainIntents();
+    const adopted = engine.getSnapshot();
+    expect(adopted.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
+
+    // Re-adopting the same cube+orientation is a no-op.
+    engine.adoptCubeState({
+      levelIndex: 0,
+      gridSize: 3,
+      style: CUBE_STYLES[0]!,
+      removedIds: [],
+      yawSteps: 1,
+      pitchSteps: 0,
+    });
     expect(engine.getSnapshot()).toBe(adopted);
     expect(engine.drainIntents()).toEqual([]);
   });
