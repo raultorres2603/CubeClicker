@@ -1,5 +1,5 @@
 /**
- * The multiplayer wire catalog and its codecs, mirrored from the backend (T7).
+ * The multiplayer wire catalog and its codecs, mirrored from the backend.
  *
  * The frontend half of the protocol: the same message unions and payload shapes as
  * `src/backend/src/game/protocol.ts`, the same `MAX_MESSAGE_BYTES` cap, and the same
@@ -34,6 +34,16 @@ export type { FaceId, MiniCubeId };
  */
 export const MAX_MESSAGE_BYTES = 1024;
 
+/**
+ * Pinned upper bound for a single orientation step count (yaw). The spec defines
+ * `yawSteps` in `0..3` and `pitchSteps` in `-1..1`; this constant records the yaw
+ * upper bound (the larger of the two).
+ */
+export const MAX_STEPS = 3;
+
+/** Size cap applied to a `rotate` frame; identical to the global frame cap. */
+export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
+
 /** A world-plane point (`z = 0`), exactly as it travels on the wire. */
 export interface Position {
   x: number;
@@ -46,6 +56,8 @@ export interface CubeState {
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 }
 
 /** One server member as broadcast to that server's clients (cube state inlined). */
@@ -57,6 +69,8 @@ export interface MemberState {
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 }
 
 /** The pinned error codes (spec § 8). */
@@ -73,7 +87,8 @@ export type ClientMessage =
   | { type: 'join' }
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
-  | { type: 'cubeCompleted'; level: number };
+  | { type: 'cubeCompleted'; level: number }
+  | { type: 'rotate'; yawSteps: number; pitchSteps: number };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -102,6 +117,7 @@ export type ServerMessage =
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
+  | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
   | {
       type: 'levelAdvanced';
@@ -119,6 +135,8 @@ export type ServerMessage =
       gridSize: number;
       styleId: string;
       removedIds: string[];
+      yawSteps: number;
+      pitchSteps: number;
     }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
@@ -147,6 +165,17 @@ export interface Placement {
   roster: MemberState[];
 }
 
+/** The payload of an authoritative board message (`stateSync`). */
+export interface CubeSync {
+  playerId: string;
+  levelIndex: number;
+  gridSize: number;
+  styleId: string;
+  removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
+}
+
 /** Narrows an arbitrary decoded value to a plain JSON object (arrays and `null` excluded). */
 function asJsonObject(value: unknown): JsonObject | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -163,6 +192,11 @@ function isNonEmptyString(value: unknown): value is string {
 /** A required numeric field (JSON numbers are always finite once parsed). */
 function isNumber(value: unknown): value is number {
   return typeof value === 'number';
+}
+
+/** A required integer field (rejects booleans, floats and non-numbers). */
+function isInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
 }
 
 /** An array of strings (the wire `removedIds` shape); `[]` passes. */
@@ -240,6 +274,15 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
       }
       return { ok: true, message: { type: 'cubeCompleted', level: frame.level } };
 
+    case 'rotate':
+      if (!isInteger(frame.yawSteps) || !isInteger(frame.pitchSteps)) {
+        return badClientMessage();
+      }
+      return {
+        ok: true,
+        message: { type: 'rotate', yawSteps: frame.yawSteps, pitchSteps: frame.pitchSteps },
+      };
+
     default:
       return badClientMessage();
   }
@@ -262,7 +305,13 @@ function parseCubeState(value: unknown): CubeState | null {
     !isNumber(cube.levelIndex) ||
     !isNumber(cube.gridSize) ||
     !isNonEmptyString(cube.styleId) ||
-    !isStringArray(cube.removedIds)
+    !isStringArray(cube.removedIds) ||
+    !isInteger(cube.yawSteps) ||
+    !isInteger(cube.pitchSteps) ||
+    cube.yawSteps < 0 ||
+    cube.yawSteps > MAX_STEPS ||
+    cube.pitchSteps < -1 ||
+    cube.pitchSteps > 1
   ) {
     return null;
   }
@@ -271,6 +320,8 @@ function parseCubeState(value: unknown): CubeState | null {
     gridSize: cube.gridSize,
     styleId: cube.styleId,
     removedIds: [...cube.removedIds],
+    yawSteps: cube.yawSteps,
+    pitchSteps: cube.pitchSteps,
   };
 }
 
@@ -288,7 +339,13 @@ function parseMemberState(value: unknown): MemberState | null {
     !isNumber(member.levelIndex) ||
     !isNumber(member.gridSize) ||
     !isNonEmptyString(member.styleId) ||
-    !isStringArray(member.removedIds)
+    !isStringArray(member.removedIds) ||
+    !isInteger(member.yawSteps) ||
+    !isInteger(member.pitchSteps) ||
+    member.yawSteps < 0 ||
+    member.yawSteps > MAX_STEPS ||
+    member.pitchSteps < -1 ||
+    member.pitchSteps > 1
   ) {
     return null;
   }
@@ -300,6 +357,8 @@ function parseMemberState(value: unknown): MemberState | null {
     gridSize: member.gridSize,
     styleId: member.styleId,
     removedIds: [...member.removedIds],
+    yawSteps: member.yawSteps,
+    pitchSteps: member.pitchSteps,
   };
 }
 
@@ -342,16 +401,6 @@ function parsePlacement(frame: JsonObject): Placement | null {
 /**
  * Decodes one server frame — the transport's only way to turn a received frame into
  * trusted data.
- *
- * Returns `{ ok: true, message }` with the pinned shape (extra fields dropped, every
- * nested array/object copied so nothing the frame still holds can leak into the store) or
- * `{ ok: false, error: 'bad_message' }` for a non-JSON/non-object frame, an unknown
- * `type`, a missing required field, or a field of the wrong type. A malformed frame never
- * throws: the transport drops it.
- *
- * `levelAdvanced` carries a *fresh* board by definition (`removedIds: []` in the pinned
- * catalog), so a non-empty removed set is malformed for that message; a non-empty board
- * always travels in `stateSync`.
  */
 export function parseServerMessage(text: string): ServerMessageParseResult {
   let decoded: unknown;
@@ -405,6 +454,28 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       }
       return { ok: true, message: { type: 'memberLeft', playerId: frame.playerId, reason: frame.reason } };
 
+    case 'cubeRotated':
+      if (
+        !isNonEmptyString(frame.playerId) ||
+        !isInteger(frame.yawSteps) ||
+        !isInteger(frame.pitchSteps) ||
+        frame.yawSteps < 0 ||
+        frame.yawSteps > MAX_STEPS ||
+        frame.pitchSteps < -1 ||
+        frame.pitchSteps > 1
+      ) {
+        return badServerMessage();
+      }
+      return {
+        ok: true,
+        message: {
+          type: 'cubeRotated',
+          playerId: frame.playerId,
+          yawSteps: frame.yawSteps,
+          pitchSteps: frame.pitchSteps,
+        },
+      };
+
     case 'miniCubeRemoved':
       if (!isNonEmptyString(frame.playerId) || !isNonEmptyString(frame.id)) {
         return badServerMessage();
@@ -450,7 +521,19 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       if (cube === null || !isNonEmptyString(frame.playerId)) {
         return badServerMessage();
       }
-      return { ok: true, message: { type: 'stateSync', playerId: frame.playerId, ...cube } };
+      return {
+        ok: true,
+        message: {
+          type: 'stateSync',
+          playerId: frame.playerId,
+          levelIndex: cube.levelIndex,
+          gridSize: cube.gridSize,
+          styleId: cube.styleId,
+          removedIds: cube.removedIds,
+          yawSteps: cube.yawSteps,
+          pitchSteps: cube.pitchSteps,
+        },
+      };
     }
 
     case 'error': {
@@ -475,4 +558,50 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
 /** Serialises one client message into the single JSON text frame sent over the wire. */
 export function encodeClientMessage(message: ClientMessage): string {
   return JSON.stringify(message);
+}
+
+/** Serialises one server message into the single JSON text frame (parity helper). */
+export function encodeServerMessage(message: ServerMessage): string {
+  return JSON.stringify(message);
+}
+
+/** Builds a client `rotate` message (orientation report). */
+export function rotateMessage(
+  yawStepsOrPayload: number | { yawSteps: number; pitchSteps: number },
+  pitchSteps?: number,
+): ClientMessage {
+  const yawSteps =
+    typeof yawStepsOrPayload === 'number' ? yawStepsOrPayload : yawStepsOrPayload.yawSteps;
+  const pitch =
+    typeof yawStepsOrPayload === 'number' ? (pitchSteps as number) : yawStepsOrPayload.pitchSteps;
+  return { type: 'rotate', yawSteps, pitchSteps: pitch };
+}
+
+/** Builds a server `cubeRotated` message. */
+export function cubeRotatedMessage(
+  playerIdOrPayload: string | { playerId: string; yawSteps: number; pitchSteps: number },
+  yawSteps?: number,
+  pitchSteps?: number,
+): ServerMessage {
+  const playerId =
+    typeof playerIdOrPayload === 'string' ? playerIdOrPayload : playerIdOrPayload.playerId;
+  const yaw =
+    typeof playerIdOrPayload === 'string' ? (yawSteps as number) : playerIdOrPayload.yawSteps;
+  const pitch =
+    typeof playerIdOrPayload === 'string' ? (pitchSteps as number) : playerIdOrPayload.pitchSteps;
+  return { type: 'cubeRotated', playerId, yawSteps: yaw, pitchSteps: pitch };
+}
+
+/** Builds a server `stateSync` message. */
+export function stateSyncMessage(cube: CubeSync): ServerMessage {
+  return {
+    type: 'stateSync',
+    playerId: cube.playerId,
+    levelIndex: cube.levelIndex,
+    gridSize: cube.gridSize,
+    styleId: cube.styleId,
+    removedIds: [...cube.removedIds],
+    yawSteps: cube.yawSteps,
+    pitchSteps: cube.pitchSteps,
+  };
 }

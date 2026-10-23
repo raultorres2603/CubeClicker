@@ -22,6 +22,8 @@ const P1_CUBE = {
   gridSize: 5,
   styleId: 'emerald-crystal',
   removedIds: ['front:0:0', 'front:0:1'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P1: MemberState = {
@@ -32,6 +34,8 @@ const P1: MemberState = {
   gridSize: 5,
   styleId: 'emerald-crystal',
   removedIds: ['front:0:0', 'front:0:1'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P2: MemberState = {
@@ -42,6 +46,8 @@ const P2: MemberState = {
   gridSize: 3,
   styleId: 'obsidian-neon',
   removedIds: [],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const PLACEMENT: Placement = {
@@ -57,7 +63,7 @@ const PLACEMENT: Placement = {
 
 /** The `welcome` frame as it travels on the wire (hand-written, not stringified). */
 const WELCOME_TEXT =
-  '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":38.197186342054884,"y":0},"self":{"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"]},"roster":[{"playerId":"p1","name":"Player 1","position":{"x":38.197186342054884,"y":0},"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"]},{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[]}]}';
+  '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":38.197186342054884,"y":0},"self":{"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},"roster":[{"playerId":"p1","name":"Player 1","position":{"x":38.197186342054884,"y":0},"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}]}';
 
 describe('MAX_MESSAGE_BYTES', () => {
   it('pins the 1024-byte frame cap mirrored from the backend', () => {
@@ -269,7 +275,7 @@ describe('parseServerMessage — catalog happy paths', () => {
   it('decodes memberJoined from the joining member', () => {
     expect(
       parseServerMessage(
-        '{"type":"memberJoined","member":{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[]}}',
+        '{"type":"memberJoined","member":{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}}',
       ),
     ).toEqual({ ok: true, message: { type: 'memberJoined', member: P2 } });
   });
@@ -316,7 +322,7 @@ describe('parseServerMessage — catalog happy paths', () => {
   it('decodes stateSync with its authoritative removed set', () => {
     expect(
       parseServerMessage(
-        '{"type":"stateSync","playerId":"p2","levelIndex":1,"gridSize":4,"styleId":"crimson-alloy","removedIds":["front:0:0","back:3:3"]}',
+        '{"type":"stateSync","playerId":"p2","levelIndex":1,"gridSize":4,"styleId":"crimson-alloy","removedIds":["front:0:0","back:3:3"],"yawSteps":2,"pitchSteps":-1}',
       ),
     ).toEqual({
       ok: true,
@@ -327,6 +333,8 @@ describe('parseServerMessage — catalog happy paths', () => {
         gridSize: 4,
         styleId: 'crimson-alloy',
         removedIds: ['front:0:0', 'back:3:3'],
+        yawSteps: 2,
+        pitchSteps: -1,
       },
     });
   });
