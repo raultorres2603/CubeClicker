@@ -256,6 +256,12 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let pendingAutoReturn = false;
   /** The owned engine adopted the server's level-0 grid/style exactly once. */
   let adoptedInitialCube = false;
+
+  /** Throttle state for outbound `rotate` messages (50 ms coalescing window). */
+  let lastBroadcastOrientation: { yawSteps: number; pitchSteps: number } | null = null;
+  let lastSendMs = 0;
+  let pendingOrientation: { yawSteps: number; pitchSteps: number } | null = null;
+  let rotateTimer: ReturnType<typeof setTimeout> | null = null;
   /** The scene of the live attach cycle; `null` while detached. */
   let activeScene: SceneView | null = null;
   /** The environment of the live attach cycle (the owned engine's replacement random). */
@@ -325,6 +331,84 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     return !online || (status === 'connected' && welcomed);
   }
 
+  /** Wall-clock read from the active (or provided) environment. */
+  function currentNow(): number {
+    const env = activeEnv ?? providedEnv;
+    if (env === undefined || env === null) {
+      return 0;
+    }
+    return env.now();
+  }
+
+  function clearRotateTimer(): void {
+    if (rotateTimer !== null) {
+      clearTimeout(rotateTimer);
+      rotateTimer = null;
+    }
+  }
+
+  function sendRotateNow(orientation: { yawSteps: number; pitchSteps: number }): void {
+    if (transport === undefined) {
+      return;
+    }
+    transport.send({ type: 'rotate', yawSteps: orientation.yawSteps, pitchSteps: orientation.pitchSteps });
+    lastBroadcastOrientation = { yawSteps: orientation.yawSteps, pitchSteps: orientation.pitchSteps };
+    lastSendMs = currentNow();
+    pendingOrientation = null;
+    clearRotateTimer();
+  }
+
+  function flushPendingRotate(): void {
+    if (pendingOrientation === null) {
+      return;
+    }
+    if (lastBroadcastOrientation !== null &&
+        lastBroadcastOrientation.yawSteps === pendingOrientation.yawSteps &&
+        lastBroadcastOrientation.pitchSteps === pendingOrientation.pitchSteps) {
+      pendingOrientation = null;
+      clearRotateTimer();
+      return;
+    }
+    if (!canRun()) {
+      return;
+    }
+    const po = pendingOrientation;
+    pendingOrientation = null;
+    sendRotateNow(po);
+  }
+
+  function requestRotateSend(orientation: { yawSteps: number; pitchSteps: number }): void {
+    if (!online || transport === undefined) {
+      return;
+    }
+    if (lastBroadcastOrientation !== null &&
+        lastBroadcastOrientation.yawSteps === orientation.yawSteps &&
+        lastBroadcastOrientation.pitchSteps === orientation.pitchSteps) {
+      // Only send when the value changed from the last sent.
+      return;
+    }
+    if (!canRun()) {
+      // Disconnected: queue the latest value, flush on reconnect.
+      pendingOrientation = { yawSteps: orientation.yawSteps, pitchSteps: orientation.pitchSteps };
+      return;
+    }
+    const now = currentNow();
+    if (lastBroadcastOrientation === null || now - lastSendMs >= 50) {
+      sendRotateNow(orientation);
+      return;
+    }
+    pendingOrientation = { yawSteps: orientation.yawSteps, pitchSteps: orientation.pitchSteps };
+    if (rotateTimer === null) {
+      const delay = Math.max(0, 50 - (now - lastSendMs));
+      rotateTimer = setTimeout(() => {
+        rotateTimer = null;
+        if (pendingOrientation !== null && canRun()) {
+          flushPendingRotate();
+        }
+      }, delay);
+    }
+  }
+
   /** Applies one authoritative removal without forwarding it back to the server. */
   function applyAuthoritativeRemoval(id: MiniCubeId): void {
     const before = engine.getSnapshot();
@@ -352,6 +436,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         gridSize: cube.gridSize,
         style: resolveStyle(cube.styleId, cube.levelIndex),
         removedIds: cube.removedIds as MiniCubeId[],
+        yawSteps: cube.yawSteps,
+        pitchSteps: cube.pitchSteps,
       });
       return;
     }
@@ -399,12 +485,15 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       if (snapshot.phase === 'travel' && (travelKind === 'spectate' || travelKind === 'return')) {
         engine.cancelTravel?.();
       }
-      spectate.reset();
-      engine.setSpectating?.(false);
     }
+    // Every welcome (join or resume, any identity) clears the spectate state and the view
+    // resets to the own cube instantly (AC-12, AC-14).
+    spectate.reset();
+    engine.setSpectating?.(false);
     reconcileCube(message.self);
     welcomed = true;
     completionLevel = null;
+    flushPendingRotate();
     pendingAutoReturn = false;
     activeScene?.enterWorld({
       maxUsers: world.maxUsers,
@@ -454,6 +543,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       style: resolveStyle(message.self.styleId, message.self.levelIndex),
       destination: message.position,
     });
+    flushPendingRotate();
     publish(engine.getSnapshot());
   }
 
@@ -491,6 +581,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     completionLevel = null;
     reconcileCube(message);
     publish(engine.getSnapshot());
+    flushPendingRotate();
   }
 
   /** A member left: the spectated/travelled target triggers the flight home (AC-19 a/b). */
@@ -560,6 +651,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     const before = engine.getSnapshot();
     engine.dispatch(event);
     const after = engine.getSnapshot();
+    const orientationChanged =
+      before.orientation.yawSteps !== after.orientation.yawSteps ||
+      before.orientation.pitchSteps !== after.orientation.pitchSteps;
     if (
       event.type === 'explodeMiniCube' &&
       after.stats.clicks > before.stats.clicks &&
@@ -573,6 +667,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         completionLevel = after.levelIndex;
         transport.send({ type: 'cubeCompleted', level: after.levelIndex });
       }
+    }
+    if (orientationChanged) {
+      requestRotateSend(after.orientation);
     }
     publish(after);
   }
@@ -666,6 +763,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       if (online) {
         // A fresh attach cycle must not run on a previous connection's welcome.
         welcomed = false;
+        clearRotateTimer();
+        lastBroadcastOrientation = null;
+        pendingOrientation = null;
+        lastSendMs = 0;
       }
 
       const env = providedEnv ?? browserEnvironment(target);
@@ -712,6 +813,11 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         if (!active) {
           // A callback that escaped `cancel`: the session is gone and must not render.
           return;
+        }
+        if (pendingOrientation !== null && canRun()) {
+          if (currentNow() - lastSendMs >= 50) {
+            flushPendingRotate();
+          }
         }
         const dtMs = Math.max(0, nowMs - frameBaselineMs);
         frameBaselineMs = nowMs;
@@ -888,6 +994,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         welcomed = false;
         completionLevel = null;
         pendingAutoReturn = false;
+        clearRotateTimer();
+        lastBroadcastOrientation = null;
+        pendingOrientation = null;
+        lastSendMs = 0;
         spectate.reset();
         engine.setSpectating?.(false);
         publishMultiplayer();

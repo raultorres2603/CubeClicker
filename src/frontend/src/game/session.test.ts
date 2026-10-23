@@ -647,6 +647,8 @@ function member(overrides: Partial<MemberState> = {}): MemberState {
     gridSize: 5,
     styleId: CUBE_STYLES[0]!.id,
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
     ...overrides,
   };
 }
@@ -665,6 +667,8 @@ function welcomeMessage(options: {
   gridSize?: number;
   styleId?: string;
   removedIds?: string[];
+  yawSteps?: number;
+  pitchSteps?: number;
   roster?: MemberState[];
   serverId?: number;
   maxUsers?: number;
@@ -684,7 +688,7 @@ function welcomeMessage(options: {
     serverId: options.serverId ?? 1,
     maxUsers: options.maxUsers ?? 4,
     position,
-    self: { levelIndex, gridSize, styleId, removedIds },
+    self: { levelIndex, gridSize, styleId, removedIds, yawSteps: options.yawSteps ?? 0, pitchSteps: options.pitchSteps ?? 0 },
     roster:
       options.roster ?? [
         member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
@@ -714,7 +718,7 @@ function worldEnteredMessage(options: {
     serverId: options.serverId ?? 2,
     maxUsers: options.maxUsers ?? 2,
     position,
-    self: { levelIndex, gridSize, styleId, removedIds: [] },
+    self: { levelIndex, gridSize, styleId, removedIds: [], yawSteps: 0, pitchSteps: 0 },
     roster:
       options.roster ?? [
         member({ playerId: 'p1', name: 'Player 1', position, levelIndex, gridSize, styleId }),
@@ -745,6 +749,8 @@ function stateSyncMessage(overrides: Partial<StateSyncMessage> = {}): StateSyncM
     gridSize: 5,
     styleId: CUBE_STYLES[0]!.id,
     removedIds: [],
+    yawSteps: 0,
+    pitchSteps: 0,
     ...overrides,
   };
 }
@@ -1413,6 +1419,8 @@ describe('multiplayer welcome and intro hold (AC-23, AC-12)', () => {
       gridSize: 6,
       styleId: 'obsidian-neon',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(session.getMultiplayerSnapshot().world.members.map((entry) => entry.playerId)).toEqual([
       'p2',
@@ -1526,6 +1534,8 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     // No second completion ever leaves for the same level.
     wire.emit(levelAdvancedMessage({ gridSize: 4, position: { x: 24, y: 0 } }));
@@ -1713,7 +1723,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
       serverId: 2,
       maxUsers: 2,
       position: { x: 0, y: 24 },
-      self: { levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy', removedIds: [] },
+      self: { levelIndex: 1, gridSize: 4, styleId: 'crimson-alloy', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       roster: [
         {
           playerId: 'p1',
@@ -1723,6 +1733,8 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           gridSize: 4,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         {
           playerId: 'p3',
@@ -1732,6 +1744,8 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           gridSize: 6,
           styleId: 'solar-gold',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
       ],
     });
@@ -2043,6 +2057,8 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
 
     // The released hold never flies: the old 2500 ms window leaves the session playing.
@@ -2173,6 +2189,8 @@ describe('multiplayer spectate (AC-18, AC-19)', () => {
         gridSize: 6,
         styleId: 'emerald-crystal',
         removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
 
