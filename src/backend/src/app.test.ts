@@ -183,6 +183,8 @@ describe('GET /ws', () => {
           gridSize: secondWelcome.self.gridSize,
           styleId: secondWelcome.self.styleId,
           removedIds: secondWelcome.self.removedIds,
+          yawSteps: 0,
+          pitchSteps: 0,
         },
       });
     } finally {
@@ -332,6 +334,8 @@ describe('GET /ws', () => {
           gridSize: fourthWelcome.self.gridSize,
           styleId: fourthWelcome.self.styleId,
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
       });
       expect(fourthWelcome.roster[0]).toEqual({
@@ -342,6 +346,8 @@ describe('GET /ws', () => {
         gridSize: thirdWelcome.self.gridSize,
         styleId: thirdWelcome.self.styleId,
         removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
       });
 
       // p1's grace expires; only p2 (server 1) hears about it.
@@ -383,6 +389,8 @@ describe('GET /ws', () => {
           gridSize: 3,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         {
           playerId: 'p2',
@@ -392,6 +400,8 @@ describe('GET /ws', () => {
           gridSize: secondWelcome.self.gridSize,
           styleId: secondWelcome.self.styleId,
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
       ]);
       expect(await second.next()).toEqual({
@@ -438,6 +448,8 @@ describe('GET /ws', () => {
           gridSize: 3,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         {
           playerId: 'p4',
@@ -447,6 +459,8 @@ describe('GET /ws', () => {
           gridSize: fourthWelcome.self.gridSize,
           styleId: fourthWelcome.self.styleId,
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
       ]);
       expect(await fourth.next()).toEqual({
@@ -471,6 +485,8 @@ describe('GET /ws', () => {
             gridSize: 3,
             styleId: 'obsidian-neon',
             removedIds: [],
+            yawSteps: 0,
+            pitchSteps: 0,
           },
         ]);
       } finally {

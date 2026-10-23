@@ -160,6 +160,8 @@ function memberOf(
   name: string,
   position: Position,
   cube: CubeFields = LEVEL_0,
+  yawSteps = 0,
+  pitchSteps = 0,
 ): {
   playerId: string;
   name: string;
@@ -168,8 +170,10 @@ function memberOf(
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 } {
-  return { playerId, name, position, ...cube };
+  return { playerId, name, position, ...cube, yawSteps, pitchSteps };
 }
 
 /** Pinned ring positions (T1 has the formula; these are the exact doubles the hub must send). */
@@ -279,7 +283,7 @@ describe('connection lifecycle', () => {
     expect(welcome.serverId).toBe(1);
     expect(welcome.maxUsers).toBe(2);
     expect(welcome.position).toEqual(X2_SLOT_1);
-    expect(welcome.self).toEqual(LEVEL_0);
+    expect(welcome.self).toEqual({ ...LEVEL_0, yawSteps: 0, pitchSteps: 0 });
     expect(welcome.roster).toEqual([memberOf('p1', 'Player 1', X2_SLOT_1)]);
     expect(peer.messages()).toHaveLength(1);
   });
@@ -436,6 +440,8 @@ describe('reconnect grace', () => {
       gridSize: 3,
       styleId: 'obsidian-neon',
       removedIds: ['front:0:0'],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(welcome.roster).toEqual([
       memberOf('p1', 'Player 1', X2_SLOT_1, {
@@ -443,6 +449,8 @@ describe('reconnect grace', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0'],
+        yawSteps: 0,
+        pitchSteps: 0,
       }),
       memberOf('p2', 'Player 2', X2_SLOT_2),
     ]);
@@ -649,6 +657,8 @@ describe('explode broadcasts', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
     expect(second.messages()).toEqual([]);
@@ -665,6 +675,8 @@ describe('explode broadcasts', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
       { type: 'error', code: 'invalid_click' },
       {
@@ -674,6 +686,8 @@ describe('explode broadcasts', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
     expect(second.messages()).toEqual([]);
@@ -859,6 +873,8 @@ describe('cube completion', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
 
@@ -873,6 +889,8 @@ describe('cube completion', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
   });
@@ -911,6 +929,8 @@ describe('cube completion', () => {
       gridSize: 5,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(third.messages()).toEqual([
       {
@@ -926,6 +946,8 @@ describe('cube completion', () => {
           gridSize: 5,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
         roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
@@ -986,6 +1008,8 @@ describe('cube completion', () => {
         gridSize: 3,
         styleId: 'obsidian-neon',
         removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
     ]);
 
@@ -1005,6 +1029,8 @@ describe('cube completion', () => {
       gridSize: 5,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(fourth.messages()).toEqual([
       {
@@ -1020,6 +1046,8 @@ describe('cube completion', () => {
           gridSize: 5,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         // p2's vacated slot 2 is the lowest free slot; p1/p3 keep slots 1/3.
         roster: [
@@ -1088,6 +1116,8 @@ describe('cube completion', () => {
       gridSize: 3,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(third.messages()).toEqual([
       {
@@ -1103,6 +1133,8 @@ describe('cube completion', () => {
           gridSize: 3,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
       },
@@ -1127,6 +1159,8 @@ describe('cube completion', () => {
       gridSize: 3,
       styleId: 'crimson-alloy',
       removedIds: [],
+      yawSteps: 0,
+      pitchSteps: 0,
     });
     expect(fifth.messages()).toEqual([
       {
@@ -1142,6 +1176,8 @@ describe('cube completion', () => {
           gridSize: 3,
           styleId: 'crimson-alloy',
           removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
         },
         roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
       },
@@ -1232,4 +1268,170 @@ describe('stable slots (T1b)', () => {
       { type: 'memberJoined', member: memberOf('p4', 'Player 4', X4_SLOT_2) },
     ]);
   });
+describe('orientation storage and rotate (T2)', () => {
+  function rotate(peer, yawSteps, pitchSteps) {
+    peer.receive(JSON.stringify({ type: 'rotate', yawSteps, pitchSteps }));
+  }
+
+  it('initialises member orientation to (0, 0) on join', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const peer = harness.connect();
+    harness.join(peer);
+    const welcome = welcomeOf(peer);
+    expect(welcome.self.yawSteps).toBe(0);
+    expect(welcome.self.pitchSteps).toBe(0);
+    expect(welcome.roster[0].yawSteps).toBe(0);
+    expect(welcome.roster[0].pitchSteps).toBe(0);
+  });
+
+  it('answers not_joined for rotate before a successful join', () => {
+    const harness = createHarness();
+    const peer = harness.connect();
+    peer.clear();
+    rotate(peer, 1, 0);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_joined' }]);
+  });
+
+  it('clamps yaw/pitch, updates storage and broadcasts cubeRotated to others only', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    rotate(first, 5, 5);
+    expect(first.messages()).toEqual([]);
+    expect(second.messages()).toEqual([
+      { type: 'cubeRotated', playerId: 'p1', yawSteps: 1, pitchSteps: 1 },
+    ]);
+
+    first.clear();
+    first.receive(JSON.stringify({ type: 'explode', id: 'front:9:9', level: 0 }));
+    expect(first.messages()).toEqual([
+      { type: 'error', code: 'invalid_click' },
+      {
+        type: 'stateSync',
+        playerId: 'p1',
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: [],
+        yawSteps: 1,
+        pitchSteps: 1,
+      },
+    ]);
+  });
+
+  it('clamps negative yaw and pitch to the pinned ranges', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    rotate(first, -1, -5);
+    expect(second.messages()).toEqual([
+      { type: 'cubeRotated', playerId: 'p1', yawSteps: 3, pitchSteps: -1 },
+    ]);
+  });
+
+  it('drops the 21st rotate in a trailing second silently and resets after 1000 ms', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    for (let index = 0; index < 20; index += 1) {
+      rotate(first, 0, 0);
+    }
+    expect(second.messages()).toHaveLength(20);
+    second.clear();
+
+    rotate(first, 1, 0);
+    expect(first.messages()).toEqual([]);
+    expect(second.messages()).toEqual([]);
+
+    harness.advance(999);
+    rotate(first, 1, 0);
+    expect(second.messages()).toEqual([]);
+
+    harness.advance(1);
+    rotate(first, 1, 0);
+    expect(second.messages()).toEqual([
+      { type: 'cubeRotated', playerId: 'p1', yawSteps: 1, pitchSteps: 0 },
+    ]);
+  });
+
+  it('drops an oversized rotate frame as bad_message', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const peer = harness.connect();
+    harness.join(peer);
+    peer.clear();
+    peer.receive(
+      JSON.stringify({ type: 'rotate', yawSteps: 1, pitchSteps: 0, pad: 'x'.repeat(1100) }),
+    );
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'bad_message' }]);
+  });
+
+  it('resets orientation to (0, 0) on a same-server level advance', () => {
+    const draws = [0, 0, 0.5];
+    let drawIndex = 0;
+    const harness = createHarness({ maxUsersPerServer: 2 }, () => draws[drawIndex++] ?? 0);
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    removeLevel(harness, first, allIds(3));
+    first.clear();
+    second.clear();
+
+    rotate(first, 2, 1);
+    second.clear();
+    first.clear();
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    first.clear();
+    first.receive(JSON.stringify({ type: 'explode', id: 'front:9:9', level: 1 }));
+    const sync = first.messages().find((m) => m.type === 'stateSync');
+    expect(sync).toBeDefined();
+    expect(sync.yawSteps).toBe(0);
+    expect(sync.pitchSteps).toBe(0);
+  });
+
+  it('resets orientation to (0, 0) on a server move', () => {
+    const draws = [0, 0, 0, 0, 0, 0.5];
+    let drawIndex = 0;
+    const harness = createHarness({ maxUsersPerServer: 2 }, () => draws[drawIndex++] ?? 0);
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const third = harness.connect();
+    harness.join(third);
+    expect(welcomeOf(third).serverId).toBe(2);
+
+    rotate(third, 2, -1);
+    first.drop();
+    second.clear();
+    third.clear();
+    harness.advance(harness.config.reconnectGraceMs);
+    removeLevel(harness, third, allIds(3));
+    second.clear();
+    third.clear();
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const joined = second.messages().find((m) => m.type === 'memberJoined');
+    expect(joined).toBeDefined();
+    expect(joined.member.yawSteps).toBe(0);
+    expect(joined.member.pitchSteps).toBe(0);
+  });
+});
+
 });

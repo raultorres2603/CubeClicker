@@ -56,6 +56,7 @@ import {
   memberJoinedMessage,
   memberLeftMessage,
   miniCubeRemovedMessage,
+  cubeRotatedMessage,
   parseClientMessage,
   stateSyncMessage,
   welcomeMessage,
@@ -77,6 +78,9 @@ import {
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
+
+/** Max `rotate` messages per trailing second per member (AC-6). */
+const ROTATE_RATE_LIMIT = 20;
 
 /**
  * The socket subset the hub drives.
@@ -159,9 +163,12 @@ interface Member {
   name: string;
   token: string;
   cube: BoardState;
+  yawSteps: number;
+  pitchSteps: number;
   /** The live socket, or `null` while the member is inside the grace window. */
   connection: Connection | null;
   rate: RateWindow;
+  rotateRate: RateWindow;
 }
 
 /**
@@ -252,6 +259,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       gridSize: member.cube.gridSize,
       styleId: member.cube.styleId,
       removedIds: [...member.cube.removedIds],
+      yawSteps: member.yawSteps,
+      pitchSteps: member.pitchSteps,
     };
   }
 
@@ -265,6 +274,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       gridSize: member.cube.gridSize,
       styleId: member.cube.styleId,
       removedIds: [...member.cube.removedIds],
+      yawSteps: member.yawSteps,
+      pitchSteps: member.pitchSteps,
     };
   }
 
@@ -437,8 +448,11 @@ export function createGameHub(deps: HubDeps): GameHub {
       name: record.name,
       token: record.token,
       cube: createNextCube(null, styleForLevel, random),
+      yawSteps: 0,
+      pitchSteps: 0,
       connection,
       rate: { admitted: [], lastLimitedAt: null },
+      rotateRate: { admitted: [], lastLimitedAt: null },
     };
     members.set(member.playerId, member);
     tokens.set(member.token, member.playerId);
@@ -519,6 +533,8 @@ export function createGameHub(deps: HubDeps): GameHub {
     // "stay here", so the member simply advances in place.
     const moved = target === undefined ? null : registry.moveMember(member.playerId, target);
     member.cube = next;
+    member.yawSteps = 0;
+    member.pitchSteps = 0;
     if (moved === null) {
       const advance: LevelAdvance = {
         playerId: member.playerId,
@@ -538,6 +554,27 @@ export function createGameHub(deps: HubDeps): GameHub {
     send(connection, worldEnteredMessage(placementFor(member)));
     broadcast(previous.serverId, memberLeftMessage(member.playerId, 'moved'));
     broadcast(location.serverId, memberJoinedMessage(memberState(member)), member.playerId);
+  }
+
+  function handleRotate(member: Member, connection: Connection, yawSteps: number, pitchSteps: number): void {
+    const now = deps.now();
+    const rate = member.rotateRate;
+    while (rate.admitted.length > 0 && rate.admitted[0]! <= now - RATE_WINDOW_MS) {
+      rate.admitted.shift();
+    }
+    if (rate.admitted.length >= ROTATE_RATE_LIMIT) {
+      // Dropped silently: no state change, no broadcast, no reply.
+      return;
+    }
+    rate.admitted.push(now);
+    const clampedYaw = ((yawSteps % 4) + 4) % 4;
+    const clampedPitch = Math.max(-1, Math.min(1, pitchSteps));
+    member.yawSteps = clampedYaw;
+    member.pitchSteps = clampedPitch;
+    const location = locationOf(member.playerId);
+    if (location !== null) {
+      broadcast(location.serverId, cubeRotatedMessage(member.playerId, clampedYaw, clampedPitch), member.playerId);
+    }
   }
 
   function handleMessage(connection: Connection, raw: unknown): void {
@@ -570,7 +607,14 @@ export function createGameHub(deps: HubDeps): GameHub {
       handleExplode(member, connection, message.id, message.level);
       return;
     }
-    handleCompletion(member, connection, message.level);
+    if (message.type === 'cubeCompleted') {
+      handleCompletion(member, connection, message.level);
+      return;
+    }
+    if (message.type === 'rotate') {
+      handleRotate(member, connection, message.yawSteps, message.pitchSteps);
+      return;
+    }
   }
 
   return {
