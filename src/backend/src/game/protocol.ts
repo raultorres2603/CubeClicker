@@ -28,6 +28,18 @@ export type { Position };
  */
 export const MAX_MESSAGE_BYTES = 1024;
 
+/**
+ * Pinned upper bound for a single orientation step count (yaw). The spec defines
+ * `yawSteps` in `0..3` and `pitchSteps` in `-1..1`; this constant records the yaw
+ * upper bound (the larger of the two). Open question: the brief suggested a single
+ * `MAX_STEPS` default of 8, but the spec pins the ranges above, so 3 is used and
+ * the "8 default" is overridden (recorded as open in the build log).
+ */
+export const MAX_STEPS = 3;
+
+/** Size cap applied to a `rotate` frame; identical to the global frame cap. */
+export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
+
 /** The six cube faces, in the accepted board order (mirrors the frontend `FaceId`). */
 export type FaceId = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 
@@ -40,6 +52,8 @@ export interface CubeState {
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 }
 
 /** One server member as broadcast to that server's clients (cube state inlined). */
@@ -51,6 +65,8 @@ export interface MemberState {
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 }
 
 /** The pinned error codes (spec § 8). */
@@ -67,7 +83,8 @@ export type ClientMessage =
   | { type: 'join' }
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
-  | { type: 'cubeCompleted'; level: number };
+  | { type: 'cubeCompleted'; level: number }
+  | { type: 'rotate'; yawSteps: number; pitchSteps: number };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -96,6 +113,7 @@ export type ServerMessage =
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
+  | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
   | {
       type: 'levelAdvanced';
@@ -113,6 +131,8 @@ export type ServerMessage =
       gridSize: number;
       styleId: string;
       removedIds: string[];
+      yawSteps: number;
+      pitchSteps: number;
     }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
@@ -140,6 +160,11 @@ function isNonEmptyString(value: unknown): value is string {
 /** A required numeric field (JSON numbers are always finite once parsed). */
 function isNumber(value: unknown): value is number {
   return typeof value === 'number';
+}
+
+/** A required integer field (rejects booleans, floats and non-numbers). */
+function isInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
 }
 
 function badMessage(): ClientMessageParseResult {
@@ -196,6 +221,15 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
       }
       return { ok: true, message: { type: 'cubeCompleted', level: frame.level } };
 
+    case 'rotate':
+      if (!isInteger(frame.yawSteps) || !isInteger(frame.pitchSteps)) {
+        return badMessage();
+      }
+      return {
+        ok: true,
+        message: { type: 'rotate', yawSteps: frame.yawSteps, pitchSteps: frame.pitchSteps },
+      };
+
     default:
       return badMessage();
   }
@@ -232,6 +266,8 @@ export interface CubeSync {
   gridSize: number;
   styleId: string;
   removedIds: string[];
+  yawSteps: number;
+  pitchSteps: number;
 }
 
 /** The shared `welcome`/`worldEntered` payload, copied so later mutations cannot leak in. */
@@ -295,7 +331,36 @@ export function stateSyncMessage(cube: CubeSync): ServerMessage {
     gridSize: cube.gridSize,
     styleId: cube.styleId,
     removedIds: [...cube.removedIds],
+    yawSteps: cube.yawSteps,
+    pitchSteps: cube.pitchSteps,
   };
+}
+
+/** Broadcast to all other members of a server when one member's cube orientation settles. */
+export function cubeRotatedMessage(
+  playerIdOrPayload: string | { playerId: string; yawSteps: number; pitchSteps: number },
+  yawSteps?: number,
+  pitchSteps?: number,
+): ServerMessage {
+  const playerId =
+    typeof playerIdOrPayload === 'string' ? playerIdOrPayload : playerIdOrPayload.playerId;
+  const yaw =
+    typeof playerIdOrPayload === 'string' ? (yawSteps as number) : playerIdOrPayload.yawSteps;
+  const pitch =
+    typeof playerIdOrPayload === 'string' ? (pitchSteps as number) : playerIdOrPayload.pitchSteps;
+  return { type: 'cubeRotated', playerId, yawSteps: yaw, pitchSteps: pitch };
+}
+
+/** Builds a client `rotate` message (orientation report). */
+export function rotateMessage(
+  yawStepsOrPayload: number | { yawSteps: number; pitchSteps: number },
+  pitchSteps?: number,
+): ClientMessage {
+  const yawSteps =
+    typeof yawStepsOrPayload === 'number' ? yawStepsOrPayload : yawStepsOrPayload.yawSteps;
+  const pitch =
+    typeof yawStepsOrPayload === 'number' ? (pitchSteps as number) : yawStepsOrPayload.pitchSteps;
+  return { type: 'rotate', yawSteps, pitchSteps: pitch };
 }
 
 /** An error addressed to one client (`detail` omitted when not supplied). */
@@ -315,6 +380,8 @@ function copyCubeState(cube: CubeState): CubeState {
     gridSize: cube.gridSize,
     styleId: cube.styleId,
     removedIds: [...cube.removedIds],
+    yawSteps: cube.yawSteps,
+    pitchSteps: cube.pitchSteps,
   };
 }
 
@@ -328,5 +395,7 @@ function copyMemberState(member: MemberState): MemberState {
     gridSize: member.gridSize,
     styleId: member.styleId,
     removedIds: [...member.removedIds],
+    yawSteps: member.yawSteps,
+    pitchSteps: member.pitchSteps,
   };
 }

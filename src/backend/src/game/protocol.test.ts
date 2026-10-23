@@ -6,8 +6,11 @@ import {
   type CubeState,
   type CubeSync,
   MAX_MESSAGE_BYTES,
+  MAX_STEPS,
+  MAX_ROTATE_BYTES,
   type MemberState,
   type Placement,
+  cubeRotatedMessage,
   encodeServerMessage,
   errorMessage,
   levelAdvancedMessage,
@@ -15,6 +18,7 @@ import {
   memberLeftMessage,
   miniCubeRemovedMessage,
   parseClientMessage,
+  rotateMessage,
   stateSyncMessage,
   welcomeMessage,
   worldEnteredMessage,
@@ -26,6 +30,8 @@ const P1_CUBE: CubeState = {
   gridSize: 5,
   styleId: 'emerald-crystal',
   removedIds: ['front:0:0', 'front:0:1'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P1: MemberState = {
@@ -36,6 +42,8 @@ const P1: MemberState = {
   gridSize: 5,
   styleId: 'emerald-crystal',
   removedIds: ['front:0:0', 'front:0:1'],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const P2: MemberState = {
@@ -46,6 +54,8 @@ const P2: MemberState = {
   gridSize: 3,
   styleId: 'obsidian-neon',
   removedIds: [],
+  yawSteps: 0,
+  pitchSteps: 0,
 };
 
 const PLACEMENT: Placement = {
@@ -243,6 +253,8 @@ describe('server-message builders', () => {
         gridSize: 5,
         styleId: 'emerald-crystal',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
       roster: [P1, P2],
     });
@@ -263,6 +275,8 @@ describe('server-message builders', () => {
         gridSize: 5,
         styleId: 'emerald-crystal',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
       roster: [P1, P2],
     });
@@ -282,6 +296,8 @@ describe('server-message builders', () => {
         gridSize: 5,
         styleId: 'emerald-crystal',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
       roster: [P1, P2],
     });
@@ -339,6 +355,8 @@ describe('server-message builders', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: ['front:0:0', 'back:3:3'],
+      yawSteps: 2,
+      pitchSteps: -1,
     };
 
     const message = stateSyncMessage(cube);
@@ -349,6 +367,8 @@ describe('server-message builders', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: ['front:0:0', 'back:3:3'],
+      yawSteps: 2,
+      pitchSteps: -1,
     });
 
     cube.removedIds.push('left:1:1');
@@ -359,6 +379,8 @@ describe('server-message builders', () => {
       gridSize: 4,
       styleId: 'crimson-alloy',
       removedIds: ['front:0:0', 'back:3:3'],
+      yawSteps: 2,
+      pitchSteps: -1,
     });
   });
 
@@ -408,8 +430,112 @@ describe('encodeServerMessage', () => {
         gridSize: 5,
         styleId: 'emerald-crystal',
         removedIds: ['front:0:0', 'front:0:1'],
+        yawSteps: 0,
+        pitchSteps: 0,
       },
       roster: [P1, P2],
     });
+  });
+});
+
+describe('MAX_STEPS / MAX_ROTATE_BYTES', () => {
+  it('pins MAX_STEPS to the yaw upper bound', () => {
+    expect(MAX_STEPS).toBe(3);
+  });
+
+  it('reuses the global frame cap for rotate frames', () => {
+    expect(MAX_ROTATE_BYTES).toBe(MAX_MESSAGE_BYTES);
+  });
+});
+
+describe('parseClientMessage — rotate', () => {
+  it('accepts an integer rotate payload', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":1,"pitchSteps":0}')).toEqual({
+      ok: true,
+      message: { type: 'rotate', yawSteps: 1, pitchSteps: 0 },
+    });
+  });
+
+  it('accepts an out-of-range integer (clamped server-side)', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":5,"pitchSteps":0}')).toEqual({
+      ok: true,
+      message: { type: 'rotate', yawSteps: 5, pitchSteps: 0 },
+    });
+  });
+
+  it('accepts negative out-of-range integers', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":-1,"pitchSteps":2}')).toEqual({
+      ok: true,
+      message: { type: 'rotate', yawSteps: -1, pitchSteps: 2 },
+    });
+  });
+
+  it('rejects a non-integer yawSteps', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":1.5,"pitchSteps":0}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects a non-integer pitchSteps', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":0,"pitchSteps":1.5}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects missing fields', () => {
+    expect(parseClientMessage('{"type":"rotate"}')).toEqual({ ok: false, error: 'bad_message' });
+    expect(parseClientMessage('{"type":"rotate","yawSteps":1}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+    expect(parseClientMessage('{"type":"rotate","pitchSteps":0}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects wrong field types', () => {
+    expect(parseClientMessage('{"type":"rotate","yawSteps":"1","pitchSteps":0}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+    expect(parseClientMessage('{"type":"rotate","yawSteps":true,"pitchSteps":0}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('server-message builders — orientation', () => {
+  it('builds cubeRotated', () => {
+    expect(cubeRotatedMessage('p1', 3, -1)).toStrictEqual({
+      type: 'cubeRotated',
+      playerId: 'p1',
+      yawSteps: 3,
+      pitchSteps: -1,
+    });
+    expect(cubeRotatedMessage({ playerId: 'p2', yawSteps: 0, pitchSteps: 1 })).toStrictEqual({
+      type: 'cubeRotated',
+      playerId: 'p2',
+      yawSteps: 0,
+      pitchSteps: 1,
+    });
+  });
+
+  it('builds rotate client message', () => {
+    expect(rotateMessage(2, 1)).toStrictEqual({ type: 'rotate', yawSteps: 2, pitchSteps: 1 });
+    expect(rotateMessage({ yawSteps: 0, pitchSteps: -1 })).toStrictEqual({
+      type: 'rotate',
+      yawSteps: 0,
+      pitchSteps: -1,
+    });
+  });
+
+  it('encodes cubeRotated as one JSON frame', () => {
+    expect(encodeServerMessage(cubeRotatedMessage('p1', 1, 0))).toBe(
+      '{"type":"cubeRotated","playerId":"p1","yawSteps":1,"pitchSteps":0}',
+    );
   });
 });
