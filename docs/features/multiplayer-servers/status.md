@@ -1,6 +1,6 @@
 ---
 feature: multiplayer-servers
-state: code_review
+state: accepted
 spec_review_round: 1
 build_round: 2
 created: 2026-10-21
@@ -32,7 +32,7 @@ Turn the single-player frontend into an online experience: the backend comes onl
 - [x] T17 corrective: mid-flight resume reset + spectator stays viewing
 - [x] T5b corrective: plan recompute, trailing-second limiter, cap ordering, donor order
 - [x] T17b corrective: authoritative board adoption, held-travel release, pre-welcome UI gating
-- [>] T15b corrective: smoke idempotency + errata commit
+- [x] T15b corrective: smoke idempotency + errata commit
 
 ## Loop log
 - 2026-10-21 — created → PLANNING — request: "include backend … every time backend goes online … it will create the first server"
@@ -51,6 +51,7 @@ Turn the single-player frontend into an online experience: the backend comes onl
 - 2026-10-22 — code_review → building — verdict changes_requested, 4 blocking (F1/F2 client authority+resume, F3 plan recompute, F4 trailing-second limiter); corrective T5b/T17b/T15b — reviews/code-r1.md
 - 2026-10-22 — building: T5b, T17b, T15b complete; spec/glossary r2 errata committed — 810 tests, backend 98.5/97.2/100/98.5, frontend 99.0/98.3/99.3/99.0; smoke 8/8 twice — build-log-T5b.md, T17b.md, T15b.md
 - 2026-10-22 — building → code_review — round 2 — reviews/code-r2.md (pending)
+- 2026-10-22 — code_review → accepted — verdict approved (0 blocking, F1–F11 closed, 27/27 ACs) — reviews/code-r2.md
 
 ## Blockers / open questions
 - **Slot stability defect (T5 Q-T5-2), fixing before the frontend chain:** the registry stores members in a dense array, so a removal compacts remaining slots and staying members' cubes would jump position mid-play — contradicting spec § 5 / D-6 ("positions stable while the member stays"), and unimplementable client-side because no message carries the new positions. Fix: explicit slot occupancy with holes in `servers.ts` + hub reads the member's slot.
