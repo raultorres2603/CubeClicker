@@ -16,6 +16,20 @@
  * states the same inclusive form (plan-r3 correction of the mismatch the T11 build
  * log flagged).
  *
+ * **Pointer-type parity — touch contract (fullscreen-responsive-layout AC-9, AC-10,
+ * AC-12).** Pointer Events is the single input path for mouse, touch and pen: the session
+ * reads only `clientX`/`clientY` from the event, and this function takes only coordinates
+ * and the rect. `pointerType`/`pointerId` are never parameters, so identical travel
+ * classifies identically for every pointer type. A touch **tap** (travel ≤ the threshold,
+ * inclusive as above) is picked by the session against the current front face and
+ * explodes the hit mini-cube, exactly like a mouse tap; a touch **drag** (travel strictly
+ * beyond the threshold) dispatches nothing at all — no rotation, no explosion, no publish,
+ * snapshot identity unchanged — exactly like a mouse drag. This retains the predecessor
+ * contract (`cube-tile-lines-and-controls` AC-2: classified drags keep the
+ * `axis`/`direction` payload but never rotate). No virtual joystick and no drag-rotation
+ * are introduced (Q-1): rotation stays keyboard/auto only. Touch/mouse parity and the
+ * 39 px tap / 40 px tap (inclusive boundary) / 41 px drag cases are pinned by test.
+ *
  * **Direction sign convention (classification only — the session ignores drags).** The
  * payload keeps the predecessor's frame so the classification contract is unchanged.
  * `direction` is the sign of the gesture's displacement along the dominant axis, which
