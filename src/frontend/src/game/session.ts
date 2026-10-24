@@ -14,8 +14,8 @@
  *    `engine.dispatch`,
  * 2. the scheduler's frame → `engine.advance(dt)` → drain intents → `scene.applyIntents`
  *    → `scene.applySnapshot` → `scene.update` → `renderer.render` → reschedule,
- * 3. the motion / visibility / resize sources → live motion switching, loop pause and
- *    viewport refresh.
+ * 3. the motion / visibility / resize / orientation sources → live motion switching, loop
+ *    pause and viewport refresh (resize trailing-debounced, orientation immediate).
  *
  * **Multiplayer (T13).** An optional {@link Transport} turns the session into the
  * composition root of the online protocol: it is the only owner of the transport
@@ -126,6 +126,11 @@ export interface ResizeSource {
   subscribe(cb: () => void): () => void;
 }
 
+/** Orientation reader: fires whenever the window/device orientation changes. */
+export interface OrientationSource {
+  subscribe(cb: () => void): () => void;
+}
+
 /** The narrow renderer surface the session drives (three's `WebGLRenderer` fits it). */
 export interface RendererAdapter {
   setSize(width: number, height: number): void;
@@ -145,6 +150,11 @@ export interface SessionEnvironment {
   motion: MotionSource;
   visibility: VisibilitySource;
   resize: ResizeSource;
+  /**
+   * Orientation changes. Optional so existing custom environments keep type-checking;
+   * the browser environment always provides it.
+   */
+  orientation?: OrientationSource;
   rendererFactory: (canvas: CanvasLike) => RendererAdapter;
   now(): number;
   random(): number;
@@ -203,6 +213,12 @@ export interface GameSessionOptions {
    */
   transport?: Transport;
 }
+
+/**
+ * Trailing debounce for container resizes (AC-8): one 60 Hz frame. The attach-time apply
+ * and orientation changes stay synchronous.
+ */
+const RESIZE_DEBOUNCE_MS = 16;
 
 /** One press, in client coordinates (the canvas origin is subtracted when it is classified). */
 interface PressPosition {
@@ -790,6 +806,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       let hidden = env.visibility.isHidden();
       let press: PressPosition | null = null;
 
+      /** Pending trailing resize apply; `null` when no resize is queued. */
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
       /** Pushes the container size, the capped pixel ratio and the camera aspect. */
       function applyViewport(): void {
         const rect = target.getBoundingClientRect();
@@ -798,6 +817,13 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         // Before the first layout the box is empty; a 1:1 aspect keeps the projection valid.
         view.camera.aspect = rect.height > 0 ? rect.width / rect.height : 1;
         view.camera.updateProjectionMatrix();
+      }
+
+      function clearResizeTimer(): void {
+        if (resizeTimer !== null) {
+          clearTimeout(resizeTimer);
+          resizeTimer = null;
+        }
       }
 
       function scheduleFrame(): void {
@@ -943,7 +969,26 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         scheduleFrame();
       }
 
+      /** Trailing resize: coalesces a burst of box changes into one viewport apply (AC-8). */
       function onResize(): void {
+        if (!active) {
+          return;
+        }
+        clearResizeTimer();
+        resizeTimer = setTimeout(() => {
+          resizeTimer = null;
+          if (active) {
+            applyViewport();
+          }
+        }, RESIZE_DEBOUNCE_MS);
+      }
+
+      /** A rotation lands on the final box: apply now and drop any queued resize (AC-8). */
+      function onOrientation(): void {
+        if (!active) {
+          return;
+        }
+        clearResizeTimer();
         applyViewport();
       }
 
@@ -957,6 +1002,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       unsubscribers.push(env.motion.subscribe(onMotionChange));
       unsubscribers.push(env.visibility.subscribe(onVisibilityChange));
       unsubscribers.push(env.resize.subscribe(onResize));
+      if (env.orientation !== undefined) {
+        unsubscribers.push(env.orientation.subscribe(onOrientation));
+      }
 
       // The transport shares the attach lifecycle: the session subscribes first, then
       // connects, and teardown removes the handlers before closing the socket.
@@ -975,6 +1023,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
           env.scheduler.cancel(frameHandle);
           frameHandle = null;
         }
+        clearResizeTimer();
         target.removeEventListener('pointerdown', onPointerDown);
         target.removeEventListener('pointerup', onPointerUp);
         target.removeEventListener('pointercancel', onPointerCancel);

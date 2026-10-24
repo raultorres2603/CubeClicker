@@ -7,7 +7,7 @@ import {
   Vector3,
   type PerspectiveCamera,
 } from 'three';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
@@ -29,6 +29,7 @@ import {
   type GameSession,
   type MotionSource,
   type OnlineGameSession,
+  type OrientationSource,
   type RendererAdapter,
   type ResizeSource,
   type SessionEnvironment,
@@ -96,6 +97,13 @@ interface FakeResize {
   emit(): void;
 }
 
+interface FakeOrientation {
+  source: OrientationSource;
+  subscribeCount(): number;
+  unsubscribeCount(): number;
+  emit(): void;
+}
+
 /** One recorded `render` call — the scene and camera the frame handed the renderer. */
 interface RenderCall {
   scene: Scene;
@@ -132,6 +140,7 @@ interface FakeEnv {
   motion: FakeMotion;
   visibility: FakeVisibility;
   resize: FakeResize;
+  orientation: FakeOrientation;
   renderer: FakeRendererFactory;
   clock: { now: number };
 }
@@ -306,6 +315,31 @@ function createFakeResize(): FakeResize {
   };
 }
 
+function createFakeOrientation(): FakeOrientation {
+  const callbacks = new Set<() => void>();
+  let subscribes = 0;
+  let unsubscribes = 0;
+  return {
+    source: {
+      subscribe(cb) {
+        subscribes += 1;
+        callbacks.add(cb);
+        return () => {
+          unsubscribes += 1;
+          callbacks.delete(cb);
+        };
+      },
+    },
+    subscribeCount: () => subscribes,
+    unsubscribeCount: () => unsubscribes,
+    emit() {
+      for (const cb of [...callbacks]) {
+        cb();
+      }
+    },
+  };
+}
+
 function createFakeRendererFactory(): FakeRendererFactory {
   const canvases: CanvasLike[] = [];
   const calls: string[] = [];
@@ -357,6 +391,7 @@ function createFakeEnv(
   const motion = createFakeMotion(options.reducedMotion ?? false);
   const visibility = createFakeVisibility(options.hidden ?? false);
   const resize = createFakeResize();
+  const orientation = createFakeOrientation();
   const renderer = createFakeRendererFactory();
   const clock = { now: 0 };
   return {
@@ -367,6 +402,7 @@ function createFakeEnv(
       motion: motion.source,
       visibility: visibility.source,
       resize: resize.source,
+      orientation: orientation.source,
       rendererFactory: renderer.factory,
       now: () => clock.now,
       random: options.random ?? fixedRandom,
@@ -378,6 +414,7 @@ function createFakeEnv(
     motion,
     visibility,
     resize,
+    orientation,
     renderer,
     clock,
   };
@@ -496,6 +533,38 @@ function dragOn(
 ): void {
   canvas.emit('pointerdown', { clientX: from.x, clientY: from.y });
   canvas.emit('pointerup', { clientX: to.x, clientY: to.y });
+}
+
+/**
+ * A touch tap on the same Pointer Events path as a mouse tap. The session reads only the
+ * coordinates, so `pointerType` is carried to prove it never participates in the decision.
+ */
+function touchTapOn(canvas: FakeCanvas, clientX: number, clientY: number): void {
+  const touch = { clientX, clientY, pointerType: 'touch', pointerId: 7, isPrimary: true };
+  canvas.emit('pointerdown', touch);
+  canvas.emit('pointerup', touch);
+}
+
+/** A touch press/drag/release on the same Pointer Events path as a mouse drag. */
+function touchDragOn(
+  canvas: FakeCanvas,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): void {
+  canvas.emit('pointerdown', {
+    clientX: from.x,
+    clientY: from.y,
+    pointerType: 'touch',
+    pointerId: 7,
+    isPrimary: true,
+  });
+  canvas.emit('pointerup', {
+    clientX: to.x,
+    clientY: to.y,
+    pointerType: 'touch',
+    pointerId: 7,
+    isPrimary: true,
+  });
 }
 
 /** The ids still present on one face of the snapshot's board, in board order. */
@@ -768,14 +837,23 @@ function createOnlineSession(
   });
 }
 
+afterEach(() => {
+  // The resize debounce is the only session behaviour that uses host timers; a test that
+  // installs fake timers must never leak them into the next one.
+  vi.useRealTimers();
+});
+
 describe('attach', () => {
-  it('sizes the renderer from the container rect and the capped pixel ratio (AC-13)', () => {
-    const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 1600, height: 800 }, dpr: 3 });
+  it('sizes the renderer from the container rect and the capped pixel ratio (AC-6, AC-7)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 800, height: 600 }, dpr: 3 });
     const session = attachSession(fake);
 
     // The cap: min(devicePixelRatio, PIXEL_RATIO_CAP) = min(3, 2), applied before the size.
     expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
-    expect(fake.renderer.calls).toEqual(['setPixelRatio:2', 'setSize:1600:800']);
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:2', 'setSize:800:600']);
+    // Attach applies the viewport directly: nothing is queued behind the resize debounce.
+    expect(vi.getTimerCount()).toBe(0);
     expect(fake.scheduler.pending()).toBe(1);
     expect(session.getSnapshot().phase).toBe('intro');
 
@@ -784,7 +862,8 @@ describe('attach', () => {
     expect(fake.renderer.renders).toHaveLength(1);
     const { scene, camera } = fake.renderer.renders[0]!;
     expect(scene).toBeInstanceOf(Scene);
-    expect(camera.aspect).toBe(2);
+    // 800 / 600: the container aspect reaches the projection on the first frame.
+    expect(camera.aspect).toBe(4 / 3);
     // The first frame applies the intro dolly's opening pose (AC-2).
     expect(camera.position.toArray()).toEqual([0, 0, 60]);
   });
@@ -812,6 +891,7 @@ describe('attach', () => {
     expect(fake.motion.subscribeCount()).toBe(1);
     expect(fake.visibility.subscribeCount()).toBe(1);
     expect(fake.resize.subscribeCount()).toBe(1);
+    expect(fake.orientation.subscribeCount()).toBe(1);
   });
 });
 
@@ -1012,6 +1092,9 @@ describe('pointer wiring', () => {
     recording.setSnapshot(snapshot({ phase: 'travel' }));
     tapOn(fake.canvas, 400, 400);
     dragOn(fake.canvas, { x: 100, y: 100 }, { x: 100, y: 220 });
+    // The same travel gate applies to touch pointers (AC-11): no dispatch at all.
+    touchTapOn(fake.canvas, 400, 400);
+    touchDragOn(fake.canvas, { x: 100, y: 100 }, { x: 100, y: 220 });
     fake.keys.emitKey('ArrowRight');
     expect(recording.events).toEqual([{ type: 'introSkip' }]);
 
@@ -1137,7 +1220,8 @@ describe('pointer wiring', () => {
 });
 
 describe('resize and visibility', () => {
-  it('re-applies size, capped pixel ratio and camera projection on the injected resize (AC-13)', () => {
+  it('re-applies size, capped pixel ratio and camera projection on the injected resize (AC-6, AC-7)', () => {
+    vi.useFakeTimers();
     const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 1600, height: 800 } });
     const session = attachSession(fake);
     fake.scheduler.tick(0);
@@ -1152,6 +1236,12 @@ describe('resize and visibility', () => {
     fake.canvas.rect.height = 800;
     fake.resize.emit();
 
+    // A resize emission never applies synchronously: the attach pair is still the last.
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:1', 'setSize:1600:800']);
+    vi.advanceTimersByTime(15);
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:1', 'setSize:1600:800']);
+    // ...and the trailing timer lands within the pinned 16 ms window.
+    vi.advanceTimersByTime(1);
     expect(fake.renderer.calls).toEqual([
       'setPixelRatio:1',
       'setSize:1600:800',
@@ -1169,6 +1259,82 @@ describe('resize and visibility', () => {
     expect(session.getSnapshot().stats.clicks).toBe(1);
     expect(faceIds(session.getSnapshot(), 'front')).toHaveLength(24);
     expect(faceIds(session.getSnapshot(), 'front')).not.toContain('front:2:3');
+  });
+
+  it('coalesces a burst of resize emissions into one trailing apply (AC-8)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 800, height: 600 } });
+    attachSession(fake);
+
+    fake.canvas.rect.width = 1024;
+    fake.canvas.rect.height = 768;
+    fake.resize.emit();
+    vi.advanceTimersByTime(10);
+    fake.canvas.rect.width = 1280;
+    fake.canvas.rect.height = 720;
+    fake.resize.emit();
+
+    // The second emission cleared the first timer: nothing lands at the original 16 ms.
+    vi.advanceTimersByTime(15);
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:1', 'setSize:800:600']);
+    // The restarted trailing timer applies only the final box, once.
+    vi.advanceTimersByTime(1);
+    expect(fake.renderer.calls).toEqual([
+      'setPixelRatio:1',
+      'setSize:800:600',
+      'setPixelRatio:1',
+      'setSize:1280:720',
+    ]);
+  });
+
+  it('applies an orientation change synchronously and clears the pending resize (AC-8)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 800, height: 600 } });
+    attachSession(fake);
+    fake.scheduler.tick(0);
+
+    fake.canvas.rect.width = 600;
+    fake.canvas.rect.height = 800;
+    fake.resize.emit();
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:1', 'setSize:800:600']);
+
+    fake.orientation.emit();
+
+    // Immediate, before any timer can run: the rotated box already reached the adapter.
+    expect(fake.renderer.calls).toEqual([
+      'setPixelRatio:1',
+      'setSize:800:600',
+      'setPixelRatio:1',
+      'setSize:600:800',
+    ]);
+    expect(fake.renderer.renders.at(-1)!.camera.aspect).toBe(0.75);
+
+    // The orientation apply cleared the queued resize: no duplicate lands at 16 ms.
+    vi.advanceTimersByTime(16);
+    expect(fake.renderer.calls).toEqual([
+      'setPixelRatio:1',
+      'setSize:800:600',
+      'setPixelRatio:1',
+      'setSize:600:800',
+    ]);
+  });
+
+  it('cancels a pending debounced resize on teardown (AC-8)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const session = attachSession(fake);
+    fake.canvas.rect.width = 640;
+    fake.canvas.rect.height = 480;
+    fake.resize.emit();
+
+    expect(vi.getTimerCount()).toBe(1);
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(16);
+
+    expect(fake.renderer.calls).toEqual(['setPixelRatio:1', 'setSize:800:800']);
+    expect(fake.resize.unsubscribeCount()).toBe(1);
+    expect(fake.orientation.unsubscribeCount()).toBe(1);
   });
 
   it('pauses the loop while hidden and resumes it from the current time (AC-15)', () => {
@@ -1329,6 +1495,7 @@ describe('dispose', () => {
     expect(fake.motion.unsubscribeCount()).toBe(1);
     expect(fake.visibility.unsubscribeCount()).toBe(1);
     expect(fake.resize.unsubscribeCount()).toBe(1);
+    expect(fake.orientation.unsubscribeCount()).toBe(1);
     expect(fake.renderer.disposals()).toBe(1);
     expect(bodyDisposals).toBe(1);
     expect(scene.children).toEqual([]);
@@ -2150,6 +2317,48 @@ describe('multiplayer spectate (AC-18, AC-19)', () => {
     // Home again: the same tap explodes the centre tile.
     tapOn(fake.canvas, 400, 400);
     expect(session.getSnapshot().stats.clicks).toBe(1);
+  });
+
+  it('gates touch taps and drags exactly like mouse during travel and view-only (AC-11)', () => {
+    const { fake, wire, session } = spectateSetup();
+    expect(session.spectateMember('p2')).toBe(true);
+
+    // Spectate travel: the phase gate drops pointer input before any dispatch.
+    const traveling = session.getSnapshot();
+    expect(traveling.phase).toBe('travel');
+    expect(traveling.travelKind).toBe('spectate');
+    touchTapOn(fake.canvas, 400, 400);
+    touchDragOn(fake.canvas, { x: 100, y: 100 }, { x: 220, y: 100 });
+    fake.keys.emitKey('ArrowRight');
+    expect(session.getSnapshot()).toBe(traveling);
+    expect(session.getSnapshot().stats.clicks).toBe(0);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(wire.sent).toEqual([]);
+
+    fake.scheduler.tick(2516);
+    expect(session.getSnapshot().spectating).toBe(true);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+
+    // View-only: the engine's spectating gate drops the same touch gestures, exactly as
+    // it drops the mouse tap and the keyboard step.
+    const viewing = session.getSnapshot();
+    touchTapOn(fake.canvas, 400, 400);
+    touchDragOn(fake.canvas, { x: 400, y: 400 }, { x: 400, y: 520 });
+    fake.keys.emitKey('ArrowLeft');
+    expect(session.getSnapshot()).toBe(viewing);
+    expect(session.getSnapshot().stats.clicks).toBe(0);
+    expect(session.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
+    expect(wire.sent).toEqual([]);
+
+    // Home again: the very same touch tap now explodes the front-face centre, proving the
+    // gestures above were gated by the phase and not by their pointer type.
+    expect(session.returnToOwnCube()).toBe(true);
+    fake.scheduler.tick(5016);
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(session.getSnapshot().spectating).toBe(false);
+    touchTapOn(fake.canvas, 400, 400);
+    expect(session.getSnapshot().stats.clicks).toBe(1);
+    expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
   });
 
   it('keeps viewing the target when their same-server cube advances (AC-19 c)', () => {

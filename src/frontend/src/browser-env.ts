@@ -11,13 +11,15 @@
  * key target is the top-level event target, the motion reader follows the pinned
  * `prefers-reduced-motion: reduce` query, the visibility reader follows the tab's own
  * visibility state plus its change event, the size reader follows a resize observer on
- * the canvas, the frame clock is the monotonic time source and the layout seed is the
- * host's random function.
+ * the canvas, the orientation reader follows the window's `orientationchange` event, the
+ * frame clock is the monotonic time source and the layout seed is the host's random
+ * function.
  */
 
 import type {
   CanvasLike,
   MotionSource,
+  OrientationSource,
   ResizeSource,
   SessionEnvironment,
   VisibilitySource,
@@ -62,6 +64,14 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     },
   };
 
+  const orientation: OrientationSource = {
+    subscribe(cb: () => void): () => void {
+      const handler = (): void => cb();
+      window.addEventListener('orientationchange', handler);
+      return () => window.removeEventListener('orientationchange', handler);
+    },
+  };
+
   return {
     canvas,
     keyTarget: window,
@@ -69,6 +79,7 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     motion,
     visibility,
     resize,
+    orientation,
     rendererFactory: createWebGLRenderer,
     now: () => performance.now(),
     random: () => Math.random(),
