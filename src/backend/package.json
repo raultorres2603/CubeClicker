@@ -11,11 +11,17 @@
     "coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@fastify/cookie": "^11",
     "@fastify/websocket": "^11",
-    "fastify": "^5"
+    "@node-rs/argon2": "^2",
+    "fastify": "^5",
+    "nodemailer": "^10",
+    "pg": "^8"
   },
   "devDependencies": {
     "@types/node": "^24",
+    "@types/nodemailer": "^6",
+    "@types/pg": "^8",
     "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4",
     "vitest": "^3"
