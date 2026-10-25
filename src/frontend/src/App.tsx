@@ -193,7 +193,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   if (verify) {
     return (
       <main>
-        <VerifyEmail token={token} api={resolveApi(rest) as any} store={resolveStore(rest) as any} />
+        <VerifyEmail token={token} api={resolveApi(rest) as { verify?: (t: string) => Promise<unknown> } | null} store={resolveStore(rest) as { verify?: (t: string) => Promise<unknown> } | null} />
       </main>
     );
   }
@@ -231,8 +231,8 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
       />
       {menuOpen && !chosen ? (
         <AuthMenu
-          api={api as any}
-          store={store as any}
+          api={api as { verify?: (t: string) => Promise<unknown> } | null}
+          store={store as { verify?: (t: string) => Promise<unknown> } | null}
           onPlayAsGuest={() => {
             setChosen(true);
             setMenuOpen(false);
