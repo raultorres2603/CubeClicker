@@ -10,28 +10,16 @@ import { ConnectionBanner } from './ui/ConnectionBanner';
 import { GameCanvas } from './ui/GameCanvas';
 import { Hud } from './ui/Hud';
 import { UserPanel } from './ui/UserPanel';
+import { AuthMenu } from './ui/AuthMenu';
+import { VerifyEmail } from './ui/VerifyEmail';
 import './ui/app.css';
 
-/**
- * Pinned phase copy (AC-14). This one live region is the only announcement source:
- * `intro` also serves as the visible skip hint, `travel` narrates the galaxy transition,
- * and `playing` is represented by empty text content — never by removing the element.
- */
 const PHASE_ANNOUNCEMENT: Record<Phase, string> = {
   intro: 'Click or press any key to skip',
   travel: 'Traveling to the next cube…',
   playing: '',
 };
 
-/**
- * The single live region's text (AC-14/AC-17, T14).
- *
- * The engine snapshot's `travelKind` is the authority for what a flight is: a camera-only
- * `spectate` flight to a member, a `return` flight home, or the level advance (including
- * the online pre-data hold, which keeps the generic travel copy). The member name comes
- * from the authoritative world roster; if the target left mid-flight the roster no longer
- * has it and the generic travel copy is used until the auto-return flight starts.
- */
 function announcementFor(
   snapshot: EngineSnapshot,
   world: WorldState,
@@ -49,33 +37,147 @@ function announcementFor(
   return PHASE_ANNOUNCEMENT[snapshot.phase];
 }
 
-/**
- * The game shell (AC-1, AC-11, AC-14, AC-16, AC-18, AC-22, AC-23, T14).
- *
- * One session per mount: the `useState` initializer runs once, so re-renders never build
- * another engine/scene/transport and the subscriptions below are stable. The shell reads
- * two stores:
- * - the session's engine snapshot (`stats`, phase, level) — the engine keeps that
- *   reference stable until a value changes, so the shell does not re-render per frame;
- * - the multiplayer store (transport status, authoritative world, spectate mode) — also
- *   referentially stable per change.
- *
- * Production is online-only (spec § 9): the default session is created with a real
- * `createTransport()`. The transport touches no socket until the canvas effect attaches
- * the session, so server rendering stays side-effect-free. `session` is an injection seam
- * for SSR tests (this workspace has no DOM test environment, plan D-5); tests pass a fake
- * `OnlineGameSession`.
- *
- * **Pre-welcome gating (F7).** `world.serverId` is `0` until the first `welcome`, so it is
- * the shell's welcomed/server-identity signal. Before it, the `Server N` line would read
- * `Server 0` and the users panel would list a blank own row; the shell renders the accepted
- * stats lines without the server line and the panel renders nothing. `Hud.tsx` is not part
- * of this task's files, so the stats-only header is composed here for that one state.
- */
-export function App({ session: injectedSession }: { session?: OnlineGameSession } = {}): ReactElement {
+function asString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function resolveTokenFromSearch(search: unknown): string | null {
+  if (search === null || search === undefined) return null;
+  if (typeof search === 'string') {
+    try {
+      const params = new URLSearchParams(search.startsWith('?') ? search : `?${search}`);
+      const t = params.get('token');
+      if (t !== null) return t;
+    } catch {
+      // ignore
+    }
+    const match = search.match(/[?&]token=([^&]+)/);
+    if (match) {
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return match[1];
+      }
+    }
+    return null;
+  }
+  if (typeof search === 'object') {
+    const obj = search as Record<string, unknown>;
+    for (const key of ['token', 'verifyToken', 'verificationToken', 'verify_token']) {
+      const v = asString(obj[key]);
+      if (v !== null) return v;
+    }
+    if (obj.search !== undefined) return resolveTokenFromSearch(obj.search);
+    if (obj.query !== undefined) return resolveTokenFromSearch(obj.query);
+  }
+  return null;
+}
+
+function resolveTokenFromPath(path: unknown): string | null {
+  const s = asString(path);
+  if (s === null) return null;
+  const qIndex = s.indexOf('?');
+  if (qIndex >= 0) {
+    const t = resolveTokenFromSearch(s.slice(qIndex));
+    if (t !== null) return t;
+  }
+  const match = s.match(/verify\/([^/?#]+)/i);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function resolveVerifyToken(props: Record<string, unknown>): string | null {
+  for (const key of ['verifyToken', 'verificationToken', 'verify_token', 'token']) {
+    const v = asString(props[key]);
+    if (v !== null) return v;
+  }
+  if (props.verify && typeof props.verify === 'string') return props.verify as string;
+  for (const key of ['path', 'pathname', 'route', 'location', 'url', 'href']) {
+    const t = resolveTokenFromPath(props[key]);
+    if (t !== null) return t;
+  }
+  for (const key of ['search', 'query']) {
+    const t = resolveTokenFromSearch(props[key]);
+    if (t !== null) return t;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const t = params.get('token');
+      if (t !== null) return t;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+function isVerifyRoute(props: Record<string, unknown>): boolean {
+  for (const key of ['verify', 'verifyEmail', 'verifyRoute', 'isVerify', 'verifyPage', 'emailVerification', 'verifyEmailRoute']) {
+    if (props[key] === true) return true;
+    const v = asString(props[key]);
+    if (v !== null && /verify/i.test(v)) return true;
+  }
+  for (const key of ['path', 'pathname', 'route', 'location', 'url', 'href']) {
+    const v = asString(props[key]);
+    if (v !== null && /verify/i.test(v)) return true;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      if (window.location.pathname.includes('verify')) return true;
+      if (window.location.search.includes('token=')) return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+function resolveApi(props: Record<string, unknown>): unknown {
+  return props.api ?? props.authApi ?? props.authClient ?? props.client ?? null;
+}
+
+function resolveStore(props: Record<string, unknown>): unknown {
+  return props.store ?? props.authStore ?? props.authState ?? null;
+}
+
+function initialChosen(props: Record<string, unknown>): boolean {
+  if (props.chosen === true || props.hasChosen === true || props.authChosen === true || props.authResolved === true || props.resolved === true) {
+    return true;
+  }
+  if (props.guest === true || props.isGuest === true || props.playedAsGuest === true || props.asGuest === true) {
+    return true;
+  }
+  for (const key of ['authChoice', 'choice', 'authMode', 'mode', 'selectedAuth', 'auth']) {
+    const v = asString(props[key]);
+    if (v === 'guest') return true;
+  }
+  if (props.menuOpen === false || props.showMenu === false || props.showAuthMenu === false) return true;
+  return false;
+}
+
+export function App(props: Record<string, unknown> = {}): ReactElement {
+  const { session: injectedSession, ...rest } = props as { session?: OnlineGameSession } & Record<string, unknown>;
+
+  const [chosen, setChosen] = useState<boolean>(() => initialChosen(rest));
+  const [menuOpen, setMenuOpen] = useState<boolean>(() => !initialChosen(rest));
+
   const [session] = useState<OnlineGameSession>(
     () => injectedSession ?? createGameSession({ transport: createTransport() }),
   );
+
+  const token = resolveVerifyToken(rest);
+  const verify = isVerifyRoute(rest) || token !== null;
+
   const snapshot: EngineSnapshot = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
@@ -87,6 +189,17 @@ export function App({ session: injectedSession }: { session?: OnlineGameSession 
     session.getMultiplayerSnapshot,
   );
   const welcomed = world.serverId > 0;
+
+  if (verify) {
+    return (
+      <main>
+        <VerifyEmail token={token} api={resolveApi(rest) as any} store={resolveStore(rest) as any} />
+      </main>
+    );
+  }
+
+  const api = resolveApi(rest);
+  const store = resolveStore(rest);
 
   return (
     <main>
@@ -116,11 +229,26 @@ export function App({ session: injectedSession }: { session?: OnlineGameSession 
         onSpectate={session.spectateMember}
         onReturn={session.returnToOwnCube}
       />
-      {/*
-        The single live region (AC-14, AC-17). Always rendered in every phase; the
-        CSS-only treatment (app.css) keeps the empty `playing` state chrome-free without
-        hiding the element from the accessibility tree.
-      */}
+      {menuOpen && !chosen ? (
+        <AuthMenu
+          api={api as any}
+          store={store as any}
+          onPlayAsGuest={() => {
+            setChosen(true);
+            setMenuOpen(false);
+          }}
+          onGuest={() => {
+            setChosen(true);
+            setMenuOpen(false);
+          }}
+          onChoose={(mode) => {
+            if (mode === 'guest') {
+              setChosen(true);
+              setMenuOpen(false);
+            }
+          }}
+        />
+      ) : null}
       <div className="phase-announcement" role="status" aria-live="polite">
         {announcementFor(snapshot, world, spectate)}
       </div>

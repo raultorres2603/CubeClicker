@@ -174,7 +174,7 @@ function shellHtml({
 
 describe('App', () => {
   it('renders the full intro shell on first paint (default online session, no DOM)', () => {
-    const html = renderToStaticMarkup(<App />);
+    const html = renderToStaticMarkup(<App hasChosen />);
 
     expect(html).toBe(
       shellHtml({
@@ -193,7 +193,7 @@ describe('App', () => {
 
   it('keeps the stats visible without a server line before the first welcome (F7)', () => {
     const html = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('playing', { clicks: 3, facesDestroyed: 1 }, 2),
           multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
@@ -215,7 +215,7 @@ describe('App', () => {
 
   it('renders the travel phase copy in the same single live region', () => {
     const html = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('travel', undefined, 0, {
             travelKind: 'nextLevel',
@@ -234,7 +234,7 @@ describe('App', () => {
   it('announces a spectate flight with the target member name (AC-17)', () => {
     const world = worldFor({ members: [member('p2', 'Player 2', 1)] });
     const html = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('travel', undefined, 0, {
             travelKind: 'spectate',
@@ -261,7 +261,7 @@ describe('App', () => {
 
   it('announces the return flight with the pinned copy (AC-18)', () => {
     const html = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('travel', undefined, 0, {
             travelKind: 'return',
@@ -281,7 +281,7 @@ describe('App', () => {
 
   it('renders the playing phase with an empty live region that is still present', () => {
     const html = renderToStaticMarkup(
-      <App session={sessionFor(snapshotFor('playing'), multiplayerFor())} />,
+      <App hasChosen session={sessionFor(snapshotFor('playing'), multiplayerFor())} />,
     );
 
     // AC-14: `playing` is empty text content — the element is neither removed nor hidden.
@@ -293,7 +293,7 @@ describe('App', () => {
   it('binds the HUD to the engine snapshot and the server id to the multiplayer store (AC-11, AC-23)', () => {
     const snapshot = snapshotFor('playing', { clicks: 12, facesDestroyed: 4 }, 3);
     const html = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(snapshot, multiplayerFor({ world: worldFor({ serverId: 7 }) }))}
       />,
     );
@@ -309,7 +309,7 @@ describe('App', () => {
   it('renders Return to my cube in the shell exactly while spectating (AC-18)', () => {
     const world = worldFor({ members: [member('p2', 'Player 2', 1)] });
     const spectating = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('playing', undefined, 0, { spectating: true }),
           multiplayerFor({ world, spectate: { mode: 'viewing', target: 'p2' } }),
@@ -327,7 +327,7 @@ describe('App', () => {
     );
 
     const playing = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('playing'),
           multiplayerFor({ world, spectate: { mode: 'none' } }),
@@ -341,7 +341,7 @@ describe('App', () => {
 
   it('renders the pinned banner copy per transport status (AC-22)', () => {
     const retrying = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(
           snapshotFor('playing'),
           multiplayerFor({ status: 'disconnected' }),
@@ -352,7 +352,7 @@ describe('App', () => {
     expect(retrying).toBe(shellHtml({ serverId: 1, banner: BANNER_RETRYING, regionText: '' }));
 
     const exhausted = renderToStaticMarkup(
-      <App
+      <App hasChosen
         session={sessionFor(snapshotFor('playing'), multiplayerFor({ status: 'exhausted' }))}
       />,
     );
