@@ -26,6 +26,13 @@ import type { MemberState } from '../multiplayer/protocol';
  *
  * The panel contributes no live-region semantics: the shell's single phase
  * announcement stays the only `role="status"` region.
+ *
+ * **Responsive overlay (AC-4, AC-5, AC-13; Q-3).** The root keeps the `user-panel`
+ * class so `app.css` can position it absolutely, add the safe-area offsets and clamp it
+ * with `max-width: min(20rem, calc(100vw - 2rem - safe-area))`. The toggle and the
+ * return command stay **direct** `<button>` children because the 44 px rule is
+ * `.user-panel > button`; the component adds no inline size or orientation switch, so
+ * the same markup serves portrait and landscape.
  */
 export function UserPanel({
   welcomed,

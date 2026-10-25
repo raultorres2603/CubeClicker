@@ -15,6 +15,13 @@ import type { TransportStatus } from '../multiplayer/transport';
  * shell keeps exactly one `role="status"` region (the phase announcement) so connection
  * and gameplay announcements never compete. The `Retry` button is a real focusable
  * `<button>` (the CSS gives it a visible focus ring); the text itself needs no role.
+ *
+ * **Responsive overlay (AC-4, AC-5, AC-13).** `app.css` positions `.connection-banner`
+ * absolutely at the top centre, offsets it by `env(safe-area-inset-top)`, keeps the
+ * container `pointer-events: none` and re-enables pointer events only on the `Retry`
+ * button. `Retry` is therefore a direct `<button>` child (the `.connection-banner button`
+ * rule owns its 44 px tap target), and the component adds no inline layout or
+ * orientation switch, so portrait and landscape share one markup path.
  */
 export function ConnectionBanner({
   status,

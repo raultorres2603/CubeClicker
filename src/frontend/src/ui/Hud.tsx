@@ -13,6 +13,12 @@ import type { GameStats } from '../game/types';
  * counters and the server id out of it means one predictable announcement stream instead
  * of four competing ones. Their updates are therefore deliberately not announced — they
  * stay readable by navigating to the text.
+ *
+ * **Responsive overlay (AC-4, AC-5).** `app.css` positions the HUD as the absolute
+ * `main > section` overlay, applies the safe-area insets and keeps the container
+ * `pointer-events: none`. The component therefore renders no class, wrapper or inline
+ * style — those rules stay authoritative — and has no interactive descendants, so the
+ * canvas below keeps receiving every pointer gesture in portrait and landscape.
  */
 export function Hud({
   stats,
