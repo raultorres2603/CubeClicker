@@ -51,7 +51,10 @@ const GRACE_LOWER_BOUND_MS = 900;
  * registry instead of joining the previous run's grace-retained members.
  */
 const SMOKE_SETTLE_MS = 1500;
-
+const MAILPIT_URL = process.env.MAILPIT_URL ?? 'http://mailpit:8025';
+const MAILPIT_TIMEOUT_MS = 10000;
+const AUTH_TIMEOUT_MS = 5000;
+const AUTH_SETTLE_MS = 1500;
 const results = [];
 
 function record(ok, label, detail = '') {
@@ -552,6 +555,167 @@ async function checkMultiplayerFlow() {
   }
 }
 
+async function waitForMailpitMessage(recipient, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(`no Mailpit message for ${recipient} within ${timeoutMs}ms`);
+    }
+    try {
+      const response = await fetch(MAILPIT_URL + '/api/v1/messages', {
+        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
+      });
+      if (response.ok) {
+        const body = await response.json();
+        const found = (body.messages ?? []).find((message) =>
+          (message.To ?? []).some((to) => to.Address === recipient),
+        );
+        if (found) {
+          return found;
+        }
+      }
+    } catch {
+      // Retry until the readiness budget runs out.
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+}
+
+async function checkAuthFlow() {
+  const suffix = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+  const username = `smoke${suffix}`;
+  const email = `smoke${suffix}@example.com`;
+  const password = 'smokepassword12';
+
+  let registerProblem = null;
+  try {
+    const response = await fetch(BACKEND_URL + '/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, email, password }),
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    });
+    if (response.status !== 202) {
+      registerProblem = `expected 202, got ${response.status}: ${await response.text()}`;
+    }
+  } catch (error) {
+    registerProblem = problemText(error);
+  }
+  record(registerProblem === null, 'auth register: POST /auth/register returns 202', registerProblem ?? '');
+
+  let verifyProblem = null;
+  if (registerProblem === null) {
+    try {
+      const message = await waitForMailpitMessage(email, MAILPIT_TIMEOUT_MS);
+      const detailResponse = await fetch(MAILPIT_URL + '/api/v1/message/' + message.ID, {
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+      });
+      if (!detailResponse.ok) {
+        throw new Error(`Mailpit message fetch failed: ${detailResponse.status}`);
+      }
+      const detail = await detailResponse.json();
+      const source = String(detail.Text ?? detail.HTML ?? '');
+      const match = source.match(/token=([A-Za-z0-9]+)/);
+      if (!match) {
+        throw new Error('verification token not found in the email body');
+      }
+      const token = match[1];
+      const verifyResponse = await fetch(BACKEND_URL + '/auth/verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token }),
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+      });
+      if (verifyResponse.status !== 200) {
+        verifyProblem = `expected 200, got ${verifyResponse.status}: ${await verifyResponse.text()}`;
+      } else {
+        const setCookie = verifyResponse.headers.get('set-cookie') ?? '';
+        if (!setCookie.includes('session=')) {
+          verifyProblem = 'verify response missing the session cookie';
+        } else {
+          const body = await verifyResponse.json();
+          if (body?.user?.username !== username || body?.user?.verified !== true) {
+            verifyProblem = `unexpected verify body: ${JSON.stringify(body)}`;
+          }
+        }
+      }
+    } catch (error) {
+      verifyProblem = problemText(error);
+    }
+  } else {
+    verifyProblem = 'not run — registration failed';
+  }
+  record(
+    verifyProblem === null,
+    'auth verify: Mailpit delivers a verification email and POST /auth/verify activates the account',
+    verifyProblem ?? '',
+  );
+
+  let loginProblem = null;
+  if (registerProblem === null) {
+    try {
+      const loginResponse = await fetch(BACKEND_URL + '/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+      });
+      if (loginResponse.status !== 200) {
+        loginProblem = `expected 200, got ${loginResponse.status}: ${await loginResponse.text()}`;
+      } else {
+        const setCookie = loginResponse.headers.get('set-cookie') ?? '';
+        if (!setCookie.includes('session=')) {
+          loginProblem = 'login response missing the session cookie';
+        } else {
+          const body = await loginResponse.json();
+          if (body?.user?.username !== username || body?.user?.verified !== true) {
+            loginProblem = `unexpected login body: ${JSON.stringify(body)}`;
+          }
+        }
+      }
+    } catch (error) {
+      loginProblem = problemText(error);
+    }
+  } else {
+    loginProblem = 'not run — registration failed';
+  }
+  record(loginProblem === null, 'auth login: POST /auth/login returns 200 with a session cookie', loginProblem ?? '');
+
+  let guestProblem = null;
+  const guestClient = new SmokeSocket('guest client', WS_URL);
+  try {
+    await guestClient.open();
+    const hello = await guestClient.next(HELLO_TIMEOUT_MS);
+    if (hello?.type !== 'hello' || !isParseableTimestamp(hello.serverTime)) {
+      throw new Error(`expected the pinned hello first, got ${JSON.stringify(hello)}`);
+    }
+    guestClient.send({ type: 'join', mode: 'guest' });
+    const welcome = await waitForMessage(
+      guestClient,
+      (message) => message.type === 'welcome',
+      MULTIPLAYER_TIMEOUT_MS,
+      'welcome',
+    );
+    if (welcome?.identity?.kind !== 'guest') {
+      guestProblem = `expected identity.kind "guest", got ${JSON.stringify(welcome?.identity?.kind)}`;
+    }
+  } catch (error) {
+    guestProblem = problemText(error);
+  } finally {
+    guestClient.close();
+  }
+  record(
+    guestProblem === null,
+    'auth guest: WebSocket join with mode "guest" yields a guest welcome',
+    guestProblem ?? '',
+  );
+
+  if (guestProblem === null) {
+    await delay(AUTH_SETTLE_MS);
+  }
+}
+
 async function main() {
   console.log(`smoke: backend=${BACKEND_URL} frontend=${FRONTEND_URL} ws=${WS_URL} readyTimeoutMs=${READY_TIMEOUT_MS}`);
 
@@ -559,6 +723,7 @@ async function main() {
   await checkFrontendServesHtml();
   await checkConcurrentWebSocketClients();
   await checkMultiplayerFlow();
+  await checkAuthFlow();
 
   const failures = results.filter((result) => !result.ok).length;
   if (failures === 0) {
