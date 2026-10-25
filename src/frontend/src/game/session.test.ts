@@ -642,6 +642,7 @@ interface FakeTransport {
   closeCount(): number;
   messageHandlerCount(): number;
   statusHandlerCount(): number;
+  joinCalls(): Array<'guest' | 'account'>;
   emit(message: ServerMessage): void;
   emitStatus(status: TransportStatus): void;
 }
@@ -650,6 +651,7 @@ function createFakeTransport(): FakeTransport {
   const messageHandlers = new Set<(message: ServerMessage) => void>();
   const statusHandlers = new Set<(status: TransportStatus) => void>();
   const sent: ClientMessage[] = [];
+  const joinCallsList: Array<'guest' | 'account'> = [];
   let connects = 0;
   let closes = 0;
   let currentStatus: TransportStatus | null = null;
@@ -667,6 +669,9 @@ function createFakeTransport(): FakeTransport {
       },
       close() {
         closes += 1;
+      },
+      join(mode) {
+        joinCallsList.push(mode);
       },
       send(message) {
         sent.push(message);
@@ -692,6 +697,7 @@ function createFakeTransport(): FakeTransport {
     closeCount: () => closes,
     messageHandlerCount: () => messageHandlers.size,
     statusHandlerCount: () => statusHandlers.size,
+    joinCalls: () => [...joinCallsList],
     emit(message) {
       for (const handler of [...messageHandlers]) {
         handler(message);

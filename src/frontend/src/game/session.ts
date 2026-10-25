@@ -200,6 +200,8 @@ export interface OnlineGameSession extends GameSession {
   returnToOwnCube(): boolean;
   /** The banner's `Retry`: closes and restarts the connection (no-op offline). */
   retryConnection(): void;
+  /** Deferred join entry point: chooses guest/account mode (no-op offline). */
+  join(mode: 'guest' | 'account'): void;
 }
 
 /** Construction options; the environment, the engine and the transport are all injectable. */
@@ -770,6 +772,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     transport.connect();
   }
 
+  function join(mode: 'guest' | 'account'): void {
+    transport?.join(mode);
+  }
+
   return {
     attach(target: CanvasLike): void {
       if (active) {
@@ -1089,5 +1095,6 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     returnToOwnCube,
 
     retryConnection,
+    join,
   };
 }

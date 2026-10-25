@@ -59,6 +59,8 @@ export interface Transport {
   close(): void;
   /** Sends one client message; a no-op while no socket is open. */
   send(message: ClientMessage): void;
+  /** Deferred join entry point: chooses guest/account mode after an explicit menu choice (AC-34). */
+  join(mode: 'guest' | 'account'): void;
   /** Subscribes to decoded server messages; the returned function unsubscribes. */
   onMessage(handler: (message: ServerMessage) => void): () => void;
   /** Subscribes to status changes (the current status is replayed on subscription). */
@@ -115,6 +117,8 @@ export function createTransport(options: TransportOptions = {}): Transport {
 
   /** The session token from the last `welcome`; memory only, survives reconnect cycles. */
   let token: string | null = options.token ?? null;
+  /** The last explicitly chosen join mode; retained across reconnects for the fallback join. */
+  let lastMode: 'guest' | 'account' | null = null;
   /** The live retry connection, or `null` while detached. */
   let connection: ReturnType<typeof createConnection> | null = null;
   /** The socket the current attempt is using (stale frames compare against it). */
@@ -123,6 +127,8 @@ export function createTransport(options: TransportOptions = {}): Transport {
   let sendTarget: WebSocket | null = null;
   /** Whether the current socket already answered its `hello` (one join/rejoin per socket). */
   let helloHandled = false;
+  /** Whether the current socket has already performed its join/rejoin handshake. */
+  let joined = false;
   /** Consecutive drops since the last open, mirrored against the connection's attempt cap. */
   let drops = 0;
   /** True between `connect()` and `close()` (guards re-entrant lifecycle calls). */
@@ -163,16 +169,20 @@ export function createTransport(options: TransportOptions = {}): Transport {
           return; // one handshake per socket; a duplicated hello must not double-join
         }
         helloHandled = true;
-        if (token === null) {
-          send({ type: 'join' });
-        } else {
+        if (token !== null) {
+          joined = true;
           send({ type: 'rejoin', token });
+        } else if (lastMode !== null) {
+          joined = true;
+          send({ type: 'join', mode: lastMode });
         }
+        // First connection: send nothing until an explicit transport.join(mode).
         return;
 
       case 'welcome':
         // A welcome (join or resume) is the only issuer of the token used for resume.
         token = message.token;
+        joined = true;
         return;
 
       case 'error':
@@ -181,7 +191,12 @@ export function createTransport(options: TransportOptions = {}): Transport {
         }
         // The token is dead (unknown/expired): forget it and join fresh on this socket.
         token = null;
-        send({ type: 'join' });
+        joined = true;
+        if (lastMode !== null) {
+          send({ type: 'join', mode: lastMode });
+        } else {
+          send({ type: 'join' });
+        }
         return;
 
       default:
@@ -233,6 +248,15 @@ export function createTransport(options: TransportOptions = {}): Transport {
     publishStatus(drops > maxAttempts ? 'exhausted' : 'disconnected');
   }
 
+  /** Deferred join entry point: records the chosen mode and joins on the current socket. */
+  function join(mode: 'guest' | 'account'): void {
+    lastMode = mode;
+    if (!joined && helloHandled && sendTarget !== null) {
+      joined = true;
+      send({ type: 'join', mode });
+    }
+  }
+
   function connect(): void {
     if (active) {
       return;
@@ -247,6 +271,7 @@ export function createTransport(options: TransportOptions = {}): Transport {
         const socket = socketFactory(url);
         latestSocket = socket;
         helloHandled = false; // every new socket answers its own hello
+         joined = false; // reset the join handshake for the new socket
         attachSocketHandlers(socket);
         return socket;
       },
@@ -267,6 +292,7 @@ export function createTransport(options: TransportOptions = {}): Transport {
     }
     active = false;
     helloHandled = false;
+    joined = false;
     drops = 0;
     latestStatus = null;
     releaseSocket();
@@ -281,6 +307,7 @@ export function createTransport(options: TransportOptions = {}): Transport {
     connect,
     close,
     send,
+    join,
     onMessage(handler: (message: ServerMessage) => void): () => void {
       messageHandlers.add(handler);
       return () => {

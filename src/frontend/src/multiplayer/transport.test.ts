@@ -311,7 +311,7 @@ describe('createTransport — connection, status and send (unit)', () => {
 
     socket.emitMessage(HELLO_TEXT);
     expect(h.messages).toEqual([HELLO]);
-    expect(socket.sent).toEqual(['{"type":"join"}']);
+    expect(socket.sent).toEqual([]);
 
     h.transport.close();
   });
@@ -332,7 +332,7 @@ describe('createTransport — connection, status and send (unit)', () => {
     expect(h.messages).toEqual([]);
 
     second.emitMessage(HELLO_TEXT);
-    expect(second.sent).toEqual(['{"type":"join"}']);
+    expect(second.sent).toEqual([]);
     expect(h.messages).toEqual([HELLO]);
 
     h.transport.close();
@@ -435,7 +435,9 @@ describe('createTransport — join/resume over the retry connection (integration
     const first = current(h);
     first.emitOpen();
     first.emitMessage(HELLO_TEXT);
-    expect(first.sent).toEqual(['{"type":"join"}']);
+    expect(first.sent).toEqual([]);
+    h.transport.join('guest');
+    expect(first.sent).toEqual(['{"type":"join","mode":"guest"}']);
 
     first.emitMessage(JSON.stringify(WELCOME_1));
     expect(h.messages).toEqual([HELLO, WELCOME_1]);
@@ -450,7 +452,7 @@ describe('createTransport — join/resume over the retry connection (integration
     second.emitMessage(HELLO_TEXT);
 
     expect(second.sent).toEqual([`{"type":"rejoin","token":"${TOKEN_1}"}`]);
-    expect(first.sent).toEqual(['{"type":"join"}']);
+    expect(first.sent).toEqual(['{"type":"join","mode":"guest"}']);
 
     second.emitMessage(JSON.stringify(WELCOME_1));
     expect(h.messages).toEqual([HELLO, WELCOME_1, HELLO, WELCOME_1]);
@@ -488,7 +490,7 @@ describe('createTransport — join/resume over the retry connection (integration
     const third = current(h);
     third.emitOpen();
     third.emitMessage(HELLO_TEXT);
-    expect(third.sent).toEqual(['{"type":"join"}']);
+    expect(third.sent).toEqual([]);
 
     third.emitMessage(JSON.stringify(WELCOME_2));
     third.emitFailure();
@@ -509,12 +511,12 @@ describe('createTransport — join/resume over the retry connection (integration
 
     socket.emitMessage(HELLO_TEXT);
     socket.emitMessage(HELLO_TEXT);
-    expect(socket.sent).toEqual(['{"type":"join"}']);
+    expect(socket.sent).toEqual([]);
 
     socket.emitMessage('{"type":"error","code":"invalid_click"}');
     socket.emitMessage('{"type":"miniCubeRemoved","playerId":"p2","id":"back:1:1"}');
 
-    expect(socket.sent).toEqual(['{"type":"join"}']);
+    expect(socket.sent).toEqual([]);
     expect(h.messages).toEqual([
       HELLO,
       HELLO,

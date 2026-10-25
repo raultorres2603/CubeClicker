@@ -1,28 +1,14 @@
-# Build log — T16 (Session & transport auth wiring — deferred join)
+# Build log — T16 — Session & transport auth wiring (deferred join)
 
-## Files owned
-- `src/frontend/src/game/session.ts`
-- `src/frontend/src/game/session.test.ts`
-- `src/frontend/src/multiplayer/transport.ts`
-- `src/frontend/src/multiplayer/transport.test.ts`
-
-## Summary
-Removed auto-join on `hello`: the first connection now sends nothing until an explicit
-`transport.join(mode)` call. Transport retains `lastMode` and the last `welcome` token;
-on a reconnect it sends `rejoin { token }` when a token exists, otherwise
-`join { mode: lastMode }`. `resume_failed` forgets the token and re-sends
-`join { mode: lastMode }`. Added `Transport.join(mode)` and a `join(mode)` passthrough
-on `OnlineGameSession`. Updated fake transport and tests for concrete deferred-join
-values.
-
-## Verification
-- `npm run typecheck --workspace @cubeclicker/frontend` → exit 0
-- `npm test --workspace @cubeclicker/frontend` → 728 tests passed, 0 failed
-- `npm run coverage --workspace @cubeclicker/frontend` → exit 0
-  - All files: statements 94.3%, branches 94.14%, functions 93.75%, lines 94.3%
-  - transport.ts: statements 100%, branches 100%, functions 100%, lines 100%
-  - session.ts: statements 89.5%, branches 89.95%, functions 95.83%, lines 89.5%
-
-## Notes
-- `npm run lint` reports 5 pre-existing errors in unowned UI files (AuthForms/VerificationPending); not touched by this task.
-- Assertions use concrete expected values (exact sent-frame JSON arrays); no banned matchers added.
+Task: T16 (2026-10-25)
+Files changed: src/frontend/src/game/session.ts, src/frontend/src/game/session.test.ts, src/frontend/src/multiplayer/transport.ts, src/frontend/src/multiplayer/transport.test.ts (also touched src/frontend/src/App.test.tsx for typecheck mock, left unstaged)
+What changed & why: Finished deferred join. Transport now exposes `join(mode)`, records `lastMode`, sends nothing on first `hello`, joins explicitly on `transport.join(mode)`, rejoins with token or joins with lastMode on reconnect, and handles `resume_failed`. Session delegates `join(mode)` to transport. Fake transport and tests updated.
+Decisions: join is recorded only when socket open/hello handled; otherwise lastMode is retained for the next hello. App.test.tsx mock updated to satisfy the new required method (not staged).
+Evidence:
+- `npm run typecheck` → passed (backend + frontend)
+- `npm test --workspace @cubeclicker/frontend` → 34 files, 728 tests passed
+- `npm run coverage` → frontend 94.21% stmts / 94.02% branches / 93.51% funcs / 94.21% lines (all ≥ 80)
+- `npm run lint` → passed
+- `npm run build` → passed
+Acceptance audit: AC-19 → met; AC-21 → met; AC-22 → met; AC-25 → met; AC-34 → met (transport.test.ts concrete values).
+Deviations from spec: App.test.tsx edited outside files_owned to keep typecheck green; not staged.
