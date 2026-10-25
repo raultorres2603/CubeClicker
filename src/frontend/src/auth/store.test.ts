@@ -382,8 +382,8 @@ describe('auth store', () => {
     expect(typeof createAuthStateStore).toBe('function');
     expect(typeof createAuthState).toBe('function');
     expect(typeof createStore).toBe('function');
-    expect(defaultStore).toBeDefined();
-    expect(authStore).toBeDefined();
+    expect(typeof defaultStore.getSnapshot).toBe('function');
+    expect(typeof authStore.getSnapshot).toBe('function');
   });
 
   it('accepts a positional api argument', async () => {
@@ -402,7 +402,11 @@ describe('auth store', () => {
     const s = createAuthStore({ fetch: fetchMock as unknown as (...args: unknown[]) => unknown });
     await s.me();
     expect(s.status).toBe('authenticated');
-    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith('/auth/me', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
   });
   it('initializes as authenticated when initialUser is provided', () => {
     const s = createAuthStore({ initialUser: VERIFIED_USER });
@@ -420,7 +424,11 @@ describe('auth store', () => {
     const s = createAuthStore({ baseUrl: 'http://localhost:8080/', credentials: 'omit', fetch: fetchMock as unknown as (...args: unknown[]) => unknown });
     await s.me();
     expect(s.status).toBe('authenticated');
-    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/auth/me', {
+      method: 'GET',
+      credentials: 'omit',
+      headers: { Accept: 'application/json' },
+    });
   });
 
   it('ignores a non-api first argument and treats it as options', () => {
