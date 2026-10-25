@@ -39,4 +39,5 @@ depends_on: T2, T3, T4
 files_owned: —
 verify: `npm run lint`, `npm run typecheck`, `npm test`, `npm run coverage`, `npm run build`, `npm run smoke` (where the environment allows)
 acceptance: AC-1..AC-14
-status: [ ]
+status: [x]
+notes: T5 completed 2026-10-25. Full verification suite green: lint 0, typecheck 0 (both workspaces), tests 208 backend + 655 frontend, coverage backend 98.64/97.4/100/98.64 and frontend 95.81/96.53/96.94/95.81 (all >= 80), build exit 0, smoke 8/8 PASS. Manual AC-1/AC-5 browser pass not performed (no browser/emulation tooling in this environment); static CSS/markup audit + automated evidence recorded in build-log-T5.md. Open question: 40 px tap boundary (T3) remains unresolved; T3 recommendation (keep inclusive 39/40 tap, 41 drag) recorded. Working tree started with pre-existing modifications (.opencode/agents/orchestrator.md, docs/features/README.md) and untracked feature artifacts; T5 touched only build-log-T5.md and this tasks.md update. Branch is main (not feat/fullscreen-responsive-layout); no history rewrite attempted.
