@@ -13,13 +13,15 @@ A web-based, online, real-time, multi-client clicker game — connected clients 
 podman compose up
 ```
 
-This builds and starts the full local environment (backend + frontend containers) with hot reload:
+This builds and starts the full local environment (backend + frontend + Postgres + Mailpit containers) with hot reload:
 
 | Surface | URL |
 | --- | --- |
 | Frontend | http://localhost:5173 |
 | Backend | http://localhost:8080 |
 | WebSocket | ws://localhost:8080/ws |
+| Mailpit (dev email capture) | http://localhost:8025 |
+| Postgres | localhost:5432 |
 
 - Background: `podman compose up -d`
 - First run, or after dependency/manifest changes: `podman compose up --build`
@@ -47,8 +49,23 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `BACKEND_PORT` | `8080` | host port published for the backend container (`127.0.0.1:${BACKEND_PORT}:8080`) |
 | `FRONTEND_PORT` | `5173` | host port published for the frontend container (`127.0.0.1:${FRONTEND_PORT}:5173`) |
 | `VITE_WS_URL` | `ws://localhost:8080/ws` | WebSocket URL the frontend connects to |
+| `DB_PORT` | `5432` | host port published for the Postgres container |
+| `MAILPIT_SMTP_PORT` | `1025` | host port published for Mailpit SMTP |
+| `MAILPIT_UI_PORT` | `8025` | host port published for the Mailpit web UI |
+| `POSTGRES_USER` | `cubeclicker` | Postgres superuser name |
+| `POSTGRES_PASSWORD` | `cubeclicker` | Postgres superuser password |
+| `POSTGRES_DB` | `cubeclicker` | Postgres database name |
+| `DATABASE_URL` | `postgres://cubeclicker:cubeclicker@db:5432/cubeclicker` | backend connection string (must match the Postgres credentials above if overridden) |
+| `SMTP_HOST` | `mailpit` | SMTP host used by the backend |
+| `SMTP_PORT` | `1025` | SMTP port used by the backend |
+| `SMTP_USER` | _(empty)_ | SMTP username (optional) |
+| `SMTP_PASS` | _(empty)_ | SMTP password (optional) |
+| `SMTP_FROM` | `no-reply@cubeclicker.local` | sender address for outbound email |
+| `APP_BASE_URL` | `http://localhost:5173` | base URL used to build verification links |
+| `ALLOWED_ORIGIN` | `http://localhost:5173` | allowed Origin for state-changing auth requests (CSRF) |
+| `SESSION_COOKIE_SECURE` | `false` | set the session cookie `Secure` flag (enable in production over HTTPS) |
 
-The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`.
+The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
 
 ## Production images
 

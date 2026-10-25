@@ -1,10 +1,17 @@
 # Containerized smoke test — opt-in override, never started by a plain `podman compose up`.
 # Run: podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
 services:
+  db:
+    environment:
+      POSTGRES_USER: "cubeclicker"
+      POSTGRES_PASSWORD: "cubeclicker"
+      POSTGRES_DB: "cubeclicker"
+
   backend:
     environment:
       MAX_USERS_PER_SERVER: "2"
       RECONNECT_GRACE_MS: "1000"
+      DATABASE_URL: "postgres://cubeclicker:cubeclicker@db:5432/cubeclicker"
 
   smoke:
     image: docker.io/library/node:24-alpine
