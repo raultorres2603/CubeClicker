@@ -124,7 +124,7 @@ describe('SmtpEmailService', () => {
       pass: 'smtp-pass',
       from: 'no-reply@cubeclicker.local',
     });
-    expect(service).toBeDefined();
+    expect(service).toBeInstanceOf(SmtpEmailService);
   });
 
   it('creates a nodemailer transport when none is injected (without auth)', () => {
@@ -133,15 +133,15 @@ describe('SmtpEmailService', () => {
       port: 1025,
       from: 'no-reply@cubeclicker.local',
     });
-    expect(service).toBeDefined();
+    expect(service).toBeInstanceOf(SmtpEmailService);
   });
 
   it('derives secure from port 465 when not explicitly set', () => {
     const a = new SmtpEmailService({ host: 'smtp.example.com', port: 465, from: 'x@y' });
     const b = new SmtpEmailService({ host: 'smtp.example.com', port: 587, from: 'x@y', secure: true });
     const c = new SmtpEmailService({ host: 'smtp.example.com', port: 465, from: 'x@y', secure: false });
-    expect(a).toBeDefined();
-    expect(b).toBeDefined();
-    expect(c).toBeDefined();
+    expect(a).toBeInstanceOf(SmtpEmailService);
+    expect(b).toBeInstanceOf(SmtpEmailService);
+    expect(c).toBeInstanceOf(SmtpEmailService);
   });
 });

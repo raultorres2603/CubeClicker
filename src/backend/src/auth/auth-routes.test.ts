@@ -160,7 +160,7 @@ describe('auth routes', () => {
     expect(sc).toContain('HttpOnly');
     expect(sc.toLowerCase()).toContain('samesite=lax');
     expect(sc).toContain('Path=/');
-    expect(cookieValue(sc, SESSION_COOKIE_NAME)).toBeTruthy();
+    expect(cookieValue(sc, SESSION_COOKIE_NAME)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('POST /auth/login invalid credentials returns 401', async () => {
@@ -214,7 +214,7 @@ describe('auth routes', () => {
       payload: { username: 'alice', password: 'password1234' },
     });
     expect(res.statusCode).toBe(429);
-    expect(res.headers['retry-after']).toBeDefined();
+    expect(res.headers['retry-after']).toBe('900');
   });
 
   it('GET /auth/me without cookie returns 401', async () => {
@@ -278,7 +278,7 @@ describe('auth routes', () => {
     expect(res.json().user.verified).toBe(true);
     const sc = getSetCookie(res);
     expect(sc).toContain('HttpOnly');
-    expect(cookieValue(sc, SESSION_COOKIE_NAME)).toBeTruthy();
+    expect(cookieValue(sc, SESSION_COOKIE_NAME)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('GET /auth/verify with query token activates', async () => {

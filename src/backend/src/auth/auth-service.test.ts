@@ -583,6 +583,7 @@ describe('AuthService edge cases and aliases', () => {
 describe('AuthService aliases and factory', () => {
   it('createAuthService works', async () => {
     const ctx = makeService();
-    expect(ctx.service).toBeDefined();
+    const r = await ctx.service.register({ username: 'factory', email: 'factory@x.com', password: 'password1234' });
+    expect(r.user.username).toBe('factory');
   });
 });

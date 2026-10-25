@@ -366,36 +366,41 @@ describe('PgUserRepository', () => {
   });
 
   it('recordFailedLogin increments from current attempts and locks on 5th', async () => {
-    const db = makeDb((text) => {
-      if (text.startsWith('SELECT')) {
-        return { rows: [{ failed_login_attempts: 3 }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
+    const db = makeDb(() => ({
+      rows: [{ failed_login_attempts: 4, locked_until: null }],
+      rowCount: 1,
+    }));
     const repo = new PgUserRepository(db, { now: () => FIXED_NOW });
     const result = await repo.recordFailedLogin('uid-1');
     expect(result).toEqual({ attempts: 4, lockedUntil: null });
-    // update call
-    const updateCall = db.calls[1];
-    expect(updateCall.text).toContain('UPDATE users SET failed_login_attempts');
-    expect(updateCall.values).toEqual(['uid-1', 4, null]);
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE users SET failed_login_attempts');
+    expect(call.text).toContain('RETURNING');
+    expect(call.values).toEqual([
+      'uid-1',
+      5,
+      new Date(FIXED_NOW + 15 * 60 * 1000).toISOString(),
+    ]);
   });
 
   it('recordFailedLogin locks on the 5th attempt with a timestamp', async () => {
-    const db = makeDb((text) => {
-      if (text.startsWith('SELECT')) {
-        return { rows: [{ failed_login_attempts: 4 }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
+    const lockedIso = new Date(FIXED_NOW + 15 * 60 * 1000).toISOString();
+    const db = makeDb(() => ({
+      rows: [{ failed_login_attempts: 5, locked_until: lockedIso }],
+      rowCount: 1,
+    }));
     const repo = new PgUserRepository(db, { now: () => FIXED_NOW });
     const result = await repo.recordFailedLogin('uid-1');
     expect(result.attempts).toBe(5);
     expect(result.lockedUntil).toBe(FIXED_NOW + 15 * 60 * 1000);
-    const updateCall = db.calls[1];
-    expect(updateCall.values?.[0]).toBe('uid-1');
-    expect(updateCall.values?.[1]).toBe(5);
-    expect(updateCall.values?.[2]).toBe(new Date(FIXED_NOW + 15 * 60 * 1000).toISOString());
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE users SET failed_login_attempts');
+    expect(call.text).toContain('RETURNING');
+    expect(call.values?.[0]).toBe('uid-1');
+    expect(call.values?.[1]).toBe(5);
+    expect(call.values?.[2]).toBe(lockedIso);
   });
 
   it('recordFailedLogin returns zeros for unknown user', async () => {

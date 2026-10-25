@@ -768,6 +768,7 @@ function welcomeMessage(options: {
       options.roster ?? [
         member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
       ],
+    identity: { kind: 'guest', playerId },
   };
 }
 
@@ -798,6 +799,7 @@ function worldEnteredMessage(options: {
       options.roster ?? [
         member({ playerId: 'p1', name: 'Player 1', position, levelIndex, gridSize, styleId }),
       ],
+    identity: { kind: 'guest', playerId: 'p1' },
   };
 }
 

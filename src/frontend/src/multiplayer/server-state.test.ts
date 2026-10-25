@@ -82,6 +82,7 @@ const WELCOME: ServerMessage = {
     pitchSteps: 0,
   },
   roster: [SELF_MEMBER, P2_MEMBER, P3_MEMBER],
+  identity: { kind: 'guest', playerId: 'p1' },
 };
 
 /** The mover's placement on server 2: p2 already in slot 1, the mover filling slot 2. */
@@ -102,6 +103,7 @@ const WORLD_ENTERED: ServerMessage = {
     pitchSteps: 0,
   },
   roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
+  identity: { kind: 'guest', playerId: 'p1' },
 };
 
 /** The world after {@link WELCOME}: self seeded, roster minus self, no pending swap. */
@@ -183,6 +185,7 @@ describe('reduceWorldState — roster', () => {
       position: SLOT_1,
       self: SELF_MEMBER,
       roster: [SELF_MEMBER, P3_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
     });
     const p4: MemberState = { ...P3_MEMBER, playerId: 'p4', name: 'Player 4', position: SLOT_2 };
 
@@ -584,6 +587,7 @@ describe('reduceWorldState — orientation sync', () => {
         { ...SELF_MEMBER, yawSteps: 1, pitchSteps: 1 },
         { ...P2_MEMBER, yawSteps: 2, pitchSteps: -1 },
       ],
+      identity: { kind: 'guest', playerId: 'p1' },
     };
     const state = reduceWorldState(createWorldState(), welcome);
 

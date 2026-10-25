@@ -81,7 +81,12 @@ describe('auth store', () => {
     await store.login({ username: 'alice', password: 'password1234' });
 
     expect(store.getSnapshot()).toEqual({ status: 'authenticated', user: VERIFIED_USER, verified: true });
-    expect(fetchMock).toHaveBeenCalledWith('/auth/login', expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith('/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: 'password1234' }),
+    });
   });
 
   it('login failure throws and reverts to previous state', async () => {
@@ -118,7 +123,12 @@ describe('auth store', () => {
     await store.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
 
     expect(store.getSnapshot()).toEqual({ status: 'anonymous', user: null, verified: false });
-    expect(fetchMock).toHaveBeenCalledWith('/auth/register', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock).toHaveBeenCalledWith('/auth/register', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', email: 'a@x.com', password: 'password1234' }),
+    });
   });
 
   it('register supports positional args and aliases', async () => {
@@ -215,9 +225,12 @@ describe('auth store', () => {
     await s.verify();
 
     expect(s.token).toBeNull();
-    expect(bothFetch).toHaveBeenCalledWith('/auth/verify', expect.objectContaining({
+    expect(bothFetch).toHaveBeenCalledWith('/auth/verify', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: 'stored-token' }),
-    }));
+    });
   });
 
   it('verify failure throws and reverts state', async () => {

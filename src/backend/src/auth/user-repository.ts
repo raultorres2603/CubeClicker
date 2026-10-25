@@ -57,14 +57,10 @@ function normalize(value: string): string {
 }
 
 function makeId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
+  if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') {
+    throw new Error('crypto.randomUUID is not available');
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  return crypto.randomUUID();
 }
 
 export interface InMemoryUserRepositoryOptions {
@@ -301,24 +297,27 @@ export class PgUserRepository implements UserRepository {
     id: string,
     nowMs?: number,
   ): Promise<{ attempts: number; lockedUntil: number | null }> {
-    const selectResult = await this.db.query(
-      'SELECT failed_login_attempts FROM users WHERE id = $1',
-      [id],
+    const now = nowMs ?? this.now();
+    const lockedUntilCandidate = now + LOCKOUT_DURATION_MS;
+    const result = await this.db.query(
+      'UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts + 1 >= $2 THEN $3 ELSE NULL END, updated_at = now() WHERE id = $1 RETURNING failed_login_attempts, locked_until',
+      [id, LOCKOUT_THRESHOLD, new Date(lockedUntilCandidate).toISOString()],
     );
-    const row = selectResult.rows[0];
+    const row = result.rows[0];
     if (!row) {
       return { attempts: 0, lockedUntil: null };
     }
-    const now = nowMs ?? this.now();
-    const attempts = Number(row.failed_login_attempts ?? 0) + 1;
+    const attempts = Number(row.failed_login_attempts ?? 0);
     let lockedUntil: number | null = null;
-    if (attempts >= LOCKOUT_THRESHOLD) {
-      lockedUntil = now + LOCKOUT_DURATION_MS;
+    const raw = row.locked_until;
+    if (raw !== null && raw !== undefined) {
+      if (raw instanceof Date) {
+        lockedUntil = raw.getTime();
+      } else {
+        const parsed = Date.parse(String(raw));
+        lockedUntil = Number.isNaN(parsed) ? null : parsed;
+      }
     }
-    await this.db.query(
-      'UPDATE users SET failed_login_attempts = $2, locked_until = $3, updated_at = now() WHERE id = $1',
-      [id, attempts, lockedUntil === null ? null : new Date(lockedUntil).toISOString()],
-    );
     return { attempts, lockedUntil };
   }
 

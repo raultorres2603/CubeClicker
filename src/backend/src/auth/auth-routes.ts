@@ -91,6 +91,11 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v);
 }
 
+// CSRF Origin check: a missing Origin header is allowed (F7 decision). Browser-initiated
+// cross-site form POSTs always carry Origin, so rejecting only *mismatched* Origins
+// blocks CSRF while permitting non-browser clients (curl, server-to-server, WebSocket
+// upgrades) that legitimately omit Origin. Stricter rejection of missing Origin was
+// considered and rejected to avoid breaking those clients.
 function checkOrigin(request: FastifyRequest, reply: FastifyReply, allowedOrigin: string): boolean {
   const origin = request.headers.origin;
   if (origin !== undefined && origin !== null && origin !== allowedOrigin) {

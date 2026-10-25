@@ -37,7 +37,7 @@ describe('loadMigrations', () => {
     const names = migrations.map((m) => m.name);
     expect(names).toContain('001_init.sql');
     const init = migrations.find((m) => m.name === '001_init.sql');
-    expect(init).toBeDefined();
+    expect(init?.name).toBe('001_init.sql');
     expect(init!.sql).toContain('CREATE TABLE');
     expect(init!.sql).toContain('users');
     expect(init!.sql).toContain('lower(username)');
