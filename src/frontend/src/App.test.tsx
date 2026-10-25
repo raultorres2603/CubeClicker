@@ -173,6 +173,16 @@ function shellHtml({
 }
 
 describe('App', () => {
+  it('renders the auth menu with its three choices before a choice, over the canvas', () => {
+    const html = renderToStaticMarkup(<App />);
+
+    expect(html).toContain('<canvas');
+    expect(html).toContain('<div class="auth-menu">');
+    expect(html).toContain('<button type="button">Login</button>');
+    expect(html).toContain('<button type="button">Register</button>');
+    expect(html).toContain('<button type="button">Play as guest</button>');
+  });
+
   it('renders the full intro shell on first paint (default online session, no DOM)', () => {
     const html = renderToStaticMarkup(<App hasChosen />);
 
