@@ -129,6 +129,7 @@ function sessionFor(
     spectateMember: () => false,
     returnToOwnCube: () => false,
     retryConnection: () => {},
+    join: () => {},
   };
 }
 
