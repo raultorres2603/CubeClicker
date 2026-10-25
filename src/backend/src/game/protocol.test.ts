@@ -67,6 +67,7 @@ const PLACEMENT: Placement = {
   position: { x: 38.197186342054884, y: 0 },
   self: P1_CUBE,
   roster: [P1, P2],
+  identity: { kind: 'guest', playerId: 'p1' },
 };
 
 describe('MAX_MESSAGE_BYTES', () => {
@@ -257,6 +258,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      identity: { kind: 'guest', playerId: 'p1' },
     });
 
     // Later hub mutations of the source must not rewrite an already-built message.
@@ -279,6 +281,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      identity: { kind: 'guest', playerId: 'p1' },
     });
   });
 
@@ -300,6 +303,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      identity: { kind: 'guest', playerId: 'p1' },
     });
   });
 
@@ -434,6 +438,7 @@ describe('encodeServerMessage', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      identity: { kind: 'guest', playerId: 'p1' },
     });
   });
 });

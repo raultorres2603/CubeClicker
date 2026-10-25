@@ -951,6 +951,7 @@ describe('cube completion', () => {
         },
         // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
         roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
+        identity: { kind: 'guest', playerId: 'p3' },
       },
     ]);
     expect(second.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
@@ -1055,6 +1056,7 @@ describe('cube completion', () => {
           moved,
           memberOf('p3', 'Player 3', X3_SLOT_3),
         ],
+        identity: { kind: 'guest', playerId: 'p4' },
       },
     ]);
     expect(fifth.messages()).toEqual([
@@ -1137,6 +1139,7 @@ describe('cube completion', () => {
           pitchSteps: 0,
         },
         roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
+        identity: { kind: 'guest', playerId: 'p3' },
       },
     ]);
     expect(second.messages()).toEqual([{ type: 'memberJoined', member: movedThird }]);
@@ -1180,6 +1183,7 @@ describe('cube completion', () => {
           pitchSteps: 0,
         },
         roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
+        identity: { kind: 'guest', playerId: 'p5' },
       },
     ]);
     expect(fourth.messages()).toEqual([{ type: 'memberJoined', member: movedFifth }]);

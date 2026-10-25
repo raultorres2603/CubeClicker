@@ -76,11 +76,13 @@ export type ErrorCode =
   | 'rate_limited'
   | 'invalid_click'
   | 'invalid_completion'
-  | 'resume_failed';
+  | 'resume_failed'
+  | 'account_unverified'
+  | 'not_authenticated';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
-  | { type: 'join' }
+  | { type: 'join'; mode?: 'account' | 'guest' }
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
   | { type: 'cubeCompleted'; level: number }
@@ -99,6 +101,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      identity?: Identity;
     }
   | {
       type: 'worldEntered';
@@ -110,6 +113,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      identity?: Identity;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
@@ -195,8 +199,15 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
   }
 
   switch (frame.type) {
-    case 'join':
-      return { ok: true, message: { type: 'join' } };
+    case 'join': {
+      if (frame.mode === undefined) {
+        return { ok: true, message: { type: 'join' } };
+      }
+      if (frame.mode !== 'account' && frame.mode !== 'guest') {
+        return badMessage();
+      }
+      return { ok: true, message: { type: 'join', mode: frame.mode } };
+    }
 
     case 'rejoin':
       if (!isNonEmptyString(frame.token)) {
@@ -239,6 +250,10 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
  * The placement payload shared by `welcome` (join/resume) and `worldEntered` (a mover whose
  * next cube lands on a different server): identity, assignment and the full world state.
  */
+export type Identity =
+  | { kind: 'account'; accountId: string; username: string }
+  | { kind: 'guest'; playerId: string };
+
 export interface Placement {
   playerId: string;
   name: string;
@@ -248,6 +263,7 @@ export interface Placement {
   position: Position;
   self: CubeState;
   roster: MemberState[];
+  identity: Identity;
 }
 
 /** The payload of a fresh-cube broadcast (`levelAdvanced`; `removedIds` is always empty). */
@@ -272,6 +288,14 @@ export interface CubeSync {
 
 /** The shared `welcome`/`worldEntered` payload, copied so later mutations cannot leak in. */
 function placementPayload(placement: Placement): Placement {
+  const identity: Identity =
+    placement.identity.kind === 'account'
+      ? {
+          kind: 'account',
+          accountId: placement.identity.accountId,
+          username: placement.identity.username,
+        }
+      : { kind: 'guest', playerId: placement.identity.playerId };
   return {
     playerId: placement.playerId,
     name: placement.name,
@@ -281,6 +305,7 @@ function placementPayload(placement: Placement): Placement {
     position: { x: placement.position.x, y: placement.position.y },
     self: copyCubeState(placement.self),
     roster: placement.roster.map(copyMemberState),
+    identity,
   };
 }
 

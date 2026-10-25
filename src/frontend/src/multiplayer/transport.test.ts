@@ -115,6 +115,7 @@ function welcome(playerId: string, token: string): ServerMessage {
     position: SLOT_1,
     self: { levelIndex: 0, gridSize: 3, styleId: 'obsidian-neon', removedIds: [], yawSteps: 0, pitchSteps: 0 },
     roster: [MEMBER_1],
+    identity: { kind: 'guest', playerId },
   };
 }
 

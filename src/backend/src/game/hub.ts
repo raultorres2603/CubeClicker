@@ -64,6 +64,7 @@ import {
   type CubeState,
   type CubeSync,
   type ErrorCode,
+  type Identity,
   type LevelAdvance,
   type MemberState,
   type MiniCubeId,
@@ -120,6 +121,13 @@ export interface HubDeps {
   timers: HubTimers;
 }
 
+/** Account session resolved from the upgrade cookie (server-authoritative). */
+export interface AccountSession {
+  userId: string;
+  username: string;
+  verified: boolean;
+}
+
 /** The hub surface (`app.ts` attaches sockets; nothing else is public). */
 export interface GameHub {
   /**
@@ -130,7 +138,7 @@ export interface GameHub {
    */
   hasCapacity(): boolean;
   /** Attaches one socket: registers the lifecycle listeners and the heartbeat. */
-  attach(peer: Peer): void;
+  attach(peer: Peer, accountSession?: AccountSession | null): void;
   /** Number of currently attached sockets (bounded by `config.maxConnections`). */
   connectionCount(): number;
   /** Clears every hub-owned timer and forgets the connections (app shutdown). */
@@ -140,6 +148,8 @@ export interface GameHub {
 /** One attached socket and its per-connection state. */
 interface Connection {
   peer: Peer;
+  /** Resolved from the upgrade cookie; never from client input. */
+  accountSession: AccountSession | null;
   /** `null` until a successful join/rejoin. */
   playerId: string | null;
   /** Consecutive pings that received no pong (reset by any pong). */
@@ -161,6 +171,7 @@ interface RateWindow {
 interface Member {
   playerId: string;
   name: string;
+  accountId: string | null;
   token: string;
   cube: BoardState;
   yawSteps: number;
@@ -296,6 +307,10 @@ export function createGameHub(deps: HubDeps): GameHub {
 
   function placementFor(member: Member): Placement {
     const location = locationOf(member.playerId)!;
+    const identity: Identity =
+      member.accountId !== null
+        ? { kind: 'account', accountId: member.accountId, username: member.name }
+        : { kind: 'guest', playerId: member.playerId };
     return {
       playerId: member.playerId,
       name: member.name,
@@ -305,6 +320,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       position: positionOf(location.slot),
       self: cubeState(member),
       roster: rosterFor(location.serverId),
+      identity,
     };
   }
 
@@ -435,17 +451,38 @@ export function createGameHub(deps: HubDeps): GameHub {
     return members.get(connection.playerId) ?? null;
   }
 
-  function handleJoin(connection: Connection): void {
+  function handleJoin(connection: Connection, mode?: 'account' | 'guest'): void {
     if (connection.playerId !== null) {
       sendError(connection, 'bad_message');
       return;
     }
+    const effectiveMode: 'account' | 'guest' =
+      mode ??
+      (connection.accountSession !== null && connection.accountSession.verified
+        ? 'account'
+        : 'guest');
+
+    if (effectiveMode === 'account') {
+      if (connection.accountSession === null) {
+        sendError(connection, 'not_authenticated');
+        return;
+      }
+      if (!connection.accountSession.verified) {
+        sendError(connection, 'account_unverified');
+        return;
+      }
+    }
+
     playerCounter += 1;
     const record = createPlayerRecord(playerCounter);
     const assignment = registry.assign(record.playerId);
+    const isAccount = effectiveMode === 'account';
+    const accountId = isAccount ? connection.accountSession!.userId : null;
+    const name = isAccount ? connection.accountSession!.username : record.name;
     const member: Member = {
       playerId: record.playerId,
-      name: record.name,
+      name,
+      accountId,
       token: record.token,
       cube: createNextCube(null, styleForLevel, random),
       yawSteps: 0,
@@ -474,6 +511,24 @@ export function createGameHub(deps: HubDeps): GameHub {
     if (member === undefined || member.connection !== null) {
       sendError(connection, 'resume_failed');
       return;
+    }
+    // Account resume validation: an authenticated connection may only resume a member
+    // whose accountId matches the cookie's userId (and the session is verified); an
+    // unauthenticated connection may only resume a guest member.
+    if (connection.accountSession !== null) {
+      if (!connection.accountSession.verified) {
+        sendError(connection, 'resume_failed');
+        return;
+      }
+      if (member.accountId !== connection.accountSession.userId) {
+        sendError(connection, 'resume_failed');
+        return;
+      }
+    } else {
+      if (member.accountId !== null) {
+        sendError(connection, 'resume_failed');
+        return;
+      }
     }
     if (grace.expired(member.playerId, deps.now())) {
       // Exactly at (or past) the deadline: finalise the removal, then fail the resume.
@@ -591,7 +646,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     const message = decoded.message;
     if (message.type === 'join') {
-      handleJoin(connection);
+      handleJoin(connection, message.mode);
       return;
     }
     if (message.type === 'rejoin') {
@@ -622,7 +677,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       return connections.size < config.maxConnections;
     },
 
-    attach(peer: Peer): void {
+    attach(peer: Peer, accountSession: AccountSession | null = null): void {
       // Backstop for direct hub users (the route checks `hasCapacity` before hello): a socket
       // beyond the cap is closed before any state is created for it.
       if (connections.size >= config.maxConnections) {
@@ -631,6 +686,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       }
       const connection: Connection = {
         peer,
+        accountSession,
         playerId: null,
         missedPongs: 0,
         awaitingPong: false,

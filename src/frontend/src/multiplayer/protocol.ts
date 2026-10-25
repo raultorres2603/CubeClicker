@@ -80,11 +80,13 @@ export type ErrorCode =
   | 'rate_limited'
   | 'invalid_click'
   | 'invalid_completion'
-  | 'resume_failed';
+  | 'resume_failed'
+  | 'account_unverified'
+  | 'not_authenticated';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
-  | { type: 'join' }
+  | { type: 'join'; mode?: 'account' | 'guest' }
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
   | { type: 'cubeCompleted'; level: number }
@@ -103,6 +105,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      identity?: Identity;
     }
   | {
       type: 'worldEntered';
@@ -114,6 +117,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      identity?: Identity;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
@@ -153,6 +157,10 @@ export type ServerMessageParseResult =
 /** A JSON object, as produced by `JSON.parse` for a well-formed frame. */
 type JsonObject = Record<string, unknown>;
 
+export type Identity =
+  | { kind: 'account'; accountId: string; username: string }
+  | { kind: 'guest'; playerId: string };
+
 /** The placement payload shared by `welcome` (join/resume) and `worldEntered` (a mover). */
 export interface Placement {
   playerId: string;
@@ -163,6 +171,7 @@ export interface Placement {
   position: Position;
   self: CubeState;
   roster: MemberState[];
+  identity: Identity;
 }
 
 /** The payload of an authoritative board message (`stateSync`). */
@@ -212,6 +221,8 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'invalid_click',
   'invalid_completion',
   'resume_failed',
+  'account_unverified',
+  'not_authenticated',
 ];
 
 /** A pinned error code (the `error` frame's `code` is a closed set, never free text). */
@@ -248,8 +259,15 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
   }
 
   switch (frame.type) {
-    case 'join':
-      return { ok: true, message: { type: 'join' } };
+    case 'join': {
+      if (frame.mode === undefined) {
+        return { ok: true, message: { type: 'join' } };
+      }
+      if (frame.mode !== 'account' && frame.mode !== 'guest') {
+        return badClientMessage();
+      }
+      return { ok: true, message: { type: 'join', mode: frame.mode } };
+    }
 
     case 'rejoin':
       if (!isNonEmptyString(frame.token)) {
@@ -362,6 +380,24 @@ function parseMemberState(value: unknown): MemberState | null {
   };
 }
 
+function parseIdentity(value: unknown): Identity | null {
+  const obj = asJsonObject(value);
+  if (obj === null) return null;
+  if (obj.kind === 'account') {
+    if (!isNonEmptyString(obj.accountId) || !isNonEmptyString(obj.username)) {
+      return null;
+    }
+    return { kind: 'account', accountId: obj.accountId, username: obj.username };
+  }
+  if (obj.kind === 'guest') {
+    if (!isNonEmptyString(obj.playerId)) {
+      return null;
+    }
+    return { kind: 'guest', playerId: obj.playerId };
+  }
+  return null;
+}
+
 /** The `welcome`/`worldEntered` payload (identity + assignment + full world), or `null`. */
 function parsePlacement(frame: JsonObject): Placement | null {
   if (
@@ -375,7 +411,8 @@ function parsePlacement(frame: JsonObject): Placement | null {
   }
   const position = parsePosition(frame.position);
   const self = parseCubeState(frame.self);
-  if (position === null || self === null || !Array.isArray(frame.roster)) {
+  const identity = parseIdentity(frame.identity);
+  if (position === null || self === null || identity === null || !Array.isArray(frame.roster)) {
     return null;
   }
   const roster: MemberState[] = [];
@@ -395,6 +432,7 @@ function parsePlacement(frame: JsonObject): Placement | null {
     position,
     self,
     roster,
+    identity,
   };
 }
 
