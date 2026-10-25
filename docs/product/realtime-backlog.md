@@ -20,7 +20,7 @@ The request's "etc." stays open: further candidates are added here at the user's
 
 ## Open tensions
 
-- **Identity vs. "no accounts required".** Presence and attribution imply some notion of a user or session, which can collide with the vision's "no accounts required" principle; this must be reconciled before any presence or attribution feature is scoped. Flagged here, not resolved.
+- **Identity vs. accounts.** Resolved by the user-authentication feature: accounts are an optional identity layer on top of ephemeral guest identity; guest play remains first-class and no account is ever required to play. Presence and attribution features may build on either identity. (Other backlog items remain provisional.)
 - **Server authority.** Anything shared across clients has one authoritative source, and values reported by a client are never treated as truth. How that is structured is a design question for whichever feature needs it.
 
 Items become real only through the normal feature-request workflow (spec → plan → build). Until then this list is direction only. The user owns this list and may add, reword, or remove entries at will.

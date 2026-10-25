@@ -14,7 +14,7 @@ Click a cube → earn points → spend points on upgrades → earn faster → re
 
 ## Principles
 
-- **Instant fun:** playable within seconds of loading; no friction, no accounts required.
+- **Instant fun:** playable within seconds of loading; no friction, no account required to play (accounts are optional and additive; guest play remains first-class).
 - **Idle-friendly:** progress accrues while away (offline progress), so returning players feel rewarded.
 - **Persistence:** safe local saves with versioned migration; corrupted saves never crash the game.
 - **Accessible & responsive:** keyboard operable, mobile-friendly, respects reduced motion.

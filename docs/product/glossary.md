@@ -5,6 +5,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ## Terms
 
+### account
+
+**Definition:** An optional, persistent player identity created by registering a username, email and password. An account is activated only after email verification, and its username is also its display name. Accounts are additive: a player may always choose guest play instead, and no account is ever required to play. Account identity is resolved server-side from the session cookie; the client never supplies an account id or verified flag.
+**Example:** A returning player logs in with username and password to resume the same account identity across sessions.
+
 ### click
 
 **Definition:** The player's primary action on the cube, and also the discrete event that action produces; each click earns points. This is the canonical word for the action, preferred over informal synonyms.
@@ -34,6 +39,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** A logical room inside the single backend process that holds up to X **server members**' cubes in one world, where X is the configured capacity (default 10, valid 2–24). A game server is created lazily when its first member joins — no server exists at boot — and is destroyed immediately when its last member leaves. Servers are numbered with sequential integers from 1; ids are assigned at creation and never reused, so a gap in the sequence simply records a destroyed server. Every member of the server sees only that server's world, roster and play.
 **Example:** The first user joins and the backend creates game server 1; when server 1 is full, the next join creates game server 2.
+
+### guest
+
+**Definition:** A player with no account, using the ephemeral identity (a server-issued id plus an in-memory token, no persistence) exactly as before. Guest play is first-class and remains available now that accounts exist; no game state is persisted for guests.
+**Example:** Selecting `Play as guest` starts immediately with an ephemeral identity and no account.
 
 ### idle progress
 
@@ -67,8 +77,13 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### server member
 
-**Definition:** A connected user who has been assigned to a **game server** and owns exactly one **cube** on that server's ring layout at a server-assigned **cube world position**. A member's identity is ephemeral (a server-issued id plus an in-memory token, no account), and one connection is one member — two browser tabs are two members. The member keeps their slot while they stay on the server; after a disconnect the slot is retained for the reconnect grace window, and the member moves to another server only when a completed cube executes a rebalance move. Other members see a server member's cube and live play; the member is listed in the `Users on Server` panel by display name.
+**Definition:** A connected user who has been assigned to a **game server** and owns exactly one **cube** on that server's ring layout at a server-assigned **cube world position**. A member's identity is either an account (a verified session resolved server-side from the cookie) or an ephemeral guest (a server-issued id plus an in-memory token, no account); accounts are optional and guest play remains first-class. One connection is one member — two browser tabs are two members. The member keeps their slot while they stay on the server; after a disconnect the slot is retained for the reconnect grace window, and the member moves to another server only when a completed cube executes a rebalance move. Other members see a server member's cube and live play; the member is listed in the `Users on Server` panel by display name.
 **Example:** Player 2 joins while game server 1 is full, becoming the first server member of game server 2 with a cube at slot 1 of that server's ring.
+
+### session
+
+**Definition:** A server-side, opaque authentication session carried in an `HttpOnly` cookie with a 7-day sliding expiry. It is created on login or email verification, revoked on logout, and all prior sessions for an account are revoked when a new login succeeds (single active session). The backend resolves account identity from this cookie on the server; the client never reads it.
+**Example:** Logging in sets the session cookie; `GET /auth/me` returns the authenticated user while it is valid.
 
 ### spectating
 
@@ -79,3 +94,8 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** A purchasable improvement bought with points that increases the rate at which the player earns. Upgrades are the main way to spend points for faster progress.
 **Example:** Buying an upgrade with points makes every future click more valuable.
+
+### verified account
+
+**Definition:** An account whose email has been verified by consuming a valid, unexpired, single-use verification token (`verified = true`). Only a verified account may join the game as an account; an unverified account must verify (and may resend the verification email) before playing.
+**Example:** After clicking the activation link, the account becomes verified and can join the game.
