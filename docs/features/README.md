@@ -17,5 +17,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | cube-tile-lines-and-controls | Cube Tile Lines & Controls (seamed surface, no pointer rotation, WASD/arrows) | accepted | 2026-10-21 |
 | multiplayer-servers | Multiplayer Servers & Spectating (online backend, X=10 server rooms, per-user cubes, spectate travel, rebalancing) | accepted | 2026-10-22 |
 | multiplayer-cube-sync | Multiplayer Cube Actions & Full Spectating (remote rotation and action sync) | accepted | 2026-10-23 |
+| fullscreen-responsive-layout | Fullscreen Responsive Layout (full viewport, mobile-friendly) | accepted | 2026-10-25 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

@@ -1,6 +1,6 @@
 ---
 feature: fullscreen-responsive-layout
-state: code_review
+state: accepted
 spec_review_round: 2
 build_round: 1
 created: 2026-10-23
@@ -28,6 +28,7 @@ Dependency overview: T1 first; then T2 ∥ T4; T3 after T2; T5 after T2, T3, T4.
 - 2026-10-23 — awaiting_approval → building — user approved; gesture-only mobile input confirmed — status.md
 - 2026-10-24 — building — T1 completed (viewport CSS, shell, index.html; commit d480c72) — build-log-T1.md
 - 2026-10-25 — building → code_review — all tasks [x], coverage verified, T5 log 1283e78 — docs/features/fullscreen-responsive-layout/build-log-T5.md
+- 2026-10-25 — code_review → accepted — verdict approved (0 blocking, 6 non-blocking) — reviews/code-r1.md
 
 ## Blockers / open questions
 - none
