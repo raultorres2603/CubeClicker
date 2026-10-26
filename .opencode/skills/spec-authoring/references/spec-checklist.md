@@ -43,3 +43,6 @@
 ## Containers (when the feature adds services, images, ports, configuration, or deployables)
 - [ ] Containerization impact addressed per `docs/architecture/containerization.md` (local-run contract, image/service rules, deploy neutrality, WebSocket endpoint exposure) — or explicitly out of scope
 - [ ] Container details follow the settled conventions (`docs/architecture/containerization.md`); deviations are flagged as open questions for a user-owned amendment
+
+## Documentation
+- [ ] Documentation impact: which docs (README, architecture, features index) need updating; is the documentation pass scheduled in tasks?

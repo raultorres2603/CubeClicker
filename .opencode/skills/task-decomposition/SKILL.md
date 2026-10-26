@@ -21,3 +21,7 @@ Produce `tasks.md` from `spec.md` and `plan.md`. The orchestrator executes it li
 ## Output
 
 Use `templates/tasks.md`. Include a dependency overview line at the top (and optionally a mermaid graph).
+
+## Documentation task
+
+When a feature changes user-facing behavior, configuration, commands, ports, or images, the task list must account for documentation: either a dedicated documentation task or the update folded into the final verification task (`T<final> — Verify & integrate`). The task's `files_owned` must cover the affected docs (e.g. `README.md`, `docs/architecture/**`, `docs/product/**`), and its `verify` must include greps confirming the documentation changes. The documentation update pass itself may run post-approval per the orchestration playbook, but the documentation impact must be identified up front in `tasks.md`. See `docs/architecture/documentation.md`.
