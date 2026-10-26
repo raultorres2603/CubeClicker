@@ -32,7 +32,8 @@ Transition rules:
 - `awaiting_approval → building` when the user approves.
 - `building → code_review` when every task in `tasks.md` is `[x]` and every behavior-change task's build log records its coverage run.
 - Increment `build_round` each time a code review starts.
-- `code_review → accepted` when `verdict: approved` and every acceptance criterion is verified met.
+- `code_review → accepted` when `verdict: approved` and every acceptance criterion is verified met, **and the builder's documentation pass (per `docs/architecture/documentation.md`) is complete with a `build-log-docs.md` (or `build-log-<taskid>.md` covering docs)."
+- While the documentation pass runs the feature stays in `code_review`: the orchestrator dispatches the pass on approval and transitions to `accepted` only once evidence is recorded in a build log. No new state is introduced.
 - `code_review → building` when `changes_requested` and `build_round < 3`; if it would exceed 3 → `escalated`.
 - `code_review → planning` when the review identifies a spec defect (missing or wrong requirement). Same loop limits.
 - Any state → `escalated` on a `failed` report that a single retry does not fix.
@@ -98,7 +99,7 @@ Present at most 12 lines: feature goal, acceptance-criteria count, task count (+
 
 ## 7. Final summary (`accepted`)
 
-One message: what was built (feature + key files), evidence (verification commands and results, including the `npm run coverage` run and per-workspace numbers), review history (rounds and outcomes), backlog (MINOR/INFO findings and open questions), suggested next step. Update `docs/features/README.md`.
+One message: what was built (feature + key files), evidence (verification commands and results, including the `npm run coverage` run and per-workspace numbers, documentation updated (list)), review history (rounds and outcomes), backlog (MINOR/INFO findings and open questions), suggested next step. Update `docs/features/README.md`.
 
 ## 8. Blocked & escalation
 

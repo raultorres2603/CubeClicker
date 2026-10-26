@@ -37,6 +37,7 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 - Feature state lives in `docs/features/<slug>/status.md` — never rely on chat memory.
 - Feature artifacts: `spec.md`, `plan.md`, `tasks.md`, `status.md`, `build-log-<taskid>.md`, `reviews/`.
 - Only the orchestrator communicates with the user; worker agents return reports.
+- Documentation on acceptance: when a feature reaches `accepted`, the builder runs a documentation pass per `docs/architecture/documentation.md` (same change as the final verification), covering root `README.md`, `docs/features/README.md` (orchestrator-owned row update), `docs/architecture/*`, and any other affected docs; the orchestrator confirms the pass before transitioning to `accepted`.
 
 ## Conventions
 
@@ -44,6 +45,7 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
 - Branches: `feat/<slug>` for feature work; merge to main only after a feature is `accepted`.
 - Tests accompany every behavior change: unit tests and integration tests with concrete expected values (no wildcard matchers), and no useless tests; coverage stays ≥ 80% (statements, branches, functions, lines) per workspace, verified with `npm run coverage`.
+- Documentation: every behavior change updates documentation in the same commit (see docs/architecture/documentation.md).
 
 ## Boundaries
 
