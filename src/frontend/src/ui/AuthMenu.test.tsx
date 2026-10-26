@@ -1,7 +1,14 @@
+/** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthMenu } from './AuthMenu';
+
+afterEach(() => {
+  cleanup();
+});
 
 function occurrences(html: string, needle: string): number {
   return html.split(needle).length - 1;
@@ -52,5 +59,55 @@ describe('AuthMenu', () => {
     const html = renderToStaticMarkup(<AuthMenu />);
     expect(html).not.toContain('aria-live');
     expect(html).not.toContain('role="status"');
+  });
+});
+
+describe('AuthMenu — interaction', () => {
+  it('calls onPlayAsGuest exactly once when the rendered Play as guest button is clicked', async () => {
+    const onPlayAsGuest = vi.fn();
+    render(<AuthMenu onPlayAsGuest={onPlayAsGuest} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Play as guest' }));
+    expect(onPlayAsGuest).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onSelect and onChoose with "login" when the rendered Login button is clicked', async () => {
+    const onSelect = vi.fn();
+    const onChoose = vi.fn();
+    render(<AuthMenu onSelect={onSelect} onChoose={onChoose} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('login');
+    expect(onChoose).toHaveBeenCalledTimes(1);
+    expect(onChoose).toHaveBeenCalledWith('login');
+  });
+
+  it('calls onSelect and onChoose with "register" when the rendered Register button is clicked', async () => {
+    const onSelect = vi.fn();
+    const onChoose = vi.fn();
+    render(<AuthMenu onSelect={onSelect} onChoose={onChoose} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('register');
+    expect(onChoose).toHaveBeenCalledTimes(1);
+    expect(onChoose).toHaveBeenCalledWith('register');
+  });
+
+  it('returns to the menu (buttons reappear) when Cancel is clicked in a form view', async () => {
+    render(<AuthMenu defaultView="login" />);
+    expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Login' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Register' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Play as guest' })).toBeTruthy();
+  });
+
+  it('focuses the first input after mount where applicable', async () => {
+    render(<AuthMenu defaultView="login" />);
+    const input = screen.getByLabelText('Username');
+    expect(document.activeElement).toBe(input);
   });
 });

@@ -2,92 +2,43 @@
 
 Task: fix-tests (2026-10-26)
 Files changed:
-- `src/frontend/src/ui/AuthMenu.tsx` (F8: removed `autoFocus` from the menu `Login` button)
-- `src/frontend/src/ui/AuthForms.tsx` (F3: `autoFocus` on the first input; F5: documented mount-only `initialError`)
-- `src/frontend/src/App.tsx` (F3: `autoFocus` on the pending screen's `Back to login` button)
+- `src/frontend/package.json` + lockfile (added devDeps: jsdom, @testing-library/react, @testing-library/user-event)
+- `src/frontend/src/App.test.tsx` (jsdom docblock; +3 interaction tests)
+- `src/frontend/src/ui/AuthMenu.test.tsx` (jsdom docblock; +5 interaction tests)
+- `src/frontend/src/ui/AuthForms.test.tsx` (jsdom docblock; +6 interaction tests)
 - `docs/features/user-authentication/build-log-fix-tests.md`
 
-## Status: BLOCKED on F1
+What changed & why: enabled jsdom + RTL per user approval to add DOM-driven interaction tests that exercise the rendered `onClick`/`onSubmit` bindings (F1). Kept all pre-existing SSR tests. Added per-file `/** @vitest-environment jsdom */` docblocks (preferred over global change). Mutation-checked bindings.
 
-The MAJOR finding F1 asks for interaction-level coverage that drives the real
-rendered `onClick`/`onSubmit` bindings. The frontend test environment is `node`
-(see `src/frontend/vitest.config.ts`: `environment: 'node'`) and no DOM
-implementation or testing library is available anywhere in the dependency tree:
+Decisions: per-file jsdom docblock (global default stays node). No other deps added. No source changes this round (bindings already present).
 
-- `src/frontend/package.json` devDependencies: only `@vitest/coverage-v8`, `vite`,
-  `vitest`, `@vitejs/plugin-react`, react types. No `jsdom`, no `happy-dom`, no
-  `@testing-library/*`.
-- `package.json` (root) devDependencies: eslint, typescript, etc. No DOM test
-  libraries.
-- `node_modules` search (`find / -type d -name jsdom`, `find / -path *testing-library*`)
-  returned no matches; `require('jsdom')` fails with "Cannot find module 'jsdom'".
-- Global npm (`npm ls -g`) only has corepack and npm.
+Dependency install evidence:
+- `npm install -D -w @cubeclicker/frontend jsdom @testing-library/react @testing-library/user-event` → added 47 packages, audited 402.
+- `npm ci` → added 399 packages, audited 402 (ci-clean).
+- Installed versions: jsdom ^30.1.3, @testing-library/react ^16.3.3, @testing-library/user-event ^14.6.8.
 
-Per AGENTS.md, adding dependencies requires user approval, so I did NOT add any.
-Per scope item 2, a minimal DOM shim via React's `act` is not feasible in a Node
-environment without a DOM, and the source-reading guard described as the fallback
-is explicitly acknowledged as weak. I therefore report `blocked` on F1 rather than
-fabricating passing tests.
+Test additions:
+- AuthMenu.test.tsx: Play as guest click → onPlayAsGuest called exactly once; Login/Register clicks → onSelect+onChoose with right view; Cancel returns to menu; focus first input.
+- AuthForms.test.tsx: login submit → onLogin with entered values; legacy onSubmit path; register submit → onRegister; thrown login error renders exact text; focus first input (login/register).
+- App.test.tsx: Play as guest click → session.join('guest') once + menu unmounts; login success drives form submit → retryConnection then join('account') order; failed login → error text + no join.
 
-### Requested approval (exact commands)
+Mutation checks:
+- AuthMenu: commented `onClick={handleGuest}` → "Play as guest" interaction test failed (1 failed). Restored. Verified via git diff.
+- AuthForms: removed `onSubmit={handleSubmit}` → 4 interaction tests failed. Restored. Verified via git diff.
 
-Run from the repository root:
+Gate outputs:
+- `npm run lint` → exit 0.
+- `npm run typecheck` → exit 0 (backend + frontend).
+- `npm test` → exit 0 (backend 18 files/492 tests; frontend 34 files/756 tests).
+- `npm run coverage` → exit 0:
+  - backend: All files 94.66 / 84.32 / 99.60 / 94.66
+  - frontend: All files 93.72 / 93.78 / 96.20 / 93.72
+- `npm run build` → exit 0 (dist/assets/index-*.js 820.66 kB).
+- Banned-matcher grep over changed test files → no matches.
+- AuthMenu function coverage: 100% (was 20%); AuthForms function coverage: 100% (was 66.67%).
 
-    npm install -D -w @cubeclicker/frontend jsdom @testing-library/react @testing-library/user-event
+Acceptance audit:
+- F1 → met: DOM interaction coverage added for all three files; tests fail when binding removed (mutation-checked).
+- Pre-existing tests retained (756 total vs 742 prior +14).
 
-(or, equivalently, `cd src/frontend && npm install -D jsdom @testing-library/react @testing-library/user-event`)
-
-Then, for the affected test files, add a per-file docblock as the first line:
-
-    /** @vitest-environment jsdom */
-
-to `src/frontend/src/App.test.tsx`, `src/frontend/src/ui/AuthMenu.test.tsx`, and
-`src/frontend/src/ui/AuthForms.test.tsx` (or set `environment: 'jsdom'` in
-`src/frontend/vitest.config.ts` for those files via `environmentMatchGlobs`).
-
-After approval I will add the interaction tests:
-- AuthMenu: clicking the rendered `Play as guest` button calls the injected
-  `onPlayAsGuest` exactly once; clicking `Login`/`Register` switches views via
-  `onSelect`/`onChoose`; `Cancel` returns to the menu.
-- AuthForms: submitting the rendered login form with valid values calls
-  `onLogin`/`onSubmit` with those values; submitting register calls `onRegister`;
-  a thrown login error renders the exact error text in the DOM.
-- App: with a mock session, clicking the rendered `Play as guest` button results
-  in `session.join('guest')` being called and the menu unmounting.
-
-These tests will be written to FAIL if the corresponding `onClick`/`onSubmit`
-binding is removed (verified by temporarily reverting a binding locally).
-
-## Safe MINORs addressed (F3, F5, F8; F6 already satisfied)
-
-- F3: added `autoFocus` to the first input (username) of `AuthForms` and to the
-  pending screen's primary `Back to login` button in `App.tsx`.
-- F5: documented `initialError` as mount-only at the `useState` initializer in
-  `AuthForms.tsx` (remount via `key` re-reads the prop); no behavior change.
-- F6: `createAuthGate.verificationRequired` already guards with
-  `if (closed()) return;` (present since `ee4a667`); no change required.
-- F8: removed `autoFocus` from the menu's `Login` button in `AuthMenu.tsx`.
-
-F2, F4, F7 left open per the brief (trade-offs/docs).
-
-## Evidence
-- `npm run lint` -> exit 0.
-- `npm run typecheck` -> exit 0 (backend + frontend `tsc --noEmit`).
-- `npm test` -> exit 0 (backend 18 files / 492 tests; frontend 34 files / 742 tests).
-- `npm run coverage` -> exit 0 (thresholds 80/80/80/80):
-  - backend: `All files | 94.66 | 84.32 | 99.6 | 94.66`
-  - frontend: `All files | 92.46 | 91.65 | 93.67 | 92.46`
-- `npm run build` -> exit 0 (`dist/assets/index-*.js 820.66 kB`).
-
-## Acceptance audit
-- F1 (interaction tests) -> unmet: blocked pending approval to add
-  `jsdom` + `@testing-library/react` + `@testing-library/user-event` (see above).
-- F3 -> met: `autoFocus` on first input + pending primary button.
-- F5 -> met: mount-only documented in code comment.
-- F6 -> met: guard already present.
-- F8 -> met: `autoFocus` removed from menu `Login` button.
-- F2, F4, F7 -> left open per brief.
-
-## Deviations from spec
-- None in behavior. No dependencies added. No backend/compose/docs (beyond feature
-  artifact folder) modified.
+Deviations from spec: none in behavior. No backend/compose/docs (beyond feature artifact) modified. Only approved deps added.

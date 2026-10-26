@@ -1,5 +1,8 @@
+/** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AuthForms,
@@ -8,6 +11,10 @@ import {
   submitAuthForm,
   type AuthFormStore,
 } from './AuthForms';
+
+afterEach(() => {
+  cleanup();
+});
 
 const LOGIN_DATA = {
   username: 'alice',
@@ -216,5 +223,92 @@ describe('AuthForms', () => {
     });
     expect(onLoginSuccess).toHaveBeenCalledWith(LOGIN_DATA, null);
     expect(result).toEqual({ outcome: 'success', mode: 'login', user: null });
+  });
+});
+
+describe('AuthForms — interaction', () => {
+  const VERIFIED_USER = { email: 'alice@example.com', verified: true };
+
+  it('submits the rendered login form and calls onLogin with the entered values', async () => {
+    const onLogin = vi.fn();
+    const login = vi.fn(async () => undefined);
+    const store = storeFor(VERIFIED_USER, { login });
+    render(<AuthForms mode="login" store={store} onLogin={onLogin} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await waitFor(() => expect(onLogin).toHaveBeenCalledTimes(1));
+    expect(onLogin).toHaveBeenCalledWith(
+      { username: 'alice', email: '', password: 'correct horse battery' },
+      VERIFIED_USER,
+    );
+    expect(login).toHaveBeenCalledWith({ username: 'alice', password: 'correct horse battery' });
+  });
+
+  it('submits the rendered login form via the legacy onSubmit binding', async () => {
+    const onSubmit = vi.fn();
+    render(<AuthForms mode="login" onSubmit={onSubmit} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith('login', {
+      username: 'alice',
+      email: '',
+      password: 'correct horse battery',
+    });
+  });
+
+  it('submits the rendered register form and calls onRegister with the entered values', async () => {
+    const onRegister = vi.fn();
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const store = storeFor(null, { register });
+    render(<AuthForms mode="register" store={store} onRegister={onRegister} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await waitFor(() => expect(onRegister).toHaveBeenCalledTimes(1));
+    expect(onRegister).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(register).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+  });
+
+  it('renders the exact error text in the DOM when the login handler throws', async () => {
+    const onLogin = vi.fn();
+    const login = vi.fn(async () => {
+      throw new Error('invalid credentials');
+    });
+    const store = storeFor(null, { login });
+    render(<AuthForms mode="login" store={store} onLogin={onLogin} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('invalid credentials');
+    expect(onLogin).toHaveBeenCalledTimes(0);
+  });
+
+  it('focuses the first input after mount', () => {
+    render(<AuthForms mode="login" />);
+    const input = screen.getByLabelText('Username');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('focuses the first input after mount in register mode', () => {
+    render(<AuthForms mode="register" />);
+    const input = screen.getByLabelText('Username');
+    expect(document.activeElement).toBe(input);
   });
 });

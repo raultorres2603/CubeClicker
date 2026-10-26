@@ -1,5 +1,8 @@
+/** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App, createAuthGate } from './App';
 import { createBoard } from './game/board';
@@ -10,6 +13,10 @@ import { GRID_SIZE, type GameStats, type Phase } from './game/types';
 import type { MemberState } from './multiplayer/protocol';
 import type { WorldState } from './multiplayer/server-state';
 import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
+
+afterEach(() => {
+  cleanup();
+});
 
 /**
  * Integration test for the game shell (AC-1, AC-11, AC-14, AC-16, AC-18, AC-22, AC-23,
@@ -615,5 +622,72 @@ describe('App — auth choice starts the game', () => {
     const html = renderToStaticMarkup(<App gate={gate} session={session} />);
     expect(html).toContain('Check your email to verify your account.');
     expect(html).not.toContain('Play as guest');
+  });
+});
+
+describe('App — auth interaction', () => {
+  function introSession(join: ReturnType<typeof vi.fn>, retryConnection: ReturnType<typeof vi.fn>): OnlineGameSession {
+    return sessionFor(
+      snapshotFor('intro'),
+      multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
+      { join, retryConnection },
+    );
+  }
+
+  it('clicking the rendered Play as guest button joins as guest and unmounts the menu', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    render(<App session={session} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Play as guest' }));
+    await waitFor(() => expect(join).toHaveBeenCalledTimes(1));
+    expect(join).toHaveBeenCalledWith('guest');
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Login' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Register' })).toBeNull();
+  });
+
+  it('drives the rendered login form submit and joins as account after reconnect', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const login = vi.fn(async () => undefined);
+    const store = authStoreFor({ email: 'alice@example.com', verified: true }, { login, register: vi.fn() });
+    render(<App session={session} store={store} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await waitFor(() => expect(join).toHaveBeenCalledTimes(1));
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(login).toHaveBeenCalledWith({ username: 'alice', password: 'correct horse battery' });
+    expect(retryConnection).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('account');
+    expect(login.mock.invocationCallOrder[0]).toBeLessThan(retryConnection.mock.invocationCallOrder[0]);
+    expect(retryConnection.mock.invocationCallOrder[0]).toBeLessThan(join.mock.invocationCallOrder[0]);
+    expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+  });
+
+  it('shows the error text and does not join when rendered login fails', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const login = vi.fn(async () => {
+      throw new Error('invalid credentials');
+    });
+    const store = authStoreFor(null, { login, register: vi.fn() });
+    render(<App session={session} store={store} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('invalid credentials');
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
   });
 });
