@@ -13,7 +13,7 @@ A web-based, online, real-time, multi-client clicker game — connected clients 
 podman compose up
 ```
 
-This builds and starts the full local environment (backend + frontend + Postgres + Mailpit containers) with hot reload:
+This builds and starts the full local environment (backend + frontend + Postgres + Mailpit + Adminer containers) with hot reload:
 
 | Surface | URL |
 | --- | --- |
@@ -21,6 +21,7 @@ This builds and starts the full local environment (backend + frontend + Postgres
 | Backend | http://localhost:8080 |
 | WebSocket | ws://localhost:8080/ws |
 | Mailpit (dev email capture) | http://localhost:8025 |
+| Adminer (DB browser) | http://localhost:8081 |
 | Postgres | localhost:5432 |
 
 - Background: `podman compose up -d`
@@ -53,6 +54,7 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `DB_PORT` | `5432` | host port published for the Postgres container |
 | `MAILPIT_SMTP_PORT` | `1025` | host port published for Mailpit SMTP |
 | `MAILPIT_UI_PORT` | `8025` | host port published for the Mailpit web UI |
+| `ADMINER_PORT` | `8081` | host port published for the Adminer DB browser (`127.0.0.1:${ADMINER_PORT}:8080`) |
 | `POSTGRES_USER` | `cubeclicker` | Postgres superuser name |
 | `POSTGRES_PASSWORD` | `cubeclicker` | Postgres superuser password |
 | `POSTGRES_DB` | `cubeclicker` | Postgres database name |
