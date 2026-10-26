@@ -20,6 +20,7 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | fullscreen-responsive-layout | Fullscreen Responsive Layout (full viewport, mobile-friendly) | accepted | 2026-10-25 |
 | user-authentication | User Authentication (login, registration with email activation, password hashing, guest play, dockerized DB) | accepted | 2026-10-26 |
 | db-admin-browser | DB Admin Browser (local Adminer for Postgres) | accepted | 2026-10-26 |
+| docs-on-feature-acceptance | Docs Update on Feature Acceptance (builder docs pass on acceptance) | accepted | 2026-10-26 |
 | cube-centering | Cube Centering (background and cube position) | accepted | 2026-10-26 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
