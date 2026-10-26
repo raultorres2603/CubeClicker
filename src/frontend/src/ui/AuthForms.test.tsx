@@ -1,31 +1,220 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AuthForms, LoginForm, RegisterForm } from './AuthForms';
+import {
+  AuthForms,
+  LoginForm,
+  RegisterForm,
+  submitAuthForm,
+  type AuthFormStore,
+} from './AuthForms';
+
+const LOGIN_DATA = {
+  username: 'alice',
+  email: '',
+  password: 'correct horse battery',
+};
+
+const REGISTER_DATA = {
+  username: 'alice',
+  email: 'alice@example.com',
+  password: 'correct horse battery',
+};
+
+const VERIFIED_USER = { email: 'alice@example.com', verified: true };
+const UNVERIFIED_USER = { email: 'alice@example.com', verified: false };
+
+function storeFor(
+  user: { email?: string; verified?: boolean } | null,
+  calls: {
+    login?: AuthFormStore['login'];
+    register?: AuthFormStore['register'];
+  } = {},
+): AuthFormStore {
+  return { user, login: calls.login, register: calls.register };
+}
 
 describe('AuthForms', () => {
-  it('renders the login form by default', () => {
+  it('renders the login form by default with labeled fields and a primary submit', () => {
     const html = renderToStaticMarkup(<AuthForms />);
-    expect(html).toContain('Login');
+
+    expect(html).toContain('<div class="auth-forms">');
+    expect(html).toContain('<form class="auth-form auth-form-login">');
+    expect(html).toContain('<h2 class="auth-title" id="auth-form-title">Welcome back</h2>');
     expect(html).toContain('name="username"');
     expect(html).toContain('name="password"');
-    expect(html).toContain('Cancel');
+    expect(html).not.toContain('name="email"');
+    expect(html).toContain('class="auth-button auth-button-primary"');
+    expect(html).toContain('>Login</button>');
+    expect(html).toContain('>Cancel</button>');
   });
 
   it('renders the register form when mode is register', () => {
     const html = renderToStaticMarkup(<AuthForms mode="register" />);
-    expect(html).toContain('Register');
+
+    expect(html).toContain('<form class="auth-form auth-form-register">');
+    expect(html).toContain('<h2 class="auth-title" id="auth-form-title">Create an account</h2>');
     expect(html).toContain('name="email"');
     expect(html).toContain('name="password"');
+    expect(html).toContain('>Register</button>');
+    expect(html).toContain('>Cancel</button>');
   });
 
-  it('LoginForm alias renders login form', () => {
-    const html = renderToStaticMarkup(<LoginForm />);
-    expect(html).toContain('Login');
+  it('renders a rejected login as an inline alert', () => {
+    const html = renderToStaticMarkup(<AuthForms initialError="invalid credentials" />);
+
+    expect(html).toContain(
+      '<p class="auth-error" role="alert">invalid credentials</p>',
+    );
   });
 
-  it('RegisterForm alias renders register form', () => {
-    const html = renderToStaticMarkup(<RegisterForm />);
-    expect(html).toContain('Register');
+  it('LoginForm and RegisterForm aliases render their mode', () => {
+    expect(renderToStaticMarkup(<LoginForm />)).toContain('Welcome back');
+    expect(renderToStaticMarkup(<RegisterForm />)).toContain('Create an account');
+  });
+
+  it('logs in through the store and hands the authoritative user to the success callback', async () => {
+    const login = vi.fn(async () => undefined);
+    const onLoginSuccess = vi.fn();
+    const store = storeFor(VERIFIED_USER, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+      onLoginSuccess,
+    });
+
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(login).toHaveBeenCalledWith({
+      username: 'alice',
+      password: 'correct horse battery',
+    });
+    expect(onLoginSuccess).toHaveBeenCalledTimes(1);
+    expect(onLoginSuccess).toHaveBeenCalledWith(LOGIN_DATA, VERIFIED_USER);
+    expect(result).toEqual({
+      outcome: 'success',
+      mode: 'login',
+      user: VERIFIED_USER,
+    });
+  });
+
+  it('returns an exact error and skips the success callback when login rejects', async () => {
+    const login = vi.fn(async () => {
+      throw new Error('invalid credentials');
+    });
+    const onLoginSuccess = vi.fn();
+    const store = storeFor(null, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+      onLoginSuccess,
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'invalid credentials' });
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(onLoginSuccess).toHaveBeenCalledTimes(0);
+  });
+
+  it('registers through the store and reports success without a login callback', async () => {
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const onRegisterSuccess = vi.fn();
+    const onLoginSuccess = vi.fn();
+    const store = storeFor(null, { register });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      store,
+      onRegisterSuccess,
+      onLoginSuccess,
+    });
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(onRegisterSuccess).toHaveBeenCalledWith(REGISTER_DATA);
+    expect(onLoginSuccess).toHaveBeenCalledTimes(0);
+    expect(result).toEqual({ outcome: 'success', mode: 'register' });
+  });
+
+  it('routes an unverified login to verification instead of success', async () => {
+    const login = vi.fn(async () => undefined);
+    const onLoginSuccess = vi.fn();
+    const onVerificationRequired = vi.fn();
+    const store = storeFor(UNVERIFIED_USER, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+      onLoginSuccess,
+      onVerificationRequired,
+    });
+
+    expect(result).toEqual({ outcome: 'verification', email: 'alice@example.com' });
+    expect(onVerificationRequired).toHaveBeenCalledWith('alice@example.com');
+    expect(onLoginSuccess).toHaveBeenCalledTimes(0);
+  });
+
+  it('rejects a short registration password before calling the store', async () => {
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const store = storeFor(null, { register });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: { username: 'alice', email: 'alice@example.com', password: 'too-short' },
+      store,
+    });
+
+    expect(result).toEqual({
+      outcome: 'error',
+      message: 'Password must be 12 to 128 characters.',
+    });
+    expect(register).toHaveBeenCalledTimes(0);
+  });
+
+  it('falls back to the supplied API client when no store is supplied', async () => {
+    const login = vi.fn(async () => ({ user: VERIFIED_USER }));
+    const onLoginSuccess = vi.fn();
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      api: { login },
+      onLoginSuccess,
+    });
+
+    expect(login).toHaveBeenCalledWith({
+      username: 'alice',
+      password: 'correct horse battery',
+    });
+    expect(onLoginSuccess).toHaveBeenCalledWith(LOGIN_DATA, null);
+    expect(result).toEqual({ outcome: 'success', mode: 'login', user: null });
+  });
+
+  it('falls back to the legacy onSubmit callback when no store is supplied', async () => {
+    const onSubmit = vi.fn();
+    const onLoginSuccess = vi.fn();
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      onSubmit,
+      onLoginSuccess,
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith('login', {
+      username: 'alice',
+      email: '',
+      password: 'correct horse battery',
+    });
+    expect(onLoginSuccess).toHaveBeenCalledWith(LOGIN_DATA, null);
+    expect(result).toEqual({ outcome: 'success', mode: 'login', user: null });
   });
 });

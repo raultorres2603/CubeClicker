@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { App } from './App';
+import { App, createAuthGate } from './App';
 import { createBoard } from './game/board';
 import type { EngineSnapshot } from './game/engine';
 import { CUBE_STYLES } from './game/progression';
@@ -9,6 +9,7 @@ import type { MultiplayerSnapshot, OnlineGameSession } from './game/session';
 import { GRID_SIZE, type GameStats, type Phase } from './game/types';
 import type { MemberState } from './multiplayer/protocol';
 import type { WorldState } from './multiplayer/server-state';
+import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
 
 /**
  * Integration test for the game shell (AC-1, AC-11, AC-14, AC-16, AC-18, AC-22, AC-23,
@@ -118,6 +119,7 @@ function multiplayerFor(overrides: Partial<MultiplayerSnapshot> = {}): Multiplay
 function sessionFor(
   snapshot: EngineSnapshot,
   multiplayer: MultiplayerSnapshot,
+  overrides: Partial<OnlineGameSession> = {},
 ): OnlineGameSession {
   return {
     attach: () => {},
@@ -130,6 +132,22 @@ function sessionFor(
     returnToOwnCube: () => false,
     retryConnection: () => {},
     join: () => {},
+    ...overrides,
+  };
+}
+
+/** A store fake carrying the server-authoritative user a login response would set. */
+function authStoreFor(
+  user: { email?: string; verified?: boolean } | null,
+  calls: {
+    login?: AuthFormStore['login'];
+    register?: AuthFormStore['register'];
+  } = {},
+): AuthFormStore {
+  return {
+    user,
+    login: calls.login,
+    register: calls.register,
   };
 }
 
@@ -177,10 +195,25 @@ describe('App', () => {
     const html = renderToStaticMarkup(<App />);
 
     expect(html).toContain('<canvas');
-    expect(html).toContain('<div class="auth-menu">');
-    expect(html).toContain('<button type="button">Login</button>');
-    expect(html).toContain('<button type="button">Register</button>');
-    expect(html).toContain('<button type="button">Play as guest</button>');
+    expect(html).toContain(
+      '<div class="auth-menu" role="dialog" aria-modal="true" aria-labelledby="auth-menu-title">',
+    );
+    expect(html).toContain('<div class="auth-menu-actions">');
+    expect(html).toContain('class="auth-button auth-button-primary"');
+    expect(html).toContain('>Login</button>');
+    expect(html).toContain('>Register</button>');
+    expect(html).toContain('>Play as guest</button>');
+    // The canvas is behind the overlay, so it is present but not the interactive layer.
+    expect(html.indexOf('<canvas')).toBeLessThan(html.indexOf('class="auth-menu"'));
+  });
+
+  it('renders the verification route with a way back to the login menu', () => {
+    const html = renderToStaticMarkup(<App verifyToken="token-123" />);
+
+    expect(html).toContain('<div class="verify-email">');
+    expect(html).toContain('Verifying your email…');
+    expect(html).toContain('<a href="/">Continue to login</a>');
+    expect(html).not.toContain('class="auth-menu"');
   });
 
   it('renders the full intro shell on first paint (default online session, no DOM)', () => {
@@ -374,5 +407,213 @@ describe('App', () => {
     // The banner never becomes a second live region.
     expect(occurrences(exhausted, 'aria-live=')).toBe(1);
     expect(occurrences(exhausted, 'role="status"')).toBe(1);
+  });
+});
+
+describe('App — auth choice starts the game', () => {
+  const loginData = {
+    username: 'alice',
+    email: '',
+    password: 'correct horse battery',
+  };
+  const registerData = {
+    username: 'alice',
+    email: 'alice@example.com',
+    password: 'correct horse battery',
+  };
+
+  function introSession(join: ReturnType<typeof vi.fn>, retryConnection: ReturnType<typeof vi.fn>): OnlineGameSession {
+    return sessionFor(
+      snapshotFor('intro'),
+      multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
+      { join, retryConnection },
+    );
+  }
+
+  it('joins as a guest exactly once (even on a double click) and closes the menu', () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const gate = createAuthGate({ session });
+
+    // The button's onClick is `gate.playAsGuest`; a rapid double click must not join twice.
+    gate.playAsGuest();
+    gate.playAsGuest();
+
+    expect(join).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('guest');
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(gate.getSnapshot()).toEqual({
+      view: 'closed',
+      pendingEmail: null,
+      menuDefaultView: 'menu',
+    });
+
+    const html = renderToStaticMarkup(<App gate={gate} session={session} />);
+    expect(html).toContain('<canvas');
+    expect(html).not.toContain('class="auth-menu"');
+    expect(html).not.toContain('Play as guest');
+  });
+
+  it('logs in through the store, reconnects for the session cookie, then joins as an account', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const gate = createAuthGate({ session });
+    const login = vi.fn(async () => undefined);
+    const store = authStoreFor(
+      { email: 'alice@example.com', verified: true },
+      { login },
+    );
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: loginData,
+      store,
+      onLoginSuccess: gate.loginSucceeded,
+    });
+
+    expect(result).toEqual({
+      outcome: 'success',
+      mode: 'login',
+      user: { email: 'alice@example.com', verified: true },
+    });
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(login).toHaveBeenCalledWith({
+      username: 'alice',
+      password: 'correct horse battery',
+    });
+    expect(retryConnection).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('account');
+    // The HTTP login must finish before the socket reconnects, and account mode must be
+    // chosen on the reconnected socket (the cookie is resolved at the WS upgrade).
+    expect(login.mock.invocationCallOrder[0]).toBeLessThan(
+      retryConnection.mock.invocationCallOrder[0],
+    );
+    expect(retryConnection.mock.invocationCallOrder[0]).toBeLessThan(
+      join.mock.invocationCallOrder[0],
+    );
+    expect(gate.getSnapshot()).toEqual({
+      view: 'closed',
+      pendingEmail: null,
+      menuDefaultView: 'menu',
+    });
+
+    const html = renderToStaticMarkup(<App gate={gate} session={session} />);
+    expect(html).not.toContain('class="auth-menu"');
+  });
+
+  it('shows the form error and does not join when login fails', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const gate = createAuthGate({ session });
+    const login = vi.fn(async () => {
+      throw new Error('invalid credentials');
+    });
+    const store = authStoreFor(null, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: loginData,
+      store,
+      onLoginSuccess: gate.loginSucceeded,
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'invalid credentials' });
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(gate.getSnapshot()).toEqual({
+      view: 'menu',
+      pendingEmail: null,
+      menuDefaultView: 'menu',
+    });
+  });
+
+  it('registers, shows verification-pending, never joins, and returns to login on dismiss', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const gate = createAuthGate({ session });
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const store = authStoreFor(null, { register });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: registerData,
+      store,
+      onRegisterSuccess: (data) => gate.verificationRequired(data.email),
+    });
+
+    expect(result).toEqual({ outcome: 'success', mode: 'register' });
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(gate.getSnapshot()).toEqual({
+      view: 'menu',
+      pendingEmail: 'alice@example.com',
+      menuDefaultView: 'menu',
+    });
+
+    const pending = renderToStaticMarkup(<App gate={gate} session={session} />);
+    expect(pending).toContain('aria-label="Verify your email"');
+    expect(pending).toContain('Verify your email');
+    expect(pending).toContain('Check your email to verify your account.');
+    expect(pending).toContain('alice@example.com');
+    expect(pending).toContain('Back to login');
+    expect(pending).not.toContain('Play as guest');
+
+    gate.backToLogin();
+    expect(gate.getSnapshot()).toEqual({
+      view: 'menu',
+      pendingEmail: null,
+      menuDefaultView: 'login',
+    });
+    const loginForm = renderToStaticMarkup(<App gate={gate} session={session} />);
+    expect(loginForm).toContain('class="auth-forms"');
+    expect(loginForm).toContain('Welcome back');
+    expect(loginForm).toContain('name="username"');
+    expect(loginForm).toContain('name="password"');
+    expect(loginForm).not.toContain('Play as guest');
+  });
+
+  it('routes an unverified login to verification-pending without joining', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const session = introSession(join, retryConnection);
+    const gate = createAuthGate({ session });
+    const login = vi.fn(async () => undefined);
+    const store = authStoreFor(
+      { email: 'alice@example.com', verified: false },
+      { login },
+    );
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: loginData,
+      store,
+      onLoginSuccess: gate.loginSucceeded,
+      onVerificationRequired: gate.verificationRequired,
+    });
+
+    expect(result).toEqual({ outcome: 'verification', email: 'alice@example.com' });
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(gate.getSnapshot()).toEqual({
+      view: 'menu',
+      pendingEmail: 'alice@example.com',
+      menuDefaultView: 'menu',
+    });
+
+    const html = renderToStaticMarkup(<App gate={gate} session={session} />);
+    expect(html).toContain('Check your email to verify your account.');
+    expect(html).not.toContain('Play as guest');
   });
 });

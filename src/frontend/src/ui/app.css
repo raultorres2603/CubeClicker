@@ -229,11 +229,10 @@ main > section [data-stat] {
 }
 
 /*
- * Auth menu overlay (corrective fix): the menu and its forms must sit above the
- * full-screen canvas and capture pointer events so gameplay cannot start before a
- * choice is made. The intro cinematic keeps animating behind (no pause) — this is
- * presentation only. `.auth-menu` doubles as its own backdrop (full-viewport) so
- * the canvas below is not clickable until Login/Register/Play as guest is chosen.
+ * Auth overlay (AC-18, AC-20): a full-viewport backdrop above the canvas. The
+ * backdrop dims and softens the cinematic but does not pause it — the session keeps
+ * rendering behind (presentation only). It captures pointer events, so gameplay
+ * input cannot reach the canvas before Login / Register / Play as guest is chosen.
  */
 .auth-menu,
 .auth-forms {
@@ -243,30 +242,271 @@ main > section [data-stat] {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
-  padding: 1rem;
+  padding: max(1rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px))
+    max(1rem, env(safe-area-inset-bottom, 0px)) max(1rem, env(safe-area-inset-left, 0px));
+  overflow-y: auto;
   pointer-events: auto;
-  background: rgba(6, 10, 20, 0.55);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(8, 16, 32, 0.42), rgba(2, 4, 10, 0.8) 72%),
+    rgba(2, 4, 10, 0.55);
+  -webkit-backdrop-filter: blur(6px) saturate(0.85);
+  backdrop-filter: blur(6px) saturate(0.85);
 }
 
-.auth-menu button,
-.auth-forms button {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0.45rem 0.85rem;
+/* The card: a vertical stack with one clear primary decision per row. */
+.auth-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: min(24rem, 100%);
+  padding: clamp(1.25rem, 4vw, 2rem);
+  border: 1px solid rgba(124, 246, 255, 0.32);
+  border-radius: 1rem;
+  background: linear-gradient(160deg, rgba(12, 20, 36, 0.97), rgba(6, 10, 20, 0.97));
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 24px 60px rgba(0, 0, 0, 0.55),
+    0 0 34px rgba(124, 246, 255, 0.12);
+}
+
+.auth-title {
+  margin: 0;
+  color: var(--hud-text);
+  font-size: clamp(1.4rem, 5vw, 1.75rem);
+  line-height: 1.15;
+  letter-spacing: 0.03em;
+}
+
+.auth-subtitle {
+  margin: 0;
+  color: rgba(232, 246, 255, 0.74);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.auth-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+
+/* One button treatment for the menu, forms and the verification-pending screen. */
+.auth-button,
+.verification-pending button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.7rem 1rem;
   border: 1px solid rgba(124, 246, 255, 0.42);
-  border-radius: 0.5rem;
-  background: var(--hud-background);
+  border-radius: 0.6rem;
+  background: rgba(124, 246, 255, 0.06);
   color: var(--hud-text);
   font: inherit;
-  font-size: 0.95rem;
+  font-size: 1rem;
+  font-weight: 600;
   letter-spacing: 0.02em;
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.1s ease;
 }
 
-.auth-menu button:hover,
-.auth-forms button:hover {
+.auth-button:hover,
+.verification-pending button:hover:not(:disabled) {
   border-color: var(--accent);
+  background: rgba(124, 246, 255, 0.14);
   color: var(--accent);
+}
+
+.auth-button:active,
+.verification-pending button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.auth-button:focus-visible,
+.verification-pending button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.auth-button:disabled,
+.verification-pending button:disabled {
+  opacity: 0.62;
+  cursor: progress;
+}
+
+.auth-button-primary,
+.verification-pending button {
+  border-color: var(--accent);
+  background: rgba(124, 246, 255, 0.14);
+}
+
+.auth-button-primary:hover,
+.verification-pending button:hover:not(:disabled) {
+  background: rgba(124, 246, 255, 0.22);
+}
+
+.auth-button-secondary {
+  border-color: rgba(232, 246, 255, 0.24);
+  background: transparent;
+  color: rgba(232, 246, 255, 0.82);
+}
+
+.auth-button-secondary:hover {
+  border-color: rgba(232, 246, 255, 0.5);
+  background: rgba(232, 246, 255, 0.06);
+  color: var(--hud-text);
+}
+
+.auth-form,
+.verification-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.auth-field,
+.verification-pending label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: rgba(232, 246, 255, 0.72);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.auth-input,
+.verification-pending input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(124, 246, 255, 0.28);
+  border-radius: 0.5rem;
+  background: rgba(0, 0, 0, 0.38);
+  color: var(--hud-text);
+  font: inherit;
+  font-size: 1rem;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.auth-input:focus,
+.verification-pending input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Inline auth failure: readable, high contrast, never a silent no-op. */
+.auth-error {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(255, 107, 107, 0.55);
+  border-radius: 0.5rem;
+  background: rgba(255, 80, 80, 0.12);
+  color: #ffb4b4;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+}
+
+.verification-pending h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.verification-pending p {
+  margin: 0;
+  color: rgba(232, 246, 255, 0.78);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+/*
+ * Verification-link route (`/?token=…`): a centered status card with a way back to
+ * the login menu, so a verified player is never stranded on the result screen.
+ */
+.verify-email {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 100%;
+  padding: 2rem;
+  text-align: center;
+}
+
+.verify-email p {
+  margin: 0;
+  max-width: 32rem;
+  color: var(--hud-text);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.verify-email-continue {
+  position: absolute;
+  left: 50%;
+  bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  margin: 0;
+}
+
+.verify-email-continue a {
+  color: var(--accent);
+  font-size: 1rem;
+  text-underline-offset: 0.2em;
+}
+
+.verify-email-continue a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* On very short viewports the card starts at the top instead of being clipped. */
+@media (max-height: 560px) {
+  .auth-menu,
+  .auth-forms {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-menu,
+  .auth-forms {
+    padding: 0.75rem;
+  }
+
+  .auth-panel {
+    width: 100%;
+    padding: 1.15rem;
+    border-radius: 0.85rem;
+  }
+
+  .auth-title {
+    font-size: 1.35rem;
+  }
+
+  .auth-button,
+  .verification-pending button {
+    min-height: 48px;
+  }
 }
 
