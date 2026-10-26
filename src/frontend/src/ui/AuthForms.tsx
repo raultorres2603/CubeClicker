@@ -221,6 +221,9 @@ export function AuthForms({
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // `initialError` is captured at mount only; a later change to the prop does not
+  // resync. AuthForms is remounted via `key` on view transitions (see App.tsx), so
+  // a fresh mount re-reads the prop. Documented as mount-only (review F5).
   const [error, setError] = useState<string | null>(initialError ?? null);
   const [pending, setPending] = useState(false);
 
@@ -275,6 +278,7 @@ export function AuthForms({
               autoComplete="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              autoFocus
             />
           </label>
           {isRegister ? (

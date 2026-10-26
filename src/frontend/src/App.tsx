@@ -431,6 +431,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
                 className="auth-button auth-button-secondary"
                 type="button"
                 onClick={gate.backToLogin}
+                autoFocus
               >
                 Back to login
               </button>

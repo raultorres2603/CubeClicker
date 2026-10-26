@@ -125,7 +125,6 @@ export function AuthMenu({
             className="auth-button auth-button-primary"
             type="button"
             onClick={handleLogin}
-            autoFocus
           >
             Login
           </button>
