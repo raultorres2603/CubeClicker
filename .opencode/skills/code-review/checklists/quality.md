@@ -42,3 +42,7 @@ Mark each ✅ / ❌ / n/a; failures become findings with severity.
 - [ ] One image per deployable; images build reproducibly from the repository
 - [ ] Runtime config via environment variables with safe local defaults; no host-specific assumptions
 - [ ] Health signal present for long-running services; containers stop gracefully
+
+## Documentation
+- [ ] Documentation updated for changed behavior: repository docs reflect shipped behavior on acceptance (no documentation drift)
+- [ ] `docs/features/README.md` ownership respected (builder proposes changes; orchestrator applies)

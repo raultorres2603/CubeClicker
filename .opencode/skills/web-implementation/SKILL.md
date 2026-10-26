@@ -30,6 +30,7 @@ You implement exactly one task (or a small parallel-safe batch) per invocation, 
 - `textContent`, never `innerHTML`, for user-controlled strings. No `eval`, no remote code.
 - Accessibility baseline: keyboard operable, visible focus, semantic elements, text contrast ≥ 4.5:1.
 - Performance: interactions target 60 fps; justify bundle additions; no per-frame allocations in hot loops.
+- Documentation: every behavior change updates documentation in the same commit per `docs/architecture/documentation.md`.
 
 ## Testing bar
 

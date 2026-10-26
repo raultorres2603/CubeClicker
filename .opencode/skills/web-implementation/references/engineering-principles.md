@@ -73,3 +73,14 @@ The bar in the `web-implementation` SKILL § Testing bar, with the depth behind 
 - **Health & graceful lifecycle.** Every long-running service exposes a health signal and stops cleanly without data corruption.
 - **WebSocket end-to-end.** The backend container exposes the WebSocket endpoint and the compose setup preserves connection upgrades — consistent with § Real-time (WebSocket) principles.
 - **Deploy neutrality.** No provider-specific assumptions; the images run on any container platform (AWS ECS Fargate is an example only, not a commitment).
+
+## Documentation principles
+
+Reference: `docs/architecture/documentation.md` (single source of truth for the documentation best practices and the acceptance-time update checklist).
+
+- **Accuracy.** Documentation must match shipped behavior; stale or misleading docs are treated as defects.
+- **Minimal diffs.** Change only what the behavior change requires — no blanket rewrites of unrelated sections.
+- **Same change.** Update documentation in the same commit as the behavior change it describes.
+- **Concrete specifics.** Prefer paths, commands, and environment variables over vague prose.
+- **Link validity.** Keep relative links resolvable; no broken references.
+- **Glossary.** Update `docs/product/glossary.md` when a term's meaning changes.
