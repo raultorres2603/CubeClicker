@@ -18,6 +18,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | multiplayer-servers | Multiplayer Servers & Spectating (online backend, X=10 server rooms, per-user cubes, spectate travel, rebalancing) | accepted | 2026-10-22 |
 | multiplayer-cube-sync | Multiplayer Cube Actions & Full Spectating (remote rotation and action sync) | accepted | 2026-10-23 |
 | fullscreen-responsive-layout | Fullscreen Responsive Layout (full viewport, mobile-friendly) | accepted | 2026-10-25 |
-| user-authentication | User Authentication (login, registration with email activation, password hashing, guest play, dockerized DB) | accepted | 2026-10-25 |
+| user-authentication | User Authentication (login, registration with email activation, password hashing, guest play, dockerized DB) | accepted | 2026-10-26 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

@@ -3,8 +3,9 @@ feature: user-authentication
 state: accepted
 spec_review_round: 3
 build_round: 3
+corrective_round: 2
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 ---
 # Status — User Authentication (Login, Registration & Guest Play)
 
@@ -51,6 +52,11 @@ Login with username and password, registration with email activation, password h
 - 2026-10-25 — code_review → building — verdict changes_requested (F12 banned matchers in store.test.ts) — reviews/code-r2.md
 - 2026-10-25 — building → code_review — F12 fixed (banned matchers replaced) — build-log-F12.md
 - 2026-10-25 — code_review → accepted — verdict approved (0 blocking, 0 nonblocking) — reviews/code-r3.md
+- 2026-10-26 — accepted → building — user-reported defects: guest choice does not start game (static intro), login/register path unverified, menu layout should be a vertical button column — corrective round (build log build-log-fix-menu.md from prior pass)
+- 2026-10-26 — building → code_review — corrective wiring + restyle complete: guest/login call session.join, register enters verification-pending, menu is a centered vertical column — commit ee4a667, build-log-fix-wiring.md
+- 2026-10-26 — code_review → building — corrective r1 review changes_requested (F1 MAJOR: no DOM interaction coverage) — reviews/code-corrective-r1.md
+- 2026-10-26 — building → code_review — F1 resolved: jsdom + @testing-library installed, DOM click/submit tests added and mutation-checked; safe MINORs F3/F5/F6/F8 applied — commit c38d159, build-log-fix-tests.md
+- 2026-10-26 — code_review → accepted — corrective r2 verdict approved (0 blocking, 3 nonblocking F2/F4/F7) — reviews/code-corrective-r2.md
 
 ## Blockers / open questions
 - Dependency/service decisions flagged (Q-1..Q-12) need user approval before build.
