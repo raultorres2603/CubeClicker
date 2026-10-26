@@ -233,6 +233,13 @@ main > section [data-stat] {
  * backdrop dims and softens the cinematic but does not pause it — the session keeps
  * rendering behind (presentation only). It captures pointer events, so gameplay
  * input cannot reach the canvas before Login / Register / Play as guest is chosen.
+ *
+ * Trade-off (review F4): because the backdrop covers the whole viewport, the
+ * pointer "tap outside to skip the intro" affordance is unavailable while the
+ * menu is open. The backdrop is kept intentionally to block pre-choice gameplay
+ * input; intro skip remains reachable via keyboard (Space/Enter/Escape, which
+ * the global key handler maps to introSkip) and is advertised by the
+ * `.auth-skip-hint` text below.
  */
 .auth-menu,
 .auth-forms {
@@ -282,6 +289,14 @@ main > section [data-stat] {
   color: rgba(232, 246, 255, 0.74);
   font-size: 0.95rem;
   line-height: 1.5;
+}
+
+/* Visible hint for the keyboard-only intro-skip affordance (review F4). */
+.auth-skip-hint {
+  margin: 0;
+  color: rgba(232, 246, 255, 0.62);
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .auth-menu-actions {

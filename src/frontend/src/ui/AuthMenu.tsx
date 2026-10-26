@@ -120,6 +120,7 @@ export function AuthMenu({
         <p className="auth-subtitle">
           Sign in to keep your account, create one, or jump straight in as a guest.
         </p>
+        <p className="auth-skip-hint">Press any key to skip the intro</p>
         <div className="auth-menu-actions">
           <button
             className="auth-button auth-button-primary"

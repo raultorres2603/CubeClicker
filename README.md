@@ -49,6 +49,7 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `BACKEND_PORT` | `8080` | host port published for the backend container (`127.0.0.1:${BACKEND_PORT}:8080`) |
 | `FRONTEND_PORT` | `5173` | host port published for the frontend container (`127.0.0.1:${FRONTEND_PORT}:5173`) |
 | `VITE_WS_URL` | `ws://localhost:8080/ws` | WebSocket URL the frontend connects to |
+| `BACKEND_URL` | `http://backend:8080` | Base URL the Vite dev server proxies `/auth/*` to (host-only runs: `http://localhost:8080`) |
 | `DB_PORT` | `5432` | host port published for the Postgres container |
 | `MAILPIT_SMTP_PORT` | `1025` | host port published for Mailpit SMTP |
 | `MAILPIT_UI_PORT` | `8025` | host port published for the Mailpit web UI |
@@ -66,6 +67,10 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `SESSION_COOKIE_SECURE` | `false` | set the session cookie `Secure` flag (enable in production over HTTPS) |
 
 The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
+
+### Vite dev proxy (host-only runs)
+
+The frontend talks to the backend through same-origin relative paths (`/auth/*`) so the `HttpOnly` session cookie stays on the page origin and the backend's CSRF check (which compares `Origin`) succeeds. In the compose stack Vite proxies `/auth` to the `backend` service with `changeOrigin: false`, keeping the browser's page origin (`http://localhost:5173`) as the forwarded `Origin` header — this must match the backend's `ALLOWED_ORIGIN` (`http://localhost:5173` by default). For host-only development (running Vite on the host against a host backend), point the proxy at the host backend with `BACKEND_URL=http://localhost:8080`; the page origin is still `http://localhost:5173`, so `ALLOWED_ORIGIN` must remain `http://localhost:5173` (or you must run via `podman compose`, which sets both consistently).
 
 ## Production images
 

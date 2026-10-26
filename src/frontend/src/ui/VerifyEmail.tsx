@@ -15,6 +15,13 @@ function isSuccess(s: VerifyStatus): boolean {
  *
  * In SSR (no effects) the status can be pinned via `status`/`state`/`phase`.
  */
+type VerifyStore = {
+  verify?: (t: string) => Promise<unknown>;
+  me?: () => Promise<unknown>;
+  bootstrap?: () => Promise<unknown>;
+  refresh?: () => Promise<unknown>;
+} | null;
+
 export function VerifyEmail({
   token,
   api,
@@ -29,7 +36,7 @@ export function VerifyEmail({
 }: {
   token?: string | null;
   api?: { verify?: (t: string) => Promise<unknown> } | null;
-  store?: { verify?: (t: string) => Promise<unknown> } | null;
+  store?: VerifyStore;
   status?: VerifyStatus;
   state?: VerifyStatus;
   phase?: VerifyStatus;
@@ -58,6 +65,25 @@ export function VerifyEmail({
           await store.verify(t);
         } else if (api && typeof api.verify === 'function') {
           await api.verify(t);
+        }
+        // Hydrate the client store so a freshly-verified user is recognized
+        // without a second login (F2). Prefer `bootstrap` when available, then
+        // `me`, then `refresh`; any failure leaves the "Continue to login"
+        // fallback intact instead of masking the successful verification.
+        const bootstrapFn =
+          store && typeof store.bootstrap === 'function'
+            ? store.bootstrap.bind(store)
+            : store && typeof store.me === 'function'
+              ? store.me.bind(store)
+              : store && typeof store.refresh === 'function'
+                ? store.refresh.bind(store)
+                : null;
+        if (bootstrapFn) {
+          try {
+            await bootstrapFn();
+          } catch {
+            // Verification succeeded server-side; bootstrap is best-effort.
+          }
         }
         setStatus('success');
         if (!successMessage) setSuccessMessage('Email verified.');
