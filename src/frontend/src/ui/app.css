@@ -254,8 +254,9 @@ main > section [data-stat] {
   overflow-y: auto;
   pointer-events: auto;
   background:
-    radial-gradient(circle at 50% 38%, rgba(8, 16, 32, 0.42), rgba(2, 4, 10, 0.8) 72%),
+    radial-gradient(circle at 50% 50%, rgba(8, 16, 32, 0.42), rgba(2, 4, 10, 0.8) 72%),
     rgba(2, 4, 10, 0.55);
+  background-origin: border-box;
   -webkit-backdrop-filter: blur(6px) saturate(0.85);
   backdrop-filter: blur(6px) saturate(0.85);
 }
