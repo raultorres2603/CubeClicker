@@ -3,7 +3,7 @@ feature: user-authentication
 state: accepted
 spec_review_round: 3
 build_round: 3
-corrective_round: 2
+corrective_round: 3
 created: 2026-10-25
 updated: 2026-10-26
 ---
@@ -57,6 +57,9 @@ Login with username and password, registration with email activation, password h
 - 2026-10-26 — code_review → building — corrective r1 review changes_requested (F1 MAJOR: no DOM interaction coverage) — reviews/code-corrective-r1.md
 - 2026-10-26 — building → code_review — F1 resolved: jsdom + @testing-library installed, DOM click/submit tests added and mutation-checked; safe MINORs F3/F5/F6/F8 applied — commit c38d159, build-log-fix-tests.md
 - 2026-10-26 — code_review → accepted — corrective r2 verdict approved (0 blocking, 3 nonblocking F2/F4/F7) — reviews/code-corrective-r2.md
+- 2026-10-26 — accepted → building — user requested minor backlog (F2/F4/F7) plus new report: cube background/position not centered
+- 2026-10-26 — building → code_review — minor backlog resolved: F2 store bootstrap after verify, F4 backdrop trade-off documented + skip hint, F7 dev-proxy docs — commit d5b6778, build-log-minor-backlog.md
+- 2026-10-26 — code_review → accepted — corrective r3 verdict approved (0 blocking) — reviews/code-corrective-r3.md
 
 ## Blockers / open questions
 - Dependency/service decisions flagged (Q-1..Q-12) need user approval before build.
