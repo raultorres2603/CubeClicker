@@ -8,6 +8,8 @@ import {
   AuthForms,
   LoginForm,
   RegisterForm,
+  authValidationError,
+  readAuthStoreUser,
   submitAuthForm,
   type AuthFormStore,
 } from './AuthForms';
@@ -310,5 +312,269 @@ describe('AuthForms — interaction', () => {
     render(<AuthForms mode="register" />);
     const input = screen.getByLabelText('Username');
     expect(document.activeElement).toBe(input);
+  });
+});
+
+describe('authValidationError', () => {
+  it('requires a username for login', () => {
+    expect(authValidationError('login', { username: '', email: '', password: 'correct horse battery' })).toBe(
+      'Username is required.',
+    );
+  });
+
+  it('requires a password for login', () => {
+    expect(authValidationError('login', { username: 'alice', email: '', password: '' })).toBe(
+      'Password is required.',
+    );
+  });
+
+  it('requires an email for register', () => {
+    expect(
+      authValidationError('register', { username: 'alice', email: '', password: 'correct horse battery' }),
+    ).toBe('Email is required.');
+  });
+
+  it('rejects a malformed email for register', () => {
+    expect(
+      authValidationError('register', {
+        username: 'alice',
+        email: 'not-an-email',
+        password: 'correct horse battery',
+      }),
+    ).toBe('Enter a valid email address.');
+  });
+
+  it('rejects a short password for register', () => {
+    expect(
+      authValidationError('register', {
+        username: 'alice',
+        email: 'alice@example.com',
+        password: 'short',
+      }),
+    ).toBe('Password must be 12 to 128 characters.');
+  });
+
+  it('rejects a long password for register', () => {
+    const long = 'a'.repeat(129);
+    expect(
+      authValidationError('register', {
+        username: 'alice',
+        email: 'alice@example.com',
+        password: long,
+      }),
+    ).toBe('Password must be 12 to 128 characters.');
+  });
+
+  it('accepts valid login data', () => {
+    expect(authValidationError('login', LOGIN_DATA)).toBeNull();
+  });
+
+  it('accepts valid register data', () => {
+    expect(authValidationError('register', REGISTER_DATA)).toBeNull();
+  });
+});
+
+describe('readAuthStoreUser', () => {
+  it('reads the user directly from the store', () => {
+    const store = storeFor(VERIFIED_USER);
+    expect(readAuthStoreUser(store)).toEqual(VERIFIED_USER);
+  });
+
+  it('reads the user from getSnapshot when direct user is missing', () => {
+    const store: AuthFormStore = {
+      getSnapshot: () => ({ user: VERIFIED_USER }),
+    };
+    expect(readAuthStoreUser(store)).toEqual(VERIFIED_USER);
+  });
+
+  it('falls back to asUser on the snapshot when no user key exists', () => {
+    const store: AuthFormStore = {
+      getSnapshot: () => ({ email: 'alice@example.com', verified: true }),
+    };
+    expect(readAuthStoreUser(store)).toEqual(VERIFIED_USER);
+  });
+
+  it('returns null when the store is null', () => {
+    expect(readAuthStoreUser(null)).toBeNull();
+  });
+
+  it('returns null when the store user has no email or verified field', () => {
+    const store: AuthFormStore = { user: {} };
+    expect(readAuthStoreUser(store)).toBeNull();
+  });
+
+  it('returns null when getSnapshot returns a non-object', () => {
+    const store: AuthFormStore = {
+      getSnapshot: () => null,
+    };
+    expect(readAuthStoreUser(store)).toBeNull();
+  });
+});
+
+describe('AuthForms — mode resolution', () => {
+  it('resolves mode from defaultMode', () => {
+    render(<AuthForms defaultMode="register" />);
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+  });
+
+  it('resolves mode from initialMode', () => {
+    render(<AuthForms initialMode="register" />);
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+  });
+
+  it('resolves mode from type', () => {
+    render(<AuthForms type="register" />);
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+  });
+
+  it('resolves mode from variant', () => {
+    render(<AuthForms variant="register" />);
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+  });
+});
+
+describe('AuthForms — submitAuthForm extra branches', () => {
+  it('falls back to the supplied API client on register', async () => {
+    const register = vi.fn(async () => ({ message: 'ok' }));
+    const onRegisterSuccess = vi.fn();
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      api: { register },
+      onRegisterSuccess,
+    });
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(onRegisterSuccess).toHaveBeenCalledTimes(1);
+    expect(onRegisterSuccess).toHaveBeenCalledWith(REGISTER_DATA);
+    expect(result).toEqual({ outcome: 'success', mode: 'register' });
+  });
+
+  it('falls back to the legacy onSubmit callback on register', async () => {
+    const onSubmit = vi.fn();
+    const onRegisterSuccess = vi.fn();
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      onSubmit,
+      onRegisterSuccess,
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('register', {
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(onRegisterSuccess).toHaveBeenCalledTimes(1);
+    expect(onRegisterSuccess).toHaveBeenCalledWith(REGISTER_DATA);
+    expect(result).toEqual({ outcome: 'success', mode: 'register' });
+  });
+
+  it('returns the thrown string as the error message', async () => {
+    const login = vi.fn(async () => {
+      throw 'boom';
+    });
+    const store = storeFor(null, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'boom' });
+  });
+
+  it('returns request failed when a non-Error value is thrown', async () => {
+    const login = vi.fn(async () => {
+      throw { code: 5 };
+    });
+    const store = storeFor(null, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'request failed' });
+  });
+
+  it('falls back to data.email when an unverified user has no email', async () => {
+    const login = vi.fn(async () => undefined);
+    const onVerificationRequired = vi.fn();
+    const store = storeFor({ verified: false }, { login });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      store,
+      onVerificationRequired,
+    });
+
+    expect(result).toEqual({ outcome: 'verification', email: '' });
+    expect(onVerificationRequired).toHaveBeenCalledWith('');
+  });
+});
+
+describe('AuthForms — interaction extra', () => {
+  it('shows a validation error when submitting an empty login form', async () => {
+    const login = vi.fn(async () => undefined);
+    const store = storeFor(VERIFIED_USER, { login });
+    render(<AuthForms mode="login" store={store} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Username is required.');
+    expect(login).toHaveBeenCalledTimes(0);
+  });
+
+  it('shows a validation error when registering with a short password', async () => {
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const store = storeFor(null, { register });
+    render(<AuthForms mode="register" store={store} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+    await user.type(screen.getByLabelText('Password'), 'short');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Password must be 12 to 128 characters.');
+    expect(register).toHaveBeenCalledTimes(0);
+  });
+
+  it('calls onVerificationRequired instead of onLogin for an unverified login', async () => {
+    const onLogin = vi.fn();
+    const onVerificationRequired = vi.fn();
+    const login = vi.fn(async () => undefined);
+    const store = storeFor(UNVERIFIED_USER, { login });
+    render(
+      <AuthForms
+        mode="login"
+        store={store}
+        onLogin={onLogin}
+        onVerificationRequired={onVerificationRequired}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    await waitFor(() => expect(onVerificationRequired).toHaveBeenCalledTimes(1));
+    expect(onVerificationRequired).toHaveBeenCalledWith('alice@example.com');
+    expect(onLogin).toHaveBeenCalledTimes(0);
+  });
+
+  it('renders the error from initialError and keeps it until submit', async () => {
+    render(<AuthForms mode="login" initialError="initial problem" />);
+    expect(screen.getByRole('alert').textContent).toBe('initial problem');
   });
 });

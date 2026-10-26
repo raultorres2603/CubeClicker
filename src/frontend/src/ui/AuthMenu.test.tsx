@@ -100,14 +100,100 @@ describe('AuthMenu — interaction', () => {
     expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('button', { name: 'Login' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Register' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Play as guest' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Login' }).textContent).toBe('Login');
+    expect(screen.getByRole('button', { name: 'Register' }).textContent).toBe('Register');
+    expect(screen.getByRole('button', { name: 'Play as guest' }).textContent).toBe('Play as guest');
   });
 
   it('focuses the first input after mount where applicable', async () => {
     render(<AuthMenu defaultView="login" />);
     const input = screen.getByLabelText('Username');
     expect(document.activeElement).toBe(input);
+  });
+});
+
+describe('AuthMenu — view switching and controlled view', () => {
+  it('switches menu → login → menu when Login then Cancel are clicked', async () => {
+    render(<AuthMenu />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    expect(screen.getByRole('heading', { name: 'Welcome back' }).textContent).toBe('Welcome back');
+    expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Login' }).textContent).toBe('Login');
+    expect(screen.getByRole('button', { name: 'Register' }).textContent).toBe('Register');
+    expect(screen.getByRole('button', { name: 'Play as guest' }).textContent).toBe('Play as guest');
+  });
+
+  it('switches menu → register → menu when Register then Cancel are clicked', async () => {
+    render(<AuthMenu />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Play as guest' }).textContent).toBe('Play as guest');
+  });
+
+  it('stays on the login form after Cancel when view is controlled', async () => {
+    render(<AuthMenu view="login" />);
+    expect(screen.getByRole('heading', { name: 'Welcome back' }).textContent).toBe('Welcome back');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('heading', { name: 'Welcome back' }).textContent).toBe('Welcome back');
+    expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+  });
+
+  it('renders the register form when defaultView is register', () => {
+    render(<AuthMenu defaultView="register" />);
+    expect(screen.getByRole('heading', { name: 'Create an account' }).textContent).toBe('Create an account');
+  });
+
+  it('calls onLogin when the Login button is clicked', async () => {
+    const onLogin = vi.fn();
+    render(<AuthMenu onLogin={onLogin} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+    expect(onLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onRegister when the Register button is clicked', async () => {
+    const onRegister = vi.fn();
+    render(<AuthMenu onRegister={onRegister} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(onRegister).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onGuest when the Play as guest button is clicked', async () => {
+    const onGuest = vi.fn();
+    render(<AuthMenu onGuest={onGuest} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Play as guest' }));
+    expect(onGuest).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onSelect and onChoose with guest when Play as guest is clicked', async () => {
+    const onSelect = vi.fn();
+    const onChoose = vi.fn();
+    render(<AuthMenu onSelect={onSelect} onChoose={onChoose} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Play as guest' }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('guest');
+    expect(onChoose).toHaveBeenCalledTimes(1);
+    expect(onChoose).toHaveBeenCalledWith('guest');
+  });
+
+  it('calls onCancel when Cancel is clicked', async () => {
+    const onCancel = vi.fn();
+    render(<AuthMenu defaultView="login" onCancel={onCancel} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the intro skip hint', () => {
+    const html = renderToStaticMarkup(<AuthMenu />);
+    expect(html).toContain('Press any key to skip the intro');
   });
 });
