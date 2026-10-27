@@ -22,5 +22,8 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | db-admin-browser | DB Admin Browser (local Adminer for Postgres) | accepted | 2026-10-26 |
 | docs-on-feature-acceptance | Docs Update on Feature Acceptance (builder docs pass on acceptance) | accepted | 2026-10-26 |
 | cube-centering | Cube Centering (background and cube position) | accepted | 2026-10-26 |
+| spaceship-cursor | Spaceship Cursor (3D spaceship follows cursor, shoots mini-cubes on explosion) | accepted | 2026-10-27 |
+| spaceship-cursor-polish | Spaceship Cursor Polish (farther diagonal, larger bullet ship, more delay, ignition fire) | accepted | 2026-10-27 |
+| spaceship-cursor-refinement | Spaceship Cursor Refinement (smaller ship, shifted left) | accepted | 2026-10-27 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

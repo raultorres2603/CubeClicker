@@ -1,6 +1,6 @@
 ---
 feature: spaceship-cursor
-state: building
+state: accepted
 spec_review_round: 3
 build_round: 1
 created: 2026-10-27
@@ -28,6 +28,8 @@ A 3D spaceship that follows the cursor (near, not overlapping) with floating/fly
 - 2026-10-27 — building — T2 completed — docs/features/spaceship-cursor/build-log-T2.md
 - 2026-10-27 — building — T3 completed — docs/features/spaceship-cursor/build-log-T3.md
 - 2026-10-27 — building — T4 completed — docs/features/spaceship-cursor/build-log-T4.md
+- 2026-10-27 — building → code_review — all tasks [x] + coverage evidence — docs/features/spaceship-cursor/build-log-T4.md
+- 2026-10-27 — code_review → accepted — approved r1 (0 blocking) + docs pass — docs/features/spaceship-cursor/reviews/code-r1.md
 
 ## Blockers / open questions
 - none

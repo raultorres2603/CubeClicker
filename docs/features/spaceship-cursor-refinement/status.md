@@ -1,8 +1,8 @@
 ---
 feature: spaceship-cursor-refinement
-state: code_review
+state: accepted
 spec_review_round: 1
-build_round: 0
+build_round: 1
 created: 2026-10-27
 updated: 2026-10-27
 ---
@@ -24,6 +24,7 @@ Follow-up to spaceship-cursor-polish: make the ship a little smaller (not larger
 
 - 2026-10-27 — building — T3 completed — docs/features/spaceship-cursor-refinement/build-log-T3.md
 - 2026-10-27 — building → code_review — all tasks [x] + coverage evidence — docs/features/spaceship-cursor-refinement/build-log-T3.md
+- 2026-10-27 — code_review → accepted — approved r1 (0 blocking) + docs pass — docs/features/spaceship-cursor-refinement/reviews/code-r1.md
 
 ## Blockers / open questions
 - none
