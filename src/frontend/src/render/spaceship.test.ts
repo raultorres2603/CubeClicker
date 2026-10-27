@@ -38,9 +38,9 @@ describe('spaceshipTargetPosition', () => {
     camera.updateMatrixWorld(true);
 
     const result = spaceshipTargetPosition(camera, 0, 0);
-    expect(Math.abs(result.x - -0.334695)).toBeLessThan(1e-6);
-    expect(Math.abs(result.y - -0.334695)).toBeLessThan(1e-6);
-    expect(Math.abs(result.z - 6.018699)).toBeLessThan(1e-6);
+    expect(Math.abs(result.x - -0.445721)).toBeLessThan(1e-6);
+    expect(Math.abs(result.y - -0.334291)).toBeLessThan(1e-6);
+    expect(Math.abs(result.z - 6.025924)).toBeLessThan(1e-6);
   });
 
   it('is independent of the NDC z input', () => {
@@ -50,7 +50,7 @@ describe('spaceshipTargetPosition', () => {
     camera.updateMatrixWorld(true);
 
     const a = spaceshipTargetPosition(camera, 0.1, -0.2);
-    const ndc = new Vector3(0.1 - 0.12, -0.2 - 0.12, 1);
+    const ndc = new Vector3(0.1 - 0.16, -0.2 - 0.12, 1);
     ndc.unproject(camera);
     const dir = ndc.sub(camera.position).normalize();
     const expected = camera.position.clone().add(dir.multiplyScalar(6));
