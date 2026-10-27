@@ -28,4 +28,4 @@ depends_on: T1, T2, T3
 files_owned: (none)
 verify: `npm run lint`, `npm run typecheck`, `npm test`, `npm run coverage`, `npm run build`
 acceptance: AC-9, AC-10
-status: [ ]
+status: [x]
