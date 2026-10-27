@@ -82,15 +82,15 @@ describe('scene spaceship integration', () => {
     expect(groups).toHaveLength(1);
   });
 
-  it('follows the pointer with the pinned factor after 120 ms (AC-2)', () => {
+  it('follows the pointer with the pinned factor after 240 ms (AC-2)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     view.setPointerTarget(0, 0);
     const group = spaceshipGroup(view);
     const start = group.position.clone();
     const target = spaceshipTargetPosition(view.camera, 0, 0);
-    view.update(120);
-    const factor = spaceshipFollowFactor(120, false);
+    view.update(240);
+    const factor = spaceshipFollowFactor(240, false);
     const expected = start.clone().lerp(target, factor);
     expect(group.position.x).toBeCloseTo(expected.x, 6);
     expect(group.position.y).toBeCloseTo(expected.y, 6);
