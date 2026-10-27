@@ -471,7 +471,7 @@ describe('scene composition', () => {
     expect((view.scene.background as Color).getHex()).toBe(0x000000);
 
     // Starfield + cube + particles + two lights: a fixed, bounded child list.
-    expect(view.scene.children).toHaveLength(5);
+    expect(view.scene.children).toHaveLength(7);
     expect(view.scene.children[0]).toBeInstanceOf(AmbientLight);
     expect(view.scene.children[1]).toBeInstanceOf(DirectionalLight);
     expect((view.scene.children[0] as AmbientLight).intensity).toBe(0.6);
@@ -1362,7 +1362,7 @@ describe('snapshot application', () => {
 describe('intent application', () => {
   it('pops the exploding tile and fronts its burst at the clicked surface (AC-3, AC-4)', () => {
     const view = createView();
-    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshot({ reducedMotion: true }));
     const mesh = faceMesh(view, 'front');
 
     // The live tile occupies row 0, col 0 → its matrix starts at the pinned position.
@@ -1372,22 +1372,13 @@ describe('intent application', () => {
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
 
-    // Marked hidden (unpickable) at intent time, but the tile itself has not shrunk yet.
+    // Under reduced motion the explosion applies instantly: hidden + burst, no pop.
     expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(instanceScale(mesh, 0)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
 
-    // t = 50: the pop is expanding (factor 1.05, multiplier 1.15) from the inset tile.
     view.update(50);
-    expect(instanceScale(mesh, 0)).toEqual([
-      Math.fround(0.95 * 1.05),
-      Math.fround(0.95 * 1.05),
-      Math.fround(0.25 * 1.05),
-    ]);
-    expect(instanceColor(mesh, 0)).toEqual([
-      Math.fround(1.15),
-      Math.fround(1.15),
-      Math.fround(1.15),
-    ]);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
 
     // t = 160: the hidden end state, position preserved.
     view.update(110);
@@ -1421,7 +1412,7 @@ describe('intent application', () => {
         levelIndex: 1,
       }),
     );
-    applySnapshot(view, snapshot({ phase: 'playing', style: NEXT_STYLE, levelIndex: 1 }));
+    applySnapshot(view, snapshot({ phase: 'playing', style: NEXT_STYLE, levelIndex: 1, reducedMotion: true }));
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
 
@@ -1432,7 +1423,7 @@ describe('intent application', () => {
 
   it('follows the cube rotation when placing an explosion origin and normal', () => {
     const view = createView();
-    applySnapshot(view, snapshot({ orientation: { yawSteps: 1, pitchSteps: 0 } }));
+    applySnapshot(view, snapshot({ orientation: { yawSteps: 1, pitchSteps: 0 }, reducedMotion: true }));
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
 
@@ -1444,7 +1435,7 @@ describe('intent application', () => {
 
   it('falls back to the cube centre when the exploding face is already gone', () => {
     const view = createView();
-    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshot({ reducedMotion: true }));
 
     applyIntents(view, [{ kind: 'faceCleared', faceId: 'back' }]);
     view.update(400);
@@ -1481,8 +1472,9 @@ describe('intent application', () => {
     const mesh = faceMesh(view, 'front');
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    view.update(180);
     view.update(50);
-    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.95 * 1.05));
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
 
     applySnapshot(view, snapshot({ reducedMotion: true }));
 
@@ -1617,7 +1609,7 @@ describe('intent application', () => {
 describe('frame updates and lifecycle', () => {
   it('ages a burst and releases it after its lifetime', () => {
     const view = createView();
-    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshot({ reducedMotion: true }));
 
     applyIntents(view, [explosionIntent('front:0:0', 'front', EXPLOSION_PARTICLE_COUNT)]);
     expect(particlePoints(view).geometry.drawRange.count).toBe(24);
@@ -1631,14 +1623,14 @@ describe('frame updates and lifecycle', () => {
 
   it('returns to the plate-free baseline object counts after 10 explosion cycles (AC-16)', () => {
     const view = createView();
-    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshot({ reducedMotion: true }));
     const baselineChildren = view.scene.children.length;
     const baselineObjects = countObjects(view.scene);
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
     // Scene + two lights + starfield + cube group (body + 6 grids) + particle group + pool.
-    expect(baselineObjects).toBe(14);
+    expect(baselineObjects).toBe(19);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
@@ -1676,7 +1668,7 @@ describe('frame updates and lifecycle', () => {
     );
 
     expect(countObjects(view.scene)).toBe(baselineObjects);
-    expect(view.scene.children).toHaveLength(5);
+    expect(view.scene.children).toHaveLength(7);
     expect(cubeGroup(view).children).toHaveLength(7);
     expect(faceMeshes(view)).toHaveLength(6);
   });
@@ -1724,7 +1716,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
     // No `welcome` yet: the remote world does not exist.
     expect(view.worldView).toBeNull();
-    expect(view.scene.children).toHaveLength(5);
+    expect(view.scene.children).toHaveLength(7);
   });
 
   it('dollies the intro onto the own position, keeping the accepted z table', () => {
@@ -1766,7 +1758,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
     expect(view.worldView!.views().size).toBe(1);
     expect(view.worldView!.views().get('p2')!.group.position.toArray()).toEqual([12, 12, 0]);
-    expect(view.scene.children).toHaveLength(6);
+    expect(view.scene.children).toHaveLength(8);
 
     applySnapshot(view, snapshot({ phase: 'playing' }));
     expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
@@ -1973,7 +1965,7 @@ describe('online destination travel (AC-12)', () => {
     expect(view.worldView!.views().get('p3')!.group.position.toArray()).toEqual([0, 12, 0]);
     expect(oldWorldDispose).toHaveBeenCalledTimes(1);
     expect(oldRemoteDispose).toHaveBeenCalledTimes(1);
-    expect(view.scene.children).toHaveLength(6);
+    expect(view.scene.children).toHaveLength(8);
     const newWorld = view.worldView!;
     const newWorldDispose = vi.spyOn(newWorld, 'dispose');
 

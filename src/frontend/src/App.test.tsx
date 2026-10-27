@@ -139,6 +139,7 @@ function sessionFor(
     returnToOwnCube: () => false,
     retryConnection: () => {},
     join: () => {},
+    setPointerTarget: () => {},
     ...overrides,
   };
 }

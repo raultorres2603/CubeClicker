@@ -27,6 +27,7 @@ function createSessionSpy(): { session: GameSession; attachCalls: () => number }
         throw new Error('GameCanvas must not read the snapshot during render');
       },
       subscribe: () => () => {},
+      setPointerTarget: () => {},
     },
   };
 }

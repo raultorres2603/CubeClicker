@@ -1026,18 +1026,18 @@ describe('pointer wiring', () => {
     expect(faceIds(snapshot, 'front')).not.toContain('front:2:2');
     expect(faceIds(snapshot, 'front')).toContain('front:0:0');
 
+    const mesh = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
+
     fake.scheduler.tick(32);
 
-    // The drained intent reached the scene: the tile is mid-pop (AC-4), still full enough
-    // to be visible, and has not been zero-scaled away yet.
-    const mesh = faceMesh(fake.renderer.renders.at(-1)!.scene, 'front');
-    const popping = instanceMatrix(mesh, 12);
-    expect(popping.elements[0]).toBe(Math.fround(0.95 * 1.016));
-    expect(new Vector3().setFromMatrixPosition(popping).toArray()).toEqual([0, 0, 2.625]);
+    // The shot is in flight: the tile is not yet hidden (AC-4 deferred).
+    const stillVisible = instanceMatrix(mesh, 12);
+    expect(stillVisible.elements[0]).toBe(Math.fround(0.95));
+    expect(new Vector3().setFromMatrixPosition(stillVisible).toArray()).toEqual([0, 0, 2.625]);
 
-    fake.scheduler.tick(192);
+    fake.scheduler.tick(400);
 
-    // At the end of the 160 ms pop the instance reaches the hidden end state (AC-4).
+    // When the shot lands the deferred explosion applies and the instance is hidden (AC-4).
     const hidden = instanceMatrix(mesh, 12);
     expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
     expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([0, 0, 2.625]);
@@ -1975,14 +1975,14 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
 
 describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
   /** A connected online session on the real engine, playing after the intro skip. */
-  function playingSession(): {
+  function playingSession(reducedMotion = false): {
     engine: GameEngine;
     fake: FakeEnv;
     wire: FakeTransport;
     session: OnlineGameSession;
   } {
-    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
-    const fake = createFakeEnv();
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom, reducedMotion });
+    const fake = createFakeEnv({ reducedMotion });
     const wire = createFakeTransport();
     const session = createOnlineSession(fake, wire, engine);
     session.attach(fake.canvas.surface);
@@ -2029,7 +2029,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
   });
 
   it('removes the authoritative ids of a stateSync exactly and never echoes them', () => {
-    const { fake, wire, session } = playingSession();
+    const { fake, wire, session } = playingSession(true);
 
     wire.emit(stateSyncMessage({ removedIds: ['front:0:0', 'front:0:1'] }));
 
@@ -2079,7 +2079,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
   });
 
   it('adopts a different level, grid and style from stateSync exactly (AC-14)', () => {
-    const { fake, wire, session } = playingSession();
+    const { fake, wire, session } = playingSession(true);
 
     tapOn(fake.canvas, 400, 400);
     expect(session.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
