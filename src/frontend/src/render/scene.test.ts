@@ -1630,7 +1630,7 @@ describe('frame updates and lifecycle', () => {
     const particles = particlePoints(view);
 
     // Scene + two lights + starfield + cube group (body + 6 grids) + particle group + pool.
-    expect(baselineObjects).toBe(19);
+    expect(baselineObjects).toBe(21);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {

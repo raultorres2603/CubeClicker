@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { Mesh, PerspectiveCamera, Vector3 } from 'three';
 
-import { SHOT_TRAVEL_MS } from '../game/effects';
+import {
+  SHOT_TRAVEL_MS,
+  SPACESHIP_IGNITION_COUNT,
+  SPACESHIP_SCALE,
+} from '../game/effects';
 import {
   createSpaceship,
   spaceshipFollowFactor,
@@ -11,7 +15,7 @@ import {
 
 describe('spaceshipFollowFactor', () => {
   it('follows 1 - exp(-dt/tau) without reduced motion', () => {
-    expect(spaceshipFollowFactor(120, false)).toBeCloseTo(1 - 1 / Math.E, 6);
+    expect(spaceshipFollowFactor(240, false)).toBeCloseTo(1 - 1 / Math.E, 6);
     expect(spaceshipFollowFactor(0, false)).toBe(0);
   });
 
@@ -34,9 +38,9 @@ describe('spaceshipTargetPosition', () => {
     camera.updateMatrixWorld(true);
 
     const result = spaceshipTargetPosition(camera, 0, 0);
-    expect(Math.abs(result.x - -0.139757)).toBeLessThan(1e-6);
-    expect(Math.abs(result.y - -0.223611)).toBeLessThan(1e-6);
-    expect(Math.abs(result.z - 6.005798)).toBeLessThan(1e-6);
+    expect(Math.abs(result.x - -0.334695)).toBeLessThan(1e-6);
+    expect(Math.abs(result.y - -0.334695)).toBeLessThan(1e-6);
+    expect(Math.abs(result.z - 6.018699)).toBeLessThan(1e-6);
   });
 
   it('is independent of the NDC z input', () => {
@@ -46,8 +50,7 @@ describe('spaceshipTargetPosition', () => {
     camera.updateMatrixWorld(true);
 
     const a = spaceshipTargetPosition(camera, 0.1, -0.2);
-    // recompute manually with z=1 should yield the same ray direction
-    const ndc = new Vector3(0.1 - 0.05, -0.2 - 0.08, 1);
+    const ndc = new Vector3(0.1 - 0.12, -0.2 - 0.12, 1);
     ndc.unproject(camera);
     const dir = ndc.sub(camera.position).normalize();
     const expected = camera.position.clone().add(dir.multiplyScalar(6));
@@ -65,8 +68,27 @@ describe('createSpaceship', () => {
     ship.group.traverse((o) => {
       if (o instanceof Mesh) meshCount += 1;
     });
-    // avoid require in test? use imported Mesh
     expect(meshCount).toBeGreaterThan(0);
+    ship.dispose();
+  });
+
+  it('group scale is (SPACESHIP_SCALE, SPACESHIP_SCALE, SPACESHIP_SCALE)', () => {
+    const ship = createSpaceship();
+    expect(ship.group.scale.x).toBe(SPACESHIP_SCALE);
+    expect(ship.group.scale.y).toBe(SPACESHIP_SCALE);
+    expect(ship.group.scale.z).toBe(SPACESHIP_SCALE);
+    ship.dispose();
+  });
+
+  it('contains ConeGeometry and CylinderGeometry, no BoxGeometry', () => {
+    const ship = createSpaceship();
+    const types: string[] = [];
+    ship.group.traverse((o) => {
+      if (o instanceof Mesh) types.push(o.geometry.type);
+    });
+    expect(types).toContain('ConeGeometry');
+    expect(types).toContain('CylinderGeometry');
+    expect(types).not.toContain('BoxGeometry');
     ship.dispose();
   });
 
@@ -125,6 +147,95 @@ describe('createSpaceship', () => {
     ship.dispose();
   });
 
+  it('exposes ignitions of length SPACESHIP_IGNITION_COUNT named ignition', () => {
+    const ship = createSpaceship();
+    expect(ship.ignitions).toHaveLength(SPACESHIP_IGNITION_COUNT);
+    for (const ig of ship.ignitions) {
+      expect(ig.name).toBe('ignition');
+    }
+    ship.dispose();
+  });
+
+  it('ignitions created hidden with intensity 0', () => {
+    const ship = createSpaceship();
+    expect(ship.getIgnitionIntensity()).toBe(0);
+    for (const ig of ship.ignitions) {
+      expect(ig.visible).toBe(false);
+    }
+    ship.dispose();
+  });
+
+  it('at rest (no pointer) intensity 0 and ignitions hidden', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.update(camera, 0, 0, false, 120, false);
+    expect(ship.getIgnitionIntensity()).toBe(0);
+    for (const ig of ship.ignitions) {
+      expect(ig.visible).toBe(false);
+    }
+    ship.dispose();
+  });
+
+  it('after a moving update intensity > 0 and an ignition visible', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.update(camera, 0, 0, true, 120, false);
+    expect(ship.getIgnitionIntensity()).toBeGreaterThan(0);
+    expect(ship.ignitions.some((ig) => ig.visible === true)).toBe(true);
+    ship.dispose();
+  });
+
+  it('under reduced motion ignitions stay hidden even after moving update', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.update(camera, 0, 0, true, 120, true);
+    expect(ship.getIgnitionIntensity()).toBe(0);
+    for (const ig of ship.ignitions) {
+      expect(ig.visible).toBe(false);
+    }
+    ship.dispose();
+  });
+
+  it('ignition animation advances: two moving updates yield different scale.z', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.update(camera, 0, 0, true, 120, false);
+    const first = ship.ignitions[0]!.scale.z;
+    ship.update(camera, 0, 0, true, 120, false);
+    const second = ship.ignitions[0]!.scale.z;
+    expect(Math.abs(second - first)).toBeGreaterThan(1e-9);
+    ship.dispose();
+  });
+
+  it('no movement: dtMs 0 keeps intensity 0 and does not advance time', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    // first move to set position maybe
+    ship.update(camera, 0, 0, true, 120, false);
+    // reset by new ship for clean
+    ship.dispose();
+    const ship2 = createSpaceship();
+    ship2.update(camera, 0, 0, true, 0, false);
+    expect(ship2.getIgnitionIntensity()).toBe(0);
+    for (const ig of ship2.ignitions) expect(ig.visible).toBe(false);
+    ship2.dispose();
+  });
+
   it('spawns a shot with endpoints and travel time', () => {
     const ship = createSpaceship();
     const start = new Vector3(1, 2, 3);
@@ -173,6 +284,38 @@ describe('createSpaceship', () => {
     const pos = ship.getPosition();
     expect(pos.z).not.toBe(6);
     ship.dispose();
+  });
+
+  it('dispose is idempotent (covers disposed guard)', () => {
+    const ship = createSpaceship();
+    ship.spawnShot(new Vector3(0, 0, 0), new Vector3(1, 1, 1));
+    ship.dispose();
+    ship.dispose();
+    expect(ship.shots).toHaveLength(0);
+  });
+
+  it('sub-threshold movement keeps ignitions inactive', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.update(camera, 0, 0, true, 1, false);
+    expect(ship.getIgnitionIntensity()).toBe(0);
+    for (const ig of ship.ignitions) expect(ig.visible).toBe(false);
+    ship.dispose();
+  });
+
+  it('update after dispose is a no-op', () => {
+    const ship = createSpaceship();
+    const camera = new PerspectiveCamera(50, 1, 0.1, 200);
+    camera.position.set(0, 0, 12);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    ship.dispose();
+    // should not throw
+    ship.update(camera, 0, 0, true, 120, false);
+    expect(ship.getIgnitionIntensity()).toBe(0);
   });
 
   it('dispose empties shots', () => {

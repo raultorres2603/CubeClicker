@@ -164,16 +164,28 @@ export const MINI_CUBE_POP_COLOR_STRENGTH = 0.3;
 export const SHOT_TRAVEL_MS = 180;
 
 /** Spaceship follow smoothing time constant in ms (spaceship-cursor spec AC-2). */
-export const SPACESHIP_FOLLOW_TAU_MS = 120;
+export const SPACESHIP_FOLLOW_TAU_MS = 240;
 
 /** Plane distance in front of the camera the spaceship rests on (spaceship-cursor spec AC-3). */
 export const SPACESHIP_PLANE_DISTANCE = 6;
 
 /** NDC x offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
-export const SPACESHIP_CURSOR_NDC_OFFSET_X = -0.05;
+export const SPACESHIP_CURSOR_NDC_OFFSET_X = -0.12;
 
 /** NDC y offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
-export const SPACESHIP_CURSOR_NDC_OFFSET_Y = -0.08;
+export const SPACESHIP_CURSOR_NDC_OFFSET_Y = -0.12;
+
+/** Scale applied to the whole spaceship group (spaceship-cursor-polish spec AC-1). */
+export const SPACESHIP_SCALE = 1.5;
+
+/** Number of ignition flames at the ship's rear (spaceship-cursor-polish spec AC-1). */
+export const SPACESHIP_IGNITION_COUNT = 2;
+
+/** Movement delta (world units) at/above which ignitions activate (spaceship-cursor-polish spec AC-1). */
+export const SPACESHIP_IGNITION_MOVEMENT_THRESHOLD = 0.01;
+
+/** Flicker period of the ignition flames in ms (spaceship-cursor-polish spec AC-1). */
+export const SPACESHIP_IGNITION_FLICKER_PERIOD_MS = 100;
 
 /** Duration of the shrink phase: the remainder of the pop after the expand phase (60 ms). */
 const MINI_CUBE_POP_SHRINK_MS = MINI_CUBE_POP_MS - MINI_CUBE_POP_EXPAND_MS;

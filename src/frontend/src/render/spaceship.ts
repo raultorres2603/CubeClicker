@@ -9,9 +9,9 @@
  */
 
 import {
-  BoxGeometry,
   Camera,
   ConeGeometry,
+  CylinderGeometry,
   Group,
   Mesh,
   MeshBasicMaterial,
@@ -25,7 +25,11 @@ import {
   SPACESHIP_CURSOR_NDC_OFFSET_X,
   SPACESHIP_CURSOR_NDC_OFFSET_Y,
   SPACESHIP_FOLLOW_TAU_MS,
+  SPACESHIP_IGNITION_COUNT,
+  SPACESHIP_IGNITION_FLICKER_PERIOD_MS,
+  SPACESHIP_IGNITION_MOVEMENT_THRESHOLD,
   SPACESHIP_PLANE_DISTANCE,
+  SPACESHIP_SCALE,
 } from '../game/effects';
 
 /** One in-flight shot: a small sphere travelling linearly from `start` to `target`. */
@@ -48,6 +52,8 @@ export interface Spaceship {
   readonly shotsGroup: Group;
   /** In-flight shots (delegated to by `SceneView.shots`). */
   readonly shots: readonly Shot[];
+  /** Ignition flame meshes (length === SPACESHIP_IGNITION_COUNT, each name === 'ignition'). */
+  readonly ignitions: readonly Mesh[];
   /** Follows the pointer for one frame. */
   update(
     camera: Camera,
@@ -67,6 +73,8 @@ export interface Spaceship {
   ): void;
   /** Current spaceship position (a fresh clone). */
   getPosition(): Vector3;
+  /** Current ignition intensity (0..1). */
+  getIgnitionIntensity(): number;
   /** Spawns a shot from `start` to `target` and returns it. */
   spawnShot(start: Vector3, target: Vector3): Shot;
   /** Advances the shots; returns the shots that arrived this step. */
@@ -106,23 +114,25 @@ export function spaceshipTargetPosition(camera: Camera, ndcX: number, ndcY: numb
   return camera.position.clone().add(direction.multiplyScalar(SPACESHIP_PLANE_DISTANCE));
 }
 
-/** Builds the spaceship (cone nose + box body + sphere cockpit) and its shot manager. */
+/** Builds the spaceship (cone nose + cylinder body + sphere cockpit) and its shot manager. */
 export function createSpaceship(): Spaceship {
   const group = new Group();
   group.name = 'spaceship';
   group.position.set(0, 0, 6);
+  group.scale.set(SPACESHIP_SCALE, SPACESHIP_SCALE, SPACESHIP_SCALE);
 
   const nose = new Mesh(
-    new ConeGeometry(0.25, 0.6, 8),
+    new ConeGeometry(0.2, 0.8, 8),
     new MeshStandardMaterial({ color: 0x88aaff }),
   );
-  nose.position.set(0, 0, 0.3);
+  nose.position.set(0, 0, 0.4);
   nose.rotation.x = Math.PI / 2;
 
   const body = new Mesh(
-    new BoxGeometry(0.4, 0.3, 0.8),
+    new CylinderGeometry(0.25, 0.25, 0.9, 8),
     new MeshStandardMaterial({ color: 0x4466cc }),
   );
+  body.rotation.x = Math.PI / 2;
 
   const cockpit = new Mesh(
     new SphereGeometry(0.15, 8, 8),
@@ -132,14 +142,42 @@ export function createSpaceship(): Spaceship {
 
   group.add(nose, body, cockpit);
 
+  // Ignition flames at the rear.
+  const ignitions: Mesh[] = [];
+  for (let i = 0; i < SPACESHIP_IGNITION_COUNT; i += 1) {
+    const ignition = new Mesh(
+      new ConeGeometry(0.12, 0.35, 8),
+      new MeshStandardMaterial({
+        color: 0xff6600,
+        transparent: true,
+        opacity: 0.5,
+        emissive: 0xff3300,
+      }),
+    );
+    ignition.name = 'ignition';
+    ignition.visible = false;
+    const offset = (i - (SPACESHIP_IGNITION_COUNT - 1) / 2) * 0.25;
+    ignition.position.set(offset, 0, -0.6);
+    ignition.rotation.x = -Math.PI / 2;
+    group.add(ignition);
+    ignitions.push(ignition);
+  }
+
   const shotsGroup = new Group();
   shotsGroup.name = 'spaceship-shots';
 
   const shots: Shot[] = [];
   let disposed = false;
 
+  let ignitionTimeMs = 0;
+  let intensity = 0;
+
   function getPosition(): Vector3 {
     return group.position.clone();
+  }
+
+  function getIgnitionIntensity(): number {
+    return intensity;
   }
 
   function spawnShot(start: Vector3, target: Vector3): Shot {
@@ -159,6 +197,13 @@ export function createSpaceship(): Spaceship {
     return shot;
   }
 
+  function resetIgnitions(): void {
+    intensity = 0;
+    for (const flame of ignitions) {
+      flame.visible = false;
+    }
+  }
+
   function update(
     camera: Camera,
     ndcX: number,
@@ -167,12 +212,36 @@ export function createSpaceship(): Spaceship {
     dtMs: number,
     reducedMotion: boolean,
   ): void {
-    if (disposed || !hasPointer) {
+    if (disposed) {
+      return;
+    }
+    if (!hasPointer) {
+      resetIgnitions();
       return;
     }
     const target = spaceshipTargetPosition(camera, ndcX, ndcY);
+    const previous = group.position.clone();
     const factor = spaceshipFollowFactor(dtMs, reducedMotion);
     group.position.lerp(target, factor);
+    const delta = group.position.distanceTo(previous);
+
+    // Reset baseline: flames never linger after a prior moving update.
+    resetIgnitions();
+
+    // Early-return: no time advance, no intensity.
+    if (reducedMotion || dtMs <= 0 || delta < SPACESHIP_IGNITION_MOVEMENT_THRESHOLD) {
+      return;
+    }
+
+    intensity = Math.min(1, Math.max(0, delta / SPACESHIP_IGNITION_MOVEMENT_THRESHOLD));
+    ignitionTimeMs += Math.max(0, dtMs);
+    for (const flame of ignitions) {
+      flame.visible = true;
+      const s = Math.abs(Math.sin((ignitionTimeMs / SPACESHIP_IGNITION_FLICKER_PERIOD_MS) * 2 * Math.PI));
+      flame.scale.z = 0.6 + 0.4 * s;
+      const material = flame.material as MeshStandardMaterial;
+      material.opacity = 0.5 + 0.5 * s;
+    }
   }
 
   function updateSpaceship(
@@ -253,9 +322,11 @@ export function createSpaceship(): Spaceship {
     get shots(): readonly Shot[] {
       return shots;
     },
+    ignitions,
     update,
     updateSpaceship,
     getPosition,
+    getIgnitionIntensity,
     spawnShot,
     updateShots,
     dispose,
