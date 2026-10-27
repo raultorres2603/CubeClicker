@@ -60,6 +60,7 @@ import {
   BURST_ORIGIN_OFFSET,
   easeInOutQuad,
   easeOutCubic,
+  SHOT_TRAVEL_MS,
   timingsFor,
   travelSwing,
 } from '../game/effects';
@@ -78,6 +79,7 @@ import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
 import { createParticleSystem, type ParticleSystem } from './particles';
 import { travelCameraPose as spectateTravelPose } from './spectate-travel';
 import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
+import { createSpaceship, type Shot, type Spaceship } from './spaceship';
 import { createWorldView, type WorldView } from './world';
 
 /** Black backdrop behind the starfield (AC-3). */
@@ -294,6 +296,20 @@ export interface SceneView {
    */
   applyWorldMessage(msg: ServerMessage): void;
   /**
+   * Stores the latest pointer NDC so the spaceship can follow it on subsequent frames
+   * (spaceship-cursor spec AC-2, AC-7). Both components are clamped to `[-1, 1]`.
+   */
+  setPointerTarget(ndcX: number, ndcY: number): void;
+  /**
+   * In-flight shots (delegated from the spaceship). Emptied by `dispose()`.
+   */
+  readonly shots: readonly Shot[];
+  /**
+   * The most recent frame time retained from the last `applyIntents`/`applySnapshot`
+   * call, defaulting to `0`. Drives burst spawning for shots that arrive in `update`.
+   */
+  readonly lastFrameTime: number;
+  /**
    * Applies the engine's ordered effect intents: explosion → start the tile's pop and spawn
    * its burst in front of the face surface; `faceCleared` → start the face-removal
    * countdown; `levelChanged` → mark the cube rebuild pending (the next snapshot performs
@@ -355,8 +371,9 @@ export function createSceneView(options: {
   let cube: CubeView = createCubeView(options.style, gridSize);
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
+  const spaceship: Spaceship = createSpaceship();
 
-  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group);
+  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup);
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
@@ -397,6 +414,16 @@ export function createSceneView(options: {
   /** The snapshot's spectating flag (drives the playing rest pose). */
   let spectating = false;
   const faceRemovals = new Map<FaceId, FaceRemoval>();
+  let pointerNdc = { x: 0, y: 0 };
+  let hasPointer = false;
+  interface PendingExplosion {
+    intent: Extract<EffectIntent, { kind: 'explosion' }>;
+    origin: Vector3;
+    normal: Vector3;
+    remainingMs: number;
+  }
+  const pendingExplosions: PendingExplosion[] = [];
+  let retainedFrameTime = 0;
   const instanceMatrix = new Matrix4();
   const introPosition = new Vector3();
   const introTarget = new Vector3();
@@ -451,6 +478,23 @@ export function createSceneView(options: {
     cube.hideMiniCube(intent.id, reducedMotion);
     origin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
     particles.spawn(intent.burst, origin, nowMs);
+  }
+
+  function applyDeferredExplosion(
+    intent: Extract<EffectIntent, { kind: 'explosion' }>,
+    origin: Vector3,
+    normal: Vector3,
+  ): void {
+    const mesh = cube.faces.get(intent.faceId);
+    if (mesh === undefined) {
+      cube.hideMiniCube(intent.id, reducedMotion);
+      particles.spawn(intent.burst, new Vector3(), retainedFrameTime);
+      return;
+    }
+    const burstOrigin = origin.clone();
+    cube.hideMiniCube(intent.id, reducedMotion);
+    burstOrigin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
+    particles.spawn(intent.burst, burstOrigin, retainedFrameTime);
   }
 
   /**
@@ -748,6 +792,23 @@ export function createSceneView(options: {
       return world;
     },
 
+    setPointerTarget(ndcX: number, ndcY: number): void {
+      if (disposed) {
+        return;
+      }
+      const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
+      pointerNdc = { x: clamp(ndcX), y: clamp(ndcY) };
+      hasPointer = true;
+    },
+
+    get shots(): readonly Shot[] {
+      return spaceship.shots;
+    },
+
+    get lastFrameTime(): number {
+      return retainedFrameTime;
+    },
+
     enterWorld(state: SceneWorld): void {
       enterServerWorld(state);
     },
@@ -768,10 +829,32 @@ export function createSceneView(options: {
     },
 
     applyIntents(intents: EffectIntent[], nowMs: number): void {
+      retainedFrameTime = nowMs;
       for (const intent of intents) {
         switch (intent.kind) {
           case 'explosion':
-            applyExplosion(intent, nowMs);
+            if (reducedMotion) {
+              applyExplosion(intent, nowMs);
+            } else {
+              const mesh = cube.faces.get(intent.faceId);
+              let origin: Vector3;
+              let normal: Vector3;
+              if (mesh === undefined) {
+                origin = new Vector3();
+                normal = new Vector3();
+              } else {
+                origin = instanceOrigin(mesh, intent.id);
+                normal = worldFaceNormal(intent.faceId);
+              }
+              const start = spaceship.getPosition();
+              spaceship.spawnShot(start, origin);
+              pendingExplosions.push({
+                intent,
+                origin,
+                normal,
+                remainingMs: SHOT_TRAVEL_MS,
+              });
+            }
             break;
           case 'faceCleared':
             applyFaceCleared(intent.faceId);
@@ -788,7 +871,8 @@ export function createSceneView(options: {
       }
     },
 
-    applySnapshot(snapshot: EngineSnapshot): void {
+    applySnapshot(snapshot: EngineSnapshot, nowMs: number): void {
+      retainedFrameTime = nowMs;
       // The frame time stays in the pinned `SceneView` signature for the loop; every value
       // applied here comes from the snapshot (removals/pops are driven by `update`'s dt).
       // Pinned order: motion setting → rebuild → camera → orientation → reduced settle.
@@ -813,6 +897,18 @@ export function createSceneView(options: {
       // The travel input persists between snapshots: a frame that only advances time
       // keeps the current expansion and the swirl (see `starfield.update`). The anchor is
       // the live camera pose, so the backdrop stays camera-centred in every phase.
+      spaceship.update(camera, pointerNdc.x, pointerNdc.y, hasPointer, dtMs, reducedMotion);
+      const advanceMs = Math.max(0, dtMs);
+      const completedShots = spaceship.updateShots(dtMs);
+      void completedShots;
+      for (let index = pendingExplosions.length - 1; index >= 0; index -= 1) {
+        const pending = pendingExplosions[index]!;
+        pending.remainingMs = Math.max(0, pending.remainingMs - advanceMs);
+        if (pending.remainingMs <= 0) {
+          applyDeferredExplosion(pending.intent, pending.origin, pending.normal);
+          pendingExplosions.splice(index, 1);
+        }
+      }
       starfield.update(dtMs, travelProgress, starfieldAnchor);
       particles.update(dtMs);
       advanceFaceRemovals(dtMs);
@@ -828,10 +924,12 @@ export function createSceneView(options: {
       }
       disposed = true;
       faceRemovals.clear();
+      pendingExplosions.length = 0;
       starfield.dispose();
       cube.dispose();
       particles.dispose();
       disposeWorld();
+      spaceship.dispose();
       scene.clear();
     },
   };
