@@ -170,14 +170,12 @@ export const SPACESHIP_FOLLOW_TAU_MS = 240;
 export const SPACESHIP_PLANE_DISTANCE = 6;
 
 /** NDC x offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
-export const SPACESHIP_CURSOR_NDC_OFFSET_X = -0.12;
-
+export const SPACESHIP_CURSOR_NDC_OFFSET_X = -0.16;
 /** NDC y offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
 export const SPACESHIP_CURSOR_NDC_OFFSET_Y = -0.12;
 
 /** Scale applied to the whole spaceship group (spaceship-cursor-polish spec AC-1). */
-export const SPACESHIP_SCALE = 1.5;
-
+export const SPACESHIP_SCALE = 1.2;
 /** Number of ignition flames at the ship's rear (spaceship-cursor-polish spec AC-1). */
 export const SPACESHIP_IGNITION_COUNT = 2;
 

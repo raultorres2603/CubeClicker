@@ -26,12 +26,12 @@ describe('spaceship/shot pinned constants', () => {
   });
 
   it('pins the cursor NDC offsets', () => {
-    expect(SPACESHIP_CURSOR_NDC_OFFSET_X).toBe(-0.12);
+    expect(SPACESHIP_CURSOR_NDC_OFFSET_X).toBe(-0.16);
     expect(SPACESHIP_CURSOR_NDC_OFFSET_Y).toBe(-0.12);
   });
 
   it('pins the polished constants', () => {
-    expect(SPACESHIP_SCALE).toBe(1.5);
+    expect(SPACESHIP_SCALE).toBe(1.2);
     expect(SPACESHIP_IGNITION_COUNT).toBe(2);
     expect(SPACESHIP_IGNITION_MOVEMENT_THRESHOLD).toBe(0.01);
     expect(SPACESHIP_IGNITION_FLICKER_PERIOD_MS).toBe(100);
