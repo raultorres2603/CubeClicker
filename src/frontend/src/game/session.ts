@@ -171,6 +171,8 @@ export interface GameSession {
   getSnapshot(): EngineSnapshot;
   /** Subscribes to snapshot changes; the returned function unsubscribes. */
   subscribe(listener: () => void): () => void;
+  /** Forwards a pointer target (clamped NDC) to the live scene; no-op while detached. */
+  setPointerTarget(ndcX: number, ndcY: number): void;
 }
 
 /**
@@ -776,6 +778,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     transport?.join(mode);
   }
 
+  function setPointerTarget(ndcX: number, ndcY: number): void {
+    activeScene?.setPointerTarget(ndcX, ndcY);
+  }
+
   return {
     attach(target: CanvasLike): void {
       if (active) {
@@ -905,6 +911,19 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         press = null;
       }
 
+      /** Tracks pointer movement for the spaceship cursor (AC-7). */
+      function onPointerMove(event: unknown): void {
+        const { clientX, clientY } = event as { clientX: number; clientY: number };
+        const rect = target.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          return;
+        }
+        const rawX = (clientX - rect.left) / rect.width * 2 - 1;
+        const rawY = 1 - (clientY - rect.top) / rect.height * 2;
+        const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
+        activeScene?.setPointerTarget(clamp(rawX), clamp(rawY));
+      }
+
       /**
        * The phase policy: what one classified gesture means right now.
        *
@@ -1004,6 +1023,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       target.addEventListener('pointerdown', onPointerDown);
       target.addEventListener('pointerup', onPointerUp);
       target.addEventListener('pointercancel', onPointerCancel);
+      target.addEventListener('pointermove', onPointerMove);
       env.keyTarget.addEventListener('keydown', onKeyDown);
       unsubscribers.push(env.motion.subscribe(onMotionChange));
       unsubscribers.push(env.visibility.subscribe(onVisibilityChange));
@@ -1033,6 +1053,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         target.removeEventListener('pointerdown', onPointerDown);
         target.removeEventListener('pointerup', onPointerUp);
         target.removeEventListener('pointercancel', onPointerCancel);
+        target.removeEventListener('pointermove', onPointerMove);
         env.keyTarget.removeEventListener('keydown', onKeyDown);
         for (const unsubscribe of unsubscribers.splice(0)) {
           unsubscribe();
@@ -1096,5 +1117,6 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
 
     retryConnection,
     join,
+    setPointerTarget,
   };
 }
