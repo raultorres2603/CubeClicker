@@ -160,6 +160,21 @@ export const MINI_CUBE_POP_PEAK_SCALE = 1.1;
 /** Peak `instanceColor` multiplier delta of the pop's brightness flash (spec AC-4). */
 export const MINI_CUBE_POP_COLOR_STRENGTH = 0.3;
 
+/** Shot travel time in ms (spaceship-cursor spec AC-5). */
+export const SHOT_TRAVEL_MS = 180;
+
+/** Spaceship follow smoothing time constant in ms (spaceship-cursor spec AC-2). */
+export const SPACESHIP_FOLLOW_TAU_MS = 120;
+
+/** Plane distance in front of the camera the spaceship rests on (spaceship-cursor spec AC-3). */
+export const SPACESHIP_PLANE_DISTANCE = 6;
+
+/** NDC x offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
+export const SPACESHIP_CURSOR_NDC_OFFSET_X = -0.05;
+
+/** NDC y offset applied to the pointer when computing the spaceship target (spaceship-cursor spec AC-3). */
+export const SPACESHIP_CURSOR_NDC_OFFSET_Y = -0.08;
+
 /** Duration of the shrink phase: the remainder of the pop after the expand phase (60 ms). */
 const MINI_CUBE_POP_SHRINK_MS = MINI_CUBE_POP_MS - MINI_CUBE_POP_EXPAND_MS;
 
