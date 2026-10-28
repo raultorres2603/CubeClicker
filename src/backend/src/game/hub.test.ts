@@ -3,6 +3,8 @@ import { loadGameConfig, type GameConfig } from './config.js';
 import { allIds } from './cubes.js';
 import { createGameHub, type GameHub, type Peer } from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
+import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
+import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins } from './economy.js';
 
 /** A fake {@link Peer}: records sent frames and lets tests drive the transport events. */
 class FakePeer implements Peer {
@@ -952,6 +954,7 @@ describe('cube completion', () => {
         // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
         roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
         identity: { kind: 'guest', playerId: 'p3' },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
     ]);
     expect(second.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
@@ -1057,6 +1060,7 @@ describe('cube completion', () => {
           memberOf('p3', 'Player 3', X3_SLOT_3),
         ],
         identity: { kind: 'guest', playerId: 'p4' },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
     ]);
     expect(fifth.messages()).toEqual([
@@ -1140,6 +1144,7 @@ describe('cube completion', () => {
         },
         roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
         identity: { kind: 'guest', playerId: 'p3' },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
     ]);
     expect(second.messages()).toEqual([{ type: 'memberJoined', member: movedThird }]);
@@ -1184,6 +1189,7 @@ describe('cube completion', () => {
         },
         roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
         identity: { kind: 'guest', playerId: 'p5' },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
     ]);
     expect(fourth.messages()).toEqual([{ type: 'memberJoined', member: movedFifth }]);
@@ -1438,4 +1444,186 @@ describe('orientation storage and rotate (T2)', () => {
   });
 });
 
+});
+
+describe('account economy (T3)', () => {
+  function createAccountHarness(repo: InMemoryEconomyRepository) {
+    const config = loadGameConfig({});
+    let clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      economy: repo,
+    });
+    return {
+      config,
+      hub,
+      clock: () => clock,
+      setNow: (ms: number) => {
+        clock = ms;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      connect: (userId = 'u1', username = 'alice') => {
+        const peer = new FakePeer();
+        hub.attach(peer, { userId, username, verified: true });
+        return peer;
+      },
+      join: (peer: FakePeer) => {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+    };
+  }
+
+  async function flush() {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  it('loads persisted economy into welcome for an account join', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit('u1', { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 });
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.economy).toEqual({ coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 });
+  });
+
+  it('credits mini-cube coins + click on valid explode and broadcasts economyUpdate to joined account connections', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await flush();
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    await flush();
+
+    const expected = { type: 'economyUpdate', coins: COINS_PER_MINI_CUBE, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 };
+    // round coins to 2 decimals already
+    expect(first.messages()).toContainEqual(expected);
+    expect(second.messages()).toContainEqual(expected);
+  });
+
+  it('increments facesDestroyed when an explode clears a face', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await flush();
+    peer.clear();
+
+    // remove all other ids of front face first, leaving front:2:2
+    const ids = allIds(3).filter((id) => id.startsWith('front:'));
+    // remove all front ids except last
+    for (const id of ids.slice(0, ids.length - 1)) {
+      explode(peer, id);
+    }
+    await flush();
+    peer.clear();
+
+    const last = ids[ids.length - 1]!;
+    explode(peer, last);
+    await flush();
+
+    const msgs = peer.messages();
+    const update = msgs.find((m) => m.type === 'economyUpdate') as ServerMessage;
+    expect(update).toBeDefined();
+    expect(update.facesDestroyed).toBe(1);
+    expect(update.clicks).toBe(ids.length);
+  });
+
+  it('credits completion with speed bonus when fast', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await flush();
+    // remove all cubes
+    removeLevel(h, peer, allIds(3));
+    await flush();
+    peer.clear();
+
+    h.setNow(0); // within threshold (grid 3 -> 15s = 15000ms); elapsed 0
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await flush();
+
+    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
+    expect(update).toBeDefined();
+    expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
+    expect(update.cubesDestroyed).toBe(1);
+  });
+
+  it('credits completion without speed bonus when slow', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await flush();
+    removeLevel(h, peer, allIds(3));
+    await flush();
+    peer.clear();
+
+    h.setNow(100_000); // elapsed large
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await flush();
+
+    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
+    expect(update).toBeDefined();
+    expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE));
+  });
+
+  it('guest join does not call repo or broadcast economyUpdate', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const spy = vi.spyOn(repo, 'credit');
+    const config = loadGameConfig({});
+    const clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      economy: repo,
+    });
+    const peer = new FakePeer();
+    hub.attach(peer); // no account session -> guest
+    peer.receive(JSON.stringify({ type: 'join' }));
+    await flush();
+    peer.clear();
+    explode(peer, 'front:0:0');
+    await flush();
+    expect(spy).not.toHaveBeenCalled();
+    expect(peer.messages().some((m) => m.type === 'economyUpdate')).toBe(false);
+  });
+
+  it('boundary: exactly at threshold qualifies for speed bonus', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await flush();
+    removeLevel(h, peer, allIds(3));
+    await flush();
+    peer.clear();
+
+    // cubeStartedAtMs = 0 (join at clock 0). set now to threshold ms.
+    const thresholdMs = thresholdSeconds(3) * 1000;
+    h.setNow(thresholdMs);
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await flush();
+
+    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
+    expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
+  });
 });

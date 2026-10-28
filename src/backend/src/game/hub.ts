@@ -59,10 +59,12 @@ import {
   cubeRotatedMessage,
   parseClientMessage,
   stateSyncMessage,
+  economyUpdateMessage,
   welcomeMessage,
   worldEnteredMessage,
   type CubeState,
   type CubeSync,
+  type EconomyState,
   type ErrorCode,
   type Identity,
   type LevelAdvance,
@@ -76,6 +78,13 @@ import {
   worldPosition,
   type ServerRegistry,
 } from './servers.js';
+import type { EconomyRepository } from '../auth/economy-repository.js';
+import {
+  COINS_PER_CUBE,
+  COINS_PER_MINI_CUBE,
+  roundCoins,
+  speedBonusApplies,
+} from './economy.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
@@ -119,6 +128,8 @@ export interface HubDeps {
   /** Returns the RNG the hub draws next-cube grids from (`N = 3 + ⌊draw·5⌋`). */
   random: () => () => number;
   timers: HubTimers;
+  /** Optional economy repository; absent => no persistence (guests / tests). */
+  economy?: EconomyRepository | null;
 }
 
 /** Account session resolved from the upgrade cookie (server-authoritative). */
@@ -176,6 +187,10 @@ interface Member {
   cube: BoardState;
   yawSteps: number;
   pitchSteps: number;
+  /** Server timestamp (ms) when this cube started, for the speed bonus. */
+  cubeStartedAtMs: number;
+  /** Server-authoritative economy totals for this member. */
+  economy: EconomyState;
   /** The live socket, or `null` while the member is inside the grace window. */
   connection: Connection | null;
   rate: RateWindow;
@@ -192,6 +207,7 @@ interface Member {
  */
 export function createGameHub(deps: HubDeps): GameHub {
   const { config } = deps;
+  const economyRepo = deps.economy ?? null;
   const registry: ServerRegistry = createServerRegistry(config.maxUsersPerServer);
   const grace: GraceTracker = createGraceTracker({
     graceMs: config.reconnectGraceMs,
@@ -321,6 +337,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       self: cubeState(member),
       roster: rosterFor(location.serverId),
       identity,
+      economy: member.economy,
     };
   }
 
@@ -451,7 +468,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     return members.get(connection.playerId) ?? null;
   }
 
-  function handleJoin(connection: Connection, mode?: 'account' | 'guest'): void {
+  async function handleJoin(connection: Connection, mode?: 'account' | 'guest'): Promise<void> {
     if (connection.playerId !== null) {
       sendError(connection, 'bad_message');
       return;
@@ -473,11 +490,21 @@ export function createGameHub(deps: HubDeps): GameHub {
       }
     }
 
+    const isAccount = effectiveMode === 'account';
+    const accountId = isAccount ? connection.accountSession!.userId : null;
+
+    // Load persisted economy before creating the member (account + repo present).
+    let loadedEconomy: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
+    if (isAccount && accountId !== null && economyRepo !== null) {
+      const found = await economyRepo.findByUserId(accountId);
+      if (found !== null) {
+        loadedEconomy = found;
+      }
+    }
+
     playerCounter += 1;
     const record = createPlayerRecord(playerCounter);
     const assignment = registry.assign(record.playerId);
-    const isAccount = effectiveMode === 'account';
-    const accountId = isAccount ? connection.accountSession!.userId : null;
     const name = isAccount ? connection.accountSession!.username : record.name;
     const member: Member = {
       playerId: record.playerId,
@@ -487,6 +514,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       cube: createNextCube(null, styleForLevel, random),
       yawSteps: 0,
       pitchSteps: 0,
+      cubeStartedAtMs: deps.now(),
+      economy: loadedEconomy,
       connection,
       rate: { admitted: [], lastLimitedAt: null },
       rotateRate: { admitted: [], lastLimitedAt: null },
@@ -573,7 +602,56 @@ export function createGameHub(deps: HubDeps): GameHub {
     member.cube.removedIds.add(id);
     const location = locationOf(member.playerId)!;
     broadcast(location.serverId, miniCubeRemovedMessage(member.playerId, id));
+
+    // Face-clear detection: all N² ids of that face now removed.
+    const face = id.split(':')[0] as string;
+    const gridSize = member.cube.gridSize;
+    let faceCleared = true;
+    for (let r = 0; r < gridSize && faceCleared; r += 1) {
+      for (let c = 0; c < gridSize; c += 1) {
+        if (!member.cube.removedIds.has(`${face}:${r}:${c}`)) {
+          faceCleared = false;
+          break;
+        }
+      }
+    }
+
+    // Account credit (fire-and-forget): mini-cube coins + click + face (if cleared).
+    if (member.accountId !== null && economyRepo !== null) {
+      const accountId = member.accountId;
+      const delta = {
+        coins: roundCoins(COINS_PER_MINI_CUBE),
+        clicks: 1,
+        facesDestroyed: faceCleared ? 1 : 0,
+      };
+      void economyRepo
+        .credit(accountId, delta)
+        .then((result) => {
+          for (const m of members.values()) {
+            if (m.accountId === accountId) {
+              m.economy = result;
+            }
+          }
+          broadcastEconomyUpdate(accountId, result);
+        });
+    }
   }
+
+  function broadcastEconomyUpdate(userId: string, economy: EconomyState): void {
+    for (const connection of connections) {
+      if (connection.playerId === null) {
+        continue;
+      }
+      if (connection.accountSession?.userId !== userId) {
+        continue;
+      }
+      if (!connection.peer.isOpen()) {
+        continue;
+      }
+      send(connection, economyUpdateMessage(economy));
+    }
+  }
+
 
   function handleCompletion(member: Member, connection: Connection, level: number): void {
     if (!isComplete(member.cube, level)) {
@@ -581,6 +659,11 @@ export function createGameHub(deps: HubDeps): GameHub {
       sendSync(connection, member);
       return;
     }
+    // Speed bonus uses the previous cube's gridSize and the server clock, before reset.
+    const previousGridSize = member.cube.gridSize;
+    const elapsedMs = deps.now() - member.cubeStartedAtMs;
+    const bonus = speedBonusApplies(elapsedMs, previousGridSize);
+
     const previous = locationOf(member.playerId)!;
     const next = createNextCube(member.cube, styleForLevel, random);
     const target = movePlan.get(member.playerId);
@@ -590,6 +673,24 @@ export function createGameHub(deps: HubDeps): GameHub {
     member.cube = next;
     member.yawSteps = 0;
     member.pitchSteps = 0;
+    member.cubeStartedAtMs = deps.now();
+
+    // Account credit (fire-and-forget): cube coins (with speed bonus) + cubesDestroyed.
+    if (member.accountId !== null && economyRepo !== null) {
+      const accountId = member.accountId;
+      const coins = roundCoins(COINS_PER_CUBE * (bonus ? 2 : 1));
+      void economyRepo
+        .credit(accountId, { coins, cubesDestroyed: 1 })
+        .then((result) => {
+          for (const m of members.values()) {
+            if (m.accountId === accountId) {
+              m.economy = result;
+            }
+          }
+          broadcastEconomyUpdate(accountId, result);
+        });
+    }
+
     if (moved === null) {
       const advance: LevelAdvance = {
         playerId: member.playerId,
