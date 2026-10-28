@@ -81,10 +81,10 @@ export const STARFIELD_TAN =
   Math.tan((Math.PI * 50) / 360) * STARFIELD_ASPECT_MAX * (1 + STARFIELD_COVERAGE_MARGIN);
 
 /** World-space point size of a star (attenuated by distance). */
-const STAR_SIZE = 0.6;
+export const STAR_SIZE = 0.8;
 
 /** Brightness of the dimmest star; the brightest star is exactly 1. */
-const STAR_MIN_BRIGHTNESS = 0.5;
+export const STAR_MIN_BRIGHTNESS = 0.75;
 
 /**
  * Swirl rate: `2^-16 = 1/65536` radians per millisecond (≈ 0.015259 rad/s — a full slow
@@ -110,10 +110,19 @@ export interface StarfieldAnchor {
   quaternion: Quaternion;
 }
 
+/** Pinned twinkle constants (AC-2). */
+export const STARFIELD_OPACITY_BASE = 1.0;
+export const STARFIELD_OPACITY_AMPLITUDE = 0.1;
+export const STARFIELD_PULSE_PERIOD_MS = 4000;
+
 /** The galaxy backdrop: one starfield `Points` object plus its frame-update hooks. */
 export interface Starfield {
   /** The single `THREE.Points` drawable holding every star (AC-16: one object, never rebuilt). */
   readonly points: Points<BufferGeometry, PointsMaterial>;
+  /** Accumulated pulse phase in ms (AC-2). */
+  readonly pulseTimeMs: number;
+  /** Mean of all per-star RGB color channel values (AC-3). */
+  readonly averageBrightness: number;
   /**
    * Advances the backdrop by `dtMs` milliseconds, re-anchors it to `anchor` and applies the
    * travel scale.
@@ -128,7 +137,7 @@ export interface Starfield {
    *
    * The anchor references and the swirl quaternion are preallocated: no per-frame allocation.
    */
-  update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor): void;
+  update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor, reducedMotion?: boolean): void;
   /** Releases the geometry and material of the starfield. */
   dispose(): void;
 }
@@ -163,6 +172,11 @@ export function createStarfield(random: () => number): Starfield {
     colors[offset + 1] = brightness;
     colors[offset + 2] = brightness;
   }
+  let brightnessSum = 0;
+  for (let i = 0; i < colors.length; i += 1) {
+    brightnessSum += colors[i];
+  }
+  const averageBrightness = brightnessSum / colors.length;
 
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
@@ -173,7 +187,7 @@ export function createStarfield(random: () => number): Starfield {
     sizeAttenuation: true,
     vertexColors: true,
     transparent: true,
-    opacity: 0.9,
+    opacity: STARFIELD_OPACITY_BASE,
     depthWrite: false,
   });
 
@@ -181,12 +195,21 @@ export function createStarfield(random: () => number): Starfield {
 
   /** Accumulated swirl angle about the view axis (radians). */
   let swirlAngle = 0;
+  /** Accumulated pulse phase in ms (AC-2). */
+  let pulseTimeMsValue = 0;
   /** Preallocated `RotZ(swirlAngle)`: the view-axis swirl composed with the anchor. */
   const swirlQuaternion = new Quaternion();
 
   return {
     points,
-    update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor): void {
+    get pulseTimeMs(): number {
+      return pulseTimeMsValue;
+    },
+    get averageBrightness(): number {
+      return averageBrightness;
+    },
+    update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor, reducedMotion?: boolean): void {
+      pulseTimeMsValue += Math.max(0, dtMs);
       swirlAngle += Math.max(0, dtMs) * DRIFT_RADIANS_PER_MS;
 
       const anchorPosition = anchor?.position ?? WORLD_IDENTITY_POSITION;
@@ -201,6 +224,16 @@ export function createStarfield(random: () => number): Starfield {
         // In-plane only: the stars spread radially away from the screen centre while their
         // depth stays put, so no star leaves the camera's far plane (depth ≤ 160 < 200).
         points.scale.set(expansion, expansion, 1);
+      }
+
+      const motion = reducedMotion === true;
+      if (motion) {
+        points.material.opacity = STARFIELD_OPACITY_BASE;
+      } else {
+        points.material.opacity =
+          STARFIELD_OPACITY_BASE -
+          STARFIELD_OPACITY_AMPLITUDE *
+            (0.5 - 0.5 * Math.cos((2 * Math.PI * pulseTimeMsValue) / STARFIELD_PULSE_PERIOD_MS));
       }
     },
     dispose(): void {

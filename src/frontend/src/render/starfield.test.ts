@@ -7,6 +7,11 @@ import {
   STARFIELD_DEPTH_FAR,
   STARFIELD_DEPTH_NEAR,
   STARFIELD_TAN,
+  STAR_MIN_BRIGHTNESS,
+  STAR_SIZE,
+  STARFIELD_OPACITY_BASE,
+  STARFIELD_OPACITY_AMPLITUDE,
+  STARFIELD_PULSE_PERIOD_MS,
 } from './starfield';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
@@ -70,7 +75,8 @@ describe('createStarfield', () => {
   it('pins the point material that draws the stars', () => {
     const starfield = createStarfield(seededRandom(2));
 
-    expect(starfield.points.material.size).toBe(0.6);
+    expect(starfield.points.material.size).toBe(0.8);
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
     expect(starfield.points.material.sizeAttenuation).toBe(true);
     expect(starfield.points.material.vertexColors).toBe(true);
   });
@@ -113,7 +119,7 @@ describe('createStarfield', () => {
     expect([position.getX(1199), position.getY(1199), position.getZ(1199)]).toEqual([
       200.201416015625, -200.201416015625, -160,
     ]);
-    expect([color.getX(1199), color.getY(1199), color.getZ(1199)]).toEqual([0.5, 0.5, 0.5]);
+    expect([color.getX(1199), color.getY(1199), color.getZ(1199)]).toEqual([0.75, 0.75, 0.75]);
   });
 
   it('consumes exactly four draws per star, whatever the drawn values are', () => {
@@ -151,12 +157,12 @@ describe('createStarfield', () => {
       -69.12860107421875, 109.4261703491211, -105.74883270263672,
     ]);
     expect([color.getX(0), color.getY(0), color.getZ(0)]).toEqual([
-      0.9634907245635986, 0.9634907245635986, 0.9634907245635986,
+      0.9817453622817993, 0.9817453622817993, 0.9817453622817993,
     ]);
     expect([position.getX(1199), position.getY(1199), position.getZ(1199)]).toEqual([
       -17.420745849609375, -28.543577194213867, -22.971054077148438,
     ]);
-    expect(color.getX(1199)).toBe(0.7416720986366272);
+    expect(color.getX(1199)).toBe(0.870836079120636);
   });
 });
 
@@ -334,5 +340,83 @@ describe('dispose', () => {
     expect(geometryDispose).toHaveBeenCalledWith();
     expect(materialDispose).toHaveBeenCalledTimes(1);
     expect(materialDispose).toHaveBeenCalledWith();
+  });
+});
+
+describe('starfield twinkle (AC-2)', () => {
+  it('exports the pinned brightness/size/twinkle constants', () => {
+    expect(STAR_MIN_BRIGHTNESS).toBe(0.75);
+    expect(STAR_SIZE).toBe(0.8);
+    expect(STARFIELD_OPACITY_BASE).toBe(1.0);
+    expect(STARFIELD_OPACITY_AMPLITUDE).toBe(0.1);
+    expect(STARFIELD_PULSE_PERIOD_MS).toBe(4000);
+  });
+
+  it('exposes pulseTimeMs and averageBrightness as readonly numbers', () => {
+    const starfield = createStarfield(seededRandom(1));
+    expect(typeof starfield.pulseTimeMs).toBe('number');
+    expect(typeof starfield.averageBrightness).toBe('number');
+    expect(starfield.pulseTimeMs).toBe(0);
+  });
+
+  it('advances pulseTimeMs by max(0, dtMs) on every call', () => {
+    const starfield = createStarfield(seededRandom(1));
+    starfield.update(1000);
+    expect(starfield.pulseTimeMs).toBe(1000);
+    starfield.update(0);
+    expect(starfield.pulseTimeMs).toBe(1000);
+    starfield.update(-500);
+    expect(starfield.pulseTimeMs).toBe(1000);
+    starfield.update(250);
+    expect(starfield.pulseTimeMs).toBe(1250);
+  });
+
+  it('applies the twinkle formula when reducedMotion is false', () => {
+    const starfield = createStarfield(seededRandom(1));
+    starfield.update(1000);
+    const expected =
+      STARFIELD_OPACITY_BASE -
+      STARFIELD_OPACITY_AMPLITUDE *
+        (0.5 - 0.5 * Math.cos((2 * Math.PI * 1000) / STARFIELD_PULSE_PERIOD_MS));
+    expect(starfield.points.material.opacity).toBeCloseTo(expected, 6);
+    expect(starfield.pulseTimeMs).toBe(1000);
+  });
+
+  it('keeps opacity at base when reducedMotion is true', () => {
+    const starfield = createStarfield(seededRandom(1));
+    starfield.update(1000, undefined, undefined, true);
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
+    expect(starfield.pulseTimeMs).toBe(1000);
+  });
+
+  it('defaults reducedMotion to false', () => {
+    const starfield = createStarfield(seededRandom(1));
+    starfield.update(1000);
+    const expected =
+      STARFIELD_OPACITY_BASE -
+      STARFIELD_OPACITY_AMPLITUDE *
+        (0.5 - 0.5 * Math.cos((2 * Math.PI * 1000) / STARFIELD_PULSE_PERIOD_MS));
+    expect(starfield.points.material.opacity).toBeCloseTo(expected, 6);
+  });
+
+  it('computes averageBrightness as the mean of per-star RGB channels', () => {
+    const starfield = createStarfield(sequenceRandom([0.5, 0.5, 0.5, 1, 1, 0, 1, 0]));
+    // brightnesses: star0 = 0.75+0.25*1=1.0 (3 ch), star1... all 1199 stars use cycling draws.
+    // Just check range and type.
+    expect(starfield.averageBrightness).toBeGreaterThanOrEqual(0);
+    expect(starfield.averageBrightness).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('starfield averageBrightness (AC-3)', () => {
+  it('matches the mean of color attribute values', () => {
+    const starfield = createStarfield(seededRandom(3));
+    const color = starfield.points.geometry.getAttribute('color');
+    let sum = 0;
+    for (let i = 0; i < color.count; i += 1) {
+      sum += color.getX(i) + color.getY(i) + color.getZ(i);
+    }
+    const mean = sum / (color.count * 3);
+    expect(starfield.averageBrightness).toBe(mean);
   });
 });
