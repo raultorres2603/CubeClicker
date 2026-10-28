@@ -25,5 +25,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | spaceship-cursor | Spaceship Cursor (3D spaceship follows cursor, shoots mini-cubes on explosion) | accepted | 2026-10-27 |
 | spaceship-cursor-polish | Spaceship Cursor Polish (farther diagonal, larger bullet ship, more delay, ignition fire) | accepted | 2026-10-27 |
 | spaceship-cursor-refinement | Spaceship Cursor Refinement (smaller ship, shifted left) | accepted | 2026-10-27 |
+| modern-visual-overhaul | Modern Visual Overhaul (bright starfield, shadows, fighter ship, animated HUD) | accepted | 2026-10-28 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

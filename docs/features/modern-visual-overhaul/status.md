@@ -1,9 +1,8 @@
 ---
 feature: modern-visual-overhaul
-state: code_review
+state: accepted
 spec_review_round: 2
-spec_review_round: 1
-build_round: 1
+build_round: 2
 created: 2026-10-28
 updated: 2026-10-28
 ---
@@ -30,6 +29,8 @@ Modernize visuals: recreate spaceship as a simple bullet/fighter (image unreadab
 - 2026-10-28 — building — T5 completed — docs/features/modern-visual-overhaul/build-log-T5.md
 - 2026-10-28 — building — T3 completed — docs/features/modern-visual-overhaul/build-log-T3.md
 - 2026-10-28 — building → code_review — Tfinal verification passed (lint/typecheck/tests/coverage/build/smoke); build-log-Tfinal.md
+- 2026-10-28 — code_review — fixes applied (commit 48ec56d); starting r2
+- 2026-10-28 — code_review → accepted — approved r2 (0 blocking) + docs pass — docs/features/modern-visual-overhaul/reviews/code-r2.md
 
 ## Blockers / open questions
 - none
