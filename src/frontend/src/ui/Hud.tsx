@@ -2,35 +2,24 @@ import type { ReactElement } from 'react';
 
 import type { GameStats } from '../game/types';
 
-/**
- * Live session statistics (AC-1, AC-11, AC-14; `Server` line AC-23, T14).
- *
- * Pure props — `App` reads the session snapshot and the multiplayer store and hands the
- * values down, so this component owns no subscription and renders identically under SSR.
- *
- * **Accessibility (AC-14):** neither counter is a live region. The shell renders exactly
- * one `role="status" aria-live="polite"` region (the phase announcement); keeping the
- * counters and the server id out of it means one predictable announcement stream instead
- * of four competing ones. Their updates are therefore deliberately not announced — they
- * stay readable by navigating to the text.
- *
- * **Responsive overlay (AC-4, AC-5).** `app.css` positions the HUD as the absolute
- * `main > section` overlay, applies the safe-area insets and keeps the container
- * `pointer-events: none`. The component therefore renders no class, wrapper or inline
- * style — those rules stay authoritative — and has no interactive descendants, so the
- * canvas below keeps receiving every pointer gesture in portrait and landscape.
- */
 export function Hud({
   stats,
   levelIndex,
   serverId,
+  minimized = false,
+  onToggleMinimize,
 }: {
   stats: GameStats;
   levelIndex: number;
   serverId: number;
+  minimized?: boolean;
+  onToggleMinimize?: () => void;
 }): ReactElement {
   return (
-    <section aria-label="Game statistics">
+    <section
+      aria-label="Game statistics"
+      {...(minimized ? { 'data-minimized': 'true' } : {})}
+    >
       <p>
         Clicks: <span data-stat="clicks">{stats.clicks}</span>
       </p>
@@ -43,6 +32,14 @@ export function Hud({
       <p>
         Server <span data-stat="server">{serverId}</span>
       </p>
+      {onToggleMinimize ? (
+        <button
+          type="button"
+          aria-expanded={!minimized}
+          aria-label="Toggle HUD"
+          onClick={onToggleMinimize}
+        />
+      ) : null}
     </section>
   );
 }

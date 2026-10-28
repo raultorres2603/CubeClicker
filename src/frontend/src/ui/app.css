@@ -526,3 +526,41 @@ main > section [data-stat] {
   }
 }
 
+
+/* HUD minimize + overlay motion (AC-6, AC-7, AC-8). */
+main > section {
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+main > section button {
+  pointer-events: auto;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+main > section button:active {
+  transform: scale(0.97);
+}
+
+main > section[data-minimized="true"] {
+  gap: 0.125rem;
+}
+
+main > section[data-minimized="true"] p {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 150ms ease, opacity 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  main > section,
+  main > section button,
+  main > section[data-minimized="true"] p {
+    transition: none;
+    animation: none;
+  }
+
+  main > section button:active {
+    transform: none;
+  }
+}

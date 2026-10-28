@@ -2,19 +2,6 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-/**
- * Weak regression guard for the auth-overlay backdrop centering (cube-centering).
- *
- * This test runs in the default node environment and has NO layout engine, so it cannot
- * assert anything about the rendered geometry of the backdrop or the cube. It only checks
- * that the CSS source still contains the two tokens the centering fix depends on:
- *   - `circle at 50% 50%` (radial-gradient focal point)
- *   - `background-origin: border-box` (percentage resolves against the full viewport box)
- *
- * Real visual centering still requires a browser/DOM layout engine and is out of scope for
- * the node test environment. If the rule is removed or the tokens change, this guard fails;
- * it does NOT prove the backdrop is visually centered.
- */
 describe('auth overlay backdrop centering (CSS guard)', () => {
   it('keeps the auth-menu/auth-forms backdrop gradient centered at 50% 50% with border-box origin', () => {
     const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
@@ -27,5 +14,37 @@ describe('auth overlay backdrop centering (CSS guard)', () => {
 
     expect(rule).toContain('circle at 50% 50%');
     expect(rule).toContain('background-origin: border-box');
+  });
+});
+
+describe('overlay motion (CSS guard, AC-7, AC-8)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('grants pointer-events: auto to main > section button', () => {
+    expect(css).toContain('main > section button');
+    expect(css).toContain('pointer-events: auto');
+  });
+
+  it('applies a transition with duration <= 200ms to main > section', () => {
+    expect(css).toMatch(/main > section\s*\{[\s\S]*?transition:[^}]*150ms/);
+  });
+
+  it('applies scale(0.97) (or 0.98) on the minimize button :active', () => {
+    expect(css).toMatch(/main > section button:active\s*\{[\s\S]*?transform:\s*scale\(0\.9[78]\)/);
+  });
+
+  it('collapses stat paragraphs when data-minimized="true"', () => {
+    expect(css).toContain('main > section[data-minimized="true"]');
+    expect(css).toContain('max-height: 0');
+    expect(css).toContain('opacity: 0');
+    expect(css).toContain('overflow: hidden');
+  });
+
+  it('disables transitions under prefers-reduced-motion: reduce', () => {
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    expect(block).toContain('transition: none');
+    expect(block).toContain('animation: none');
   });
 });
