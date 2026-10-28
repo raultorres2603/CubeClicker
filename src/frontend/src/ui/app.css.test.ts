@@ -258,10 +258,10 @@ describe('frame sheen (AC-9)', () => {
   });
   it('mask-composite declarations follow their shorthands', () => {
     const body = ruleBody(re);
-    const webkitMaskIdx = body.indexOf('-webkit-mask:');
-    const webkitCompIdx = body.indexOf('-webkit-mask-composite:');
-    const maskIdx = body.indexOf('mask: linear-gradient(#000 0 0)');
-    const compIdx = body.indexOf('mask-composite:');
+    const webkitMaskIdx = body.search(/^\s*-webkit-mask:/m);
+    const webkitCompIdx = body.search(/^\s*-webkit-mask-composite:/m);
+    const maskIdx = body.search(/^\s*mask:/m);
+    const compIdx = body.search(/^\s*mask-composite:/m);
     expect(webkitCompIdx).toBeGreaterThan(webkitMaskIdx);
     expect(compIdx).toBeGreaterThan(maskIdx);
   });
@@ -570,5 +570,11 @@ describe('responsive fit (CSS guard, AC-11)', () => {
     expect(m).not.toBeNull();
     const block = m![1];
     expect(block).toMatch(/main > section[^{]*\{[\s\S]*?(?:padding:|font-size:)/);
+  });
+});
+describe('stylesheet hygiene', () => {
+  it('ends with exactly one trailing newline', () => {
+    expect(css.endsWith('\n')).toBe(true);
+    expect(css.endsWith('\n\n')).toBe(false);
   });
 });
