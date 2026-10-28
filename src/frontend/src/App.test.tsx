@@ -480,6 +480,7 @@ describe('App', () => {
   });
 
   it('blinks the welcomed HUD when clicks increase (AC-5)', async () => {
+    vi.useFakeTimers();
     const { session, setSnapshot } = mutableSession(
       snapshotFor('playing', { clicks: 0, facesDestroyed: 0 }, 0),
       multiplayerFor(),
@@ -493,15 +494,24 @@ describe('App', () => {
       setSnapshot(snapshotFor('playing', { clicks: 1, facesDestroyed: 0 }, 0));
     });
 
-    await waitFor(() => {
-      expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBe('true');
+    // Flush the commit effect so the blink flips on synchronously.
+    await act(async () => {
+      await Promise.resolve();
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBe('true');
 
-    await waitFor(() => {
-      expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBeNull();
+    // The single HUD_BLINK_MS (200 ms) timer clears the blink.
+    act(() => {
+      vi.advanceTimersByTime(200);
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBeNull();
+
+    vi.useRealTimers();
   });
 
   it('does not blink the welcomed HUD under reduced motion (AC-6)', async () => {
@@ -516,7 +526,9 @@ describe('App', () => {
       setSnapshot(snapshotFor('playing', { clicks: 1, facesDestroyed: 0 }, 0, { reducedMotion: true }));
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     expect(section.getAttribute('data-blinking')).toBeNull();
   });

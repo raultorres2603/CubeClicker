@@ -2372,3 +2372,74 @@ describe('resume reset during a flight (AC-19 d, AC-22)', () => {
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
   });
 });
+
+describe('background life scene integration (AC-9, AC-10)', () => {
+  function backgroundLifeGroup(view: SceneView): Group {
+    const group = view.scene.children.find(
+      (child): child is Group => child instanceof Group && child.name === 'background-life',
+    );
+    if (group === undefined) {
+      throw new Error('the scene has no background-life group');
+    }
+    return group;
+  }
+
+  it('adds exactly one group named background-life (AC-9)', () => {
+    const view = createView();
+    const groups = view.scene.children.filter(
+      (child): child is Group => child instanceof Group && child.name === 'background-life',
+    );
+    expect(groups).toHaveLength(1);
+    expect(backgroundLifeGroup(view).name).toBe('background-life');
+  });
+
+  it('survives a levelChanged rebuild without duplication (AC-9)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelDirection: 'right',
+        style: NEXT_STYLE,
+        levelIndex: 1,
+      }),
+    );
+
+    const groups = view.scene.children.filter(
+      (child): child is Group => child instanceof Group && child.name === 'background-life',
+    );
+    expect(groups).toHaveLength(1);
+  });
+
+  it('leaves no group named background-life after dispose (AC-9)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    view.dispose();
+    const groups = view.scene.children.filter(
+      (child): child is Group => child instanceof Group && child.name === 'background-life',
+    );
+    expect(groups).toHaveLength(0);
+  });
+
+  it('forwards reducedMotion to background life on update (AC-10)', () => {
+    const viewReduced = createView();
+    applySnapshot(viewReduced, snapshot({ reducedMotion: true }));
+    const reducedGroup = backgroundLifeGroup(viewReduced);
+    const reducedStar = reducedGroup.children.find((c) => c.name === 'shooting-star') as Mesh;
+    const reducedBefore = reducedStar.position.x;
+    viewReduced.update(100);
+    expect(reducedStar.position.x).toBe(reducedBefore);
+
+    const viewMotion = createView();
+    applySnapshot(viewMotion, snapshot({ reducedMotion: false }));
+    const motionGroup = backgroundLifeGroup(viewMotion);
+    const motionStar = motionGroup.children.find((c) => c.name === 'shooting-star') as Mesh;
+    const motionBefore = motionStar.position.x;
+    viewMotion.update(100);
+    expect(motionStar.position.x).not.toBe(motionBefore);
+  });
+});

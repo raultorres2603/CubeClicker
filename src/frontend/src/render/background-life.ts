@@ -104,6 +104,11 @@ export function createBackgroundLife(random: () => number): BackgroundLife {
       return;
     }
     disposed = true;
+    // Detach the group from its parent first so the module is self-contained (F3):
+    // an empty group must not linger in a parent scene when disposed standalone.
+    if (group.parent !== null) {
+      group.parent.remove(group);
+    }
     for (const star of shootingStars) {
       star.geometry.dispose();
       (star.material as { dispose(): void }).dispose();
