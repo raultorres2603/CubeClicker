@@ -1,6 +1,6 @@
 ---
 feature: metallic-hud-frames
-state: code_review
+state: accepted
 spec_review_round: 2
 spec_review_round: 1
 build_round: 1
@@ -25,6 +25,7 @@ Replace the current futuristic HUD styling with metallic blue-gray frames, cyan 
 - 2026-10-28 — building — T1 completed — docs/features/metallic-hud-frames/build-log-T1.md
 - 2026-10-28 — building — T2 completed — docs/features/metallic-hud-frames/build-log-T2.md
 - 2026-10-28 — building → code_review — T2 verification passed (lint/typecheck/tests/coverage/build/smoke); build-log-T2.md
+- 2026-10-28 — code_review → accepted — approved r1 (0 blocking) + docs pass — docs/features/metallic-hud-frames/reviews/code-r1.md
 
 ## Blockers / open questions
 - none

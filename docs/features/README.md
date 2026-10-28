@@ -28,5 +28,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | modern-visual-overhaul | Modern Visual Overhaul (bright starfield, shadows, fighter ship, animated HUD) | accepted | 2026-10-28 |
 | modern-ui-background-life | Modern UI & Background Life (border light, HUD blink, shooting stars, spaceships) | accepted | 2026-10-28 |
 | futuristic-hud-blue | Futuristic HUD Blue (blue technologic HUD styling) | accepted | 2026-10-28 |
+| metallic-hud-frames | Metallic HUD Frames (beveled metal frames, cyan glow) | accepted | 2026-10-28 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
