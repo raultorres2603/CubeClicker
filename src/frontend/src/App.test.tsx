@@ -190,6 +190,7 @@ function shellHtml({
     `<p>Faces destroyed: <span data-stat="faces-destroyed">${stats.facesDestroyed}</span></p>` +
     `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
     (welcomed ? `<p>Server <span data-stat="server">${serverId}</span></p>` : '') +
+    (welcomed ? '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' : '') +
     '</section>' +
     banner +
     (welcomed ? panel : '') +
@@ -415,6 +416,18 @@ describe('App', () => {
     // The banner never becomes a second live region.
     expect(occurrences(exhausted, 'aria-live=')).toBe(1);
     expect(occurrences(exhausted, 'role="status"')).toBe(1);
+  });
+
+  it('toggles the HUD minimized state from the welcomed branch (AC-6)', async () => {
+    render(<App hasChosen session={sessionFor(snapshotFor('playing'), multiplayerFor())} />);
+    const toggle = screen.getByRole('button', { name: 'Toggle HUD' });
+    const section = screen.getByLabelText('Game statistics');
+
+    expect(section.getAttribute('data-minimized')).toBeNull();
+    await userEvent.click(toggle);
+    expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBe('true');
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle HUD' }));
+    expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBeNull();
   });
 });
 

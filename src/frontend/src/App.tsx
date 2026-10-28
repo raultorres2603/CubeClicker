@@ -371,6 +371,8 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   const gateState = useSyncExternalStore(gate.subscribe, gate.getSnapshot, gate.getSnapshot);
   const welcomed = world.serverId > 0;
 
+  const [hudMinimized, setHudMinimized] = useState(false);
+
   if (verify) {
     return (
       <main>
@@ -386,7 +388,13 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
     <main>
       <GameCanvas session={session} />
       {welcomed ? (
-        <Hud stats={snapshot.stats} levelIndex={snapshot.levelIndex} serverId={world.serverId} />
+        <Hud
+          stats={snapshot.stats}
+          levelIndex={snapshot.levelIndex}
+          serverId={world.serverId}
+          minimized={hudMinimized}
+          onToggleMinimize={() => setHudMinimized((value) => !value)}
+        />
       ) : (
         <section aria-label="Game statistics">
           <p>
