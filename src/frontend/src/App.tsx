@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type ReactElement } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { createAuthApi, type AuthApi } from './auth/api';
 import { createAuthStore, type AuthStore } from './auth/store';
@@ -10,7 +10,7 @@ import type { SpectateStatus } from './multiplayer/spectate';
 import { createTransport } from './multiplayer/transport';
 import { ConnectionBanner } from './ui/ConnectionBanner';
 import { GameCanvas } from './ui/GameCanvas';
-import { Hud } from './ui/Hud';
+import { HUD_BLINK_MS, Hud } from './ui/Hud';
 import { UserPanel } from './ui/UserPanel';
 import { AuthMenu } from './ui/AuthMenu';
 import { VerificationPending } from './ui/VerificationPending';
@@ -373,6 +373,39 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
 
   const [hudMinimized, setHudMinimized] = useState(false);
 
+  const [hudBlinking, setHudBlinking] = useState(false);
+  const prevClicksRef = useRef<number | null>(null);
+  const blinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const clicks = snapshot.stats.clicks;
+    const reducedMotion = snapshot.reducedMotion;
+    const previous = prevClicksRef.current;
+    prevClicksRef.current = clicks;
+
+    if (blinkTimerRef.current !== null) {
+      clearTimeout(blinkTimerRef.current);
+      blinkTimerRef.current = null;
+    }
+
+    if (previous !== null && clicks > previous && !reducedMotion) {
+      setHudBlinking(true);
+      blinkTimerRef.current = setTimeout(() => {
+        setHudBlinking(false);
+        blinkTimerRef.current = null;
+      }, HUD_BLINK_MS);
+    } else {
+      setHudBlinking(false);
+    }
+
+    return () => {
+      if (blinkTimerRef.current !== null) {
+        clearTimeout(blinkTimerRef.current);
+        blinkTimerRef.current = null;
+      }
+    };
+  }, [snapshot.stats.clicks, snapshot.reducedMotion]);
+
   if (verify) {
     return (
       <main>
@@ -393,6 +426,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
           levelIndex={snapshot.levelIndex}
           serverId={world.serverId}
           minimized={hudMinimized}
+          blinking={hudBlinking}
           onToggleMinimize={() => setHudMinimized((value) => !value)}
         />
       ) : (

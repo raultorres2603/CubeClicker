@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -141,6 +141,55 @@ function sessionFor(
     join: () => {},
     setPointerTarget: () => {},
     ...overrides,
+  };
+}
+
+/** A session fake whose snapshot can be advanced in tests, notifying subscribers. */
+function mutableSession(
+  initialSnapshot: EngineSnapshot,
+  initialMultiplayer: MultiplayerSnapshot,
+): {
+  session: OnlineGameSession;
+  setSnapshot: (next: EngineSnapshot) => void;
+  setMultiplayer: (next: MultiplayerSnapshot) => void;
+} {
+  let snapshot = initialSnapshot;
+  let multiplayer = initialMultiplayer;
+  const snapListeners = new Set<() => void>();
+  const mpListeners = new Set<() => void>();
+  const session: OnlineGameSession = {
+    attach: () => {},
+    dispose: () => {},
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      snapListeners.add(listener);
+      return () => {
+        snapListeners.delete(listener);
+      };
+    },
+    getMultiplayerSnapshot: () => multiplayer,
+    subscribeMultiplayer: (listener) => {
+      mpListeners.add(listener);
+      return () => {
+        mpListeners.delete(listener);
+      };
+    },
+    spectateMember: () => false,
+    returnToOwnCube: () => false,
+    retryConnection: () => {},
+    join: () => {},
+    setPointerTarget: () => {},
+  };
+  return {
+    session,
+    setSnapshot: (next) => {
+      snapshot = next;
+      for (const listener of snapListeners) listener();
+    },
+    setMultiplayer: (next) => {
+      multiplayer = next;
+      for (const listener of mpListeners) listener();
+    },
   };
 }
 
@@ -428,6 +477,55 @@ describe('App', () => {
     expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBe('true');
     await userEvent.click(screen.getByRole('button', { name: 'Toggle HUD' }));
     expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBeNull();
+  });
+
+  it('blinks the welcomed HUD when clicks increase (AC-5)', async () => {
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0 }, 0),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    const section = screen.getByLabelText('Game statistics');
+
+    expect(section.getAttribute('data-blinking')).toBeNull();
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', { clicks: 1, facesDestroyed: 0 }, 0));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBe('true');
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Game statistics').getAttribute('data-blinking')).toBeNull();
+    });
+  });
+
+  it('does not blink the welcomed HUD under reduced motion (AC-6)', async () => {
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0 }, 0, { reducedMotion: true }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    const section = screen.getByLabelText('Game statistics');
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', { clicks: 1, facesDestroyed: 0 }, 0, { reducedMotion: true }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(section.getAttribute('data-blinking')).toBeNull();
+  });
+
+  it('leaves the pre-welcome stats section without a blink (AC-5)', () => {
+    const html = renderToStaticMarkup(
+      <App hasChosen session={sessionFor(snapshotFor('playing', { clicks: 5, facesDestroyed: 0 }, 0), multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }))} />,
+    );
+    expect(html).not.toContain('data-blinking');
   });
 });
 
