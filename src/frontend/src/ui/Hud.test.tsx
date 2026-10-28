@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Hud } from './Hud';
+import { HUD_BLINK_MS, Hud } from './Hud';
 
 afterEach(() => {
   cleanup();
@@ -161,5 +161,49 @@ describe('responsive overlay contract', () => {
     expect(html).not.toContain('tabindex');
     expect(html).not.toContain('role=');
     expect(html).not.toContain('aria-live');
+  });
+});
+
+describe('HUD_BLINK_MS', () => {
+  it('is exported as 200', () => {
+    expect(HUD_BLINK_MS).toBe(200);
+  });
+});
+
+describe('Hud blinking prop (AC-3)', () => {
+  it('carries data-blinking="true" when blinking is true', () => {
+    const html = renderToStaticMarkup(
+      <Hud stats={{ clicks: 1, facesDestroyed: 1 }} levelIndex={0} serverId={1} blinking />,
+    );
+    expect(html).toContain('data-blinking="true"');
+  });
+
+  it('carries data-blinking="true" when blinking is explicitly true', () => {
+    const html = renderToStaticMarkup(
+      <Hud stats={{ clicks: 1, facesDestroyed: 1 }} levelIndex={0} serverId={1} blinking={true} />,
+    );
+    expect(html).toContain('data-blinking="true"');
+  });
+
+  it('carries no data-blinking attribute when blinking is false', () => {
+    const html = renderToStaticMarkup(
+      <Hud stats={{ clicks: 1, facesDestroyed: 1 }} levelIndex={0} serverId={1} blinking={false} />,
+    );
+    expect(html).not.toContain('data-blinking');
+  });
+
+  it('carries no data-blinking attribute when blinking is omitted (default markup unchanged)', () => {
+    const html = renderToStaticMarkup(
+      <Hud stats={{ clicks: 1, facesDestroyed: 1 }} levelIndex={0} serverId={1} />,
+    );
+    expect(html).not.toContain('data-blinking');
+    expect(html).toBe(
+      '<section aria-label="Game statistics">' +
+        '<p>Clicks: <span data-stat="clicks">1</span></p>' +
+        '<p>Faces destroyed: <span data-stat="faces-destroyed">1</span></p>' +
+        '<p>Cube <span data-stat="cube">1</span></p>' +
+        '<p>Server <span data-stat="server">1</span></p>' +
+        '</section>',
+    );
   });
 });
