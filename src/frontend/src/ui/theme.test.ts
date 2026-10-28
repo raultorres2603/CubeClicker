@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { ACCENT, HUD_BACKGROUND, HUD_TEXT, PAGE_BACKGROUND } from './theme';
@@ -56,6 +58,15 @@ function contrastRatio(a: Rgb, b: Rgb): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
+function readCssVar(name: string): string {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+  const match = css.match(new RegExp(`${name.replace(/[-]/g, '\\-')}:\\s*([^;]+);`));
+  if (match === null) {
+    throw new Error(`theme.test.ts: css var ${name} not found`);
+  }
+  return match[1].trim();
+}
+
 describe('HUD theme', () => {
   it('pins the exact theme colours', () => {
     expect(HUD_TEXT).toBe('#e8f6ff');
@@ -71,6 +82,48 @@ describe('HUD theme', () => {
 
     // Exact value for the pinned pair (18.2648…), so an unnoticed colour change fails.
     expect(Math.round(ratio * 100) / 100).toBe(18.26);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps HUD text contrast >= 12 over the frame center (AC-17)', () => {
+    const { color, alpha } = parseRgba(readCssVar('--frame-center-top'));
+    const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
+    const ratio = contrastRatio(hexToRgb(HUD_TEXT), center);
+    expect(ratio).toBeGreaterThanOrEqual(12);
+  });
+
+  it('keeps HUD text contrast >= 12 over both alert center stops (AC-22)', () => {
+    for (const name of ['--frame-center-alert-start', '--frame-center-alert-end']) {
+      const { color, alpha } = parseRgba(readCssVar(name));
+      const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
+      const ratio = contrastRatio(hexToRgb(HUD_TEXT), center);
+      expect(ratio).toBeGreaterThanOrEqual(12);
+    }
+  });
+
+  it('keeps #ffb4b4 contrast >= 4.5 over both alert center stops (AC-22)', () => {
+    for (const name of ['--frame-center-alert-start', '--frame-center-alert-end']) {
+      const { color, alpha } = parseRgba(readCssVar(name));
+      const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
+      const ratio = contrastRatio(hexToRgb('#ffb4b4'), center);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('keeps HUD text contrast >= 4.5 over the input well (AC-22)', () => {
+    const { color: centerColor, alpha: centerAlpha } = parseRgba(readCssVar('--frame-center-top'));
+    const center = composite(centerColor, centerAlpha, hexToRgb(PAGE_BACKGROUND));
+    const { color: wellColor, alpha: wellAlpha } = parseRgba('rgba(0, 0, 0, 0.42)');
+    const well = composite(wellColor, wellAlpha, center);
+    const ratio = contrastRatio(hexToRgb(HUD_TEXT), well);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps disabled text at 0.62 alpha contrast >= 4.5 over the frame center (AC-23)', () => {
+    const { color: centerColor, alpha: centerAlpha } = parseRgba(readCssVar('--frame-center-top'));
+    const center = composite(centerColor, centerAlpha, hexToRgb(PAGE_BACKGROUND));
+    const disabledText = composite(hexToRgb(HUD_TEXT), 0.62, center);
+    const ratio = contrastRatio(disabledText, center);
     expect(ratio).toBeGreaterThanOrEqual(4.5);
   });
 });
