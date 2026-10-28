@@ -61,6 +61,13 @@ describe('createWebGLRenderer', () => {
     expect(threeMock.instances[0]!.shadowMap.enabled).toBe(true);
   });
 
+  it('enables shadow maps on the renderer (AC-4)', () => {
+    createWebGLRenderer(canvas);
+
+    expect(threeMock.instances).toHaveLength(1);
+    expect(threeMock.instances[0]!.shadowMap.enabled).toBe(true);
+  });
+
   it('forwards each adapter call to the renderer with the exact arguments', () => {
     const adapter = createWebGLRenderer(canvas);
     const renderer = threeMock.instances[0]!;

@@ -257,6 +257,9 @@ describe('createCubeView', () => {
       heightSegments: 1,
       depthSegments: 1,
     });
+    // AC-4: body casts and receives shadows.
+    expect(view.body.castShadow).toBe(true);
+    expect(view.body.receiveShadow).toBe(true);
 
     expect([...view.faces.keys()]).toEqual(FACE_ORDER);
     expect(view.faces.size).toBe(6);
@@ -266,6 +269,9 @@ describe('createCubeView', () => {
       expect(mesh.count).toBe(25);
       expect(mesh.instanceMatrix.count).toBe(25);
       expect(mesh.geometry).toBeInstanceOf(BoxGeometry);
+      // AC-4: every face InstancedMesh casts and receives shadows.
+      expect(mesh.castShadow).toBe(true);
+      expect(mesh.receiveShadow).toBe(true);
     }
   });
 

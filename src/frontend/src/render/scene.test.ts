@@ -31,6 +31,9 @@ import {
 import type { MemberState } from '../multiplayer/protocol';
 import { CUBE_HALF_SIZE } from './cube-view';
 import {
+  AMBIENT_INTENSITY,
+  AMBIENT_INTENSITY_MAX,
+  AMBIENT_INTENSITY_MIN,
   createSceneView,
   CUBE_SPACING,
   introCameraPose,
@@ -40,7 +43,7 @@ import {
   type SceneView,
   type SceneWorld,
 } from './scene';
-import { STARFIELD_TAN } from './starfield';
+import { createStarfield, STARFIELD_TAN } from './starfield';
 
 /**
  * Integration tier the spec pins for `render/**`: the scene is exercised against real
@@ -474,9 +477,17 @@ describe('scene composition', () => {
     expect(view.scene.children).toHaveLength(7);
     expect(view.scene.children[0]).toBeInstanceOf(AmbientLight);
     expect(view.scene.children[1]).toBeInstanceOf(DirectionalLight);
-    expect((view.scene.children[0] as AmbientLight).intensity).toBe(0.525);
+    const starfield = createStarfield(fixedRandom);
+    expect((view.scene.children[0] as AmbientLight).intensity).toBe(
+      AMBIENT_INTENSITY *
+        Math.min(Math.max(starfield.averageBrightness, AMBIENT_INTENSITY_MIN), AMBIENT_INTENSITY_MAX),
+    );
     expect((view.scene.children[1] as DirectionalLight).intensity).toBe(1.2);
     expect((view.scene.children[1] as DirectionalLight).position.toArray()).toEqual([6, 8, 10]);
+    // AC-4: key light casts shadows with a 1024×1024 shadow map.
+    expect((view.scene.children[1] as DirectionalLight).castShadow).toBe(true);
+    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.width).toBe(1024);
+    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.height).toBe(1024);
 
     // Exactly one starfield `Points` with exactly STAR_COUNT (1200) stars.
     expect(starfieldPoints(view)).toBeInstanceOf(Points);

@@ -88,6 +88,11 @@ const BACKGROUND_COLOR = 0x000000;
 /** Ambient fill-light intensity. */
 export const AMBIENT_INTENSITY = 0.6;
 
+/** Lower clamp bound for the star-driven ambient fill intensity (AC-3). */
+export const AMBIENT_INTENSITY_MIN = 0.5;
+
+/** Upper clamp bound for the star-driven ambient fill intensity (AC-3). */
+export const AMBIENT_INTENSITY_MAX = 1.0;
 /** Key-light intensity. */
 const KEY_INTENSITY = 1.2;
 
@@ -360,7 +365,7 @@ export function createSceneView(options: {
   const starfield: Starfield = createStarfield(random);
   const ambientLight = new AmbientLight(
     0xffffff,
-    AMBIENT_INTENSITY * Math.min(Math.max(starfield.averageBrightness, 0.5), 1.0),
+    AMBIENT_INTENSITY * Math.min(Math.max(starfield.averageBrightness, AMBIENT_INTENSITY_MIN), AMBIENT_INTENSITY_MAX),
   );
   const keyLight = new DirectionalLight(0xffffff, KEY_INTENSITY);
   keyLight.position.set(KEY_LIGHT_POSITION.x, KEY_LIGHT_POSITION.y, KEY_LIGHT_POSITION.z);
