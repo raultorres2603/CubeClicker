@@ -230,6 +230,8 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     roughness: style.roughness,
   });
   const body = new Mesh(new BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE), bodyMaterial);
+  body.castShadow = true;
+  body.receiveShadow = true;
   group.add(body);
 
   const records = new Map<FaceId, FaceRecord>();
@@ -254,6 +256,8 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       roughness: style.roughness,
     });
     const mesh = new InstancedMesh(new BoxGeometry(1, 1, 1), tileMaterial, instanceCount);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     // Static per-instance colour multiplier, white by default: idle tiles are unchanged,
     // and the pop only writes scalar brightness into the running instance's slot.
     const instanceColor = new InstancedBufferAttribute(new Float32Array(instanceCount * 3), 3);

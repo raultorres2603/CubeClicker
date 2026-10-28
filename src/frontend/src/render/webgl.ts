@@ -29,6 +29,7 @@ export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
     canvas: canvas as unknown as HTMLCanvasElement,
     antialias: true,
   });
+  renderer.shadowMap.enabled = true;
 
   return {
     setSize(width: number, height: number): void {

@@ -86,7 +86,7 @@ import { createWorldView, type WorldView } from './world';
 const BACKGROUND_COLOR = 0x000000;
 
 /** Ambient fill-light intensity. */
-const AMBIENT_INTENSITY = 0.6;
+export const AMBIENT_INTENSITY = 0.6;
 
 /** Key-light intensity. */
 const KEY_INTENSITY = 1.2;
@@ -357,11 +357,15 @@ export function createSceneView(options: {
   const scene = new Scene();
   scene.background = new Color(BACKGROUND_COLOR);
 
-  const ambientLight = new AmbientLight(0xffffff, AMBIENT_INTENSITY);
+  const starfield: Starfield = createStarfield(random);
+  const ambientLight = new AmbientLight(
+    0xffffff,
+    AMBIENT_INTENSITY * Math.min(Math.max(starfield.averageBrightness, 0.5), 1.0),
+  );
   const keyLight = new DirectionalLight(0xffffff, KEY_INTENSITY);
   keyLight.position.set(KEY_LIGHT_POSITION.x, KEY_LIGHT_POSITION.y, KEY_LIGHT_POSITION.z);
-
-  const starfield: Starfield = createStarfield(random);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(1024, 1024);
   /** The own cube's world position on the flat plane (z = 0). */
   const cubePosition = new Vector3(
     options.ownPosition?.x ?? 0,
@@ -909,7 +913,7 @@ export function createSceneView(options: {
           pendingExplosions.splice(index, 1);
         }
       }
-      starfield.update(dtMs, travelProgress, starfieldAnchor);
+      starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       particles.update(dtMs);
       advanceFaceRemovals(dtMs);
       // Remote cubes and their pops advance on the same clock, after the own removals.

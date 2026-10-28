@@ -14,6 +14,7 @@ import { createRafScheduler, createWebGLRenderer } from './webgl';
 
 interface FakeThreeRenderer {
   options: unknown;
+  shadowMap: { enabled: boolean };
   setSize: ReturnType<typeof vi.fn>;
   setPixelRatio: ReturnType<typeof vi.fn>;
   render: ReturnType<typeof vi.fn>;
@@ -25,6 +26,7 @@ const threeMock = vi.hoisted(() => ({ instances: [] as FakeThreeRenderer[] }));
 vi.mock('three', () => ({
   WebGLRenderer: class {
     options: unknown;
+    shadowMap = { enabled: false };
     setSize = vi.fn();
     setPixelRatio = vi.fn();
     render = vi.fn();
@@ -56,6 +58,7 @@ describe('createWebGLRenderer', () => {
     expect(threeMock.instances).toHaveLength(1);
     expect(threeMock.instances[0]!.options).toEqual({ canvas, antialias: true });
     expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'render', 'dispose']);
+    expect(threeMock.instances[0]!.shadowMap.enabled).toBe(true);
   });
 
   it('forwards each adapter call to the renderer with the exact arguments', () => {

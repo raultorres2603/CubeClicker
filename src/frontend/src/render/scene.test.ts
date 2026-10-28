@@ -474,7 +474,7 @@ describe('scene composition', () => {
     expect(view.scene.children).toHaveLength(7);
     expect(view.scene.children[0]).toBeInstanceOf(AmbientLight);
     expect(view.scene.children[1]).toBeInstanceOf(DirectionalLight);
-    expect((view.scene.children[0] as AmbientLight).intensity).toBe(0.6);
+    expect((view.scene.children[0] as AmbientLight).intensity).toBe(0.525);
     expect((view.scene.children[1] as DirectionalLight).intensity).toBe(1.2);
     expect((view.scene.children[1] as DirectionalLight).position.toArray()).toEqual([6, 8, 10]);
 
