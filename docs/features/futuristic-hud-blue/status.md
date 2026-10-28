@@ -1,8 +1,7 @@
 ---
 feature: futuristic-hud-blue
-state: code_review
+state: accepted
 spec_review_round: 2
-spec_review_round: 1
 build_round: 1
 created: 2026-10-28
 updated: 2026-10-28
@@ -25,6 +24,7 @@ Redesign the game HUD into a futuristic blue technologic style (reference image 
 - 2026-10-28 — building — T1 completed — docs/features/futuristic-hud-blue/build-log-T1.md
 - 2026-10-28 — building — T2 completed — docs/features/futuristic-hud-blue/build-log-T2.md
 - 2026-10-28 — building → code_review — T2 verification passed (lint/typecheck/tests/coverage/build/smoke); build-log-T2.md
+- 2026-10-28 — code_review → accepted — approved r1 (0 blocking) + docs pass — docs/features/futuristic-hud-blue/reviews/code-r1.md
 
 ## Blockers / open questions
 - none
