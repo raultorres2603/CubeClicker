@@ -48,3 +48,69 @@ describe('overlay motion (CSS guard, AC-7, AC-8)', () => {
     expect(block).toContain('animation: none');
   });
 });
+
+describe('animated border light (CSS guard, AC-1, AC-2)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('defines @keyframes border-light-travel', () => {
+    expect(css).toMatch(/@keyframes\s+border-light-travel\s*\{/);
+  });
+
+  it('applies border-light-travel to a rule whose selector contains main > section', () => {
+    const match = css.match(/main > section[^{]*\{[\s\S]*?animation:\s*border-light-travel\s+(\d+)ms\s+linear\s+infinite/);
+    if (match === null) {
+      throw new Error('border-light-travel on main > section not found');
+    }
+    const n = Number(match[1]);
+    expect(n).toBeGreaterThanOrEqual(2000);
+    expect(n).toBeLessThanOrEqual(6000);
+  });
+
+  it('applies border-light-travel to a rule whose selector contains .user-panel', () => {
+    const match = css.match(/\.user-panel[^{]*\{[\s\S]*?animation:\s*border-light-travel\s+(\d+)ms\s+linear\s+infinite/);
+    if (match === null) {
+      throw new Error('border-light-travel on .user-panel not found');
+    }
+    const n = Number(match[1]);
+    expect(n).toBeGreaterThanOrEqual(2000);
+    expect(n).toBeLessThanOrEqual(6000);
+  });
+
+  it('disables the border-light animation under prefers-reduced-motion for main > section', () => {
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    const match = block.match(/main > section[^{]*\{[\s\S]*?animation:\s*none/);
+    expect(match).not.toBeNull();
+  });
+
+  it('disables the border-light animation under prefers-reduced-motion for .user-panel', () => {
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    const match = block.match(/\.user-panel[^{]*\{[\s\S]*?animation:\s*none/);
+    expect(match).not.toBeNull();
+  });
+});
+
+describe('HUD blink (CSS guard, AC-4)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('defines @keyframes hud-blink', () => {
+    expect(css).toMatch(/@keyframes\s+hud-blink\s*\{/);
+  });
+
+  it('applies hud-blink to main > section[data-blinking="true"] with duration <= 300ms', () => {
+    const match = css.match(/main > section\[data-blinking="true"\][^{]*\{[\s\S]*?animation:\s*hud-blink\s+(\d+)ms/);
+    if (match === null) {
+      throw new Error('hud-blink on main > section[data-blinking="true"] not found');
+    }
+    const n = Number(match[1]);
+    expect(n).toBeLessThanOrEqual(300);
+  });
+
+  it('disables the blink animation under prefers-reduced-motion for main > section[data-blinking="true"]', () => {
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    const match = block.match(/main > section\[data-blinking="true"\][^{]*\{[\s\S]*?animation:\s*none/);
+    expect(match).not.toBeNull();
+  });
+});

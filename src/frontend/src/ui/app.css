@@ -552,10 +552,70 @@ main > section[data-minimized="true"] p {
   transition: max-height 150ms ease, opacity 150ms ease;
 }
 
+/* Animated border light on HUD boxes (AC-1, AC-2). */
+@keyframes border-light-travel {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+main > section::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(from 0deg, transparent 0deg, var(--accent) 90deg, transparent 180deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  animation: border-light-travel 3000ms linear infinite;
+}
+
+.user-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 0.5rem;
+  pointer-events: none;
+  background: conic-gradient(from 0deg, transparent 0deg, var(--accent) 90deg, transparent 180deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  animation: border-light-travel 3000ms linear infinite;
+}
+
+/* HUD blink (AC-4). */
+@keyframes hud-blink {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 16px var(--accent);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+main > section[data-blinking="true"] {
+  animation: hud-blink 200ms ease;
+}
+
 @media (prefers-reduced-motion: reduce) {
   main > section,
+  main > section::before,
   main > section button,
-  main > section[data-minimized="true"] p {
+  main > section[data-minimized="true"] p,
+  main > section[data-blinking="true"],
+  .user-panel,
+  .user-panel::before {
     transition: none;
     animation: none;
   }
