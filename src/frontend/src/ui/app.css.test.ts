@@ -114,3 +114,206 @@ describe('HUD blink (CSS guard, AC-4)', () => {
     expect(match).not.toBeNull();
   });
 });
+
+describe('HUD panel frame (CSS guard, AC-2)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('pins the futuristic frame tokens in the base main > section rule', () => {
+    const match = css.match(/main > section\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('base main > section rule not found');
+    }
+    const rule = match[1];
+    expect(rule).toContain('position: absolute');
+    expect(rule).toMatch(/(?:-webkit-)?backdrop-filter[^;]*blur\(/);
+    expect(rule).toMatch(/box-shadow:[^;]*rgba\(124,\s*246,\s*255/);
+    expect(rule).toMatch(/border:[^;]*rgba\(124,\s*246,\s*255/);
+    expect(rule).toContain('overflow: hidden');
+  });
+
+  it('carries pointer-events: none on both detailing pseudo-elements', () => {
+    for (const pseudo of ['::before', '::after']) {
+      const match = css.match(new RegExp(`main > section${pseudo.replace('::', '\\:\\:')}\\s*\\{([\\s\\S]*?)\\}`));
+      if (match === null) {
+        throw new Error(`main > section${pseudo} rule not found`);
+      }
+      expect(match[1]).toContain('pointer-events: none');
+    }
+  });
+});
+
+describe('minimize control visibility (CSS guard, AC-3, AC-4)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('grants pointer-events: auto, cursor: pointer, and canonical 1.5rem size to the button', () => {
+    const match = css.match(/main > section button\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section button rule not found');
+    }
+    const rule = match[1];
+    expect(rule).toContain('pointer-events: auto');
+    expect(rule).toContain('cursor: pointer');
+    expect(rule).toContain('min-width: 1.5rem;');
+    expect(rule).toContain('min-height: 1.5rem;');
+  });
+
+  it('converts the rem size to at least 24px at a 16px root', () => {
+    const match = css.match(/main > section button\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section button rule not found');
+    }
+    const rule = match[1];
+    const minWidth = rule.match(/min-width:\s*([\d.]+)rem/);
+    if (minWidth === null) {
+      throw new Error('min-width rem declaration not found');
+    }
+    expect(Number(minWidth[1]) * 16).toBeGreaterThanOrEqual(24);
+  });
+
+  it('provides a visible glyph via button::before or ::after content:', () => {
+    expect(css).toMatch(/main > section button::(?:before|after)\s*\{[\s\S]*?content:/);
+  });
+
+  it('defines a focus-visible outline using the accent token', () => {
+    const match = css.match(/main > section button:focus-visible\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section button:focus-visible rule not found');
+    }
+    expect(match[1]).toMatch(/outline:\s*2px\s+solid\s+var\(--accent\)/);
+  });
+});
+
+describe('minimized state presentation (CSS guard, AC-5)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('dims the panel via opacity or brightness in the exact minimized rule', () => {
+    const match = css.match(/main > section\[data-minimized="true"\]\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('exact minimized rule not found');
+    }
+    expect(match[1]).toMatch(/opacity:|filter:\s*brightness\(/);
+  });
+
+  it('collapses the stat paragraphs in the adjacent p rule', () => {
+    const match = css.match(/main > section\[data-minimized="true"\] p\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('minimized p rule not found');
+    }
+    const rule = match[1];
+    expect(rule).toContain('max-height: 0');
+    expect(rule).toContain('opacity: 0');
+    expect(rule).toContain('overflow: hidden');
+  });
+});
+
+describe('scanline detailing (CSS guard, AC-6)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('defines @keyframes hud-scanline', () => {
+    expect(css).toMatch(/@keyframes\s+hud-scanline\s*\{/);
+  });
+
+  it('applies hud-scanline to main > section::after with a duration in 2000..6000ms', () => {
+    const match = css.match(/main > section::after[^{]*\{[\s\S]*?animation:\s*hud-scanline\s+(\d+)ms\s+linear\s+infinite/);
+    if (match === null) {
+      throw new Error('hud-scanline on ::after not found');
+    }
+    const n = Number(match[1]);
+    expect(n).toBeGreaterThanOrEqual(2000);
+    expect(n).toBeLessThanOrEqual(6000);
+  });
+
+  it('carries content, position: absolute, and pointer-events: none on ::after', () => {
+    const match = css.match(/main > section::after\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section::after rule not found');
+    }
+    const rule = match[1];
+    expect(rule).toMatch(/content:/);
+    expect(rule).toContain('position: absolute');
+    expect(rule).toContain('pointer-events: none');
+  });
+
+  it('does not apply hud-scanline to ::before', () => {
+    const match = css.match(/main > section::before\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section::before rule not found');
+    }
+    expect(match[1]).not.toContain('hud-scanline');
+  });
+});
+
+describe('reduced motion (CSS guard, AC-7)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('disables animation and transition for the required selectors', () => {
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    expect(block).toContain('main > section::after');
+    expect(block).toContain('animation: none');
+    expect(block).toContain('transition: none');
+  });
+
+  it('names each required selector in the reduced-motion block', () => {
+    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const block = css.slice(idx);
+    for (const sel of [
+      'main > section,',
+      'main > section::before,',
+      'main > section::after,',
+      'main > section button,',
+      'main > section[data-minimized="true"] p,',
+      'main > section[data-blinking="true"],',
+    ]) {
+      expect(block).toContain(sel);
+    }
+  });
+});
+
+describe('border light retained (CSS guard, AC-8)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('uses inset: 0 on main > section::before', () => {
+    const match = css.match(/main > section::before\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section::before rule not found');
+    }
+    expect(match[1]).toContain('inset: 0');
+    expect(match[1]).not.toContain('inset: -1px');
+  });
+
+  it('retains border-light-travel on ::before', () => {
+    const match = css.match(/main > section::before\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section::before rule not found');
+    }
+    expect(match[1]).toContain('animation: border-light-travel');
+  });
+
+  it('carries pointer-events: none on ::before', () => {
+    const match = css.match(/main > section::before\s*\{([\s\S]*?)\}/);
+    if (match === null) {
+      throw new Error('main > section::before rule not found');
+    }
+    expect(match[1]).toContain('pointer-events: none');
+  });
+});
+
+describe('responsive fit (CSS guard, AC-11)', () => {
+  const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+
+  it('introduces no second max-width: 480px block', () => {
+    const matches = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)/g);
+    expect(matches).not.toBeNull();
+    expect(matches!.length).toBe(1);
+  });
+
+  it('adjusts padding or font-size for main > section inside the 480px block', () => {
+    const match = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)\s*\{([\s\S]*?)\n\}/);
+    if (match === null) {
+      throw new Error('480px media block not found');
+    }
+    const block = match[1];
+    expect(block).toMatch(/main > section[^{]*\{[\s\S]*?(?:padding:|font-size:)/);
+  });
+});

@@ -75,9 +75,15 @@ main > section {
   border: 1px solid rgba(124, 246, 255, 0.28);
   border-radius: 0.5rem;
   background: var(--hud-background);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
+  box-shadow:
+    0 0 24px rgba(124, 246, 255, 0.18),
+    inset 0 0 0 1px rgba(124, 246, 255, 0.12);
   font-size: 0.95rem;
   letter-spacing: 0.02em;
   line-height: 1.4;
+  overflow: hidden;
   pointer-events: none;
 }
 
@@ -524,6 +530,11 @@ main > section [data-stat] {
   .verification-pending button {
     min-height: 48px;
   }
+
+  main > section {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+  }
 }
 
 
@@ -534,7 +545,20 @@ main > section {
 
 main > section button {
   pointer-events: auto;
+  cursor: pointer;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
   transition: transform 150ms ease, opacity 150ms ease;
+}
+
+main > section button::before {
+  content: '▾';
+  pointer-events: none;
+}
+
+main > section button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 main > section button:active {
@@ -543,6 +567,7 @@ main > section button:active {
 
 main > section[data-minimized="true"] {
   gap: 0.125rem;
+  opacity: 0.75;
 }
 
 main > section[data-minimized="true"] p {
@@ -565,7 +590,7 @@ main > section[data-minimized="true"] p {
 main > section::before {
   content: '';
   position: absolute;
-  inset: -1px;
+  inset: 0;
   border-radius: inherit;
   pointer-events: none;
   background: conic-gradient(from 0deg, transparent 0deg, var(--accent) 90deg, transparent 180deg);
@@ -574,6 +599,25 @@ main > section::before {
   mask-composite: exclude;
   padding: 1px;
   animation: border-light-travel 3000ms linear infinite;
+}
+
+/* HUD scanline detailing (AC-6). */
+@keyframes hud-scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+main > section::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 0%, rgba(124, 246, 255, 0.12) 50%, transparent 100%);
+  animation: hud-scanline 4000ms linear infinite;
 }
 
 .user-panel::before {
@@ -611,6 +655,7 @@ main > section[data-blinking="true"] {
 @media (prefers-reduced-motion: reduce) {
   main > section,
   main > section::before,
+  main > section::after,
   main > section button,
   main > section[data-minimized="true"] p,
   main > section[data-blinking="true"],
