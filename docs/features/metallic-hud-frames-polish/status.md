@@ -1,8 +1,8 @@
 ---
 feature: metallic-hud-frames-polish
-state: building
+state: accepted
 spec_review_round: 1
-build_round: 0
+build_round: 1
 created: 2026-10-28
 updated: 2026-10-28
 ---
@@ -21,6 +21,8 @@ Backlog polish for metallic-hud-frames: trailing newline in app.css; fix mask-co
 - 2026-10-28 — awaiting_approval → building — user approved
 - 2026-10-28 — building — T1 completed — docs/features/metallic-hud-frames-polish/build-log-T1.md
 - 2026-10-28 — building — T2 completed — docs/features/metallic-hud-frames-polish/build-log-T2.md
+- 2026-10-28 — building → code_review — T2 verification passed; build-log-T2.md
+- 2026-10-28 — code_review → accepted — approved r1 (0 blocking) + docs pass — docs/features/metallic-hud-frames-polish/reviews/code-r1.md
 
 ## Blockers / open questions
 - none
