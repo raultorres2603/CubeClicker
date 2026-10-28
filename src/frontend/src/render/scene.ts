@@ -80,6 +80,7 @@ import { createParticleSystem, type ParticleSystem } from './particles';
 import { travelCameraPose as spectateTravelPose } from './spectate-travel';
 import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
 import { createSpaceship, type Shot, type Spaceship } from './spaceship';
+import { createBackgroundLife, type BackgroundLife } from './background-life';
 import { createWorldView, type WorldView } from './world';
 
 /** Black backdrop behind the starfield (AC-3). */
@@ -381,8 +382,9 @@ export function createSceneView(options: {
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
   const spaceship: Spaceship = createSpaceship();
+  const backgroundLife: BackgroundLife = createBackgroundLife(random);
 
-  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup);
+  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup, backgroundLife.group);
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
@@ -918,6 +920,7 @@ export function createSceneView(options: {
           pendingExplosions.splice(index, 1);
         }
       }
+      backgroundLife.update(dtMs, reducedMotion);
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       particles.update(dtMs);
       advanceFaceRemovals(dtMs);
@@ -939,6 +942,7 @@ export function createSceneView(options: {
       particles.dispose();
       disposeWorld();
       spaceship.dispose();
+      backgroundLife.dispose();
       scene.clear();
     },
   };

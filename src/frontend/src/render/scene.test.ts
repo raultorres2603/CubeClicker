@@ -473,8 +473,8 @@ describe('scene composition', () => {
     expect(view.scene.background).toBeInstanceOf(Color);
     expect((view.scene.background as Color).getHex()).toBe(0x000000);
 
-    // Starfield + cube + particles + two lights: a fixed, bounded child list.
-    expect(view.scene.children).toHaveLength(7);
+    // Starfield + cube + particles + two lights + background life: a fixed, bounded child list.
+    expect(view.scene.children).toHaveLength(8);
     expect(view.scene.children[0]).toBeInstanceOf(AmbientLight);
     expect(view.scene.children[1]).toBeInstanceOf(DirectionalLight);
     const starfield = createStarfield(fixedRandom);
@@ -1641,7 +1641,7 @@ describe('frame updates and lifecycle', () => {
     const particles = particlePoints(view);
 
     // Scene + two lights + starfield + cube group (body + 6 grids) + particle group + pool.
-    expect(baselineObjects).toBe(23);
+    expect(baselineObjects).toBe(32);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
@@ -1679,7 +1679,7 @@ describe('frame updates and lifecycle', () => {
     );
 
     expect(countObjects(view.scene)).toBe(baselineObjects);
-    expect(view.scene.children).toHaveLength(7);
+    expect(view.scene.children).toHaveLength(8);
     expect(cubeGroup(view).children).toHaveLength(7);
     expect(faceMeshes(view)).toHaveLength(6);
   });
@@ -1727,7 +1727,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
     // No `welcome` yet: the remote world does not exist.
     expect(view.worldView).toBeNull();
-    expect(view.scene.children).toHaveLength(7);
+    expect(view.scene.children).toHaveLength(8);
   });
 
   it('dollies the intro onto the own position, keeping the accepted z table', () => {
@@ -1769,7 +1769,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
     expect(view.worldView!.views().size).toBe(1);
     expect(view.worldView!.views().get('p2')!.group.position.toArray()).toEqual([12, 12, 0]);
-    expect(view.scene.children).toHaveLength(8);
+    expect(view.scene.children).toHaveLength(9);
 
     applySnapshot(view, snapshot({ phase: 'playing' }));
     expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
@@ -1976,7 +1976,7 @@ describe('online destination travel (AC-12)', () => {
     expect(view.worldView!.views().get('p3')!.group.position.toArray()).toEqual([0, 12, 0]);
     expect(oldWorldDispose).toHaveBeenCalledTimes(1);
     expect(oldRemoteDispose).toHaveBeenCalledTimes(1);
-    expect(view.scene.children).toHaveLength(8);
+    expect(view.scene.children).toHaveLength(9);
     const newWorld = view.worldView!;
     const newWorldDispose = vi.spyOn(newWorld, 'dispose');
 
