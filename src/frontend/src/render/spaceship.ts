@@ -9,6 +9,7 @@
  */
 
 import {
+  BoxGeometry,
   Camera,
   ConeGeometry,
   CylinderGeometry,
@@ -123,22 +124,34 @@ export function createSpaceship(): Spaceship {
 
   const nose = new Mesh(
     new ConeGeometry(0.2, 0.8, 8),
-    new MeshStandardMaterial({ color: 0x88aaff }),
+    new MeshStandardMaterial({ color: 0x88aaff, metalness: 0.5, roughness: 0.5 }),
   );
   nose.position.set(0, 0, 0.4);
   nose.rotation.x = Math.PI / 2;
 
   const body = new Mesh(
     new CylinderGeometry(0.25, 0.25, 0.9, 8),
-    new MeshStandardMaterial({ color: 0x4466cc }),
+    new MeshStandardMaterial({ color: 0x4466cc, metalness: 0.5, roughness: 0.5 }),
   );
   body.rotation.x = Math.PI / 2;
 
   const cockpit = new Mesh(
     new SphereGeometry(0.15, 8, 8),
-    new MeshStandardMaterial({ color: 0xffffff }),
+    new MeshStandardMaterial({ color: 0xffffff, metalness: 0.5, roughness: 0.5 }),
   );
   cockpit.position.set(0, 0.15, 0.1);
+
+  // Fighter wings.
+  for (let i = 0; i < 2; i += 1) {
+    const wing = new Mesh(
+      new BoxGeometry(0.6, 0.05, 0.3),
+      new MeshStandardMaterial({ color: 0x4466cc, metalness: 0.5, roughness: 0.5 }),
+    );
+    wing.name = 'wing';
+    const side = i === 0 ? 1 : -1;
+    wing.position.set(side * 0.35, 0, 0);
+    group.add(wing);
+  }
 
   group.add(nose, body, cockpit);
 
@@ -152,6 +165,8 @@ export function createSpaceship(): Spaceship {
         transparent: true,
         opacity: 0.5,
         emissive: 0xff3300,
+        metalness: 0.5,
+        roughness: 0.5,
       }),
     );
     ignition.name = 'ignition';

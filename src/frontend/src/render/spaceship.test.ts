@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Mesh, PerspectiveCamera, Vector3 } from 'three';
+import { Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
 
 import {
   SHOT_TRAVEL_MS,
@@ -80,15 +80,51 @@ describe('createSpaceship', () => {
     ship.dispose();
   });
 
-  it('contains ConeGeometry and CylinderGeometry, no BoxGeometry', () => {
+  it('contains ConeGeometry, CylinderGeometry, and at least two BoxGeometry wings named wing', () => {
     const ship = createSpaceship();
-    const types: string[] = [];
+    const meshes: Mesh[] = [];
     ship.group.traverse((o) => {
-      if (o instanceof Mesh) types.push(o.geometry.type);
+      if (o instanceof Mesh) meshes.push(o);
     });
+    const types = meshes.map((m) => m.geometry.type);
     expect(types).toContain('ConeGeometry');
     expect(types).toContain('CylinderGeometry');
-    expect(types).not.toContain('BoxGeometry');
+    const wings = meshes.filter((m) => m.name === 'wing');
+    expect(wings.length).toBeGreaterThanOrEqual(2);
+    for (const wing of wings) {
+      expect(wing.geometry.type).toBe('BoxGeometry');
+    }
+    ship.dispose();
+  });
+
+  it('all meshes under group use MeshStandardMaterial with metalness >= 0.4 and roughness <= 0.6', () => {
+    const ship = createSpaceship();
+    ship.group.traverse((o) => {
+      if (o instanceof Mesh) {
+        expect(o.material).toBeInstanceOf(MeshStandardMaterial);
+        const material = o.material as MeshStandardMaterial;
+        expect(material.metalness).toBeGreaterThanOrEqual(0.4);
+        expect(material.roughness).toBeLessThanOrEqual(0.6);
+      }
+    });
+    ship.dispose();
+  });
+
+  it('at least one mesh under group has non-zero emissive (engine glow)', () => {
+    const ship = createSpaceship();
+    let found = false;
+    ship.group.traverse((o) => {
+      if (o instanceof Mesh) {
+        const material = o.material as MeshStandardMaterial;
+        if (
+          material.emissive &&
+          (material.emissive.r > 0 || material.emissive.g > 0 || material.emissive.b > 0)
+        ) {
+          found = true;
+        }
+      }
+    });
+    expect(found).toBe(true);
     ship.dispose();
   });
 
