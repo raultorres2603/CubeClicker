@@ -1,9 +1,9 @@
 ---
 feature: modern-ui-background-life
-state: code_review
+state: accepted
 spec_review_round: 2
 spec_review_round: 1
-build_round: 1
+build_round: 2
 created: 2026-10-28
 updated: 2026-10-28
 ---
@@ -29,6 +29,8 @@ Follow-up: animated light driving on borders of HUD boxes; HUD blink on minicube
 - 2026-10-28 — building — T5 completed — docs/features/modern-ui-background-life/build-log-T5.md
 
 - 2026-10-28 — building → code_review — T6 verification passed (lint/typecheck/tests/coverage/build/smoke); build-log-T6.md
+- 2026-10-28 — code_review — fixes applied (commit cad388a); starting r2
+- 2026-10-28 — code_review → accepted — approved r2 (0 blocking) + docs pass — docs/features/modern-ui-background-life/reviews/code-r2.md
 
 ## Blockers / open questions
 - none
