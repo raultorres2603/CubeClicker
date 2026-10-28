@@ -12,6 +12,7 @@ import {
   type Placement,
   cubeRotatedMessage,
   encodeServerMessage,
+  economyUpdateMessage,
   errorMessage,
   levelAdvancedMessage,
   memberJoinedMessage,
@@ -68,6 +69,7 @@ const PLACEMENT: Placement = {
   self: P1_CUBE,
   roster: [P1, P2],
   identity: { kind: 'guest', playerId: 'p1' },
+  economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
 };
 
 describe('MAX_MESSAGE_BYTES', () => {
@@ -259,6 +261,7 @@ describe('server-message builders', () => {
       },
       roster: [P1, P2],
       identity: { kind: 'guest', playerId: 'p1' },
+      economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
 
     // Later hub mutations of the source must not rewrite an already-built message.
@@ -282,6 +285,7 @@ describe('server-message builders', () => {
       },
       roster: [P1, P2],
       identity: { kind: 'guest', playerId: 'p1' },
+      economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
   });
 
@@ -304,6 +308,7 @@ describe('server-message builders', () => {
       },
       roster: [P1, P2],
       identity: { kind: 'guest', playerId: 'p1' },
+      economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
   });
 
@@ -439,7 +444,38 @@ describe('encodeServerMessage', () => {
       },
       roster: [P1, P2],
       identity: { kind: 'guest', playerId: 'p1' },
+      economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
+  });
+});
+
+describe('economyUpdateMessage', () => {
+  it('builds economyUpdate from an EconomyState', () => {
+    expect(
+      economyUpdateMessage({ coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 }),
+    ).toStrictEqual({
+      type: 'economyUpdate',
+      coins: 1.25,
+      clicks: 3,
+      facesDestroyed: 2,
+      cubesDestroyed: 1,
+    });
+  });
+
+  it('builds economyUpdate from positional numbers', () => {
+    expect(economyUpdateMessage(0.3, 4, 5, 6)).toStrictEqual({
+      type: 'economyUpdate',
+      coins: 0.3,
+      clicks: 4,
+      facesDestroyed: 5,
+      cubesDestroyed: 6,
+    });
+  });
+
+  it('encodes economyUpdate as one JSON frame', () => {
+    expect(
+      encodeServerMessage(economyUpdateMessage({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 })),
+    ).toBe('{"type":"economyUpdate","coins":0,"clicks":0,"facesDestroyed":0,"cubesDestroyed":0}');
   });
 });
 

@@ -138,6 +138,7 @@ export type ServerMessage =
       yawSteps: number;
       pitchSteps: number;
     }
+  | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -254,6 +255,13 @@ export type Identity =
   | { kind: 'account'; accountId: string; username: string }
   | { kind: 'guest'; playerId: string };
 
+export interface EconomyState {
+  coins: number;
+  clicks: number;
+  facesDestroyed: number;
+  cubesDestroyed: number;
+}
+
 export interface Placement {
   playerId: string;
   name: string;
@@ -264,6 +272,7 @@ export interface Placement {
   self: CubeState;
   roster: MemberState[];
   identity: Identity;
+  economy?: EconomyState;
 }
 
 /** The payload of a fresh-cube broadcast (`levelAdvanced`; `removedIds` is always empty). */
@@ -306,6 +315,7 @@ function placementPayload(placement: Placement): Placement {
     self: copyCubeState(placement.self),
     roster: placement.roster.map(copyMemberState),
     identity,
+    ...(placement.economy ? { economy: copyEconomyState(placement.economy) } : {}),
   };
 }
 
@@ -317,6 +327,34 @@ export function welcomeMessage(placement: Placement): ServerMessage {
 /** The same placement payload, sent to a mover whose next cube lands elsewhere. */
 export function worldEnteredMessage(placement: Placement): ServerMessage {
   return { type: 'worldEntered', ...placementPayload(placement) };
+}
+
+/** Builds an `economyUpdate` message carrying the server's absolute totals. */
+export function economyUpdateMessage(
+  economyOrCoins:
+    | EconomyState
+    | { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
+    | number,
+  clicks?: number,
+  facesDestroyed?: number,
+  cubesDestroyed?: number,
+): ServerMessage {
+  let coins: number;
+  let c: number;
+  let f: number;
+  let cb: number;
+  if (typeof economyOrCoins === 'number') {
+    coins = economyOrCoins;
+    c = clicks as number;
+    f = facesDestroyed as number;
+    cb = cubesDestroyed as number;
+  } else {
+    coins = economyOrCoins.coins;
+    c = economyOrCoins.clicks;
+    f = economyOrCoins.facesDestroyed;
+    cb = economyOrCoins.cubesDestroyed;
+  }
+  return { type: 'economyUpdate', coins, clicks: c, facesDestroyed: f, cubesDestroyed: cb };
 }
 
 /** Broadcast to a server's existing members when someone joins (or moves in). */
@@ -396,6 +434,16 @@ export function errorMessage(code: ErrorCode, detail?: string): ServerMessage {
 /** Serialises one server message into the single JSON text frame sent over the wire. */
 export function encodeServerMessage(message: ServerMessage): string {
   return JSON.stringify(message);
+}
+
+/** Defensive copy of an economy state. */
+function copyEconomyState(economy: EconomyState): EconomyState {
+  return {
+    coins: economy.coins,
+    clicks: economy.clicks,
+    facesDestroyed: economy.facesDestroyed,
+    cubesDestroyed: economy.cubesDestroyed,
+  };
 }
 
 /** Defensive copy of a cube state (the wire `removedIds` is a plain mutable array). */
