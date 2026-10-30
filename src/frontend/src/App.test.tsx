@@ -238,6 +238,7 @@ function shellHtml({
     '<section aria-label="Game statistics">' +
     `<p>Clicks: <span data-stat="clicks">${stats.clicks}</span></p>` +
     `<p>Faces destroyed: <span data-stat="faces-destroyed">${stats.facesDestroyed}</span></p>` +
+    (welcomed ? `<p>Coins <span data-stat="coins">${(stats.coins ?? 0).toFixed(2)}</span></p>` : '') +
     `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
     (welcomed ? `<p>Server <span data-stat="server">${serverId}</span></p>` : '') +
     (welcomed ? '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' : '') +
