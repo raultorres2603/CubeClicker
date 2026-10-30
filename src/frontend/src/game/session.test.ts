@@ -1999,7 +1999,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     const { fake, wire, session } = playingSession();
 
     tapOn(fake.canvas, 400, 400);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(session.getSnapshot().stats.clicks).toBe(1); expect(session.getSnapshot().stats.facesDestroyed).toBe(0);
     expect(faceIds(session.getSnapshot(), 'front')).toHaveLength(24);
     expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
 
@@ -2008,7 +2008,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     wire.emit(stateSyncMessage({ removedIds: [] }));
 
     const restored = session.getSnapshot();
-    expect(restored.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(restored.stats.clicks).toBe(1); expect(restored.stats.facesDestroyed).toBe(0);
     expect(faceIds(restored, 'front')).toHaveLength(25);
     expect(faceIds(restored, 'front')).toContain('front:2:2');
     expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
@@ -2022,7 +2022,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
 
     // The restored tile is playable again and forwards the same optimistic message.
     tapOn(fake.canvas, 400, 400);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 2, facesDestroyed: 0 });
+    expect(session.getSnapshot().stats.clicks).toBe(2); expect(session.getSnapshot().stats.facesDestroyed).toBe(0);
     expect(wire.sent).toEqual([
       { type: 'explode', id: 'front:2:2', level: 0 },
       { type: 'explode', id: 'front:2:2', level: 0 },
@@ -2083,7 +2083,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     const { fake, wire, session } = playingSession(true);
 
     tapOn(fake.canvas, 400, 400);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(session.getSnapshot().stats.clicks).toBe(1); expect(session.getSnapshot().stats.facesDestroyed).toBe(0);
     wire.emit(
       stateSyncMessage({
         levelIndex: 1,
@@ -2098,7 +2098,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     expect(synced.gridSize).toBe(4);
     expect(synced.style.id).toBe('crimson-alloy');
     // Stats are session-local: the fresh cube never rolls the previous clicks back.
-    expect(synced.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(synced.stats.clicks).toBe(1); expect(synced.stats.facesDestroyed).toBe(0);
     expect(synced.travelKind).toBeNull();
     expect(synced.board.faces.map((face) => face.miniCubes.length)).toEqual([
       15, 16, 16, 16, 16, 16,
@@ -2137,7 +2137,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     expect(session.getSnapshot().phase).toBe('playing');
     expect(session.getSnapshot().levelIndex).toBe(1);
     expect(session.getSnapshot().gridSize).toBe(4);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(session.getSnapshot().stats.clicks).toBe(150); expect(session.getSnapshot().stats.facesDestroyed).toBe(6);
 
     // `resume_failed` is transport-level: the session sees a new identity's `welcome`, which
     // restarts it at level 0 on a full cube with the old stats.
@@ -2159,7 +2159,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     expect(rejoined.levelIndex).toBe(0);
     expect(rejoined.gridSize).toBe(5);
     expect(rejoined.style.id).toBe('obsidian-neon');
-    expect(rejoined.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(rejoined.stats.clicks).toBe(150); expect(rejoined.stats.facesDestroyed).toBe(6);
     expect(rejoined.board.faces.map((face) => face.miniCubes.length)).toEqual([
       25, 25, 25, 25, 25, 25,
     ]);
@@ -2171,7 +2171,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
 
     // The fresh cube is playable at level 0 and the wire carries the new level.
     tapOn(fake.canvas, 400, 400);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 151, facesDestroyed: 6 });
+    expect(session.getSnapshot().stats.clicks).toBe(151); expect(session.getSnapshot().stats.facesDestroyed).toBe(6);
     expect(wire.sent).toEqual([{ type: 'explode', id: 'front:2:2', level: 0 }]);
   });
 
@@ -2224,7 +2224,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
     expect(resumed.levelIndex).toBe(1);
     expect(resumed.gridSize).toBe(4);
     expect(resumed.style.id).toBe('crimson-alloy');
-    expect(resumed.stats).toEqual({ clicks: 150, facesDestroyed: 6 });
+    expect(resumed.stats.clicks).toBe(150); expect(resumed.stats.facesDestroyed).toBe(6);
     expect(resumed.board.faces.map((face) => face.miniCubes.length)).toEqual([
       16, 16, 16, 16, 16, 16,
     ]);
@@ -2245,7 +2245,7 @@ describe('authoritative cube adoption over the wire (AC-14, AC-22)', () => {
 
     // Play is live on the adopted 4×4 cube: the quarter-offset tap hits front:1:1.
     tapOn(fake.canvas, 362, 362);
-    expect(session.getSnapshot().stats).toEqual({ clicks: 151, facesDestroyed: 6 });
+    expect(session.getSnapshot().stats.clicks).toBe(151); expect(session.getSnapshot().stats.facesDestroyed).toBe(6);
     expect(wire.sent).toEqual([
       { type: 'explode', id: 'front:2:2', level: 0 },
       { type: 'cubeCompleted', level: 0 },

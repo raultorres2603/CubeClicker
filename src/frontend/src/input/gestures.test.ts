@@ -317,7 +317,7 @@ describe('integration — a touch tap picks and explodes the front-face tile (AC
     engine.dispatch({ type: 'explodeMiniCube', id: id! });
 
     const exploded = engine.getSnapshot();
-    expect(exploded.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
+    expect(exploded.stats.clicks).toBe(1); expect(exploded.stats.facesDestroyed).toBe(0);
     expect(exploded.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(faceIds(exploded, 'front')).toHaveLength(24);
     expect(faceIds(exploded, 'front')).not.toContain('front:2:2');

@@ -84,8 +84,16 @@ import {
   createProgression,
   currentStyle,
   recordClick,
+  recordCoins,
+  recordCubeDestroyed,
   recordFaceDestroyed,
 } from './progression';
+import {
+  COINS_PER_CUBE,
+  COINS_PER_MINI_CUBE,
+  SPEED_BONUS_MULTIPLIER,
+  speedBonusApplies,
+} from './economy';
 import {
   createOrientation,
   frontFace,
@@ -100,6 +108,7 @@ import {
   TRAVEL_DIRECTIONS,
   type Board,
   type CubeStyle,
+  type EconomyState,
   type FaceId,
   type GameStats,
   type MiniCubeId,
@@ -283,6 +292,8 @@ export interface GameEngine {
    * fakes (owned by other tasks); {@link createEngine} always implements it.
    */
   adoptCubeState?(cube: AuthoritativeCubeState): void;
+  /** Reconciles coins/stats to the server's absolute totals. */
+  adoptEconomy?(economy: EconomyState): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -293,6 +304,7 @@ export interface OnlineGameEngine extends GameEngine {
   completeNextLevel(data: NextLevelData): void;
   cancelTravel(): void;
   adoptCubeState(cube: AuthoritativeCubeState): void;
+  adoptEconomy(economy: EconomyState): void;
   setSpectating(active: boolean): void;
 }
 
@@ -461,6 +473,8 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   let queuedStep: RotationStep | null = null;
   /** Milliseconds left before the sixth-face clear becomes `travel`; `null` when not pending. */
   let faceFadeRemainingMs: number | null = null;
+  /** Milliseconds elapsed on the current cube (resets on level advance). */
+  let cubeElapsedMs = 0;
   let intents: EffectIntent[] = [];
   let cachedSnapshot: OnlineEngineSnapshot | null = null;
 
@@ -619,11 +633,21 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     }
     board = removal.board;
     progression = recordClick(progression);
+    progression = recordCoins(progression, COINS_PER_MINI_CUBE);
     const faceId = faceIdOf(id);
     intents.push({ kind: 'explosion', id, faceId, burst: explosionBurst() });
     if (removal.faceCleared) {
       progression = recordFaceDestroyed(progression);
       intents.push({ kind: 'faceCleared', faceId });
+    }
+    // Cube completion: the last mini-cube of the last face just cleared.
+    const fullyCleared = board.faces.every((face) => face.miniCubes.length === 0);
+    if (fullyCleared) {
+      const multiplier = speedBonusApplies(cubeElapsedMs, gridSize)
+        ? SPEED_BONUS_MULTIPLIER
+        : 1;
+      progression = recordCoins(progression, COINS_PER_CUBE * multiplier);
+      progression = recordCubeDestroyed(progression);
     }
     invalidate();
     settleFrontFace();
@@ -696,6 +720,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     rotationElapsedMs = 0;
     queuedStep = null;
     faceFadeRemainingMs = null;
+    cubeElapsedMs = 0;
     intents.push({ kind: 'levelChanged', style: next?.style ?? currentStyle(progression) });
     invalidate();
   }
@@ -825,6 +850,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   }
 
   function advancePlaying(dtMs: number): void {
+    cubeElapsedMs += dtMs;
     if (faceFadeRemainingMs !== null) {
       faceFadeRemainingMs -= dtMs;
       if (faceFadeRemainingMs <= 0) {
@@ -1061,6 +1087,19 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       ) {
         invalidate();
       }
+    },
+
+    adoptEconomy(economy: EconomyState): void {
+      progression = {
+        levelIndex: progression.levelIndex,
+        stats: {
+          clicks: economy.clicks,
+          facesDestroyed: economy.facesDestroyed,
+          cubesDestroyed: economy.cubesDestroyed,
+          coins: economy.coins,
+        },
+      };
+      invalidate();
     },
 
     cancelTravel(): void {
