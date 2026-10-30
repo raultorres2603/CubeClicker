@@ -78,7 +78,10 @@ export type ErrorCode =
   | 'invalid_completion'
   | 'resume_failed'
   | 'account_unverified'
-  | 'not_authenticated';
+  | 'not_authenticated'
+  | 'insufficient_funds'
+  | 'unknown_upgrade'
+  | 'max_level';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
@@ -86,7 +89,8 @@ export type ClientMessage =
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
   | { type: 'cubeCompleted'; level: number }
-  | { type: 'rotate'; yawSteps: number; pitchSteps: number };
+  | { type: 'rotate'; yawSteps: number; pitchSteps: number }
+  | { type: 'purchaseUpgrade'; upgradeId: string };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -103,6 +107,7 @@ export type ServerMessage =
       roster: MemberState[];
       identity: Identity;
       economy?: EconomyState;
+      upgrades?: UpgradeState;
     }
   | {
       type: 'worldEntered';
@@ -116,6 +121,7 @@ export type ServerMessage =
       roster: MemberState[];
       identity: Identity;
       economy?: EconomyState;
+      upgrades?: UpgradeState;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
@@ -141,6 +147,7 @@ export type ServerMessage =
       pitchSteps: number;
     }
   | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
+  | { type: 'upgradesUpdate'; upgrades: UpgradeState }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -244,6 +251,12 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         message: { type: 'rotate', yawSteps: frame.yawSteps, pitchSteps: frame.pitchSteps },
       };
 
+    case 'purchaseUpgrade':
+      if (!isNonEmptyString(frame.upgradeId)) {
+        return badMessage();
+      }
+      return { ok: true, message: { type: 'purchaseUpgrade', upgradeId: frame.upgradeId } };
+
     default:
       return badMessage();
   }
@@ -256,6 +269,8 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
 export type Identity =
   | { kind: 'account'; accountId: string; username: string }
   | { kind: 'guest'; playerId: string };
+
+export type UpgradeState = Record<string, number>;
 
 export interface EconomyState {
   coins: number;
@@ -275,6 +290,7 @@ export interface Placement {
   roster: MemberState[];
   identity: Identity;
   economy?: EconomyState;
+  upgrades?: UpgradeState;
 }
 
 /** The payload of a fresh-cube broadcast (`levelAdvanced`; `removedIds` is always empty). */
@@ -318,6 +334,7 @@ function placementPayload(placement: Placement): Placement {
     roster: placement.roster.map(copyMemberState),
     identity,
     ...(placement.economy ? { economy: copyEconomyState(placement.economy) } : {}),
+    ...(placement.upgrades ? { upgrades: copyUpgradeState(placement.upgrades) } : {}),
   };
 }
 
@@ -357,6 +374,16 @@ export function economyUpdateMessage(
     cb = economyOrCoins.cubesDestroyed;
   }
   return { type: 'economyUpdate', coins, clicks: c, facesDestroyed: f, cubesDestroyed: cb };
+}
+
+/** Builds an `upgradesUpdate` message carrying the server's absolute upgrade levels. */
+export function upgradesUpdateMessage(upgrades: UpgradeState): ServerMessage {
+  return { type: 'upgradesUpdate', upgrades: copyUpgradeState(upgrades) };
+}
+
+/** Builds a client `purchaseUpgrade` message. */
+export function purchaseUpgradeMessage(upgradeId: string): ClientMessage {
+  return { type: 'purchaseUpgrade', upgradeId };
 }
 
 /** Broadcast to a server's existing members when someone joins (or moves in). */
@@ -446,6 +473,15 @@ function copyEconomyState(economy: EconomyState): EconomyState {
     facesDestroyed: economy.facesDestroyed,
     cubesDestroyed: economy.cubesDestroyed,
   };
+}
+
+/** Defensive copy of an upgrade state. */
+function copyUpgradeState(upgrades: UpgradeState): UpgradeState {
+  const copy: UpgradeState = {};
+  for (const key of Object.keys(upgrades)) {
+    copy[key] = upgrades[key];
+  }
+  return copy;
 }
 
 /** Defensive copy of a cube state (the wire `removedIds` is a plain mutable array). */

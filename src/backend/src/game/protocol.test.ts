@@ -14,6 +14,7 @@ import {
   encodeServerMessage,
   economyUpdateMessage,
   errorMessage,
+  upgradesUpdateMessage,
   levelAdvancedMessage,
   memberJoinedMessage,
   memberLeftMessage,
@@ -578,5 +579,100 @@ describe('server-message builders — orientation', () => {
     expect(encodeServerMessage(cubeRotatedMessage('p1', 1, 0))).toBe(
       '{"type":"cubeRotated","playerId":"p1","yawSteps":1,"pitchSteps":0}',
     );
+  });
+});
+
+describe('parseClientMessage — purchaseUpgrade', () => {
+  it('decodes purchaseUpgrade with a non-empty upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}')).toEqual({
+      ok: true,
+      message: { type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' },
+    });
+  });
+
+  it('rejects purchaseUpgrade without upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects purchaseUpgrade with an empty upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":""}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects purchaseUpgrade with a non-string upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":7}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('drops unknown extra fields', () => {
+    expect(
+      parseClientMessage('{"type":"purchaseUpgrade","upgradeId":"cube_value","level":3}'),
+    ).toEqual({
+      ok: true,
+      message: { type: 'purchaseUpgrade', upgradeId: 'cube_value' },
+    });
+  });
+});
+
+describe('upgradesUpdateMessage', () => {
+  it('builds upgradesUpdate from an UpgradeState', () => {
+    expect(upgradesUpdateMessage({ mini_cube_value: 2, cube_value: 1 })).toStrictEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 2, cube_value: 1 },
+    });
+  });
+
+  it('builds upgradesUpdate from an empty map', () => {
+    expect(upgradesUpdateMessage({})).toStrictEqual({ type: 'upgradesUpdate', upgrades: {} });
+  });
+
+  it('copies its input defensively', () => {
+    const source = { mini_cube_value: 3 };
+    const message = upgradesUpdateMessage(source);
+    source.mini_cube_value = 99;
+    expect(message).toStrictEqual({ type: 'upgradesUpdate', upgrades: { mini_cube_value: 3 } });
+  });
+
+  it('encodes upgradesUpdate as one JSON frame', () => {
+    expect(encodeServerMessage(upgradesUpdateMessage({ speed_window: 2 }))).toBe(
+      '{"type":"upgradesUpdate","upgrades":{"speed_window":2}}',
+    );
+  });
+});
+
+describe('placement upgrades field', () => {
+  it('welcomeMessage copies upgrades when present', () => {
+    const placement: Placement = { ...PLACEMENT, upgrades: { mini_cube_value: 4 } };
+    const message = welcomeMessage(placement);
+    expect(message.type).toBe('welcome');
+    expect(message.upgrades).toStrictEqual({ mini_cube_value: 4 });
+    placement.upgrades!.mini_cube_value = 99;
+    expect(message.upgrades).toStrictEqual({ mini_cube_value: 4 });
+  });
+
+  it('worldEnteredMessage copies upgrades when present', () => {
+    const placement: Placement = { ...PLACEMENT, upgrades: { cube_value: 2 } };
+    const message = worldEnteredMessage(placement);
+    expect(message.type).toBe('worldEntered');
+    expect(message.upgrades).toStrictEqual({ cube_value: 2 });
+  });
+
+  it('omits upgrades when absent', () => {
+    expect(welcomeMessage(PLACEMENT)).not.toHaveProperty('upgrades');
+  });
+});
+
+describe('ErrorCode upgrades', () => {
+  it('builds errors for the new upgrade codes', () => {
+    expect(errorMessage('insufficient_funds')).toStrictEqual({ type: 'error', code: 'insufficient_funds' });
+    expect(errorMessage('unknown_upgrade')).toStrictEqual({ type: 'error', code: 'unknown_upgrade' });
+    expect(errorMessage('max_level')).toStrictEqual({ type: 'error', code: 'max_level' });
   });
 });
