@@ -8,6 +8,7 @@ import { createPool, closePool } from './db/pool.js';
 import { InMemoryUserRepository, PgUserRepository } from './auth/user-repository.js';
 import { InMemorySessionRepository, PgSessionRepository } from './auth/session-repository.js';
 import { InMemoryVerificationTokenRepository, PgVerificationTokenRepository } from './auth/verification-token-repository.js';
+import { InMemoryEconomyRepository, PgEconomyRepository } from './auth/economy-repository.js';
 import { FakeEmailService, SmtpEmailService } from './auth/email.js';
 import { createRateLimiter } from './auth/rate-limit.js';
 import { createAuthService, type AuthService } from './auth/auth-service.js';
@@ -74,6 +75,7 @@ export interface BuildAppOptions {
     users?: unknown;
     sessions?: unknown;
     verificationTokens?: unknown;
+    economy?: unknown;
     email?: unknown;
     rateLimiter?: unknown;
     pool?: unknown;
@@ -136,6 +138,12 @@ export function buildApp(
       ? new PgVerificationTokenRepository(pool as never, { now: nowFn })
       : new InMemoryVerificationTokenRepository({ now: nowFn }));
 
+  const economy =
+    options.auth?.economy ??
+    (pool !== null
+      ? new PgEconomyRepository(pool as never, { now: nowFn })
+      : new InMemoryEconomyRepository({ now: nowFn }));
+
   const email =
     options.auth?.email ??
     (authConfig.smtpHost
@@ -177,6 +185,7 @@ export function buildApp(
     now: () => Date.now(),
     random: options.random ?? (() => Math.random),
     timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+    economy: economy as never,
   });
 
   const app = Fastify();
