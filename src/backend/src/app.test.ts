@@ -4,6 +4,7 @@ import { buildApp, helloMessage, toPeer } from './app.js';
 import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
+import { roundCoins, idleCoins } from './game/economy.js';
 
 interface HelloEnvelope {
   type: unknown;
@@ -936,6 +937,152 @@ describe('spending upgrades integration (T5)', () => {
 
       expect(await repo.findByUserId('u1')).toBeNull();
       expect(await repo.findUpgradesByUserId('u1')).toEqual({});
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+});
+
+describe('idle accrual integration (T5)', () => {
+  it('account join with stale last_seen_at accrues and returns post-accrual totals', async () => {
+    let now = 0;
+    const nowFn = () => now;
+    const repo = new InMemoryEconomyRepository({ now: nowFn });
+    await repo.credit('u1', { coins: 5 });
+    // Seed a stale last_seen_at at epoch 0 (far in the past).
+    await repo.touchLastSeen('u1', 0, null);
+
+    // Advance the shared clock so the gap exceeds the away threshold (capped accrual).
+    now = 120_000;
+
+    const app = buildApp({}, {
+      now: nowFn,
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      await flushMicrotasks();
+
+      // Accrual broadcasts economyUpdate before welcome.
+      const update = await client.next();
+      const expectedCoins = roundCoins(5 + idleCoins(120_000, {}));
+      expect(update).toEqual({
+        type: 'economyUpdate',
+        coins: expectedCoins,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.economy).toEqual({
+        coins: expectedCoins,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+
+      expect(await repo.findByUserId('u1')).toEqual({
+        coins: expectedCoins,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+      expect(await repo.findLastSeenAt('u1')).toBe(120_000);
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('account join with stale last_seen_at and upgrades accrues with upgrade multiplier', async () => {
+    let now = 0;
+    const nowFn = () => now;
+    const repo = new InMemoryEconomyRepository({ now: nowFn });
+    await repo.credit('u1', { coins: 100 });
+    await repo.purchaseUpgrade('u1', 'mini_cube_value', 10, 0);
+    await repo.touchLastSeen('u1', 0, null);
+
+    now = 60_000;
+
+    const app = buildApp({}, {
+      now: nowFn,
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      await flushMicrotasks();
+
+      const update = await client.next();
+      const expectedCoins = roundCoins(90 + idleCoins(60_000, { mini_cube_value: 1 }));
+      expect(update).toEqual({
+        type: 'economyUpdate',
+        coins: expectedCoins,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.upgrades).toEqual({ mini_cube_value: 1 });
+      expect(welcome.economy.coins).toBe(expectedCoins);
+
+      expect(await repo.findLastSeenAt('u1')).toBe(60_000);
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('account join with recent last_seen_at does not accrue', async () => {
+    const now = 100_000;
+    const nowFn = () => now;
+    const repo = new InMemoryEconomyRepository({ now: nowFn });
+    await repo.credit('u1', { coins: 5 });
+    // last_seen_at only 30s ago -> below threshold
+    await repo.touchLastSeen('u1', now - 30_000, null);
+
+    const app = buildApp({}, {
+      now: nowFn,
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      await flushMicrotasks();
+
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.economy).toEqual({ coins: 5, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+
+      // No economyUpdate broadcast.
+      const maybeUpdate = await nextOrTimeout(client, 50);
+      expect(maybeUpdate).toBeNull();
+
+      expect(await repo.findLastSeenAt('u1')).toBe(now);
     } finally {
       client.close();
       await app.close();

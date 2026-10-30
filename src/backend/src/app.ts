@@ -68,6 +68,8 @@ export interface BuildAppOptions {
   config?: Partial<GameConfig>;
   /** Test seam: the RNG factory the hub draws next-cube grids from (defaults to `Math.random`). */
   random?: () => () => number;
+  /** Test seam: shared clock (ms since epoch) used by the hub and repositories (defaults to `Date.now`). */
+  now?: () => number;
   /** Test seam: auth wiring overrides. */
   auth?: {
     sessionResolver?: (cookieHeader: string | undefined) => AccountSession | null | Promise<AccountSession | null>;
@@ -118,7 +120,7 @@ export function buildApp(
   const pool = (options.auth?.pool as { end?: () => Promise<void> } | null | undefined) ??
     createPool(authConfig.databaseUrl);
 
-  const nowFn = () => Date.now();
+  const nowFn = options.now ?? (() => Date.now());
 
   const users =
     options.auth?.users ??
@@ -156,7 +158,7 @@ export function buildApp(
         })
       : new FakeEmailService());
 
-  const rateLimiter = options.auth?.rateLimiter ?? createRateLimiter(() => Date.now());
+  const rateLimiter = options.auth?.rateLimiter ?? createRateLimiter(nowFn);
 
   const authService =
     options.auth?.authService ??
@@ -182,7 +184,7 @@ export function buildApp(
 
   const hub = createGameHub({
     config,
-    now: () => Date.now(),
+    now: nowFn,
     random: options.random ?? (() => Math.random),
     timers: { setInterval, clearInterval, setTimeout, clearTimeout },
     economy: economy as never,
@@ -227,7 +229,7 @@ export function buildApp(
     };
     const session = await sessionRepo.findByToken(token);
       if (!session) return null;
-      if (session.expiresAt <= Date.now()) return null;
+      if (session.expiresAt <= nowFn()) return null;
       const userId = session.userId;
       if (!userId) return null;
       const userRepo = users as {
