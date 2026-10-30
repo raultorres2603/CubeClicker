@@ -46,6 +46,8 @@ export interface EconomyRepository {
     cost: number,
     currentLevel: number,
   ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null>;
+  findLastSeenAt(userId: string): Promise<number | null>;
+  touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean>;
 }
 
 export interface InMemoryEconomyRepositoryOptions {
@@ -62,6 +64,7 @@ const ZERO: EconomyState = {
 interface StoredRow {
   economy: EconomyState;
   upgrades: UpgradeState;
+  lastSeenAt: number | null;
 }
 
 export class InMemoryEconomyRepository implements EconomyRepository {
@@ -87,7 +90,8 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       cubesDestroyed: base.cubesDestroyed + (delta.cubesDestroyed ?? 0),
     };
     const upgrades: UpgradeState = existing ? { ...existing.upgrades } : {};
-    this.store.set(userId, { economy: next, upgrades });
+    const lastSeenAt = existing ? existing.lastSeenAt : null;
+    this.store.set(userId, { economy: next, upgrades, lastSeenAt });
     return { ...next };
   }
 
@@ -116,8 +120,46 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       coins: roundCoins(economy.coins - cost),
     };
     const nextUpgrades: UpgradeState = { ...row.upgrades, [upgradeId]: currentLevel + 1 };
-    this.store.set(userId, { economy: nextEconomy, upgrades: nextUpgrades });
+    this.store.set(userId, { economy: nextEconomy, upgrades: nextUpgrades, lastSeenAt: row.lastSeenAt });
     return { economy: { ...nextEconomy }, upgrades: { ...nextUpgrades } };
+  }
+
+  async findLastSeenAt(userId: string): Promise<number | null> {
+    const row = this.store.get(userId);
+    return row ? row.lastSeenAt : null;
+  }
+
+  async touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean> {
+    const row = this.store.get(userId);
+    if (expectedMs === undefined) {
+      const base = row ?? { economy: { ...ZERO }, upgrades: {}, lastSeenAt: null };
+      this.store.set(userId, {
+        economy: { ...base.economy },
+        upgrades: { ...base.upgrades },
+        lastSeenAt: nowMs,
+      });
+      return true;
+    }
+    if (!row) {
+      if (expectedMs === null) {
+        this.store.set(userId, {
+          economy: { ...ZERO },
+          upgrades: {},
+          lastSeenAt: nowMs,
+        });
+        return true;
+      }
+      return false;
+    }
+    if ((row.lastSeenAt ?? null) === expectedMs) {
+      this.store.set(userId, {
+        economy: { ...row.economy },
+        upgrades: { ...row.upgrades },
+        lastSeenAt: nowMs,
+      });
+      return true;
+    }
+    return false;
   }
 }
 
@@ -151,6 +193,22 @@ function parseUpgrades(raw: unknown): UpgradeState {
     if (Number.isFinite(n)) out[key] = n;
   }
   return out;
+}
+
+function toEpochMsOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
 }
 
 export class PgEconomyRepository implements EconomyRepository {
@@ -228,5 +286,49 @@ export class PgEconomyRepository implements EconomyRepository {
       economy: rowToEconomy(row),
       upgrades: parseUpgrades(row.upgrades),
     };
+  }
+
+  async findLastSeenAt(userId: string): Promise<number | null> {
+    const result = await this.db.query(
+      'SELECT last_seen_at FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return toEpochMsOrNull(row.last_seen_at);
+  }
+
+  async touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean> {
+    if (expectedMs === undefined) {
+      await this.db.query(
+        `INSERT INTO user_economy (user_id, last_seen_at)
+         VALUES ($1, to_timestamp($2 / 1000.0))
+         ON CONFLICT (user_id) DO UPDATE SET
+           last_seen_at = to_timestamp($2 / 1000.0),
+           updated_at = now()`,
+        [userId, nowMs],
+      );
+      return true;
+    }
+    if (expectedMs === null) {
+      const result = await this.db.query(
+        `INSERT INTO user_economy (user_id, last_seen_at)
+         VALUES ($1, to_timestamp($2 / 1000.0))
+         ON CONFLICT (user_id) DO NOTHING
+         RETURNING user_id`,
+        [userId, nowMs],
+      );
+      return (result.rows?.length ?? 0) > 0;
+    }
+    const result = await this.db.query(
+      `UPDATE user_economy
+       SET last_seen_at = to_timestamp($2 / 1000.0),
+           updated_at = now()
+       WHERE user_id = $1
+         AND last_seen_at = to_timestamp($3 / 1000.0)
+       RETURNING user_id`,
+      [userId, nowMs, expectedMs],
+    );
+    return (result.rows?.length ?? 0) > 0;
   }
 }

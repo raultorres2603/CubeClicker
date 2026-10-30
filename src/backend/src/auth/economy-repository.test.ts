@@ -440,3 +440,218 @@ describe('PgEconomyRepository upgrades', () => {
     await expect(repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0)).rejects.toBe(err);
   });
 });
+
+describe('InMemoryEconomyRepository last-seen', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('findLastSeenAt returns null for unknown user', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.findLastSeenAt('nope')).toBeNull();
+  });
+
+  it('touchLastSeen unconditional upserts a row and sets lastSeenAt', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.touchLastSeen(FIXED_USER, NOW)).toBe(true);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+    const econ = await repo.findByUserId(FIXED_USER);
+    expect(econ).toEqual({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+  });
+
+  it('touchLastSeen unconditional updates an existing row lastSeenAt', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    const later = NOW + 5000;
+    expect(await repo.touchLastSeen(FIXED_USER, later)).toBe(true);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(later);
+  });
+
+  it('touchLastSeen with expectedMs null inserts when no row exists', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.touchLastSeen(FIXED_USER, NOW, null)).toBe(true);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+  });
+
+  it('touchLastSeen CAS wins when expectedMs matches', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    const later = NOW + 1000;
+    expect(await repo.touchLastSeen(FIXED_USER, later, NOW)).toBe(true);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(later);
+  });
+
+  it('touchLastSeen CAS loses when expectedMs mismatches', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    const before = await repo.findLastSeenAt(FIXED_USER);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW + 1, 42)).toBe(false);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(before);
+  });
+
+  it('touchLastSeen expectedMs null loses when row already exists', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    const before = await repo.findLastSeenAt(FIXED_USER);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW + 1, null)).toBe(false);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(before);
+  });
+
+  it('credit preserves lastSeenAt', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    await repo.credit(FIXED_USER, { coins: 5, clicks: 2 });
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+  });
+
+  it('credit on a new row leaves lastSeenAt null', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit(FIXED_USER, { coins: 1 });
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBeNull();
+  });
+
+  it('purchaseUpgrade preserves lastSeenAt', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    await repo.credit(FIXED_USER, { coins: 20 });
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+    const result = await repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0);
+    expect(result).not.toBeNull();
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+  });
+});
+
+describe('PgEconomyRepository last-seen', () => {
+  function makeDb(handler: (text: string, values?: unknown[]) => unknown): EconomyDb & {
+    calls: Array<{ text: string; values?: unknown[] }>;
+  } {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      calls,
+      async query(text: string, values?: unknown[]) {
+        calls.push({ text, values });
+        const result = handler(text, values);
+        if (result instanceof Error) throw result;
+        return result as { rows: Array<Record<string, unknown>>; rowCount?: number | null };
+      },
+    };
+    return db;
+  }
+
+  function rowWith(state: EconomyState, upgrades: UpgradeState): Record<string, unknown> {
+    return {
+      coins: state.coins,
+      clicks: state.clicks,
+      faces_destroyed: state.facesDestroyed,
+      cubes_destroyed: state.cubesDestroyed,
+      upgrades,
+    };
+  }
+
+  const NOW = 1_700_000_000_000;
+  const TS = new Date(NOW).toISOString();
+
+  it('findLastSeenAt issues SELECT last_seen_at ... WHERE user_id = $1', async () => {
+    const db = makeDb(() => ({ rows: [{ last_seen_at: new Date(NOW) }], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    const found = await repo.findLastSeenAt(FIXED_USER);
+    expect(found).toBe(NOW);
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('SELECT last_seen_at');
+    expect(db.calls[0].text).toContain('FROM user_economy');
+    expect(db.calls[0].text).toContain('WHERE user_id = $1');
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('findLastSeenAt returns null when no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findLastSeenAt('missing')).toBeNull();
+  });
+
+  it('findLastSeenAt returns null when last_seen_at is null', async () => {
+    const db = makeDb(() => ({ rows: [{ last_seen_at: null }], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBeNull();
+  });
+
+  it('findLastSeenAt parses an ISO string row', async () => {
+    const db = makeDb(() => ({ rows: [{ last_seen_at: TS }], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findLastSeenAt(FIXED_USER)).toBe(NOW);
+  });
+
+  it('touchLastSeen unconditional (expectedMs undefined) upserts and returns true', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW)).toBe(true);
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('INSERT INTO user_economy');
+    expect(call.text).toContain('ON CONFLICT (user_id)');
+    expect(call.text).toContain('to_timestamp');
+    expect(call.values).toEqual([FIXED_USER, NOW]);
+  });
+
+  it('touchLastSeen expectedMs null inserts-only and returns true when inserted', async () => {
+    const db = makeDb(() => ({ rows: [{ user_id: FIXED_USER }], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW, null)).toBe(true);
+    const call = db.calls[0];
+    expect(call.text).toContain('INSERT INTO user_economy');
+    expect(call.text).toContain('ON CONFLICT (user_id) DO NOTHING');
+    expect(call.text).toContain('RETURNING');
+    expect(call.values).toEqual([FIXED_USER, NOW]);
+  });
+
+  it('touchLastSeen expectedMs null returns false when row exists (no insert)', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW, null)).toBe(false);
+  });
+
+  it('touchLastSeen CAS returns true when a row is updated', async () => {
+    const db = makeDb(() => ({ rows: [{ user_id: FIXED_USER }], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW + 1, NOW)).toBe(true);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE user_economy');
+    expect(call.text).toContain('SET last_seen_at = to_timestamp');
+    expect(call.text).toContain('WHERE user_id = $1');
+    expect(call.text).toContain('last_seen_at = to_timestamp');
+    expect(call.text).toContain('RETURNING');
+    expect(call.values).toEqual([FIXED_USER, NOW + 1, NOW]);
+  });
+
+  it('touchLastSeen CAS returns false when no row updated', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.touchLastSeen(FIXED_USER, NOW + 1, NOW)).toBe(false);
+  });
+
+  it('credit does not touch last_seen_at', async () => {
+    const state = sampleState();
+    const db = makeDb(() => ({ rows: [rowFor(state)], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    await repo.credit(FIXED_USER, { coins: 0.1 });
+    const call = db.calls[0];
+    expect(call.text).not.toContain('last_seen_at');
+  });
+
+  it('purchaseUpgrade does not touch last_seen_at', async () => {
+    const state = sampleState();
+    const ups: UpgradeState = { mini_cube_value: 1 };
+    const db = makeDb(() => ({ rows: [rowWith(state, ups)], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    await repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0);
+    const call = db.calls[0];
+    expect(call.text).not.toContain('last_seen_at');
+  });
+
+  it('touchLastSeen rethrows db errors unchanged', async () => {
+    const err = new Error('connection lost');
+    const db = makeDb(() => {
+      throw err;
+    });
+    const repo = new PgEconomyRepository(db);
+    await expect(repo.touchLastSeen(FIXED_USER, NOW)).rejects.toBe(err);
+  });
+});
