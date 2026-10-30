@@ -46,5 +46,6 @@ CREATE TABLE IF NOT EXISTS user_economy (
   faces_destroyed BIGINT NOT NULL DEFAULT 0,
   cubes_destroyed BIGINT NOT NULL DEFAULT 0,
   upgrades JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
