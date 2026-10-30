@@ -106,6 +106,7 @@ export type ServerMessage =
       self: CubeState;
       roster: MemberState[];
       identity: Identity;
+      economy?: EconomyState;
     }
   | {
       type: 'worldEntered';
@@ -118,6 +119,7 @@ export type ServerMessage =
       self: CubeState;
       roster: MemberState[];
       identity: Identity;
+      economy?: EconomyState;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }

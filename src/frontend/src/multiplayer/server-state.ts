@@ -25,9 +25,9 @@
  * change position, so the order is stable for the life of a membership.
  */
 
-import type { CubeState, MemberState, Position, ServerMessage } from './protocol';
+import type { CubeState, EconomyState, MemberState, Position, ServerMessage } from './protocol';
 
-export type { CubeState, MemberState, Position };
+export type { CubeState, EconomyState, MemberState, Position };
 
 /** The own identity, placement and cube as the server reported them. */
 export interface SelfState {
@@ -35,6 +35,7 @@ export interface SelfState {
   name: string;
   position: Position;
   cube: CubeState;
+  economy: EconomyState;
 }
 
 /**
@@ -51,6 +52,7 @@ export interface PendingWorldSwap {
   position: Position;
   self: CubeState;
   roster: MemberState[];
+  economy: EconomyState;
 }
 
 /** The full client-side world state: own placement, the server's other members, pending swap. */
@@ -79,6 +81,7 @@ export function createWorldState(): WorldState {
       name: '',
       position: { x: 0, y: 0 },
       cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+      economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     },
     members: [],
     pendingWorldSwap: null,
@@ -103,6 +106,26 @@ function copyMember(member: MemberState): MemberState {
     removedIds: [...member.removedIds],
   };
 }
+
+function copyEconomy(economy: EconomyState): EconomyState {
+  return {
+    coins: economy.coins,
+    clicks: economy.clicks,
+    facesDestroyed: economy.facesDestroyed,
+    cubesDestroyed: economy.cubesDestroyed,
+  };
+}
+
+function economiesEqual(a: EconomyState, b: EconomyState): boolean {
+  return (
+    a.coins === b.coins &&
+    a.clicks === b.clicks &&
+    a.facesDestroyed === b.facesDestroyed &&
+    a.cubesDestroyed === b.cubesDestroyed
+  );
+}
+
+const ZERO_ECONOMY: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
 
 /**
  * The member's 0-based slot index, derived from the server-assigned ring position
@@ -340,22 +363,33 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
           name: msg.name,
           position: copyPosition(msg.position),
           cube: copyCube(msg.self),
+          economy: msg.economy ? copyEconomy(msg.economy) : { ...ZERO_ECONOMY },
         },
         members: othersFrom(msg.roster, msg.playerId, msg.maxUsers),
         pendingWorldSwap: null,
       };
 
-    case 'worldEntered':
+    case 'worldEntered': {
+      const pendingEconomy = msg.economy ? copyEconomy(msg.economy) : ZERO_ECONOMY;
+      const selfEconomy = msg.economy ? copyEconomy(msg.economy) : state.self.economy;
+      const selfWithEconomy = msg.economy
+        ? economiesEqual(state.self.economy, selfEconomy)
+          ? state.self
+          : { ...state.self, economy: selfEconomy }
+        : state.self;
       return {
         ...state,
+        self: selfWithEconomy,
         pendingWorldSwap: {
           serverId: msg.serverId,
           maxUsers: msg.maxUsers,
           position: copyPosition(msg.position),
           self: copyCube(msg.self),
           roster: msg.roster.map(copyMember),
+          economy: pendingEconomy,
         },
       };
+    }
 
     case 'memberJoined':
       return withMember(state, msg.member);
@@ -374,6 +408,22 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
     case 'cubeRotated':
       return withRotated(state, msg);
+
+    case 'economyUpdate': {
+      const nextEconomy: EconomyState = {
+        coins: msg.coins,
+        clicks: msg.clicks,
+        facesDestroyed: msg.facesDestroyed,
+        cubesDestroyed: msg.cubesDestroyed,
+      };
+      if (economiesEqual(state.self.economy, nextEconomy)) {
+        return state;
+      }
+      return {
+        ...state,
+        self: { ...state.self, economy: nextEconomy },
+      };
+    }
 
     default:
       // `hello` (liveness only) and `error` (banner/telemetry) carry no world state.
@@ -399,6 +449,7 @@ export function applyWorldSwap(state: WorldState): WorldState {
       name: state.self.name,
       position: copyPosition(pending.position),
       cube: copyCube(pending.self),
+      economy: copyEconomy(pending.economy),
     },
     members: othersFrom(pending.roster, state.self.playerId, pending.maxUsers),
     pendingWorldSwap: null,

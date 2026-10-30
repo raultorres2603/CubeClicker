@@ -1923,6 +1923,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           pitchSteps: 0,
         },
       ],
+      economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
 
     fake.scheduler.tick(1666); // midpoint

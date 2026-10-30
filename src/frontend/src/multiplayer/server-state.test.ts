@@ -122,6 +122,7 @@ const SEEDED: WorldState = {
       yawSteps: 0,
       pitchSteps: 0,
     },
+    economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
   },
   members: [P2_MEMBER, P3_MEMBER],
   pendingWorldSwap: null,
@@ -141,6 +142,7 @@ describe('createWorldState', () => {
         name: '',
         position: { x: 0, y: 0 },
         cube: { levelIndex: 0, gridSize: 0, styleId: '', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
       members: [],
       pendingWorldSwap: null,
@@ -332,6 +334,7 @@ describe('reduceWorldState — levelAdvanced', () => {
       name: 'Player 1',
       position: SLOT_3,
       cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+      economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
     expect(next.members).toBe(state.members);
   });
@@ -475,6 +478,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
       position: SLOT_2,
       self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
+      economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
     expect(pending.serverId).toBe(1);
     expect(pending.self).toBe(state.self);
@@ -504,6 +508,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
         name: 'Player 1',
         position: SLOT_2,
         cube: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
       members: [P2_MEMBER_SERVER_2],
       pendingWorldSwap: null,
@@ -658,5 +663,127 @@ describe('reduceWorldState — orientation sync', () => {
 
     expect(advanced.members[0].yawSteps).toBe(0);
     expect(advanced.members[0].pitchSteps).toBe(0);
+  });
+});
+
+describe('reduceWorldState — economy (T8)', () => {
+  const ECO_A = { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 };
+  const ECO_B = { coins: 4.5, clicks: 7, facesDestroyed: 5, cubesDestroyed: 2 };
+
+  it('welcome adopts msg.economy into self.economy', () => {
+    const welcome: ServerMessage = {
+      type: 'welcome',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 1,
+      maxUsers: 10,
+      position: SLOT_1,
+      self: { levelIndex: 2, gridSize: 5, styleId: 'emerald-crystal', removedIds: ['front:0:0'], yawSteps: 0, pitchSteps: 0 },
+      roster: [SELF_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
+      economy: ECO_A,
+    };
+    const state = reduceWorldState(createWorldState(), welcome);
+    expect(state.self.economy).toEqual(ECO_A);
+    expect(state.self.economy).not.toBe(ECO_A);
+  });
+
+  it('welcome defaults to zeros when economy is absent', () => {
+    const state = seeded();
+    expect(state.self.economy).toEqual({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+  });
+
+  it('worldEntered stores msg.economy in pendingWorldSwap.economy and sets self.economy immediately', () => {
+    const state = seeded();
+    const entered: ServerMessage = {
+      type: 'worldEntered',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 2,
+      maxUsers: 10,
+      position: SLOT_2,
+      self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+      roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
+      economy: ECO_B,
+    };
+    const next = reduceWorldState(state, entered);
+    expect(next.pendingWorldSwap).not.toBeNull();
+    expect(next.pendingWorldSwap!.economy).toEqual(ECO_B);
+    expect(next.self.economy).toEqual(ECO_B);
+  });
+
+  it('economyUpdate replaces self.economy with a new reference', () => {
+    const state = reduceWorldState(createWorldState(), {
+      type: 'welcome',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 1,
+      maxUsers: 10,
+      position: SLOT_1,
+      self: { levelIndex: 2, gridSize: 5, styleId: 'emerald-crystal', removedIds: ['front:0:0'], yawSteps: 0, pitchSteps: 0 },
+      roster: [SELF_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
+      economy: ECO_A,
+    });
+    const next = reduceWorldState(state, {
+      type: 'economyUpdate',
+      coins: ECO_B.coins,
+      clicks: ECO_B.clicks,
+      facesDestroyed: ECO_B.facesDestroyed,
+      cubesDestroyed: ECO_B.cubesDestroyed,
+    });
+    expect(next).not.toBe(state);
+    expect(next.self).not.toBe(state.self);
+    expect(next.self.economy).not.toBe(state.self.economy);
+    expect(next.self.economy).toEqual(ECO_B);
+  });
+
+  it('economyUpdate with identical values returns the same state', () => {
+    const state = reduceWorldState(createWorldState(), {
+      type: 'welcome',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 1,
+      maxUsers: 10,
+      position: SLOT_1,
+      self: { levelIndex: 2, gridSize: 5, styleId: 'emerald-crystal', removedIds: ['front:0:0'], yawSteps: 0, pitchSteps: 0 },
+      roster: [SELF_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
+      economy: ECO_A,
+    });
+    const same = reduceWorldState(state, {
+      type: 'economyUpdate',
+      coins: ECO_A.coins,
+      clicks: ECO_A.clicks,
+      facesDestroyed: ECO_A.facesDestroyed,
+      cubesDestroyed: ECO_A.cubesDestroyed,
+    });
+    expect(same).toBe(state);
+  });
+
+  it('applyWorldSwap carries pending.economy into self.economy', () => {
+    const state = seeded();
+    const entered: ServerMessage = {
+      type: 'worldEntered',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 2,
+      maxUsers: 10,
+      position: SLOT_2,
+      self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
+      roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
+      identity: { kind: 'guest', playerId: 'p1' },
+      economy: ECO_B,
+    };
+    const pending = reduceWorldState(state, entered);
+    const swapped = applyWorldSwap(pending);
+    expect(swapped.self.economy).toEqual(ECO_B);
+    expect(swapped.pendingWorldSwap).toBeNull();
   });
 });
