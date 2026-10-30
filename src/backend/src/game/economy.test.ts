@@ -4,11 +4,18 @@ import {
   COIN_DECIMALS,
   COINS_PER_CUBE,
   COINS_PER_MINI_CUBE,
+  IDLE_CAP_MS,
+  IDLE_COINS_PER_SECOND,
+  IDLE_MIN_AWAY_MS,
   SPEED_BONUS_MULTIPLIER,
+  idleCoins,
+  idleMultiplier,
   roundCoins,
   speedBonusApplies,
   thresholdSeconds,
 } from './economy.js';
+import { miniCubeMultiplier } from './upgrades.js';
+import type { UpgradeState } from './upgrades.js';
 
 describe('economy constants', () => {
   it('pins the approved default values', () => {
@@ -65,5 +72,75 @@ describe('roundCoins', () => {
   it('keeps an already-rounded value unchanged', () => {
     expect(roundCoins(5)).toBe(5);
     expect(roundCoins(2.5)).toBe(2.5);
+  });
+});
+
+describe('idle constants', () => {
+  it('pins the approved default values', () => {
+    expect(IDLE_COINS_PER_SECOND).toBe(0.01);
+    expect(IDLE_CAP_MS).toBe(8 * 60 * 60 * 1000);
+    expect(IDLE_MIN_AWAY_MS).toBe(60 * 1000);
+  });
+});
+
+describe('idleMultiplier', () => {
+  it('equals miniCubeMultiplier (Click Power applies, others do not)', () => {
+    const cases: UpgradeState[] = [
+      {},
+      { mini_cube_value: 3 },
+      { cube_value: 5, speed_window: 2 },
+      { mini_cube_value: 10, cube_value: 10, speed_window: 5 },
+    ];
+    for (const upgrades of cases) {
+      expect(idleMultiplier(upgrades)).toBe(miniCubeMultiplier(upgrades));
+    }
+  });
+
+  it('does not depend on cube level (no level parameter)', () => {
+    expect(idleMultiplier({ mini_cube_value: 2 })).toBe(miniCubeMultiplier({ mini_cube_value: 2 }));
+  });
+});
+
+describe('idleCoins', () => {
+  it('returns 0 when elapsed is below the threshold', () => {
+    expect(idleCoins(0, {})).toBe(0);
+    expect(idleCoins(-1000, {})).toBe(0);
+    expect(idleCoins(59_999, {})).toBe(0);
+    expect(idleCoins(IDLE_MIN_AWAY_MS - 1, {})).toBe(0);
+  });
+
+  it('returns 0 at exactly one millisecond below threshold', () => {
+    expect(idleCoins(59_999, { mini_cube_value: 5 })).toBe(0);
+  });
+
+  it('accrues at the threshold boundary', () => {
+    expect(idleCoins(IDLE_MIN_AWAY_MS, {})).toBe(0.6);
+  });
+
+  it('rounds once to two decimals', () => {
+    // 90s * 0.01 = 0.9 (exact-ish)
+    expect(idleCoins(90_000, {})).toBe(0.9);
+    // 12345ms -> 12.345s * 0.01 = 0.12345 -> 0.12
+    expect(idleCoins(12_345, {})).toBe(0); // below 1 min -> 0
+    expect(idleCoins(120_000, {})).toBe(1.2);
+  });
+
+  it('caps elapsed time at IDLE_CAP_MS', () => {
+    const atCap = idleCoins(IDLE_CAP_MS, {});
+    const beyond = idleCoins(IDLE_CAP_MS + 1_000_000, {});
+    expect(beyond).toBe(atCap);
+    expect(atCap).toBe(288);
+  });
+
+  it('applies the upgrade multiplier (Click Power)', () => {
+    expect(idleCoins(60_000, { mini_cube_value: 3 })).toBe(0.78);
+  });
+
+  it('ignores Cube Bonus and speed window', () => {
+    expect(idleCoins(60_000, { cube_value: 5, speed_window: 3 })).toBe(0.6);
+  });
+
+  it('combines multiplier and cap', () => {
+    expect(idleCoins(IDLE_CAP_MS, { mini_cube_value: 10 })).toBe(576);
   });
 });

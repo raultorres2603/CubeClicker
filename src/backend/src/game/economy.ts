@@ -15,6 +15,9 @@
  * totals reconcile.
  */
 
+import type { UpgradeState } from './upgrades.js';
+import { miniCubeMultiplier } from './upgrades.js';
+
 /** Coins awarded for destroying one mini-cube (Q-1, approval-gated). */
 export const COINS_PER_MINI_CUBE = 0.1;
 
@@ -54,4 +57,38 @@ export function roundCoins(value: number): number {
  */
 export function speedBonusApplies(elapsedMs: number, gridSize: number): boolean {
   return elapsedMs <= thresholdSeconds(gridSize) * 1000;
+}
+
+// ---- Idle accrual (idle-accrual feature, T2) ----
+
+/** Idle coins earned per second of away time (Q-1, approval-gated). */
+export const IDLE_COINS_PER_SECOND = 0.01;
+
+/** Maximum away time that accrues idle coins (Q-2, approval-gated). */
+export const IDLE_CAP_MS = 8 * 60 * 60 * 1000;
+
+/** Minimum away time before any idle coins accrue (Q-3, approval-gated). */
+export const IDLE_MIN_AWAY_MS = 60 * 1000;
+
+/**
+ * Multiplier applied to the idle rate. Under the approved default this is the
+ * same as `miniCubeMultiplier` (Click Power applies; Cube Bonus and speed
+ * window do not), and it does not depend on the current cube level (Q-4, Q-5).
+ */
+export function idleMultiplier(upgrades: UpgradeState): number {
+  return miniCubeMultiplier(upgrades);
+}
+
+/**
+ * Coins accrued for `elapsedMs` milliseconds away, given `upgrades`.
+ *
+ * Returns `0` when `elapsedMs < IDLE_MIN_AWAY_MS` (including non-positive).
+ * Otherwise clamps elapsed time to {@link IDLE_CAP_MS} and rounds once.
+ */
+export function idleCoins(elapsedMs: number, upgrades: UpgradeState): number {
+  if (elapsedMs < IDLE_MIN_AWAY_MS) {
+    return 0;
+  }
+  const clamped = Math.min(elapsedMs, IDLE_CAP_MS);
+  return roundCoins((clamped / 1000) * IDLE_COINS_PER_SECOND * idleMultiplier(upgrades));
 }
