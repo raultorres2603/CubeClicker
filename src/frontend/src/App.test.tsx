@@ -140,6 +140,7 @@ function sessionFor(
     returnToOwnCube: () => false,
     retryConnection: () => {},
     join: () => {},
+    purchaseUpgrade: () => {},
     setPointerTarget: () => {},
     ...overrides,
   };
@@ -179,6 +180,7 @@ function mutableSession(
     returnToOwnCube: () => false,
     retryConnection: () => {},
     join: () => {},
+    purchaseUpgrade: () => {},
     setPointerTarget: () => {},
   };
   return {

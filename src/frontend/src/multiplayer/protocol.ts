@@ -111,6 +111,7 @@ export type ServerMessage =
       roster: MemberState[];
       identity: Identity;
       economy?: EconomyState;
+      upgrades?: UpgradeState;
     }
   | {
       type: 'worldEntered';
@@ -124,6 +125,7 @@ export type ServerMessage =
       roster: MemberState[];
       identity: Identity;
       economy?: EconomyState;
+      upgrades?: UpgradeState;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }

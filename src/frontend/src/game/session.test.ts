@@ -35,7 +35,7 @@ import {
   type SessionEnvironment,
   type VisibilitySource,
 } from './session';
-import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type MiniCubeId } from './types';
+import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type MiniCubeId, type UpgradeState } from './types';
 
 /**
  * Integration tier for the session: every test below runs the *real* engine and the
@@ -129,6 +129,7 @@ interface FakeEngine {
   nextLevels: NextLevelData[];
   cubeAdoptions: AuthoritativeCubeState[];
   economyAdoptions: EconomyState[];
+  upgradeAdoptions: UpgradeState[];
   spectatingCalls: boolean[];
   setSnapshot(snapshot: EngineSnapshot): void;
 }
@@ -433,6 +434,7 @@ function createFakeEngine(
   const nextLevels: NextLevelData[] = [];
   const cubeAdoptions: AuthoritativeCubeState[] = [];
   const economyAdoptions: EconomyState[] = [];
+  const upgradeAdoptions: UpgradeState[] = [];
   const spectatingCalls: boolean[] = [];
   let snapshot = initial;
   return {
@@ -492,6 +494,13 @@ function createFakeEngine(
           },
         };
       },
+      adoptUpgrades(upgrades) {
+        upgradeAdoptions.push({ ...upgrades });
+        snapshot = {
+          ...snapshot,
+          upgrades: { ...upgrades },
+        };
+      },
       setSpectating(active) {
         spectatingCalls.push(active);
       },
@@ -503,6 +512,7 @@ function createFakeEngine(
     nextLevels,
     cubeAdoptions,
     economyAdoptions,
+    upgradeAdoptions,
     spectatingCalls,
     setSnapshot(next) {
       snapshot = next;
@@ -769,6 +779,7 @@ function welcomeMessage(options: {
   serverId?: number;
   maxUsers?: number;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
+  upgrades?: UpgradeState;
 } = {}): WelcomeMessage {
   const playerId = options.playerId ?? 'p1';
   const name = options.name ?? 'Player 1';
@@ -792,6 +803,7 @@ function welcomeMessage(options: {
       ],
     identity: { kind: 'guest', playerId },
     ...(options.economy === undefined ? {} : { economy: options.economy }),
+    ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
   };
 }
 
@@ -805,6 +817,7 @@ function worldEnteredMessage(options: {
   serverId?: number;
   maxUsers?: number;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
+  upgrades?: UpgradeState;
 } = {}): WorldEnteredMessage {
   const position = options.position ?? { x: 0, y: 24 };
   const levelIndex = options.levelIndex ?? 1;
@@ -825,6 +838,7 @@ function worldEnteredMessage(options: {
       ],
     identity: { kind: 'guest', playerId: 'p1' },
     ...(options.economy === undefined ? {} : { economy: options.economy }),
+    ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
   };
 }
 
@@ -2843,5 +2857,100 @@ describe('multiplayer economy adoption (AC-6, AC-11, AC-16, AC-18)', () => {
       cubesDestroyed: 1,
       coins: 5,
     });
+  });
+});
+
+describe('multiplayer upgrades wiring (T9)', () => {
+  it('adopts upgrades from welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        upgrades: { mini_cube_value: 2 },
+        roster: [selfMember(), member()],
+      }),
+    );
+    expect(session.getSnapshot().upgrades).toEqual({ mini_cube_value: 2 });
+  });
+
+  it('adopts upgrades from worldEntered', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+    wire.emit(
+      worldEnteredMessage({
+        upgrades: { cube_value: 1 },
+        roster: [selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }), member()],
+      }),
+    );
+    expect(session.getSnapshot().upgrades).toEqual({ cube_value: 1 });
+  });
+
+  it('adopts upgrades from upgradesUpdate and publishes', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    const listener = vi.fn();
+    session.subscribe(listener);
+    wire.emit({ type: 'upgradesUpdate', upgrades: { speed_window: 3 } });
+    expect(session.getSnapshot().upgrades).toEqual({ speed_window: 3 });
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it('sends purchaseUpgrade for accounts', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+    session.purchaseUpgrade('cube_value');
+    expect(wire.sent).toContainEqual({ type: 'purchaseUpgrade', upgradeId: 'cube_value' });
+  });
+
+  it('applies guest local purchase', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    // seed coins
+    engine.adoptEconomy({ coins: 100, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    // default joinedMode guest
+    session.purchaseUpgrade('mini_cube_value');
+    expect(session.getSnapshot().stats.coins).toBe(90);
+    expect(session.getSnapshot().upgrades).toEqual({ mini_cube_value: 1 });
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('propagates mode on join', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    expect(session.getMultiplayerSnapshot().mode).toBe('guest');
+    session.join('account');
+    expect(session.getMultiplayerSnapshot().mode).toBe('account');
+    session.join('guest');
+    expect(session.getMultiplayerSnapshot().mode).toBe('guest');
   });
 });

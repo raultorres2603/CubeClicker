@@ -90,6 +90,7 @@ import { createSceneView, type SceneView } from '../render/scene';
 import { browserEnvironment } from '../browser-env';
 import { PIXEL_RATIO_CAP } from './effects';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
+import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
 import type { Board, CubeStyle, MiniCubeId } from './types';
@@ -184,6 +185,8 @@ export interface MultiplayerSnapshot {
   status: TransportStatus;
   world: WorldState;
   spectate: SpectateStatus;
+  /** Session-owned mode from the last successful `join(mode)` (default `'guest'`). */
+  mode?: 'guest' | 'account';
 }
 
 /**
@@ -204,6 +207,8 @@ export interface OnlineGameSession extends GameSession {
   retryConnection(): void;
   /** Deferred join entry point: chooses guest/account mode (no-op offline). */
   join(mode: 'guest' | 'account'): void;
+  /** Spends coins on an upgrade (account: sends a message; guest: local debit). */
+  purchaseUpgrade(upgradeId: string): void;
 }
 
 /** Construction options; the environment, the engine and the transport are all injectable. */
@@ -297,8 +302,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let publishedSnapshot: EngineSnapshot | null = null;
 
   const multiplayerListeners = new Set<() => void>();
-  /** The last built multiplayer object; reused while status/world/spectate are unchanged. */
+  /** The last built multiplayer object; reused while status/world/spectate/mode are unchanged. */
   let multiplayerCache: MultiplayerSnapshot | null = null;
+  /** Session-owned mode from the last successful `join(mode)` (default `'guest'`). */
+  let joinedMode: 'guest' | 'account' = 'guest';
   /** The multiplayer object the listeners were last told about. */
   let publishedMultiplayer: MultiplayerSnapshot;
 
@@ -321,8 +328,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       cached === null ||
       cached.status !== status ||
       cached.world !== world ||
-      cached.spectate !== currentSpectate
-        ? { status, world, spectate: currentSpectate }
+      cached.spectate !== currentSpectate ||
+      cached.mode !== joinedMode
+        ? { status, world, spectate: currentSpectate, mode: joinedMode }
         : cached;
     multiplayerCache = next;
     return next;
@@ -514,6 +522,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (message.economy !== undefined && engine.adoptEconomy !== undefined) {
       engine.adoptEconomy(message.economy);
     }
+    if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
+      engine.adoptUpgrades(message.upgrades);
+    }
     welcomed = true;
     completionLevel = null;
     flushPendingRotate();
@@ -569,6 +580,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (message.economy !== undefined && engine.adoptEconomy !== undefined) {
       engine.adoptEconomy(message.economy);
     }
+    if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
+      engine.adoptUpgrades(message.upgrades);
+    }
     flushPendingRotate();
     publish(engine.getSnapshot());
   }
@@ -623,6 +637,14 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     publish(engine.getSnapshot());
   }
 
+  /** `upgradesUpdate`: replace the engine's upgrade levels with the carried absolute map. */
+  function handleUpgradesUpdate(message: Extract<ServerMessage, { type: 'upgradesUpdate' }>): void {
+    if (engine.adoptUpgrades !== undefined) {
+      engine.adoptUpgrades(message.upgrades);
+    }
+    publish(engine.getSnapshot());
+  }
+
   /** A member left: the spectated/travelled target triggers the flight home (AC-19 a/b). */
   function handleMemberLeft(playerId: string): void {
     const mode = spectate.get().mode;
@@ -667,6 +689,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         break;
       case 'economyUpdate':
         handleEconomyUpdate(message);
+        break;
+      case 'upgradesUpdate':
+        handleUpgradesUpdate(message);
         break;
       default:
         // `hello` (transport handshake) and `error` carry no world/engine action here.
@@ -797,7 +822,46 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   }
 
   function join(mode: 'guest' | 'account'): void {
+    joinedMode = mode;
     transport?.join(mode);
+    publishMultiplayer();
+  }
+
+  function purchaseUpgrade(upgradeId: string): void {
+    if (!online || transport === undefined) {
+      return;
+    }
+    if (joinedMode === 'account') {
+      transport.send({ type: 'purchaseUpgrade', upgradeId });
+      return;
+    }
+    // Guest path (Q-5 default): validate against the mirrored catalog/cost using the
+    // engine snapshot, then adopt the debited coins + incremented level locally.
+    if (!isValidUpgradeId(upgradeId)) {
+      return;
+    }
+    const snapshotBefore = engine.getSnapshot();
+    const upgrades = snapshotBefore.upgrades ?? {};
+    const currentLevel = upgradeLevel(upgrades, upgradeId);
+    const cost = upgradeCost(upgradeId, currentLevel);
+    if (!Number.isFinite(cost)) {
+      return;
+    }
+    const coins = snapshotBefore.stats.coins ?? 0;
+    if (coins < cost) {
+      return;
+    }
+    const stats = snapshotBefore.stats;
+    engine.adoptEconomy?.({
+      coins: coins - cost,
+      clicks: stats.clicks,
+      facesDestroyed: stats.facesDestroyed,
+      cubesDestroyed: stats.cubesDestroyed ?? 0,
+    });
+    const nextUpgrades: Record<string, number> = { ...upgrades };
+    nextUpgrades[upgradeId] = currentLevel + 1;
+    engine.adoptUpgrades?.(nextUpgrades);
+    publish(engine.getSnapshot());
   }
 
   function setPointerTarget(ndcX: number, ndcY: number): void {
@@ -1139,6 +1203,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
 
     retryConnection,
     join,
+    purchaseUpgrade,
     setPointerTarget,
   };
 }
