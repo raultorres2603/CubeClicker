@@ -98,3 +98,6 @@ export type TravelDirection = 'left' | 'right' | 'top' | 'bottom';
  * constant draw 0.5 selects `top` (spec AC-3).
  */
 export const TRAVEL_DIRECTIONS: readonly TravelDirection[] = ['left', 'right', 'top', 'bottom'];
+
+/** Server-authoritative upgrade levels mirrored on the client (record of id -> level). */
+export type UpgradeState = Record<string, number>;

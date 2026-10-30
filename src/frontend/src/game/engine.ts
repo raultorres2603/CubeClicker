@@ -114,6 +114,7 @@ import {
   type MiniCubeId,
   type Phase,
   type TravelDirection,
+  type UpgradeState,
 } from './types';
 
 /** A camera-only travel: to another member's cube (`spectate`) or back home (`return`). */
@@ -234,6 +235,12 @@ export interface EngineSnapshot {
   /** True while the camera rests over another member's cube and every game input is gated. */
   spectating?: boolean;
   reducedMotion: boolean;
+  /**
+   * Upgrade levels held by the engine. Optional on the base contract for source
+   * compatibility with pre-upgrade snapshot fakes; always populated by
+   * {@link createEngine}.
+   */
+  upgrades?: UpgradeState;
 }
 
 /**
@@ -244,6 +251,7 @@ export interface OnlineEngineSnapshot extends EngineSnapshot {
   travelKind: TravelKind | null;
   travelDestination: Position | null;
   spectating: boolean;
+  upgrades: UpgradeState;
 }
 
 export interface GameEngine {
@@ -294,6 +302,8 @@ export interface GameEngine {
   adoptCubeState?(cube: AuthoritativeCubeState): void;
   /** Reconciles coins/stats to the server's absolute totals. */
   adoptEconomy?(economy: EconomyState): void;
+  /** Replaces the engine's upgrade levels with the carried absolute map. */
+  adoptUpgrades?(upgrades: UpgradeState): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -305,6 +315,7 @@ export interface OnlineGameEngine extends GameEngine {
   cancelTravel(): void;
   adoptCubeState(cube: AuthoritativeCubeState): void;
   adoptEconomy(economy: EconomyState): void;
+  adoptUpgrades(upgrades: UpgradeState): void;
   setSpectating(active: boolean): void;
 }
 
@@ -467,6 +478,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   let pendingBoardReplay: { removedIds: MiniCubeId[]; clearedFaceIds: FaceId[] } | null = null;
   let boardReplayArmed = false;
   let spectating = false;
+  let upgrades: UpgradeState = {};
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
@@ -523,6 +535,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       travelDestination,
       spectating,
       reducedMotion,
+      upgrades,
     };
   }
 
@@ -1099,6 +1112,11 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
           coins: economy.coins,
         },
       };
+      invalidate();
+    },
+
+    adoptUpgrades(next: UpgradeState): void {
+      upgrades = next;
       invalidate();
     },
 
