@@ -789,3 +789,156 @@ describe('account economy integration (T12)', () => {
     }
   });
 });
+
+describe('spending upgrades integration (T5)', () => {
+  it('account join with seeded upgrades returns persisted levels in welcome.upgrades', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit('u1', { coins: 100 });
+    await repo.purchaseUpgrade('u1', 'mini_cube_value', 10, 0);
+    await repo.purchaseUpgrade('u1', 'mini_cube_value', 20, 1);
+
+    const app = buildApp({}, {
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.upgrades).toEqual({ mini_cube_value: 2 });
+      expect(welcome.economy).toEqual({ coins: 70, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('purchaseUpgrade debits coins and broadcasts economyUpdate + upgradesUpdate', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit('u1', { coins: 100 });
+
+    const app = buildApp({}, {
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.playerId).toBe('p1');
+
+      client.send({ type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' });
+      await flushMicrotasks();
+
+      const update = await client.next();
+      expect(update).toEqual({
+        type: 'economyUpdate',
+        coins: 90,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+
+      const upgrades = await client.next();
+      expect(upgrades).toEqual({
+        type: 'upgradesUpdate',
+        upgrades: { mini_cube_value: 1 },
+      });
+
+      expect(await repo.findByUserId('u1')).toEqual({
+        coins: 90,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+      expect(await repo.findUpgradesByUserId('u1')).toEqual({ mini_cube_value: 1 });
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('purchaseUpgrade with insufficient funds sends error and persists nothing', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit('u1', { coins: 5 });
+
+    const app = buildApp({}, {
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.playerId).toBe('p1');
+
+      client.send({ type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' });
+      await flushMicrotasks();
+
+      const reply = await client.next();
+      expect(reply).toEqual({ type: 'error', code: 'insufficient_funds' });
+
+      const maybeUpdate = await nextOrTimeout(client, 50);
+      expect(maybeUpdate).toBeNull();
+
+      expect(await repo.findByUserId('u1')).toEqual({
+        coins: 5,
+        clicks: 0,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+      expect(await repo.findUpgradesByUserId('u1')).toEqual({});
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('guest purchase does not persist or broadcast', async () => {
+    const repo = new InMemoryEconomyRepository();
+
+    const app = buildApp({}, {
+      auth: { economy: repo },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.playerId).toBe('p1');
+
+      client.send({ type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' });
+      await flushMicrotasks();
+
+      const maybeMessage = await nextOrTimeout(client, 50);
+      expect(maybeMessage).toBeNull();
+
+      expect(await repo.findByUserId('u1')).toBeNull();
+      expect(await repo.findUpgradesByUserId('u1')).toEqual({});
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+});
