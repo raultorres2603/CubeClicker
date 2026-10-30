@@ -1410,7 +1410,7 @@ describe('orientation storage and rotate (T2)', () => {
     first.clear();
     first.receive(JSON.stringify({ type: 'explode', id: 'front:9:9', level: 1 }));
     const sync = first.messages().find((m) => m.type === 'stateSync');
-    expect(sync).toBeDefined();
+    expect(sync.type).toBe('stateSync');
     expect(sync.yawSteps).toBe(0);
     expect(sync.pitchSteps).toBe(0);
   });
@@ -1438,7 +1438,7 @@ describe('orientation storage and rotate (T2)', () => {
     third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
 
     const joined = second.messages().find((m) => m.type === 'memberJoined');
-    expect(joined).toBeDefined();
+    expect(joined.type).toBe('memberJoined');
     expect(joined.member.yawSteps).toBe(0);
     expect(joined.member.pitchSteps).toBe(0);
   });
@@ -1539,7 +1539,7 @@ describe('account economy (T3)', () => {
 
     const msgs = peer.messages();
     const update = msgs.find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update).toBeDefined();
+    expect(update.type).toBe('economyUpdate');
     expect(update.facesDestroyed).toBe(1);
     expect(update.clicks).toBe(ids.length);
   });
@@ -1560,7 +1560,7 @@ describe('account economy (T3)', () => {
     await flush();
 
     const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update).toBeDefined();
+    expect(update.type).toBe('economyUpdate');
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
     expect(update.cubesDestroyed).toBe(1);
   });
@@ -1580,7 +1580,7 @@ describe('account economy (T3)', () => {
     await flush();
 
     const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update).toBeDefined();
+    expect(update.type).toBe('economyUpdate');
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE));
   });
 

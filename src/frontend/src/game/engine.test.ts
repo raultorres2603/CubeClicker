@@ -9,6 +9,7 @@ import {
 } from './engine';
 import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
+import { COINS_PER_CUBE, COINS_PER_MINI_CUBE, thresholdSeconds } from './economy';
 import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
 
 /**
@@ -131,7 +132,7 @@ describe('createEngine — initial state', () => {
 
     expect(snapshot.phase).toBe('intro');
     expect(snapshot.phaseProgress).toBe(0);
-    expect(snapshot.stats.clicks).toBe(0); expect(snapshot.stats.facesDestroyed).toBe(0);
+    expect(snapshot.stats.clicks).toBe(0); expect(snapshot.stats.facesDestroyed).toBe(0); expect(snapshot.stats.coins).toBe(undefined); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     expect(snapshot.levelIndex).toBe(0);
     expect(snapshot.style).toBe(CUBE_STYLES[0]);
     expect(snapshot.style.id).toBe('obsidian-neon');
@@ -186,7 +187,7 @@ describe('getSnapshot — referential stability (AC-11)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
     const third = engine.getSnapshot();
     expect(third).not.toBe(second);
-    expect(third.stats.clicks).toBe(1); expect(third.stats.facesDestroyed).toBe(0);
+    expect(third.stats.clicks).toBe(1); expect(third.stats.facesDestroyed).toBe(0); expect(third.stats.coins).toBe(0.1); expect(third.stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot()).toBe(third);
 
     // A frame with nothing to advance, and draining the queue, are not state changes.
@@ -238,7 +239,7 @@ describe('intro phase (AC-2)', () => {
 
     const after = engine.getSnapshot();
     expect(after).toBe(before);
-    expect(after.stats.clicks).toBe(0); expect(after.stats.facesDestroyed).toBe(0);
+    expect(after.stats.clicks).toBe(0); expect(after.stats.facesDestroyed).toBe(0); expect(after.stats.coins).toBe(undefined); expect(after.stats.cubesDestroyed).toBe(undefined);
     expect(after.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(engine.drainIntents()).toEqual([]);
   });
@@ -277,7 +278,7 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(1); expect(snapshot.stats.facesDestroyed).toBe(0);
+    expect(snapshot.stats.clicks).toBe(1); expect(snapshot.stats.facesDestroyed).toBe(0); expect(snapshot.stats.coins).toBe(0.1); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     expect(snapshot.board.faces[0]?.miniCubes).toHaveLength(24);
     expect(snapshot.board.faces[0]?.miniCubes.some((miniCube) => miniCube.id === 'front:2:2')).toBe(false);
     expect(engine.drainIntents()).toEqual([explosion('front:2:2', 'front')]);
@@ -294,7 +295,7 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
 
     expect(engine.getSnapshot()).toBe(afterFirst);
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
     expect(engine.drainIntents()).toEqual([]);
   });
@@ -613,7 +614,7 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     clearFace(engine, 'front', 2);
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(4); expect(snapshot.stats.facesDestroyed).toBe(1);
+    expect(snapshot.stats.clicks).toBe(4); expect(snapshot.stats.facesDestroyed).toBe(1); expect(snapshot.stats.coins).toBe(0.4); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     const intents = engine.drainIntents();
     expect(intents).toEqual([
       explosion('front:0:0', 'front'),
@@ -638,7 +639,7 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     clearFace(engine, 'right', 2);
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(8); expect(snapshot.stats.facesDestroyed).toBe(2);
+    expect(snapshot.stats.clicks).toBe(8); expect(snapshot.stats.facesDestroyed).toBe(2); expect(snapshot.stats.coins).toBe(0.8); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
   });
@@ -649,7 +650,7 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     for (const faceId of ['left', 'right', 'top', 'bottom'] as const) {
       clearFace(engine, faceId, 2);
     }
-    expect(engine.getSnapshot().stats.clicks).toBe(16); expect(engine.getSnapshot().stats.facesDestroyed).toBe(4);
+    expect(engine.getSnapshot().stats.clicks).toBe(16); expect(engine.getSnapshot().stats.facesDestroyed).toBe(4); expect(engine.getSnapshot().stats.coins).toBe(1.6); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     engine.drainIntents();
 
@@ -667,7 +668,7 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 2, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
-    expect(snapshot.stats.clicks).toBe(20); expect(snapshot.stats.facesDestroyed).toBe(5);
+    expect(snapshot.stats.clicks).toBe(20); expect(snapshot.stats.facesDestroyed).toBe(5); expect(snapshot.stats.coins).toBe(2); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
   });
 
   it('breaks a nearest-face tie with FACE_IDS order', () => {
@@ -757,7 +758,7 @@ describe('travel and level progression (AC-10)', () => {
 
     let snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 3, pitchSteps: -1 });
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.phase).toBe('playing');
 
     const levelIntents = engine.drainIntents();
@@ -782,7 +783,7 @@ describe('travel and level progression (AC-10)', () => {
     engine.dispatch({ type: 'introSkip' });
     snapshot = engine.getSnapshot();
     expect(snapshot.phase).toBe('travel');
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.orientation).toEqual({ yawSteps: 3, pitchSteps: -1 });
     expect(engine.drainIntents()).toEqual([]);
 
@@ -796,7 +797,7 @@ describe('travel and level progression (AC-10)', () => {
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style).toBe(CUBE_STYLES[1]);
     expect(snapshot.style.id).toBe('crimson-alloy');
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
@@ -804,7 +805,7 @@ describe('travel and level progression (AC-10)', () => {
 
     // The second level plays like the first, with the carried-over stats.
     clearFace(engine, 'front', GRID_SIZE);
-    expect(engine.getSnapshot().stats.clicks).toBe(175); expect(engine.getSnapshot().stats.facesDestroyed).toBe(7);
+    expect(engine.getSnapshot().stats.clicks).toBe(175); expect(engine.getSnapshot().stats.facesDestroyed).toBe(7); expect(engine.getSnapshot().stats.coins).toBe(27.5); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(1);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     engine.advance(DEFAULT_TIMINGS.rotationMs);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
@@ -823,7 +824,7 @@ describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
     expect(snapshot.phaseProgress).toBe(1249 / 2500);
     expect(snapshot.levelIndex).toBe(0);
     expect(snapshot.style).toBe(CUBE_STYLES[0]);
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(engine.drainIntents()).toEqual([]);
   });
 
@@ -839,7 +840,7 @@ describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style).toBe(CUBE_STYLES[1]);
     expect(snapshot.style.id).toBe('crimson-alloy');
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.rotationProgress).toBe(1);
@@ -874,7 +875,7 @@ describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
     expect(snapshot.phase).toBe('playing');
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style).toBe(CUBE_STYLES[1]);
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
   });
 
   it('follows the reduced timeline: 74 nothing, 75 levelChanged, 150 playing', () => {
@@ -892,7 +893,7 @@ describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
     expect(snapshot.phase).toBe('travel');
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style).toBe(CUBE_STYLES[1]);
-    expect(snapshot.stats.clicks).toBe(6); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(6); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(10.6); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[1] }]);
 
@@ -946,7 +947,7 @@ describe('travel arrival — the level advances at the midpoint (AC-3)', () => {
     const after = engine.getSnapshot();
     expect(after).toBe(before);
     expect(after.phase).toBe('travel');
-    expect(after.stats.clicks).toBe(150); expect(after.stats.facesDestroyed).toBe(6);
+    expect(after.stats.clicks).toBe(150); expect(after.stats.facesDestroyed).toBe(6); expect(after.stats.coins).toBe(25); expect(after.stats.cubesDestroyed).toBe(1);
     expect(after.board.faces.map((face) => face.miniCubes.length)).toEqual([25, 25, 25, 25, 25, 25]);
     expect(after.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(after.rotationFrom).toBeNull();
@@ -994,7 +995,7 @@ describe('reduced motion (AC-12)', () => {
     engine.drainIntents();
     engine.dispatch({ type: 'explodeMiniCube', id: 'left:2:2' });
 
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.drainIntents()).toEqual([
       { kind: 'explosion', id: 'left:2:2', faceId: 'left', burst: EMPTY_BURST },
     ]);
@@ -1008,7 +1009,7 @@ describe('reduced motion (AC-12)', () => {
     clearFace(engine, 'front', 2);
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(4); expect(snapshot.stats.facesDestroyed).toBe(1);
+    expect(snapshot.stats.clicks).toBe(4); expect(snapshot.stats.facesDestroyed).toBe(1); expect(snapshot.stats.coins).toBe(0.4); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     expect(snapshot.orientation).toEqual({ yawSteps: 1, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.rotationProgress).toBe(1);
@@ -1029,7 +1030,7 @@ describe('reduced motion (AC-12)', () => {
     }
     engine.drainIntents();
 
-    expect(engine.getSnapshot().stats.clicks).toBe(6); expect(engine.getSnapshot().stats.facesDestroyed).toBe(6);
+    expect(engine.getSnapshot().stats.clicks).toBe(6); expect(engine.getSnapshot().stats.facesDestroyed).toBe(6); expect(engine.getSnapshot().stats.coins).toBe(10.6); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(1);
     expect(engine.getSnapshot().phase).toBe('playing');
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 1, pitchSteps: -1 });
 
@@ -1044,7 +1045,7 @@ describe('reduced motion (AC-12)', () => {
     expect(snapshot.phase).toBe('playing');
     expect(snapshot.levelIndex).toBe(1);
     expect(snapshot.style.id).toBe('crimson-alloy');
-    expect(snapshot.stats.clicks).toBe(6); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(6); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(10.6); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.board.faces.map((face) => face.miniCubes.length)).toEqual([1, 1, 1, 1, 1, 1]);
   });
 
@@ -1118,7 +1119,7 @@ describe('online mode — the level advance holds for the server (AC-14, AC-23)'
     expect(held.levelIndex).toBe(0);
     expect(held.gridSize).toBe(GRID_SIZE);
     expect(held.style).toBe(CUBE_STYLES[0]);
-    expect(held.stats.clicks).toBe(150); expect(held.stats.facesDestroyed).toBe(6);
+    expect(held.stats.clicks).toBe(150); expect(held.stats.facesDestroyed).toBe(6); expect(held.stats.coins).toBe(25); expect(held.stats.cubesDestroyed).toBe(1);
     expect(held.travelDirection).toBeNull();
     expect(held.travelKind).toBe('nextLevel');
     expect(held.travelDestination).toBeNull();
@@ -1168,7 +1169,7 @@ describe('online mode — the level advance holds for the server (AC-14, AC-23)'
     expect(snapshot.gridSize).toBe(3);
     expect(snapshot.style).toBe(CUBE_STYLES[4]);
     expect(snapshot.style.id).toBe('violet-nebula');
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(snapshot.rotationFrom).toBeNull();
     expect(snapshot.travelDestination).toBe(destination);
@@ -1190,7 +1191,7 @@ describe('online mode — the level advance holds for the server (AC-14, AC-23)'
     expect(snapshot.travelKind).toBeNull();
     expect(snapshot.travelDestination).toBeNull();
     expect(snapshot.travelDirection).toBeNull();
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6);
+    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
     expect(engine.drainIntents()).toEqual([]);
   });
 
@@ -1338,7 +1339,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       idsOfFace('front', 3).filter((id) => id !== 'front:0:0'),
     );
     // The authority removal the client had not applied counts, as the accepted reconcile does.
-    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0);
+    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0); expect(adopted.stats.coins).toBe(undefined); expect(adopted.stats.cubesDestroyed).toBe(undefined);
     expect(engine.drainIntents()).toEqual([replayExplosion('front:0:0', 'front')]);
   });
 
@@ -1357,7 +1358,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
     });
 
     const adopted = engine.getSnapshot();
-    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(1);
+    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(1); expect(adopted.stats.coins).toBe(undefined); expect(adopted.stats.cubesDestroyed).toBe(undefined);
     expect(adopted.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([0, 1, 1, 1, 1, 1]);
     expect(engine.drainIntents()).toEqual([
@@ -1371,7 +1372,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
     engine.dispatch({ type: 'introSkip' });
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:1:1' });
     engine.drainIntents();
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
 
     engine.adoptCubeState({
       levelIndex: 0,
@@ -1388,7 +1389,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       9, 9, 9, 9, 9, 9,
     ]);
     // Stats are session-local and never rolled back.
-    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0);
+    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0); expect(adopted.stats.coins).toBe(0.1); expect(adopted.stats.cubesDestroyed).toBe(undefined);
     // A restore needs a fresh view: the scene rebuilds from the `levelChanged` snapshot.
     expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[0] }]);
 
@@ -1429,7 +1430,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       idsOfFace('front', 4).filter((id) => id !== 'front:0:0' && id !== 'front:1:1'),
     );
     // The old cube's stats survive; the new cube's removal set is not click accounting.
-    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0);
+    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0); expect(adopted.stats.coins).toBe(0.1); expect(adopted.stats.cubesDestroyed).toBe(undefined);
     expect(engine.drainIntents()).toEqual([{ kind: 'levelChanged', style: CUBE_STYLES[2] }]);
 
     // The scene drains the rebuild on the first frame; the removal replay follows one frame
@@ -1451,7 +1452,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
     const held = engine.getSnapshot();
     expect(held.phase).toBe('travel');
     expect(held.travelKind).toBe('nextLevel');
-    expect(held.stats.clicks).toBe(54); expect(held.stats.facesDestroyed).toBe(6);
+    expect(held.stats.clicks).toBe(54); expect(held.stats.facesDestroyed).toBe(6); expect(held.stats.coins).toBe(15.4); expect(held.stats.cubesDestroyed).toBe(1);
 
     engine.adoptCubeState({
       levelIndex: 1,
@@ -1471,7 +1472,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
     expect(adopted.levelIndex).toBe(1);
     expect(adopted.gridSize).toBe(4);
     expect(adopted.style).toBe(CUBE_STYLES[1]);
-    expect(adopted.stats.clicks).toBe(54); expect(adopted.stats.facesDestroyed).toBe(6);
+    expect(adopted.stats.clicks).toBe(54); expect(adopted.stats.facesDestroyed).toBe(6); expect(adopted.stats.coins).toBe(15.4); expect(adopted.stats.cubesDestroyed).toBe(1);
     expect(adopted.board.faces.map((face) => face.miniCubes.length)).toEqual([
       16, 16, 16, 16, 16, 16,
     ]);
@@ -1659,7 +1660,7 @@ describe('camera-only travel kinds (AC-17)', () => {
     expect(snapshot.travelDestination).toBeNull();
     expect(snapshot.levelIndex).toBe(0);
     expect(snapshot.board).toBe(before.board);
-    expect(snapshot.stats.clicks).toBe(0); expect(snapshot.stats.facesDestroyed).toBe(0);
+    expect(snapshot.stats.clicks).toBe(0); expect(snapshot.stats.facesDestroyed).toBe(0); expect(snapshot.stats.coins).toBe(undefined); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
     expect(snapshot.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(engine.drainIntents()).toEqual([]);
   });
@@ -1741,7 +1742,7 @@ describe('spectating input gate (AC-17)', () => {
     engine.dispatch({ type: 'introSkip' });
 
     expect(engine.getSnapshot()).toBe(gated);
-    expect(engine.getSnapshot().stats.clicks).toBe(0); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(0); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(undefined); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(25);
     expect(engine.getSnapshot().orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(engine.getSnapshot().rotationFrom).toBeNull();
@@ -1768,7 +1769,7 @@ describe('spectating input gate (AC-17)', () => {
     expect(engine.getSnapshot()).toBe(active);
 
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
     expect(engine.drainIntents()).toHaveLength(1);
   });
@@ -1799,7 +1800,7 @@ describe('travel cancel (AC-19 d, AC-22)', () => {
     expect(cancelled.levelIndex).toBe(0);
     expect(cancelled.gridSize).toBe(GRID_SIZE);
     expect(cancelled.board).toBe(before.board);
-    expect(cancelled.stats.clicks).toBe(0); expect(cancelled.stats.facesDestroyed).toBe(0);
+    expect(cancelled.stats.clicks).toBe(0); expect(cancelled.stats.facesDestroyed).toBe(0); expect(cancelled.stats.coins).toBe(undefined); expect(cancelled.stats.cubesDestroyed).toBe(undefined);
     expect(cancelled.orientation).toEqual({ yawSteps: 0, pitchSteps: 0 });
     expect(cancelled.spectating).toBe(false);
     expect(engine.drainIntents()).toEqual([]);
@@ -1810,7 +1811,7 @@ describe('travel cancel (AC-19 d, AC-22)', () => {
 
     // Play is live again at the own cube.
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
   });
 
@@ -1841,7 +1842,7 @@ describe('travel cancel (AC-19 d, AC-22)', () => {
     // The session clears the gate itself; play then resumes at the own cube.
     engine.setSpectating(false);
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
-    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0);
+    expect(engine.getSnapshot().stats.clicks).toBe(1); expect(engine.getSnapshot().stats.facesDestroyed).toBe(0); expect(engine.getSnapshot().stats.coins).toBe(0.1); expect(engine.getSnapshot().stats.cubesDestroyed).toBe(undefined);
     expect(engine.getSnapshot().board.faces[0]?.miniCubes).toHaveLength(24);
   });
 
@@ -1881,5 +1882,150 @@ describe('travel cancel (AC-19 d, AC-22)', () => {
     const playingSnapshot = playing.getSnapshot();
     playing.cancelTravel();
     expect(playing.getSnapshot()).toBe(playingSnapshot);
+  });
+});
+
+
+describe('engine economy awards (AC-1..AC-4, AC-8, AC-21)', () => {
+  it('per-mini: destroying one mini-cube awards COINS_PER_MINI_CUBE', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.clicks).toBe(1);
+    expect(snap.stats.coins).toBe(COINS_PER_MINI_CUBE);
+    expect(snap.stats.cubesDestroyed).toBeUndefined();
+  });
+
+  it('guest path: earns coins and stats locally without adoptEconomy', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:1' });
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.clicks).toBe(2);
+    expect(snap.stats.coins).toBe(COINS_PER_MINI_CUBE * 2);
+  });
+
+  it('per-cube: fast completion awards 2x COINS_PER_CUBE', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 2);
+    }
+    clearFace(engine, 'bottom', 2);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.clicks).toBe(24);
+    expect(snap.stats.facesDestroyed).toBe(6);
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(24 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2);
+  });
+
+  it('per-cube: slow completion awards 1x COINS_PER_CUBE', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 2);
+    }
+    engine.advance(100_000);
+    clearFace(engine, 'bottom', 2);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(24 * COINS_PER_MINI_CUBE + COINS_PER_CUBE);
+  });
+
+  it('speed bonus boundary: exactly at threshold qualifies (grid 3)', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 3);
+    }
+    engine.advance(thresholdSeconds(3) * 1000);
+    clearFace(engine, 'bottom', 3);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2);
+  });
+
+  it('speed bonus boundary: one ms over threshold does not qualify (grid 3)', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 3);
+    }
+    engine.advance(thresholdSeconds(3) * 1000 + 1);
+    clearFace(engine, 'bottom', 3);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE);
+  });
+
+  it('size-dependent threshold: grid 7 uses 35s boundary', () => {
+    const engine = createEngine({ gridSize: 7, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 7);
+    }
+    engine.advance(thresholdSeconds(7) * 1000);
+    clearFace(engine, 'bottom', 7);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(39.4);
+  });
+});
+
+describe('adoptEconomy (AC-6, AC-16)', () => {
+  it('sets coins and stats to absolute values', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+
+    engine.adoptEconomy({ coins: 99.99, clicks: 5, facesDestroyed: 2, cubesDestroyed: 3 });
+
+    const stats = engine.getSnapshot().stats;
+    expect(stats.coins).toBe(99.99);
+    expect(stats.clicks).toBe(5);
+    expect(stats.facesDestroyed).toBe(2);
+    expect(stats.cubesDestroyed).toBe(3);
+  });
+
+  it('overwrites lower local totals with server absolute values', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.adoptEconomy({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+    const stats = engine.getSnapshot().stats;
+    expect(stats.coins).toBe(0);
+    expect(stats.clicks).toBe(0);
+    expect(stats.facesDestroyed).toBe(0);
+    expect(stats.cubesDestroyed).toBe(0);
   });
 });
