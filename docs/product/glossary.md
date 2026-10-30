@@ -100,6 +100,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** A purchasable improvement bought with points that increases the rate at which the player earns. Upgrades are the main way to spend points for faster progress.
 **Example:** Buying an upgrade with points makes every future click more valuable.
 
+### upgrades
+
+**Definition:** Purchasable improvements bought with **coins** that increase the rate at which the player earns; upgrade levels and coin balances are persisted per **account** in the `user_economy` table and reconcile across connected clients. Upgrades are the main way to spend coins for faster progress.
+**Example:** Buying upgrades with coins makes every future mini-cube and cube reward larger.
+
 ### verified account
 
 **Definition:** An account whose email has been verified by consuming a valid, unexpired, single-use verification token (`verified = true`). Only a verified account may join the game as an account; an unverified account must verify (and may resend the verification email) before playing.
