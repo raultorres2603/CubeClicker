@@ -20,6 +20,7 @@ describe('Hud', () => {
       '<section aria-label="Game statistics">' +
         '<p>Clicks: <span data-stat="clicks">0</span></p>' +
         '<p>Faces destroyed: <span data-stat="faces-destroyed">0</span></p>' +
+        '<p>Coins <span data-stat="coins">0.00</span></p>' +
         '<p>Cube <span data-stat="cube">1</span></p>' +
         '<p>Server <span data-stat="server">0</span></p>' +
         '</section>',
@@ -35,6 +36,7 @@ describe('Hud', () => {
       '<section aria-label="Game statistics">' +
         '<p>Clicks: <span data-stat="clicks">42</span></p>' +
         '<p>Faces destroyed: <span data-stat="faces-destroyed">3</span></p>' +
+        '<p>Coins <span data-stat="coins">0.00</span></p>' +
         '<p>Cube <span data-stat="cube">3</span></p>' +
         '<p>Server <span data-stat="server">7</span></p>' +
         '</section>',
@@ -76,6 +78,7 @@ describe('Hud', () => {
       '<section aria-label="Game statistics">' +
         '<p>Clicks: <span data-stat="clicks">1</span></p>' +
         '<p>Faces destroyed: <span data-stat="faces-destroyed">1</span></p>' +
+        '<p>Coins <span data-stat="coins">0.00</span></p>' +
         '<p>Cube <span data-stat="cube">1</span></p>' +
         '<p>Server <span data-stat="server">1</span></p>' +
         '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' +
@@ -201,6 +204,7 @@ describe('Hud blinking prop (AC-3)', () => {
       '<section aria-label="Game statistics">' +
         '<p>Clicks: <span data-stat="clicks">1</span></p>' +
         '<p>Faces destroyed: <span data-stat="faces-destroyed">1</span></p>' +
+        '<p>Coins <span data-stat="coins">0.00</span></p>' +
         '<p>Cube <span data-stat="cube">1</span></p>' +
         '<p>Server <span data-stat="server">1</span></p>' +
         '</section>',

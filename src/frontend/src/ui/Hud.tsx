@@ -32,6 +32,9 @@ export function Hud({
         Faces destroyed: <span data-stat="faces-destroyed">{stats.facesDestroyed}</span>
       </p>
       <p>
+        Coins <span data-stat="coins">{(stats.coins ?? 0).toFixed(2)}</span>
+      </p>
+      <p>
         Cube <span data-stat="cube">{levelIndex + 1}</span>
       </p>
       <p>
