@@ -1,17 +1,24 @@
 /**
- * Economy repository (coin-economy T2).
+ * Economy repository (coin-economy T2, extended for spending-upgrades T2).
  *
  * Persists per-user coins and in-game stats (`clicks`, `facesDestroyed`,
- * `cubesDestroyed`) in the `user_economy` table (migration 002). Follows the
- * `user-repository.ts` pattern: a `UserDb`-style injected pool, parameterized
- * SQL only, and both an in-memory and a Postgres implementation.
+ * `cubesDestroyed`) plus upgrade levels (`upgrades` JSONB, migration 003) in
+ * the `user_economy` table. Follows the `user-repository.ts` pattern: a
+ * `UserDb`-style injected pool, parameterized SQL only, and both an in-memory
+ * and a Postgres implementation.
  *
  * `credit` MUST use atomic SQL increments (INSERT ... ON CONFLICT DO UPDATE
  * SET ... = user_economy.<col> + $delta), never read-modify-write, so that
  * concurrent multi-tab credits accumulate without lost updates (F5).
+ *
+ * `purchaseUpgrade` MUST perform only the conditional UPDATE (no insert/upsert)
+ * with a level guard, returning `null` on insufficient funds / stale level /
+ * no row, so concurrent multi-tab purchases cannot overdraw or clobber a level
+ * increment (F1, F2).
  */
 
 import { roundCoins } from '../game/economy.js';
+import type { UpgradeId, UpgradeState } from '../game/upgrades.js';
 
 export interface EconomyState {
   coins: number;
@@ -32,6 +39,13 @@ export interface EconomyDb {
 export interface EconomyRepository {
   findByUserId(userId: string): Promise<EconomyState | null>;
   credit(userId: string, delta: EconomyDelta): Promise<EconomyState>;
+  findUpgradesByUserId(userId: string): Promise<UpgradeState>;
+  purchaseUpgrade(
+    userId: string,
+    upgradeId: UpgradeId,
+    cost: number,
+    currentLevel: number,
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null>;
 }
 
 export interface InMemoryEconomyRepositoryOptions {
@@ -45,8 +59,13 @@ const ZERO: EconomyState = {
   cubesDestroyed: 0,
 };
 
+interface StoredRow {
+  economy: EconomyState;
+  upgrades: UpgradeState;
+}
+
 export class InMemoryEconomyRepository implements EconomyRepository {
-  private readonly store = new Map<string, EconomyState>();
+  private readonly store = new Map<string, StoredRow>();
   private readonly now: () => number;
 
   constructor(options: InMemoryEconomyRepositoryOptions = {}) {
@@ -54,20 +73,51 @@ export class InMemoryEconomyRepository implements EconomyRepository {
   }
 
   async findByUserId(userId: string): Promise<EconomyState | null> {
-    const value = this.store.get(userId);
-    return value ? { ...value } : null;
+    const row = this.store.get(userId);
+    return row ? { ...row.economy } : null;
   }
 
   async credit(userId: string, delta: EconomyDelta): Promise<EconomyState> {
-    const existing = this.store.get(userId) ?? { ...ZERO };
+    const existing = this.store.get(userId);
+    const base = existing?.economy ?? { ...ZERO };
     const next: EconomyState = {
-      coins: roundCoins(existing.coins + (delta.coins ?? 0)),
-      clicks: existing.clicks + (delta.clicks ?? 0),
-      facesDestroyed: existing.facesDestroyed + (delta.facesDestroyed ?? 0),
-      cubesDestroyed: existing.cubesDestroyed + (delta.cubesDestroyed ?? 0),
+      coins: roundCoins(base.coins + (delta.coins ?? 0)),
+      clicks: base.clicks + (delta.clicks ?? 0),
+      facesDestroyed: base.facesDestroyed + (delta.facesDestroyed ?? 0),
+      cubesDestroyed: base.cubesDestroyed + (delta.cubesDestroyed ?? 0),
     };
-    this.store.set(userId, next);
+    const upgrades: UpgradeState = existing ? { ...existing.upgrades } : {};
+    this.store.set(userId, { economy: next, upgrades });
     return { ...next };
+  }
+
+  async findUpgradesByUserId(userId: string): Promise<UpgradeState> {
+    const row = this.store.get(userId);
+    return row ? { ...row.upgrades } : {};
+  }
+
+  async purchaseUpgrade(
+    userId: string,
+    upgradeId: UpgradeId,
+    cost: number,
+    currentLevel: number,
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null> {
+    const row = this.store.get(userId);
+    if (!row) return null;
+    const economy = row.economy;
+    if (economy.coins < cost) return null;
+    const storedLevel =
+      typeof row.upgrades[upgradeId] === 'number' && Number.isFinite(row.upgrades[upgradeId])
+        ? (row.upgrades[upgradeId] as number)
+        : 0;
+    if (storedLevel !== currentLevel) return null;
+    const nextEconomy: EconomyState = {
+      ...economy,
+      coins: roundCoins(economy.coins - cost),
+    };
+    const nextUpgrades: UpgradeState = { ...row.upgrades, [upgradeId]: currentLevel + 1 };
+    this.store.set(userId, { economy: nextEconomy, upgrades: nextUpgrades });
+    return { economy: { ...nextEconomy }, upgrades: { ...nextUpgrades } };
   }
 }
 
@@ -82,6 +132,25 @@ function rowToEconomy(row: Record<string, unknown>): EconomyState {
     facesDestroyed: Number(row.faces_destroyed ?? 0),
     cubesDestroyed: Number(row.cubes_destroyed ?? 0),
   };
+}
+
+function parseUpgrades(raw: unknown): UpgradeState {
+  if (raw === null || raw === undefined) return {};
+  let obj: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return {};
+  const out: UpgradeState = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) out[key] = n;
+  }
+  return out;
 }
 
 export class PgEconomyRepository implements EconomyRepository {
@@ -124,5 +193,40 @@ export class PgEconomyRepository implements EconomyRepository {
       throw new Error('INSERT/UPDATE returned no row');
     }
     return rowToEconomy(row);
+  }
+
+  async findUpgradesByUserId(userId: string): Promise<UpgradeState> {
+    const result = await this.db.query(
+      'SELECT upgrades FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    const row = result.rows[0];
+    return row ? parseUpgrades(row.upgrades) : {};
+  }
+
+  async purchaseUpgrade(
+    userId: string,
+    upgradeId: UpgradeId,
+    cost: number,
+    currentLevel: number,
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null> {
+    const path = [upgradeId];
+    const result = await this.db.query(
+      `UPDATE user_economy
+       SET coins = coins - $2,
+           upgrades = jsonb_set(upgrades, $3::text[], to_jsonb(($4 + 1)::int)),
+           updated_at = now()
+       WHERE user_id = $1
+         AND coins >= $2
+         AND COALESCE((upgrades->>'${upgradeId}')::int, 0) = $4
+       RETURNING coins, clicks, faces_destroyed, cubes_destroyed, upgrades`,
+      [userId, cost, path, currentLevel],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      economy: rowToEconomy(row),
+      upgrades: parseUpgrades(row.upgrades),
+    };
   }
 }
