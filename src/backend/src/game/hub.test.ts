@@ -4,7 +4,7 @@ import { allIds } from './cubes.js';
 import { createGameHub, type GameHub, type Peer } from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
-import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins } from './economy.js';
+import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins, IDLE_CAP_MS, idleCoins } from './economy.js';
 
 /** A fake {@link Peer}: records sent frames and lets tests drive the transport events. */
 class FakePeer implements Peer {
@@ -1625,5 +1625,205 @@ describe('account economy (T3)', () => {
 
     const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
+  });
+});
+
+describe('idle accrual (T4)', () => {
+  interface IdleHarness {
+    repo: InMemoryEconomyRepository;
+    config: GameConfig;
+    hub: GameHub;
+    setNow: (ms: number) => void;
+    connect: (userId?: string, username?: string) => FakePeer;
+    join: (peer: FakePeer, mode?: 'account' | 'guest') => void;
+    flush: () => Promise<void>;
+  }
+
+  function createIdleHarness(): IdleHarness {
+    const config = loadGameConfig({});
+    let clock = 0;
+    const repo = new InMemoryEconomyRepository({ now: () => clock });
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      economy: repo,
+    });
+    return {
+      repo,
+      config,
+      hub,
+      setNow: (ms: number) => {
+        clock = ms;
+      },
+      connect: (userId = 'u1', username = 'alice') => {
+        const peer = new FakePeer();
+        hub.attach(peer, { userId, username, verified: true });
+        return peer;
+      },
+      join: (peer: FakePeer, mode?: 'account' | 'guest') => {
+        peer.receive(JSON.stringify(mode ? { type: 'join', mode } : { type: 'join' }));
+      },
+      flush: async () => {
+        for (let i = 0; i < 50; i += 1) {
+          await Promise.resolve();
+        }
+      },
+    };
+  }
+
+  it('credits idle coins on account join when away long enough', async () => {
+    const h = createIdleHarness();
+    await h.repo.credit('u1', { coins: 5 });
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(120_000);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    const expectedCoins = roundCoins(5 + idleCoins(120_000, {}));
+    expect(welcome.economy.coins).toBe(expectedCoins);
+    expect(welcome.economy.clicks).toBe(0);
+    expect(welcome.economy.facesDestroyed).toBe(0);
+    expect(welcome.economy.cubesDestroyed).toBe(0);
+    const stored = await h.repo.findByUserId('u1');
+    expect(stored!.coins).toBe(expectedCoins);
+    expect(await h.repo.findLastSeenAt('u1')).toBe(120_000);
+    const eu = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
+    expect(eu.type).toBe('economyUpdate');
+    expect(eu.coins).toBe(expectedCoins);
+  });
+
+  it('does not accrue when away less than threshold', async () => {
+    const h = createIdleHarness();
+    await h.repo.credit('u1', { coins: 5 });
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(30_000);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.economy.coins).toBe(5);
+    const eu = peer.messages().find((m) => m.type === 'economyUpdate');
+    expect(eu).toBeUndefined();
+    expect(await h.repo.findLastSeenAt('u1')).toBe(30_000);
+  });
+
+  it('caps accrual at IDLE_CAP_MS', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(IDLE_CAP_MS + 100_000);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.economy.coins).toBe(idleCoins(IDLE_CAP_MS, {}));
+    expect(idleCoins(IDLE_CAP_MS + 100_000, {})).toBe(idleCoins(IDLE_CAP_MS, {}));
+  });
+
+  it('applies mini-cube upgrade multiplier to idle accrual', async () => {
+    const h = createIdleHarness();
+    await h.repo.credit('u1', { coins: 10 });
+    await h.repo.purchaseUpgrade('u1', 'mini_cube_value', 10, 0);
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(60_000);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.economy.coins).toBe(idleCoins(60_000, { mini_cube_value: 1 }));
+  });
+
+  it('guest join performs no touch or accrual and welcome economy is zero', async () => {
+    const h = createIdleHarness();
+    const spy = vi.spyOn(h.repo, 'touchLastSeen');
+    const peer = new FakePeer();
+    h.hub.attach(peer);
+    peer.receive(JSON.stringify({ type: 'join', mode: 'guest' }));
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.economy).toEqual({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(peer.messages().some((m) => m.type === 'economyUpdate')).toBe(false);
+  });
+
+  it('touches last_seen_at on final disconnect', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(0);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    h.setNow(1000);
+    peer.drop();
+    await h.flush();
+    expect(await h.repo.findLastSeenAt('u1')).toBe(1000);
+  });
+
+  it('does not touch last_seen_at when another connection remains active', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(0);
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    await h.flush();
+    h.setNow(1000);
+    first.drop();
+    await h.flush();
+    expect(await h.repo.findLastSeenAt('u1')).toBe(0);
+  });
+
+  it('grace expiry does not touch last_seen_at', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(0);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const spy = vi.spyOn(h.repo, 'touchLastSeen');
+    h.setNow(0);
+    peer.drop();
+    await h.flush();
+    const afterClose = spy.mock.calls.length;
+    h.setNow(h.config.reconnectGraceMs);
+    vi.advanceTimersByTime(h.config.reconnectGraceMs);
+    await h.flush();
+    expect(spy.mock.calls.length).toBe(afterClose);
+  });
+
+  it('rejoin within grace does not touch last_seen_at', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(0);
+    const first = h.connect();
+    h.join(first);
+    await h.flush();
+    const token = welcomeOf(first).token;
+    first.drop();
+    await h.flush();
+    const before = await h.repo.findLastSeenAt('u1');
+    const spy = vi.spyOn(h.repo, 'touchLastSeen');
+    h.setNow(10);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+    await h.flush();
+    expect(spy).not.toHaveBeenCalled();
+    expect(await h.repo.findLastSeenAt('u1')).toBe(before);
+  });
+
+  it('concurrent joins credit idle coins only once', async () => {
+    const h = createIdleHarness();
+    await h.repo.touchLastSeen('u1', 0, null);
+    h.setNow(120_000);
+    const p1 = h.connect();
+    const p2 = h.connect();
+    p1.receive(JSON.stringify({ type: 'join' }));
+    p2.receive(JSON.stringify({ type: 'join' }));
+    await h.flush();
+    const expected = idleCoins(120_000, {});
+    expect((await h.repo.findByUserId('u1'))!.coins).toBe(expected);
   });
 });

@@ -86,6 +86,7 @@ import {
   COINS_PER_MINI_CUBE,
   roundCoins,
   thresholdSeconds,
+  idleCoins,
 } from './economy.js';
 import {
   miniCubeMultiplier,
@@ -441,6 +442,20 @@ export function createGameHub(deps: HubDeps): GameHub {
     grace.begin(playerId);
     scheduleExpiry(playerId);
     recomputePlan();
+    // Touch last_seen_at on the final active connection for an account (unconditional).
+    if (member.accountId !== null && economyRepo !== null) {
+      const accountId = member.accountId;
+      let hasOtherActive = false;
+      for (const m of members.values()) {
+        if (m.accountId === accountId && m !== member && m.connection !== null) {
+          hasOtherActive = true;
+          break;
+        }
+      }
+      if (!hasOtherActive) {
+        void economyRepo.touchLastSeen(accountId, deps.now());
+      }
+    }
   }
 
   /**
@@ -510,12 +525,25 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Load persisted economy before creating the member (account + repo present).
     let loadedEconomy: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
     let loadedUpgrades: UpgradeState = {};
+    let touched = false;
+    let creditedCoins = 0;
     if (isAccount && accountId !== null && economyRepo !== null) {
       const found = await economyRepo.findByUserId(accountId);
       if (found !== null) {
         loadedEconomy = found;
       }
       loadedUpgrades = await economyRepo.findUpgradesByUserId(accountId);
+      const lastSeenAt = await economyRepo.findLastSeenAt(accountId);
+      const now = deps.now();
+      touched = await economyRepo.touchLastSeen(accountId, now, lastSeenAt);
+      if (touched) {
+        const elapsed = lastSeenAt === null ? 0 : now - lastSeenAt;
+        const coins = idleCoins(elapsed, loadedUpgrades);
+        if (coins > 0) {
+          loadedEconomy = await economyRepo.credit(accountId, { coins });
+          creditedCoins = coins;
+        }
+      }
     }
 
     playerCounter += 1;
@@ -540,6 +568,15 @@ export function createGameHub(deps: HubDeps): GameHub {
     members.set(member.playerId, member);
     tokens.set(member.token, member.playerId);
     connection.playerId = member.playerId;
+    // Update in-memory members + broadcast economyUpdate when credited (F11).
+    if (isAccount && accountId !== null && economyRepo !== null && touched && creditedCoins > 0) {
+      for (const m of members.values()) {
+        if (m.accountId === accountId) {
+          m.economy = loadedEconomy;
+        }
+      }
+      broadcastEconomyUpdate(accountId, loadedEconomy);
+    }
     send(connection, welcomeMessage(placementFor(member)));
     broadcast(assignment.serverId, memberJoinedMessage(memberState(member)), member.playerId);
     recomputePlan();
