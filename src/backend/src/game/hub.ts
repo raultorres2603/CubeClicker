@@ -60,6 +60,7 @@ import {
   parseClientMessage,
   stateSyncMessage,
   economyUpdateMessage,
+  upgradesUpdateMessage,
   welcomeMessage,
   worldEnteredMessage,
   type CubeState,
@@ -72,6 +73,7 @@ import {
   type MiniCubeId,
   type Placement,
   type ServerMessage,
+  type UpgradeState,
 } from './protocol.js';
 import {
   createServerRegistry,
@@ -83,8 +85,17 @@ import {
   COINS_PER_CUBE,
   COINS_PER_MINI_CUBE,
   roundCoins,
-  speedBonusApplies,
+  thresholdSeconds,
 } from './economy.js';
+import {
+  miniCubeMultiplier,
+  cubeMultiplier,
+  speedWindowSeconds,
+  isValidUpgradeId,
+  upgradeLevel,
+  upgradeCost,
+  UPGRADE_CATALOG,
+} from './upgrades.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
@@ -191,6 +202,8 @@ interface Member {
   cubeStartedAtMs: number;
   /** Server-authoritative economy totals for this member. */
   economy: EconomyState;
+  /** Server-authoritative upgrade levels for this member. */
+  upgrades: UpgradeState;
   /** The live socket, or `null` while the member is inside the grace window. */
   connection: Connection | null;
   rate: RateWindow;
@@ -338,6 +351,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       roster: rosterFor(location.serverId),
       identity,
       economy: member.economy,
+      ...(member.accountId !== null ? { upgrades: member.upgrades } : {}),
     };
   }
 
@@ -495,11 +509,13 @@ export function createGameHub(deps: HubDeps): GameHub {
 
     // Load persisted economy before creating the member (account + repo present).
     let loadedEconomy: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
+    let loadedUpgrades: UpgradeState = {};
     if (isAccount && accountId !== null && economyRepo !== null) {
       const found = await economyRepo.findByUserId(accountId);
       if (found !== null) {
         loadedEconomy = found;
       }
+      loadedUpgrades = await economyRepo.findUpgradesByUserId(accountId);
     }
 
     playerCounter += 1;
@@ -516,6 +532,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       pitchSteps: 0,
       cubeStartedAtMs: deps.now(),
       economy: loadedEconomy,
+      upgrades: loadedUpgrades,
       connection,
       rate: { admitted: [], lastLimitedAt: null },
       rotateRate: { admitted: [], lastLimitedAt: null },
@@ -620,7 +637,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     if (member.accountId !== null && economyRepo !== null) {
       const accountId = member.accountId;
       const delta = {
-        coins: roundCoins(COINS_PER_MINI_CUBE),
+        coins: roundCoins(COINS_PER_MINI_CUBE * miniCubeMultiplier(member.upgrades)),
         clicks: 1,
         facesDestroyed: faceCleared ? 1 : 0,
       };
@@ -652,6 +669,21 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
+  function broadcastUpgradesUpdate(userId: string, upgrades: UpgradeState): void {
+    for (const connection of connections) {
+      if (connection.playerId === null) {
+        continue;
+      }
+      if (connection.accountSession?.userId !== userId) {
+        continue;
+      }
+      if (!connection.peer.isOpen()) {
+        continue;
+      }
+      send(connection, upgradesUpdateMessage(upgrades));
+    }
+  }
+
 
   function handleCompletion(member: Member, connection: Connection, level: number): void {
     if (!isComplete(member.cube, level)) {
@@ -662,7 +694,8 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Speed bonus uses the previous cube's gridSize and the server clock, before reset.
     const previousGridSize = member.cube.gridSize;
     const elapsedMs = deps.now() - member.cubeStartedAtMs;
-    const bonus = speedBonusApplies(elapsedMs, previousGridSize);
+    const bonus =
+      elapsedMs <= (thresholdSeconds(previousGridSize) + speedWindowSeconds(member.upgrades)) * 1000;
 
     const previous = locationOf(member.playerId)!;
     const next = createNextCube(member.cube, styleForLevel, random);
@@ -678,7 +711,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Account credit (fire-and-forget): cube coins (with speed bonus) + cubesDestroyed.
     if (member.accountId !== null && economyRepo !== null) {
       const accountId = member.accountId;
-      const coins = roundCoins(COINS_PER_CUBE * (bonus ? 2 : 1));
+      const coins = roundCoins(COINS_PER_CUBE * cubeMultiplier(member.upgrades) * (bonus ? 2 : 1));
       void economyRepo
         .credit(accountId, { coins, cubesDestroyed: 1 })
         .then((result) => {
@@ -710,6 +743,47 @@ export function createGameHub(deps: HubDeps): GameHub {
     send(connection, worldEnteredMessage(placementFor(member)));
     broadcast(previous.serverId, memberLeftMessage(member.playerId, 'moved'));
     broadcast(location.serverId, memberJoinedMessage(memberState(member)), member.playerId);
+  }
+
+  async function handlePurchaseUpgrade(member: Member, connection: Connection, upgradeId: string): Promise<void> {
+    // Guests never trigger a DB write or broadcast (silent no-op).
+    if (member.accountId === null) {
+      return;
+    }
+    const accountId = member.accountId;
+    if (economyRepo === null) {
+      return;
+    }
+    // Reload upgrades from the repository first, then derive cost/currentLevel from DB value.
+    const loaded = await economyRepo.findUpgradesByUserId(accountId);
+
+    // Validate catalog.
+    if (!isValidUpgradeId(upgradeId)) {
+      sendError(connection, 'unknown_upgrade');
+      return;
+    }
+    const currentLevel = upgradeLevel(loaded, upgradeId);
+    const upgradeDef = UPGRADE_CATALOG.find((d) => d.id === upgradeId);
+    if (upgradeDef !== undefined && currentLevel >= upgradeDef.maxLevel) {
+      sendError(connection, 'max_level');
+      return;
+    }
+
+    const cost = upgradeCost(upgradeId, currentLevel);
+    const result = await economyRepo.purchaseUpgrade(accountId, upgradeId, cost, currentLevel);
+    if (result === null) {
+      sendError(connection, 'insufficient_funds');
+      return;
+    }
+    // Update all members with same accountId.
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.economy = result.economy;
+        m.upgrades = result.upgrades;
+      }
+    }
+    broadcastEconomyUpdate(accountId, result.economy);
+    broadcastUpgradesUpdate(accountId, result.upgrades);
   }
 
   function handleRotate(member: Member, connection: Connection, yawSteps: number, pitchSteps: number): void {
@@ -769,6 +843,10 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     if (message.type === 'rotate') {
       handleRotate(member, connection, message.yawSteps, message.pitchSteps);
+      return;
+    }
+    if (message.type === 'purchaseUpgrade') {
+      void handlePurchaseUpgrade(member, connection, message.upgradeId);
       return;
     }
   }
