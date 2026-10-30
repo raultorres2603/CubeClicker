@@ -92,8 +92,14 @@ import {
   COINS_PER_CUBE,
   COINS_PER_MINI_CUBE,
   SPEED_BONUS_MULTIPLIER,
-  speedBonusApplies,
+  roundCoins,
+  thresholdSeconds,
 } from './economy';
+import {
+  cubeMultiplier,
+  miniCubeMultiplier,
+  speedWindowSeconds,
+} from './upgrades';
 import {
   createOrientation,
   frontFace,
@@ -646,7 +652,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     }
     board = removal.board;
     progression = recordClick(progression);
-    progression = recordCoins(progression, COINS_PER_MINI_CUBE);
+    progression = recordCoins(progression, roundCoins(COINS_PER_MINI_CUBE * miniCubeMultiplier(upgrades)));
     const faceId = faceIdOf(id);
     intents.push({ kind: 'explosion', id, faceId, burst: explosionBurst() });
     if (removal.faceCleared) {
@@ -656,10 +662,13 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     // Cube completion: the last mini-cube of the last face just cleared.
     const fullyCleared = board.faces.every((face) => face.miniCubes.length === 0);
     if (fullyCleared) {
-      const multiplier = speedBonusApplies(cubeElapsedMs, gridSize)
-        ? SPEED_BONUS_MULTIPLIER
-        : 1;
-      progression = recordCoins(progression, COINS_PER_CUBE * multiplier);
+      const speedBonus =
+        cubeElapsedMs <= (thresholdSeconds(gridSize) + speedWindowSeconds(upgrades)) * 1000;
+      const multiplier = speedBonus ? SPEED_BONUS_MULTIPLIER : 1;
+      progression = recordCoins(
+        progression,
+        roundCoins(COINS_PER_CUBE * cubeMultiplier(upgrades) * multiplier),
+      );
       progression = recordCubeDestroyed(progression);
     }
     invalidate();

@@ -9,7 +9,8 @@ import {
 } from './engine';
 import { createBurst, DEFAULT_TIMINGS, REDUCED_TIMINGS, type Timings } from './effects';
 import { CUBE_STYLES } from './progression';
-import { COINS_PER_CUBE, COINS_PER_MINI_CUBE, thresholdSeconds } from './economy';
+import { COINS_PER_CUBE, COINS_PER_MINI_CUBE, roundCoins, thresholdSeconds } from './economy';
+import { cubeMultiplier, miniCubeMultiplier, speedWindowSeconds } from './upgrades';
 import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
 
 /**
@@ -2027,5 +2028,118 @@ describe('adoptEconomy (AC-6, AC-16)', () => {
     expect(stats.clicks).toBe(0);
     expect(stats.facesDestroyed).toBe(0);
     expect(stats.cubesDestroyed).toBe(0);
+  });
+});
+
+describe('engine upgrades (AC-2, AC-3, AC-4, AC-5, AC-16, AC-17)', () => {
+  it('initial snapshot carries upgrades as {}', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    expect(engine.getSnapshot().upgrades).toEqual({});
+  });
+
+  it('mini_cube_value level L scales the mini-cube reward', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.adoptUpgrades({ mini_cube_value: 2 });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.coins).toBe(roundCoins(COINS_PER_MINI_CUBE * miniCubeMultiplier({ mini_cube_value: 2 })));
+    expect(snap.upgrades).toEqual({ mini_cube_value: 2 });
+  });
+
+  it('cube_value level L scales the cube reward', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    engine.adoptUpgrades({ cube_value: 3 });
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 2);
+    }
+    clearFace(engine, 'bottom', 2);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(
+      24 * COINS_PER_MINI_CUBE + roundCoins(COINS_PER_CUBE * cubeMultiplier({ cube_value: 3 }) * 2),
+    );
+  });
+
+  it('speed_window level L extends the speed-bonus threshold (boundary qualifies)', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    engine.adoptUpgrades({ speed_window: 1 });
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 3);
+    }
+    engine.advance(thresholdSeconds(3) * 1000 + speedWindowSeconds({ speed_window: 1 }) * 1000);
+    clearFace(engine, 'bottom', 3);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(
+      54 * COINS_PER_MINI_CUBE + roundCoins(COINS_PER_CUBE * cubeMultiplier({}) * 2),
+    );
+  });
+
+  it('speed_window boundary: one ms over the extended threshold does not qualify', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+    engine.adoptUpgrades({ speed_window: 1 });
+
+    for (const faceId of FACE_IDS) {
+      if (faceId === 'bottom') continue;
+      clearFace(engine, faceId, 3);
+    }
+    engine.advance(thresholdSeconds(3) * 1000 + speedWindowSeconds({ speed_window: 1 }) * 1000 + 1);
+    clearFace(engine, 'bottom', 3);
+
+    const snap = engine.getSnapshot();
+    expect(snap.stats.cubesDestroyed).toBe(1);
+    expect(snap.stats.coins).toBe(
+      54 * COINS_PER_MINI_CUBE + roundCoins(COINS_PER_CUBE * cubeMultiplier({})),
+    );
+  });
+
+  it('effects apply to future earnings only (no retroactive change)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    const before = engine.getSnapshot().stats.coins;
+    expect(before).toBe(COINS_PER_MINI_CUBE);
+
+    engine.adoptUpgrades({ mini_cube_value: 5 });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:1' });
+
+    const after = engine.getSnapshot().stats.coins;
+    expect(after).toBe(roundCoins(COINS_PER_MINI_CUBE + COINS_PER_MINI_CUBE * (1 + 0.1 * 5)));
+  });
+
+  it('adoptUpgrades replaces the whole map (no merge)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptUpgrades({ mini_cube_value: 2, cube_value: 1 });
+    expect(engine.getSnapshot().upgrades).toEqual({ mini_cube_value: 2, cube_value: 1 });
+
+    engine.adoptUpgrades({ speed_window: 3 });
+    expect(engine.getSnapshot().upgrades).toEqual({ speed_window: 3 });
+  });
+
+  it('adoptUpgrades invalidates the snapshot', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    const before = engine.getSnapshot();
+    engine.adoptUpgrades({ mini_cube_value: 1 });
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.upgrades).toEqual({ mini_cube_value: 1 });
   });
 });
