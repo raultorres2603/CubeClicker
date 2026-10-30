@@ -11,6 +11,7 @@ import { createTransport } from './multiplayer/transport';
 import { ConnectionBanner } from './ui/ConnectionBanner';
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud } from './ui/Hud';
+import { UpgradesPanel } from './ui/UpgradesPanel';
 import { UserPanel } from './ui/UserPanel';
 import { AuthMenu } from './ui/AuthMenu';
 import { VerificationPending } from './ui/VerificationPending';
@@ -363,7 +364,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
     session.getSnapshot,
     session.getSnapshot,
   );
-  const { status, world, spectate } = useSyncExternalStore(
+  const { status, world, spectate, mode = 'guest' } = useSyncExternalStore(
     session.subscribeMultiplayer,
     session.getMultiplayerSnapshot,
     session.getMultiplayerSnapshot,
@@ -452,6 +453,14 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
         onSpectate={session.spectateMember}
         onReturn={session.returnToOwnCube}
       />
+      {welcomed ? (
+        <UpgradesPanel
+          upgrades={snapshot.upgrades ?? {}}
+          coins={snapshot.stats.coins ?? 0}
+          mode={mode}
+          onPurchase={session.purchaseUpgrade}
+        />
+      ) : null}
       {gateState.view === 'menu' ? (
         gateState.pendingEmail !== null ? (
           <div
