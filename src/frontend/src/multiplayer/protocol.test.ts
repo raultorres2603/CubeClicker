@@ -4,7 +4,9 @@ import {
   type MemberState,
   MAX_MESSAGE_BYTES,
   type Placement,
+  economyUpdateMessage,
   encodeClientMessage,
+  encodeServerMessage,
   parseClientMessage,
   parseServerMessage,
 } from './protocol';
@@ -60,11 +62,12 @@ const PLACEMENT: Placement = {
   self: P1_CUBE,
   roster: [P1, P2],
   identity: { kind: 'guest', playerId: 'p1' },
+  economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
 };
 
 /** The `welcome` frame as it travels on the wire (hand-written, not stringified). */
 const WELCOME_TEXT =
-  '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":38.197186342054884,"y":0},"self":{"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},"roster":[{"playerId":"p1","name":"Player 1","position":{"x":38.197186342054884,"y":0},"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}],"identity":{"kind":"guest","playerId":"p1"}}';
+  '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":38.197186342054884,"y":0},"self":{"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},"roster":[{"playerId":"p1","name":"Player 1","position":{"x":38.197186342054884,"y":0},"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}],"identity":{"kind":"guest","playerId":"p1"},"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1}}';
 
 describe('MAX_MESSAGE_BYTES', () => {
   it('pins the 1024-byte frame cap mirrored from the backend', () => {
@@ -352,6 +355,15 @@ describe('parseServerMessage — catalog happy paths', () => {
       message: { type: 'error', code: 'invalid_click', detail: 'stale level 4' },
     });
   });
+
+  it('decodes economyUpdate with its four totals', () => {
+    expect(
+      parseServerMessage('{"type":"economyUpdate","coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1}'),
+    ).toEqual({
+      ok: true,
+      message: { type: 'economyUpdate', coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
+    });
+  });
 });
 
 describe('parseServerMessage — non-JSON, non-object and unknown frames', () => {
@@ -397,6 +409,10 @@ describe('parseServerMessage — missing required fields', () => {
     '{"type":"levelAdvanced","playerId":"p1","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon"}',
     '{"type":"stateSync","playerId":"p1","levelIndex":1,"gridSize":3}',
     '{"type":"error"}',
+    '{"type":"economyUpdate"}',
+    '{"type":"economyUpdate","coins":1}',
+    '{"type":"economyUpdate","coins":1,"clicks":2}',
+    '{"type":"economyUpdate","coins":1,"clicks":2,"facesDestroyed":3}',
   ];
 
   it.each(invalidServerFrames)('rejects %j with bad_message', (text) => {
@@ -429,6 +445,12 @@ describe('parseServerMessage — wrong field types and out-of-catalog values', (
     '{"type":"stateSync","playerId":"","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon","removedIds":[]}',
     '{"type":"error","code":"nope"}',
     '{"type":"error","code":"bad_message","detail":7}',
+    '{"type":"economyUpdate","coins":"1","clicks":2,"facesDestroyed":3,"cubesDestroyed":4}',
+    '{"type":"economyUpdate","coins":1,"clicks":null,"facesDestroyed":3,"cubesDestroyed":4}',
+    '{"type":"economyUpdate","coins":1,"clicks":2,"facesDestroyed":true,"cubesDestroyed":4}',
+    '{"type":"economyUpdate","coins":1,"clicks":2,"facesDestroyed":3,"cubesDestroyed":{}}',
+    '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":0,"y":0},"self":{"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0},"roster":[],"identity":{"kind":"guest","playerId":"p1"},"economy":"bad"}',
+    '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":0,"y":0},"self":{"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0},"roster":[],"identity":{"kind":"guest","playerId":"p1"},"economy":{"coins":1}}',
   ];
 
   it.each(invalidServerFrames)('rejects %j with bad_message', (text) => {
@@ -458,5 +480,35 @@ describe('encodeClientMessage', () => {
       ok: true,
       message: { type: 'rejoin', token: '0123456789abcdef0123456789abcdef' },
     });
+  });
+});
+
+describe('economyUpdateMessage', () => {
+  it('builds economyUpdate from an EconomyState', () => {
+    expect(
+      economyUpdateMessage({ coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 }),
+    ).toStrictEqual({
+      type: 'economyUpdate',
+      coins: 1.25,
+      clicks: 3,
+      facesDestroyed: 2,
+      cubesDestroyed: 1,
+    });
+  });
+
+  it('builds economyUpdate from positional numbers', () => {
+    expect(economyUpdateMessage(0.3, 4, 5, 6)).toStrictEqual({
+      type: 'economyUpdate',
+      coins: 0.3,
+      clicks: 4,
+      facesDestroyed: 5,
+      cubesDestroyed: 6,
+    });
+  });
+
+  it('encodes economyUpdate as one JSON frame', () => {
+    expect(
+      encodeServerMessage(economyUpdateMessage({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 })),
+    ).toBe('{"type":"economyUpdate","coins":0,"clicks":0,"facesDestroyed":0,"cubesDestroyed":0}');
   });
 });

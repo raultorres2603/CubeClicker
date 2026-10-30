@@ -24,9 +24,9 @@
  * check itself belongs to the caller (the transport drops oversized frames).
  */
 
-import type { FaceId, MiniCubeId } from '../game/types';
+import type { EconomyState, FaceId, MiniCubeId } from '../game/types';
 
-export type { FaceId, MiniCubeId };
+export type { EconomyState, FaceId, MiniCubeId };
 
 /**
  * Pinned message-size cap in bytes (spec § Pinned constants: 1024), mirrored from
@@ -142,6 +142,7 @@ export type ServerMessage =
       yawSteps: number;
       pitchSteps: number;
     }
+  | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -172,6 +173,7 @@ export interface Placement {
   self: CubeState;
   roster: MemberState[];
   identity: Identity;
+  economy?: EconomyState;
 }
 
 /** The payload of an authoritative board message (`stateSync`). */
@@ -398,6 +400,26 @@ function parseIdentity(value: unknown): Identity | null {
   return null;
 }
 
+/** An economy state from the wire (defensive copy), or `null` when malformed. */
+function parseEconomyState(value: unknown): EconomyState | null {
+  const obj = asJsonObject(value);
+  if (
+    obj === null ||
+    !isNumber(obj.coins) ||
+    !isNumber(obj.clicks) ||
+    !isNumber(obj.facesDestroyed) ||
+    !isNumber(obj.cubesDestroyed)
+  ) {
+    return null;
+  }
+  return {
+    coins: obj.coins,
+    clicks: obj.clicks,
+    facesDestroyed: obj.facesDestroyed,
+    cubesDestroyed: obj.cubesDestroyed,
+  };
+}
+
 /** The `welcome`/`worldEntered` payload (identity + assignment + full world), or `null`. */
 function parsePlacement(frame: JsonObject): Placement | null {
   if (
@@ -423,6 +445,14 @@ function parsePlacement(frame: JsonObject): Placement | null {
     }
     roster.push(member);
   }
+  let economy: EconomyState | undefined;
+  if (frame.economy !== undefined) {
+    const parsedEconomy = parseEconomyState(frame.economy);
+    if (parsedEconomy === null) {
+      return null;
+    }
+    economy = parsedEconomy;
+  }
   return {
     playerId: frame.playerId,
     name: frame.name,
@@ -433,6 +463,7 @@ function parsePlacement(frame: JsonObject): Placement | null {
     self,
     roster,
     identity,
+    ...(economy !== undefined ? { economy } : {}),
   };
 }
 
@@ -574,6 +605,27 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       };
     }
 
+    case 'economyUpdate': {
+      if (
+        !isNumber(frame.coins) ||
+        !isNumber(frame.clicks) ||
+        !isNumber(frame.facesDestroyed) ||
+        !isNumber(frame.cubesDestroyed)
+      ) {
+        return badServerMessage();
+      }
+      return {
+        ok: true,
+        message: {
+          type: 'economyUpdate',
+          coins: frame.coins,
+          clicks: frame.clicks,
+          facesDestroyed: frame.facesDestroyed,
+          cubesDestroyed: frame.cubesDestroyed,
+        },
+      };
+    }
+
     case 'error': {
       if (!isErrorCode(frame.code)) {
         return badServerMessage();
@@ -591,6 +643,34 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
     default:
       return badServerMessage();
   }
+}
+
+/** Builds a server `economyUpdate` message carrying the server's absolute totals. */
+export function economyUpdateMessage(
+  economyOrCoins:
+    | EconomyState
+    | { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
+    | number,
+  clicks?: number,
+  facesDestroyed?: number,
+  cubesDestroyed?: number,
+): ServerMessage {
+  let coins: number;
+  let c: number;
+  let f: number;
+  let cb: number;
+  if (typeof economyOrCoins === 'number') {
+    coins = economyOrCoins;
+    c = clicks as number;
+    f = facesDestroyed as number;
+    cb = cubesDestroyed as number;
+  } else {
+    coins = economyOrCoins.coins;
+    c = economyOrCoins.clicks;
+    f = economyOrCoins.facesDestroyed;
+    cb = economyOrCoins.cubesDestroyed;
+  }
+  return { type: 'economyUpdate', coins, clicks: c, facesDestroyed: f, cubesDestroyed: cb };
 }
 
 /** Serialises one client message into the single JSON text frame sent over the wire. */
