@@ -24,9 +24,9 @@
  * check itself belongs to the caller (the transport drops oversized frames).
  */
 
-import type { EconomyState, FaceId, MiniCubeId } from '../game/types';
+import type { EconomyState, FaceId, MiniCubeId, UpgradeState } from '../game/types';
 
-export type { EconomyState, FaceId, MiniCubeId };
+export type { EconomyState, FaceId, MiniCubeId, UpgradeState };
 
 /**
  * Pinned message-size cap in bytes (spec § Pinned constants: 1024), mirrored from
@@ -82,7 +82,10 @@ export type ErrorCode =
   | 'invalid_completion'
   | 'resume_failed'
   | 'account_unverified'
-  | 'not_authenticated';
+  | 'not_authenticated'
+  | 'insufficient_funds'
+  | 'unknown_upgrade'
+  | 'max_level';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
@@ -90,7 +93,8 @@ export type ClientMessage =
   | { type: 'rejoin'; token: string }
   | { type: 'explode'; id: MiniCubeId; level: number }
   | { type: 'cubeCompleted'; level: number }
-  | { type: 'rotate'; yawSteps: number; pitchSteps: number };
+  | { type: 'rotate'; yawSteps: number; pitchSteps: number }
+  | { type: 'purchaseUpgrade'; upgradeId: string };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -145,6 +149,7 @@ export type ServerMessage =
       pitchSteps: number;
     }
   | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
+  | { type: 'upgradesUpdate'; upgrades: UpgradeState }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -176,6 +181,7 @@ export interface Placement {
   roster: MemberState[];
   identity: Identity;
   economy?: EconomyState;
+  upgrades?: UpgradeState;
 }
 
 /** The payload of an authoritative board message (`stateSync`). */
@@ -227,6 +233,9 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'resume_failed',
   'account_unverified',
   'not_authenticated',
+  'insufficient_funds',
+  'unknown_upgrade',
+  'max_level',
 ];
 
 /** A pinned error code (the `error` frame's `code` is a closed set, never free text). */
@@ -304,6 +313,12 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         ok: true,
         message: { type: 'rotate', yawSteps: frame.yawSteps, pitchSteps: frame.pitchSteps },
       };
+
+    case 'purchaseUpgrade':
+      if (!isNonEmptyString(frame.upgradeId)) {
+        return badClientMessage();
+      }
+      return { ok: true, message: { type: 'purchaseUpgrade', upgradeId: frame.upgradeId } };
 
     default:
       return badClientMessage();
@@ -422,6 +437,25 @@ function parseEconomyState(value: unknown): EconomyState | null {
   };
 }
 
+/** An upgrade state from the wire (defensive copy), or `null` when malformed. */
+function parseUpgradeState(value: unknown): UpgradeState | null {
+  const obj = asJsonObject(value);
+  if (obj === null) {
+    return null;
+  }
+  const result: UpgradeState = {};
+  for (const key of Object.keys(obj)) {
+    if (key.length === 0) {
+      return null;
+    }
+    if (!isInteger(obj[key])) {
+      return null;
+    }
+    result[key] = obj[key] as number;
+  }
+  return result;
+}
+
 /** The `welcome`/`worldEntered` payload (identity + assignment + full world), or `null`. */
 function parsePlacement(frame: JsonObject): Placement | null {
   if (
@@ -455,6 +489,14 @@ function parsePlacement(frame: JsonObject): Placement | null {
     }
     economy = parsedEconomy;
   }
+  let upgrades: UpgradeState | undefined;
+  if (frame.upgrades !== undefined) {
+    const parsedUpgrades = parseUpgradeState(frame.upgrades);
+    if (parsedUpgrades === null) {
+      return null;
+    }
+    upgrades = parsedUpgrades;
+  }
   return {
     playerId: frame.playerId,
     name: frame.name,
@@ -466,6 +508,7 @@ function parsePlacement(frame: JsonObject): Placement | null {
     roster,
     identity,
     ...(economy !== undefined ? { economy } : {}),
+    ...(upgrades !== undefined ? { upgrades } : {}),
   };
 }
 
@@ -628,6 +671,17 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       };
     }
 
+    case 'upgradesUpdate': {
+      const upgrades = parseUpgradeState(frame.upgrades);
+      if (upgrades === null) {
+        return badServerMessage();
+      }
+      return {
+        ok: true,
+        message: { type: 'upgradesUpdate', upgrades },
+      };
+    }
+
     case 'error': {
       if (!isErrorCode(frame.code)) {
         return badServerMessage();
@@ -673,6 +727,20 @@ export function economyUpdateMessage(
     cb = economyOrCoins.cubesDestroyed;
   }
   return { type: 'economyUpdate', coins, clicks: c, facesDestroyed: f, cubesDestroyed: cb };
+}
+
+/** Builds a server `upgradesUpdate` message carrying the server's absolute upgrade levels. */
+export function upgradesUpdateMessage(upgrades: UpgradeState): ServerMessage {
+  const copy: UpgradeState = {};
+  for (const key of Object.keys(upgrades)) {
+    copy[key] = upgrades[key];
+  }
+  return { type: 'upgradesUpdate', upgrades: copy };
+}
+
+/** Builds a client `purchaseUpgrade` message. */
+export function purchaseUpgradeMessage(upgradeId: string): ClientMessage {
+  return { type: 'purchaseUpgrade', upgradeId };
 }
 
 /** Serialises one client message into the single JSON text frame sent over the wire. */

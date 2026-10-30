@@ -4,11 +4,14 @@ import {
   type MemberState,
   MAX_MESSAGE_BYTES,
   type Placement,
+  UpgradeState,
   economyUpdateMessage,
   encodeClientMessage,
   encodeServerMessage,
   parseClientMessage,
   parseServerMessage,
+  purchaseUpgradeMessage,
+  upgradesUpdateMessage,
 } from './protocol';
 
 /**
@@ -510,5 +513,162 @@ describe('economyUpdateMessage', () => {
     expect(
       encodeServerMessage(economyUpdateMessage({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 })),
     ).toBe('{"type":"economyUpdate","coins":0,"clicks":0,"facesDestroyed":0,"cubesDestroyed":0}');
+  });
+});
+
+describe('parseClientMessage — purchaseUpgrade', () => {
+  it('decodes purchaseUpgrade with a non-empty upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}')).toEqual({
+      ok: true,
+      message: { type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' },
+    });
+  });
+
+  it('rejects purchaseUpgrade without upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects purchaseUpgrade with an empty upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":""}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects purchaseUpgrade with a non-string upgradeId', () => {
+    expect(parseClientMessage('{"type":"purchaseUpgrade","upgradeId":7}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('parseServerMessage — upgradesUpdate', () => {
+  it('decodes upgradesUpdate with integer levels', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate","upgrades":{"mini_cube_value":2,"cube_value":1}}')).toEqual({
+      ok: true,
+      message: { type: 'upgradesUpdate', upgrades: { mini_cube_value: 2, cube_value: 1 } },
+    });
+  });
+
+  it('decodes upgradesUpdate with an empty map', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate","upgrades":{}}')).toEqual({
+      ok: true,
+      message: { type: 'upgradesUpdate', upgrades: {} },
+    });
+  });
+
+  it('rejects upgradesUpdate without upgrades', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate"}')).toEqual({ ok: false, error: 'bad_message' });
+  });
+
+  it('rejects upgradesUpdate with non-integer levels', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate","upgrades":{"mini_cube_value":1.5}}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects upgradesUpdate with empty keys', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate","upgrades":{"":1}}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects upgradesUpdate with non-object upgrades', () => {
+    expect(parseServerMessage('{"type":"upgradesUpdate","upgrades":7}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('placement upgrades field', () => {
+  it('parseServerMessage copies upgrades when present on welcome', () => {
+    const text = WELCOME_TEXT.replace(
+      '"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1}',
+      '"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1},"upgrades":{"mini_cube_value":4}',
+    );
+    const result = parseServerMessage(text);
+    expect(result).toEqual({
+      ok: true,
+      message: { type: 'welcome', ...PLACEMENT, upgrades: { mini_cube_value: 4 } },
+    });
+  });
+
+  it('rejects welcome with non-integer upgrade levels', () => {
+    const text = WELCOME_TEXT.replace(
+      '"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1}',
+      '"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1},"upgrades":{"mini_cube_value":1.5}',
+    );
+    expect(parseServerMessage(text)).toEqual({ ok: false, error: 'bad_message' });
+  });
+
+  it('omits upgrades when absent', () => {
+    const result = parseServerMessage(WELCOME_TEXT);
+    if (!result.ok || result.message.type !== 'welcome') throw new Error('bad');
+    expect(result.message).not.toHaveProperty('upgrades');
+  });
+});
+
+describe('upgradesUpdateMessage', () => {
+  it('builds upgradesUpdate from an UpgradeState', () => {
+    expect(upgradesUpdateMessage({ mini_cube_value: 2, cube_value: 1 })).toStrictEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 2, cube_value: 1 },
+    });
+  });
+
+  it('builds upgradesUpdate from an empty map', () => {
+    expect(upgradesUpdateMessage({})).toStrictEqual({ type: 'upgradesUpdate', upgrades: {} });
+  });
+
+  it('copies its input defensively', () => {
+    const source: UpgradeState = { mini_cube_value: 3 };
+    const message = upgradesUpdateMessage(source);
+    source.mini_cube_value = 99;
+    expect(message).toStrictEqual({ type: 'upgradesUpdate', upgrades: { mini_cube_value: 3 } });
+  });
+
+  it('encodes upgradesUpdate as one JSON frame', () => {
+    expect(encodeServerMessage(upgradesUpdateMessage({ speed_window: 2 }))).toBe(
+      '{"type":"upgradesUpdate","upgrades":{"speed_window":2}}',
+    );
+  });
+});
+
+describe('purchaseUpgradeMessage', () => {
+  it('builds purchaseUpgrade client message', () => {
+    expect(purchaseUpgradeMessage('cube_value')).toStrictEqual({
+      type: 'purchaseUpgrade',
+      upgradeId: 'cube_value',
+    });
+  });
+
+  it('encodes purchaseUpgrade as one JSON frame', () => {
+    expect(encodeClientMessage(purchaseUpgradeMessage('speed_window'))).toBe(
+      '{"type":"purchaseUpgrade","upgradeId":"speed_window"}',
+    );
+  });
+});
+
+describe('ErrorCode upgrades', () => {
+  it('accepts the new upgrade error codes', () => {
+    expect(parseServerMessage('{"type":"error","code":"insufficient_funds"}')).toEqual({
+      ok: true,
+      message: { type: 'error', code: 'insufficient_funds' },
+    });
+    expect(parseServerMessage('{"type":"error","code":"unknown_upgrade"}')).toEqual({
+      ok: true,
+      message: { type: 'error', code: 'unknown_upgrade' },
+    });
+    expect(parseServerMessage('{"type":"error","code":"max_level"}')).toEqual({
+      ok: true,
+      message: { type: 'error', code: 'max_level' },
+    });
   });
 });
