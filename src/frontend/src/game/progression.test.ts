@@ -6,6 +6,8 @@ import {
   createProgression,
   currentStyle,
   recordClick,
+  recordCoins,
+  recordCubeDestroyed,
   recordFaceDestroyed,
   type Progression,
 } from './progression';
@@ -181,5 +183,97 @@ describe('advanceLevel', () => {
     const next = recordClick(recordFaceDestroyed(advanceLevel(p)));
     expect(next).toEqual({ levelIndex: 6, stats: { clicks: 12, facesDestroyed: 5 } });
     expect(currentStyle(next).id).toBe('crimson-alloy');
+  });
+});
+
+describe('createProgression (initial stats)', () => {
+  it('seeds clicks, facesDestroyed, cubesDestroyed and coins from initialStats', () => {
+    expect(
+      createProgression({ clicks: 5, facesDestroyed: 2, cubesDestroyed: 3, coins: 1.25 }),
+    ).toEqual({ levelIndex: 0, stats: { clicks: 5, facesDestroyed: 2, cubesDestroyed: 3, coins: 1.25 } });
+  });
+
+  it('defaults missing clicks/facesDestroyed to zero and omits optional fields when not supplied', () => {
+    expect(createProgression({ clicks: 7 })).toEqual({ levelIndex: 0, stats: { clicks: 7, facesDestroyed: 0 } });
+    expect(createProgression()).toEqual({ levelIndex: 0, stats: { clicks: 0, facesDestroyed: 0 } });
+  });
+
+  it('seeds a zero optional field when explicitly provided', () => {
+    expect(createProgression({ cubesDestroyed: 0, coins: 0 })).toEqual({
+      levelIndex: 0,
+      stats: { clicks: 0, facesDestroyed: 0, cubesDestroyed: 0, coins: 0 },
+    });
+  });
+
+  it('returns an independent progression', () => {
+    const initial = { clicks: 1, facesDestroyed: 1, cubesDestroyed: 1, coins: 1 };
+    const first = createProgression(initial);
+    const second = createProgression(initial);
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
+    expect(second.stats).not.toBe(first.stats);
+  });
+});
+
+describe('recordCoins', () => {
+  it('adds the amount to coins (rounded to 2 decimals) and leaves everything else untouched', () => {
+    const before = progressionAt(2, 3, 1);
+
+    const after = recordCoins(before, 0.1);
+
+    expect(after).toEqual({ levelIndex: 2, stats: { clicks: 3, facesDestroyed: 1, coins: 0.1 } });
+    expect(after).not.toBe(before);
+    expect(after.stats).not.toBe(before.stats);
+    expect(before).toEqual({ levelIndex: 2, stats: { clicks: 3, facesDestroyed: 1 } });
+  });
+
+  it('accumulates across calls and rounds half-up to 2 decimals', () => {
+    let p = createProgression();
+    p = recordCoins(p, 0.1);
+    p = recordCoins(p, 0.1);
+    p = recordCoins(p, 0.1);
+
+    expect(p.stats.coins).toBe(0.3);
+
+    const rounded = recordCoins(createProgression(), 0.1234);
+    expect(rounded.stats.coins).toBe(0.12);
+  });
+
+  it('starts from zero when coins is absent', () => {
+    const p = recordCoins(progressionAt(0, 0, 0), 5);
+    expect(p.stats).toEqual({ clicks: 0, facesDestroyed: 0, coins: 5 });
+  });
+
+  it('preserves cubesDestroyed when adding coins', () => {
+    const before: Progression = { levelIndex: 1, stats: { clicks: 2, facesDestroyed: 1, cubesDestroyed: 4, coins: 1 } };
+    const after = recordCoins(before, 2.5);
+    expect(after.stats).toEqual({ clicks: 2, facesDestroyed: 1, cubesDestroyed: 4, coins: 3.5 });
+  });
+});
+
+describe('recordCubeDestroyed', () => {
+  it('increments cubesDestroyed by exactly one and leaves everything else untouched', () => {
+    const before: Progression = { levelIndex: 4, stats: { clicks: 7, facesDestroyed: 2, cubesDestroyed: 3, coins: 1.5 } };
+
+    const after = recordCubeDestroyed(before);
+
+    expect(after).toEqual({ levelIndex: 4, stats: { clicks: 7, facesDestroyed: 2, cubesDestroyed: 4, coins: 1.5 } });
+    expect(after).not.toBe(before);
+    expect(after.stats).not.toBe(before.stats);
+    expect(before).toEqual({ levelIndex: 4, stats: { clicks: 7, facesDestroyed: 2, cubesDestroyed: 3, coins: 1.5 } });
+  });
+
+  it('starts from zero when cubesDestroyed is absent', () => {
+    const p = recordCubeDestroyed(progressionAt(0, 0, 0));
+    expect(p.stats).toEqual({ clicks: 0, facesDestroyed: 0, cubesDestroyed: 1 });
+  });
+
+  it('accumulates one per call', () => {
+    let p = createProgression();
+    p = recordCubeDestroyed(p);
+    p = recordCubeDestroyed(p);
+    p = recordCubeDestroyed(p);
+
+    expect(p.stats.cubesDestroyed).toBe(3);
   });
 });

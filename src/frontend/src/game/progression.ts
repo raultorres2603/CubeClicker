@@ -6,7 +6,7 @@
  * colors/materials from {@link CUBE_STYLES}, never redefine them locally.
  */
 
-import { type CubeStyle, type GameStats } from './types';
+import { type CubeStyle, type EconomyState, type GameStats } from './types';
 
 /**
  * The five cube-level styles, cycled in order (`levelIndex % CUBE_STYLES.length`).
@@ -67,9 +67,19 @@ export interface Progression {
   stats: GameStats;
 }
 
-/** Fresh progression: level 0, both counters at zero. */
-export function createProgression(): Progression {
-  return { levelIndex: 0, stats: { clicks: 0, facesDestroyed: 0 } };
+/** Fresh progression: level 0, counters seeded from `initialStats` (optional fields omitted when not supplied). */
+export function createProgression(initialStats?: Partial<GameStats> | EconomyState): Progression {
+  const stats: GameStats = {
+    clicks: initialStats?.clicks ?? 0,
+    facesDestroyed: initialStats?.facesDestroyed ?? 0,
+  };
+  if (initialStats?.cubesDestroyed !== undefined) {
+    stats.cubesDestroyed = initialStats.cubesDestroyed;
+  }
+  if (initialStats?.coins !== undefined) {
+    stats.coins = initialStats.coins;
+  }
+  return { levelIndex: 0, stats };
 }
 
 /** The style for the current level, cycling through {@link CUBE_STYLES} in order. */
@@ -85,6 +95,29 @@ export function recordClick(p: Progression): Progression {
 /** Immutable: `stats.facesDestroyed + 1`; level index and `clicks` untouched. */
 export function recordFaceDestroyed(p: Progression): Progression {
   return { levelIndex: p.levelIndex, stats: { ...p.stats, facesDestroyed: p.stats.facesDestroyed + 1 } };
+}
+
+/** Rounds a coin value to 2 decimals (half-up). */
+function roundCoins(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Immutable: `stats.coins + amount` (rounded to 2 decimals); other stats untouched. */
+export function recordCoins(p: Progression, amount: number): Progression {
+  const current = p.stats.coins ?? 0;
+  return {
+    levelIndex: p.levelIndex,
+    stats: { ...p.stats, coins: roundCoins(current + amount) },
+  };
+}
+
+/** Immutable: `stats.cubesDestroyed + 1`; other stats untouched. */
+export function recordCubeDestroyed(p: Progression): Progression {
+  const current = p.stats.cubesDestroyed ?? 0;
+  return {
+    levelIndex: p.levelIndex,
+    stats: { ...p.stats, cubesDestroyed: current + 1 },
+  };
 }
 
 /**

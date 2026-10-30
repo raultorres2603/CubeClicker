@@ -58,6 +58,18 @@ export interface Board {
 export interface GameStats {
   clicks: number;
   facesDestroyed: number;
+  /** Cumulative count of completed cubes (optional, defaults to 0 at read sites). */
+  cubesDestroyed?: number;
+  /** Coin total (optional, defaults to 0 at read sites). */
+  coins?: number;
+}
+
+/** Server-authoritative economy totals mirrored on the client (coins to 2 decimals). */
+export interface EconomyState {
+  coins: number;
+  clicks: number;
+  facesDestroyed: number;
+  cubesDestroyed: number;
 }
 
 /** One progression style: palette (`'#rrggbb'`) plus PBR material parameters. */
