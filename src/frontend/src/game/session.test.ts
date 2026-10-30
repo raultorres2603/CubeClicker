@@ -35,7 +35,7 @@ import {
   type SessionEnvironment,
   type VisibilitySource,
 } from './session';
-import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from './types';
+import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type MiniCubeId } from './types';
 
 /**
  * Integration tier for the session: every test below runs the *real* engine and the
@@ -128,6 +128,7 @@ interface FakeEngine {
   randomSources: Array<() => number>;
   nextLevels: NextLevelData[];
   cubeAdoptions: AuthoritativeCubeState[];
+  economyAdoptions: EconomyState[];
   spectatingCalls: boolean[];
   setSnapshot(snapshot: EngineSnapshot): void;
 }
@@ -431,6 +432,7 @@ function createFakeEngine(
   const randomSources: Array<() => number> = [];
   const nextLevels: NextLevelData[] = [];
   const cubeAdoptions: AuthoritativeCubeState[] = [];
+  const economyAdoptions: EconomyState[] = [];
   const spectatingCalls: boolean[] = [];
   let snapshot = initial;
   return {
@@ -472,6 +474,24 @@ function createFakeEngine(
           removedIds: [...cube.removedIds],
         });
       },
+      adoptEconomy(economy) {
+        economyAdoptions.push({
+          coins: economy.coins,
+          clicks: economy.clicks,
+          facesDestroyed: economy.facesDestroyed,
+          cubesDestroyed: economy.cubesDestroyed,
+        });
+        snapshot = {
+          ...snapshot,
+          stats: {
+            ...snapshot.stats,
+            clicks: economy.clicks,
+            facesDestroyed: economy.facesDestroyed,
+            cubesDestroyed: economy.cubesDestroyed,
+            coins: economy.coins,
+          },
+        };
+      },
       setSpectating(active) {
         spectatingCalls.push(active);
       },
@@ -482,6 +502,7 @@ function createFakeEngine(
     randomSources,
     nextLevels,
     cubeAdoptions,
+    economyAdoptions,
     spectatingCalls,
     setSnapshot(next) {
       snapshot = next;
@@ -747,6 +768,7 @@ function welcomeMessage(options: {
   roster?: MemberState[];
   serverId?: number;
   maxUsers?: number;
+  economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
 } = {}): WelcomeMessage {
   const playerId = options.playerId ?? 'p1';
   const name = options.name ?? 'Player 1';
@@ -769,6 +791,7 @@ function welcomeMessage(options: {
         member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
       ],
     identity: { kind: 'guest', playerId },
+    ...(options.economy === undefined ? {} : { economy: options.economy }),
   };
 }
 
@@ -781,6 +804,7 @@ function worldEnteredMessage(options: {
   roster?: MemberState[];
   serverId?: number;
   maxUsers?: number;
+  economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
 } = {}): WorldEnteredMessage {
   const position = options.position ?? { x: 0, y: 24 };
   const levelIndex = options.levelIndex ?? 1;
@@ -800,6 +824,7 @@ function worldEnteredMessage(options: {
         member({ playerId: 'p1', name: 'Player 1', position, levelIndex, gridSize, styleId }),
       ],
     identity: { kind: 'guest', playerId: 'p1' },
+    ...(options.economy === undefined ? {} : { economy: options.economy }),
   };
 }
 
@@ -2704,5 +2729,119 @@ describe('multiplayer connection gating (AC-22)', () => {
     expect(wire.connectCount()).toBe(3);
     expect(wire.messageHandlerCount()).toBe(1);
     expect(wire.statusHandlerCount()).toBe(1);
+  });
+});
+
+describe('multiplayer economy adoption (AC-6, AC-11, AC-16, AC-18)', () => {
+  it('adopts economy totals from welcome into the engine', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        economy: { coins: 1.5, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
+        roster: [selfMember(), member()],
+      }),
+    );
+
+    expect(session.getSnapshot().stats).toEqual({
+      clicks: 3,
+      facesDestroyed: 2,
+      cubesDestroyed: 1,
+      coins: 1.5,
+    });
+    expect(session.getSnapshot().phase).toBe('intro');
+  });
+
+  it('adopts economy totals from worldEntered into the engine', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+    expect(session.getSnapshot().phase).toBe('playing');
+
+    wire.emit(
+      worldEnteredMessage({
+        economy: { coins: 2.5, clicks: 7, facesDestroyed: 4, cubesDestroyed: 2 },
+        roster: [selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }), member()],
+      }),
+    );
+
+    expect(session.getSnapshot().stats).toEqual({
+      clicks: 7,
+      facesDestroyed: 4,
+      cubesDestroyed: 2,
+      coins: 2.5,
+    });
+  });
+
+  it('adopts economy totals from economyUpdate without interrupting play', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+    const beforePhase = session.getSnapshot().phase;
+
+    wire.emit({
+      type: 'economyUpdate',
+      coins: 9,
+      clicks: 10,
+      facesDestroyed: 4,
+      cubesDestroyed: 2,
+    });
+
+    expect(session.getSnapshot().phase).toBe(beforePhase);
+    expect(session.getSnapshot().stats).toEqual({
+      clicks: 10,
+      facesDestroyed: 4,
+      cubesDestroyed: 2,
+      coins: 9,
+    });
+    tapOn(fake.canvas, 460, 400);
+    expect(session.getSnapshot().stats.clicks).toBeGreaterThanOrEqual(10);
+  });
+
+  it('reconnect reconciles persisted totals via welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    wire.emitStatus('disconnected');
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        economy: { coins: 5, clicks: 100, facesDestroyed: 6, cubesDestroyed: 1 },
+        roster: [selfMember(), member()],
+      }),
+    );
+
+    expect(session.getSnapshot().stats).toEqual({
+      clicks: 100,
+      facesDestroyed: 6,
+      cubesDestroyed: 1,
+      coins: 5,
+    });
   });
 });

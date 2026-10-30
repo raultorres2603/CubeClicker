@@ -511,6 +511,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     spectate.reset();
     engine.setSpectating?.(false);
     reconcileCube(message.self);
+    if (message.economy !== undefined && engine.adoptEconomy !== undefined) {
+      engine.adoptEconomy(message.economy);
+    }
     welcomed = true;
     completionLevel = null;
     flushPendingRotate();
@@ -563,6 +566,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       style: resolveStyle(message.self.styleId, message.self.levelIndex),
       destination: message.position,
     });
+    if (message.economy !== undefined && engine.adoptEconomy !== undefined) {
+      engine.adoptEconomy(message.economy);
+    }
     flushPendingRotate();
     publish(engine.getSnapshot());
   }
@@ -602,6 +608,19 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     reconcileCube(message);
     publish(engine.getSnapshot());
     flushPendingRotate();
+  }
+
+  /** `economyUpdate`: adopt the server's absolute totals into the engine (no play interruption). */
+  function handleEconomyUpdate(message: Extract<ServerMessage, { type: 'economyUpdate' }>): void {
+    if (engine.adoptEconomy !== undefined) {
+      engine.adoptEconomy({
+        coins: message.coins,
+        clicks: message.clicks,
+        facesDestroyed: message.facesDestroyed,
+        cubesDestroyed: message.cubesDestroyed,
+      });
+    }
+    publish(engine.getSnapshot());
   }
 
   /** A member left: the spectated/travelled target triggers the flight home (AC-19 a/b). */
@@ -645,6 +664,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         break;
       case 'stateSync':
         handleStateSync(message);
+        break;
+      case 'economyUpdate':
+        handleEconomyUpdate(message);
         break;
       default:
         // `hello` (transport handshake) and `error` carry no world/engine action here.
