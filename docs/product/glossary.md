@@ -15,6 +15,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** The player's primary action on the cube, and also the discrete event that action produces; each click earns points. This is the canonical word for the action, preferred over informal synonyms.
 **Example:** One click on the cube adds a point to the total.
 
+### coins
+
+**Definition:** The in-game currency earned by destroying **mini-cubes** (`COINS_PER_MINI_CUBE`, default `0.1` per mini-cube) and completing **cubes** (`COINS_PER_CUBE`, default `5` per cube, doubled when the cube is completed within the size-dependent speed-bonus threshold). Coins are persisted per **account** in the `user_economy` table and reconcile across connected clients over WebSocket; **guests** earn coins locally for the session only and nothing is persisted. Coins are distinct from **points**, the core clicker currency earned by clicking.
+**Example:** Destroying a mini-cube awards `0.1` coins; completing a cube awards `5` coins, or `10` when completed within the threshold.
+
 ### cube
 
 **Definition:** The central interactive object of the game and the thing the player clicks; the namesake of CubeClicker. It is the focus of every click that earns points.
