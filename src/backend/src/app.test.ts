@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, helloMessage, toPeer } from './app.js';
 import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
+import { InMemoryEconomyRepository } from './auth/economy-repository.js';
 
 interface HelloEnvelope {
   type: unknown;
@@ -670,3 +671,121 @@ function welcomeOf(message: ServerMessage): WelcomeMessage {
   }
   return message;
 }
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+function nextOrTimeout(client: TestClient, ms: number): Promise<ServerMessage | null> {
+  return Promise.race([
+    client.next(),
+    new Promise<ServerMessage | null>((resolve) => {
+      setTimeout(() => resolve(null), ms);
+    }),
+  ]);
+}
+
+describe('account economy integration (T12)', () => {
+  it('account join with seeded economy repo returns persisted totals in welcome.economy', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit('u1', { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 });
+
+    const app = buildApp({}, {
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.economy).toEqual({ coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 });
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('explode credits and sends economyUpdate for an account', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const app = buildApp({}, {
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.playerId).toBe('p1');
+
+      client.send({ type: 'explode', id: 'front:0:0', level: 0 });
+      await flushMicrotasks();
+
+      const removed = await client.next();
+      expect(removed).toEqual({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
+
+      const update = await client.next();
+      expect(update).toEqual({
+        type: 'economyUpdate',
+        coins: 0.1,
+        clicks: 1,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+
+      expect(await repo.findByUserId('u1')).toEqual({
+        coins: 0.1,
+        clicks: 1,
+        facesDestroyed: 0,
+        cubesDestroyed: 0,
+      });
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('guest does not persist and sends no economyUpdate', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const app = buildApp({}, {
+      auth: { economy: repo },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      const welcome = welcomeOf(await client.next());
+      expect(welcome.playerId).toBe('p1');
+
+      client.send({ type: 'explode', id: 'front:0:0', level: 0 });
+      await flushMicrotasks();
+
+      const removed = await client.next();
+      expect(removed).toEqual({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
+
+      const maybeUpdate = await nextOrTimeout(client, 50);
+      expect(maybeUpdate).toBeNull();
+
+      expect(await repo.findByUserId('u1')).toBeNull();
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+});
