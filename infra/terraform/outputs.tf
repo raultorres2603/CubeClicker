@@ -43,12 +43,12 @@ output "frontend_task_family" {
 
 output "ci_plan_role_arn" {
   description = "ARN of the GitHubActionsCubeCI (read-only plan) role."
-  value       = null
+  value       = module.cicd_iam.ci_plan_role_arn
 }
 
 output "deploy_role_arn" {
   description = "ARN of the GitHubActionsCubeDeploy role."
-  value       = null
+  value       = module.cicd_iam.deploy_role_arn
 }
 
 output "db_host" {
