@@ -30,7 +30,7 @@ Transition rules:
 - `spec_review → planning` when `changes_requested` and `spec_review_round < 2`; if it would exceed 2 → `escalated`.
 - User feedback at the checkpoint does not consume reviewer budget; route it into the next Planner brief.
 - `awaiting_approval → building` when the user approves.
-- `building → code_review` when every task in `tasks.md` is `[x]` and every behavior-change task's build log records its coverage run.
+- `building → code_review` when every task in `tasks.md` is `[x]` and every behavior-change task's build log records its verify evidence (including the coverage run and any pinned feature-appropriate proof).
 - Increment `build_round` each time a code review starts.
 - `code_review → accepted` when `verdict: approved` and every acceptance criterion is verified met, **and the builder's documentation pass (per `docs/architecture/documentation.md`) is complete with a `build-log-docs.md` (or `build-log-<taskid>.md` covering docs)."
 - While the documentation pass runs the feature stays in `code_review`: the orchestrator dispatches the pass on approval and transitions to `accepted` only once evidence is recorded in a build log. No new state is introduced.

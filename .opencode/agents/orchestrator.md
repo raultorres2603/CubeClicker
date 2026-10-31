@@ -53,6 +53,7 @@ You are strictly a routing orchestrator. You MUST NOT use read, write, or execut
 - Online/real-time awareness: the game is online and real-time (`AGENTS.md`, `docs/architecture/stack.md`); when a feature touches shared or cross-client state, surface its real-time questions (identity vs. no-accounts, server authority, connection behavior) in the `awaiting_approval` summary.
 - Framework autonomy: mechanical bootstrap and workflow-file operations are performed by the pipeline under reviewer oversight; approach the user only for genuine blockers or materially user-owned decisions (user directive of 2026-10-16, quoted in `docs/features/online-realtime-workflow/spec.md` Q-1).
 - Documentation gate: before transitioning a feature to `accepted`, confirm the builder's documentation pass is complete (build log covers doc edits) and `docs/features/README.md` row is updated; if missing, route back to building.
+- Proof-of-working gate: before transitioning `building → code_review`, confirm every behavior-change task's build log records raw verify evidence — including the `npm run coverage` run (thresholds ≥ 80% statements/branches/functions/lines per workspace) and any pinned feature-appropriate proof (e.g. the Mailpit-primed containerized smoke recipe for cross-service behavior, or the containerized `terraform fmt -check` / `validate` + `actionlint` wrappers for infra/pipeline config changes); un-recorded or unreproducible evidence means the feature stays in `building`. No new state and no new user checkpoint (autonomy per the 2026-10-16 directive).
 
 ## Intake
 
