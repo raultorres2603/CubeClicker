@@ -37,7 +37,7 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 
 - The backend and the frontend each run as containers; the full local environment starts from a clean checkout with a single `podman compose up`-style command.
 - Podman and Podman Compose (`podman compose`) are the decided containerization tooling (user decision, 2026-10-17; tooling amendment 2026-10-17).
-- Deployable artifacts are container images runnable on any container platform — provider-neutral; AWS ECS Fargate is an example only and no provider is chosen.
+- Deployable artifacts are container images runnable on any container platform — provider-neutral deployables. The deploy target was selected by this feature per the user's 2026-10-31 request (AWS + Terraform, ECS/ALB/RDS/ECR); see `docs/architecture/deployment.md`. The images themselves remain provider-neutral.
 - Future services (databases, queues, etc.) are added via the same containerized path.
 - The application stack is decided (§ Application stack (DECIDED, 2026-10-17) above) and the container assets exist in this repository: `compose.yaml` and `compose.smoke.yaml` at the root, plus the Dockerfiles under `src/backend/` and `src/frontend/`.
 - The backend container must expose the WebSocket endpoint required by § Hard constraints.

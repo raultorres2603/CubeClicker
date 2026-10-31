@@ -83,7 +83,7 @@ podman build --format docker --target prod -f src/frontend/Dockerfile .
 
 The `--format docker` form keeps the image `HEALTHCHECK`, which Podman 5's default OCI build format would drop.
 
-Both images are provider-neutral and are the deployable artifacts. Release tagging is deferred to deployment time.
+Both images are provider-neutral and are the deployable artifacts. Release tagging = commit SHA in the deploy pipeline (see the Deployment section above).
 
 ## Stack
 
@@ -91,3 +91,43 @@ TypeScript (strict) on Node.js 24 LTS: a Fastify backend (HTTP health at `GET /h
 
 - `docs/architecture/stack.md` — the decided application stack and the canonical commands
 - `docs/architecture/containerization.md` — the settled container conventions (ports, env names, health, images, compose files)
+
+## Deployment
+
+CubeClicker deploys to AWS from the existing container images through Terraform-defined infrastructure and a GitHub Actions pipeline. The local development path above is unchanged; deployment is a separate, cloud-side concern. See `docs/architecture/deployment.md` for the full conventions.
+
+### What the pipelines run
+
+- `ci.yml` (reusable; runs on pull requests, pushes to `main`, and via `workflow_call`):
+  - `verify-app`: `npm ci` → `npm run lint` → `npm run typecheck` → `npm test` → `npm run coverage` → `npm run build`.
+  - `smoke-e2e`: pre-start Mailpit (`docker compose -f compose.yaml -f compose.smoke.yaml up -d mailpit`) **before** `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (the one-shot run never starts Mailpit and fails 9/12; pre-started passes 12/12).
+  - `verify-infra`: containerized `terraform fmt -check -recursive`, `terraform init -backend=false`, `terraform validate` (no AWS credentials).
+- `deploy.yml` (on push to `main`): calls `ci.yml` via `workflow_call` (gates re-run on `main` by design), then builds and pushes both images to ECR tagged with the commit SHA (frontend bakes `VITE_WS_URL` from `PUBLIC_WS_URL`), assumes the deploy role via OIDC, runs `terraform init`/`plan`/`apply`, then deploys both ECS services and waits for stability. Wrapped in a `deploy-production` concurrency group.
+
+### Deploy flow
+
+1. Push to `main` (only after a feature is accepted and merged).
+2. `verify` job re-runs all three gates.
+3. `build-and-push` builds/pushes `cubeclicker-backend` and `cubeclicker-frontend` to ECR tagged with `github.sha`.
+4. `infra` runs `terraform plan` (with the SHA-tagged image URIs) then `terraform apply`.
+5. `deploy-services` renders and deploys both task definitions with `wait-for-service-stability: true`.
+
+### User-side asset checklist (one-time, performed by the repository owner)
+
+Repository variables (Settings → Secrets and variables → Actions → Variables):
+
+- `AWS_REGION` — target region (default `us-east-1`).
+- `AWS_DEPLOY_ROLE_ARN` — ARN of `GitHubActionsCubeDeploy`.
+- `AWS_PLAN_ROLE_ARN` — ARN of `GitHubActionsCubeCI` (provisioned for the plan-on-PR follow-up; consumed by no workflow today).
+- `TF_STATE_BUCKET` — name of the one-time bootstrap-created state bucket.
+- `PUBLIC_WS_URL` — public WebSocket URL baked into the frontend image at build time.
+
+GitHub environment:
+
+- Protected `production` environment (required reviewers / branch protection as desired). The workflow's `environment: production` and the deploy role's `environment:production` trust condition both depend on it.
+
+One-time bootstrap apply (local, by the owner):
+
+- Apply `infra/terraform/bootstrap/` once to create the shared state bucket; record its name in `TF_STATE_BUCKET`. See `infra/README.md`.
+
+No long-lived AWS keys are stored anywhere; all authentication uses GitHub OIDC. Images remain provider-neutral deployables; only the infrastructure target is AWS.
