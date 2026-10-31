@@ -5,7 +5,7 @@ CubeClicker is a web-based, online, real-time, multi-client clicker game. Client
 ## Stack
 
 - **Application stack: DECIDED (2026-10-17)** — TypeScript (strict); Node.js 24 LTS + Fastify (WebSocket); React + Vite; npm workspaces; Vitest; ESLint. Canonical details in `docs/architecture/stack.md`.
-- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `podman compose up` command (hot reload); deployable artifacts are container images runnable on any container platform (AWS ECS Fargate is an example only — no provider is chosen); future services (databases, queues, etc.) join the same path. Podman and Podman Compose (`podman compose`) are the decided tooling; the container assets live in the repository (`compose.yaml`, Dockerfiles under `src/*`), and the run instructions live in `README.md` (see `docs/architecture/containerization.md`).
+- **Containerized delivery path (DECIDED).** The local development and packaging path is containerized: backend and frontend run as containers, started locally with a single `podman compose up` command (hot reload); deployable artifacts are container images runnable on any container platform (AWS + Terraform selected per the user's 2026-10-31 request; container images remain provider-neutral deployables); future services (databases, queues, etc.) join the same path. Podman and Podman Compose (`podman compose`) are the decided tooling; the container assets live in the repository (`compose.yaml`, Dockerfiles under `src/*`), and the run instructions live in `README.md` (see `docs/architecture/containerization.md`).
 - **Online/real-time constraint (protocol-level).** The game is online and real-time: the backend must be WebSocket-compatible and the frontend must connect to it over WebSocket. The decided stack satisfies this constraint: the backend serves the WebSocket endpoint (`/ws`) and the frontend connects to it over WebSocket. See docs/architecture/stack.md § Hard constraints.
 
 ## Commands
@@ -36,6 +36,7 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 
 - Feature state lives in `docs/features/<slug>/status.md` — never rely on chat memory.
 - Feature artifacts: `spec.md`, `plan.md`, `tasks.md`, `status.md`, `build-log-<taskid>.md`, `reviews/`.
+- proof-of-working: a feature is green to go only when its verification evidence is recorded and reproducible: lint, typecheck, tests, `npm run coverage`, plus feature-appropriate proof such as the Mailpit-primed containerized smoke recipe for cross-service behavior or the containerized `terraform fmt/validate` + `actionlint` wrappers for infra/pipeline config changes; raw output lives in the build logs, and the reviewer reproduces it.
 - Only the orchestrator communicates with the user; worker agents return reports.
 - Documentation on acceptance: when a feature reaches `accepted`, the builder runs a documentation pass per `docs/architecture/documentation.md` (same change as the final verification), covering root `README.md`, `docs/features/README.md` (orchestrator-owned row update), `docs/architecture/*`, and any other affected docs; the orchestrator confirms the pass before transitioning to `accepted`.
 
@@ -49,6 +50,6 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 
 ## Boundaries
 
-- ✅ Always: run lint, typecheck, tests, and the coverage command before reporting done; keep artifacts under `docs/features/<slug>/`; follow existing patterns.
+- ✅ Always: run lint, typecheck, tests, and the coverage command plus any feature-appropriate proof pinned by the task's verify before reporting done; record raw evidence in build logs; keep artifacts under `docs/features/<slug>/`; follow existing patterns.
 - ⚠️ Ask first: adding dependencies; changing shared config (CI, entrypoints, lockfiles) outside a task that owns it; deleting files.
 - 🚫 Never: commit secrets or API keys; edit `.env*`; `git push`; edit outside your role's write scope; rewrite a spec to match buggy code; weaken assertions (wildcard matchers, snapshot-only or assertion-free tests) or exclude production code from coverage without a justified, reviewer-approved reason.

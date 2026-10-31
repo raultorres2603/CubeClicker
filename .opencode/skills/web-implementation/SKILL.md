@@ -50,6 +50,7 @@ This bar is binding for every task; depth (rationale, examples, reconciliation w
 - [ ] `verify` commands pass (lint, typecheck, tests, build — as applicable)
 - [ ] Unit tests and integration tests added/updated for behavior changes (documented exception when no integration boundary exists)
 - [ ] Coverage gate green: `npm run coverage` passes (≥ 80% statements/branches/functions/lines per workspace) with raw output in the build log
+- [ ] Recorded verification evidence: raw output of the task's `verify` commands plus any feature-appropriate proof is captured in `build-log-<taskid>.md` (completion precondition)
 - [ ] Assertions use concrete expected values; no banned wildcard matchers without the bounded exception rule (≤ 1 per task, in-test-justified unavoidability reason, reviewer-approved)
 - [ ] No useless tests: each added test can fail on a real regression (no tautologies, no coverage-chasing)
 - [ ] `build-log-<taskid>.md` written with raw evidence

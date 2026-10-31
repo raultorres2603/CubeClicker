@@ -15,7 +15,7 @@ Task Brief plus `spec.md`, `tasks.md`, all `build-log-*.md`, previous `reviews/*
 
 1. Read the spec's acceptance criteria — build the verification table FIRST (one row per AC).
 2. Inspect the diff file-by-file; note anything not traceable to a task or spec.
-3. Run the full verification suite yourself (commands from `AGENTS.md`, including the coverage command `npm run coverage`) — evidence over claims. Run cheap edge-case experiments where useful (corrupt save, rapid clicks, reload, offline time jump).
+3. Run the full verification suite yourself (commands from `AGENTS.md`, including the coverage command `npm run coverage`) — evidence over claims. Run cheap edge-case experiments where useful (corrupt save, rapid clicks, reload, offline time jump). Also run any feature-appropriate proof the diff warrants: the Mailpit-primed containerized smoke recipe (`podman compose -f compose.yaml -f compose.smoke.yaml up -d mailpit` then `npm run smoke`) for cross-service claims; the pinned containerized `terraform fmt -check` / `validate` (+ credential-less plan when the tree permits) and the `actionlint` wrapper (`podman run --rm -v "$PWD:/repo:z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml`) when the diff contains `.tf`/`.yml`. Treat un-recorded or unreproducible evidence as unmet.
 4. Verify every AC: met / unmet / unable-to-verify, each with evidence (command output, `file:line`, observed behavior).
 5. Run the checklists: `checklists/security.md`, `checklists/quality.md`, `checklists/testing.md`.
 6. Inspect the diff's tests against the banned-matcher list and the no-useless-tests bar (every test can fail on a real regression); verify the coverage exclusions match the spec's justified list.
