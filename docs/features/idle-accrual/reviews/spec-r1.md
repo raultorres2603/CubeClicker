@@ -1,0 +1,57 @@
+---
+feature: idle-accrual
+phase: spec
+iteration: 1
+verdict: changes_requested
+blocking: 5
+nonblocking: 8
+---
+
+# Spec Review — r1
+
+## Summary
+
+❌ changes requested — 5 blocking (MAJOR) findings plus 8 non-blocking. The spec/plan is largely complete and consistent with coin-economy/spending-upgrades, but a concurrent-join double-credit gap, a factual error about guest `welcome.economy`, an unpinned idle-helper threshold contract, and two implementation details (in-memory `lastSeenAt` preservation and its type/Pg conversion) must be fixed before build.
+
+## Findings
+
+| # | Severity | Location | Finding | Required action | Status |
+| --- | --- | --- | --- | --- | --- |
+| F1 | MAJOR | spec.md § Security considerations (Persistence integrity); plan.md § Risks & mitigations (concurrent joins) | The eligibility check (`now − last_seen_at ≥ threshold`) and the touch are not atomic: two concurrent joins for the same account can both read the same stale `last_seen_at` and both credit, double-crediting up to the cap. The plan explicitly accepts this as an edge ("tests cover single-join"), but no AC bounds or mitigates it, and it violates the server-authority/no-double-credit invariant the feature claims. | Either (a) add an AC requiring atomic eligibility — `touchLastSeen` returns whether the row was actually updated (conditional `UPDATE … WHERE last_seen_at = $old` or compare-and-swap), gating the credit on a successful touch; or (b) serialize joins per account; or (c) explicitly document the accepted risk with a bounded cap and a test. Pick one and pin it in spec + plan + T4. | open |
+| F2 | MAJOR | spec.md § Acceptance criteria AC-10 | AC-10 claims "`welcome.economy` is absent for guests (existing behaviour retained)", but the existing backend (`hub.ts` `placementFor`: `economy: member.economy` unconditionally; guests get a zero `EconomyState`) and the frontend (`session.ts` defaults to zeros only when absent) show `welcome.economy` is *present* (zeros) for guests today. The claim is factually wrong about existing behaviour. | Correct AC-10 to state that guest behaviour is unchanged — `welcome.economy` remains present with zero totals for guests (as today) and idle accrual adds nothing for them — or, if omission is truly desired, make it an explicit behaviour change with a placement/protocol AC and update `placementFor`. | open |
+| F3 | MAJOR | spec.md § Acceptance criteria AC-6; plan.md § Interfaces (Backend economy constants/helpers) | The idle-helper threshold contract is left undecided: AC-6 says "`0` for non-positive elapsed or below-threshold callers", and the plan note offers two alternatives (helper guards `elapsedMs ≤ 0` only with the threshold check in the hub; or helper returns `0` below threshold) and says "decide in implementation; tests pin the chosen behaviour." Tests cannot assert a single expected value until this is pinned, and AC-3/AC-4 depend on it. | Pin one contract in spec + plan: either `idleCoins` returns `0` when `elapsedMs < IDLE_MIN_AWAY_MS` (and the hub's threshold check becomes redundant-but-harmless), or `idleCoins` computes the clamped credit for any positive elapsed and the hub gates on `elapsed ≥ IDLE_MIN_AWAY_MS`. Update AC-3, AC-6 and the helper signature/tests accordingly. | open |
+| F4 | MAJOR | plan.md § Interfaces (repository, in-memory); `auth/economy-repository.ts` (`InMemoryEconomyRepository.credit`) | The plan says `credit` is unchanged and "does not touch `last_seen_at`", but once `StoredRow` gains `lastSeenAt`, the in-memory `credit` overwrites the row with `{ economy, upgrades }` and would wipe `lastSeenAt`. Active play would then erase the away timer, so a later join sees `null`/stale and accrual breaks (or never fires). The Postgres path preserves the column (its `ON CONFLICT` does not touch `last_seen_at`), so only the in-memory impl is affected — but that is the path used by `app.test.ts` and most hub tests. | Update in-memory `credit` to carry `lastSeenAt` from the existing row (and leave it `null`/`undefined` for a newly inserted row), so active play never clobbers the timestamp. Add a repository test asserting `findLastSeenAt` is unchanged after `credit`. | open |
+| F5 | MAJOR | plan.md § Interfaces (repository); `auth/economy-repository.ts` (`StoredRow`, `findLastSeenAt`, `touchLastSeen`) | Type/shape ambiguity blocks typecheck: the plan says `StoredRow` gains `lastSeenAt: number` (non-null) yet `findLastSeenAt` returns `row.lastSeenAt ?? null` (implies nullable/optional); and `touchLastSeen(userId, nowMs)` takes epoch ms while Postgres stores `TIMESTAMPTZ`, with no specified conversion (passing a raw number to a `TIMESTAMPTZ` column, or a `Date`, must be pinned). | Make `StoredRow.lastSeenAt: number \| null` (optional on insert), have both impls convert consistently (in-memory stores epoch ms; Postgres converts via `to_timestamp($2 / 1000.0)` or an ISO string), and add `findLastSeenAt`/`touchLastSeen` to the `EconomyRepository` interface with these signatures. | open |
+| F6 | MINOR | spec.md (no Supersessions section) | Predecessor specs (coin-economy r2, spending-upgrades r3) record a "Supersessions of accepted behaviors" section when they override an earlier non-goal. Idle accrual supersedes coin-economy's non-goal "No offline/idle coin accrual while away" (Q-7 deferred) and spending-upgrades' non-goal "No idle/offline accrual" (Q-11 deferred), but the idle spec records no supersession. | Add a "Supersessions of accepted behaviors" section mirroring the predecessors, listing the two overridden non-goals and the retaining clauses, so the override is auditable. | open |
+| F7 | MINOR | tasks.md (Dependency overview; T2) | The dependency overview says "T2 ∥ T3 (both after T1)", but T2's row reads `depends_on: —`. The graph is acyclic either way, but the two statements contradict and could cause T2 to be scheduled before T1 unexpectedly. | Reconcile: either set T2 `depends_on: T1` (matching the overview) or change the overview to "T2 independent; T3 after T1". | open |
+| F8 | MINOR | spec.md § Acceptance criteria AC-11, AC-14; plan.md § Data flow (rejoin) | It is unspecified whether a `rejoin` inside the grace window (or a rejoin after expiry that fails) touches `last_seen_at`. AC-11 says "after a join", and rejoin is a distinct message; leaving this implicit risks a builder touching on rejoin (resetting the away timer) or not touching when it should. | State explicitly that `last_seen_at` is touched only on a successful `join` (including after grace expiry) and on the final disconnect; `rejoin` never touches it. | open |
+| F9 | MINOR | plan.md § Interfaces (hub wiring); tasks.md T4 | Tests must align clocks: `hub.now` (injected) and the repository's `now` option are separate; if a test injects a fake hub clock but leaves the repo on `Date.now`, `elapsed = hubNow − lastSeenAt` will be wrong. The plan does not call this out. | Document in T4/T5 that tests inject one shared clock into both `HubDeps.now` and the repository's `now` option, and that `lastSeenAt` is stored/read in the same epoch basis. | open |
+| F10 | MINOR | plan.md § Migration (`004_idle_accrual.sql`) | `ALTER TABLE … ADD COLUMN last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()` evaluates `now()` per row during the table rewrite, so on a large `user_economy` the stored timestamps can span the migration's duration (potentially past `IDLE_MIN_AWAY_MS`), which could grant a small retroactive accrual on the first post-deploy join. | Either accept (table is small in v1) and note it, or make the migration set one statement-level timestamp (e.g. add nullable, `UPDATE user_economy SET last_seen_at = now()`, then `SET NOT NULL`/default). Pin the chosen approach. | open |
+| F11 | MINOR | plan.md § Data flow 1; spec.md § AC-15 | Accrual broadcasts `economyUpdate` to all joined account connections "including the joining connection", but the plan sends `welcome` (which also carries post-accrual totals) in the same flow. The relative ordering and whether the joining socket receives both (and in what order) is unspecified, which matters for client adoption and referential stability. | Pin the order in the plan: credit → touch → update in-memory members → broadcast `economyUpdate` → send `welcome` (or the reverse), and state that the joining connection receiving both is expected and that the client adopts each as absolute. | open |
+| F12 | INFO | spec.md § Open questions (Q-1..Q-5) | Q-1..Q-5 remain approval-gated before T2/T4 with proposed defaults used in the interim. This is consistent with the predecessor pattern, but the spec should remind that any deviation of the pinned constants (`IDLE_COINS_PER_SECOND`, `IDLE_CAP_MS`, `IDLE_MIN_AWAY_MS`, `idleMultiplier`, rounding) requires user approval (Boundary ⚠️). | Add a one-line note in Boundaries or Assumptions that the idle constants are approval-gated and that T2/T4 must not start with a changed value without approval; no spec change to the defaults themselves. | open |
+| F13 | INFO | spec.md § Open questions Q-11; plan.md § Risks (crash handling) | Under Q-11's default, `last_seen_at` is touched only on join and final disconnect; a non-graceful termination (crash) leaves it at the last touch, so the next join may accrue idle coins over time that was actually active play. The spec documents Q-11 as default-with-notice but does not mention the crash edge. | Add a sentence to Q-11/Assumptions noting that a crash can over-credit up to the cap and that this is accepted under the default; optionally suggest a heartbeat-based touch as a future improvement. | open |
+
+## Checklist results
+
+| Area | Result | Notes |
+| --- | --- | --- |
+| Completeness | ❌ | All asks are covered, but AC-10 misstates existing guest behaviour (F2) and the supersession of predecessor non-goals is unrecorded (F6). |
+| Testability | ❌ | The idle-helper threshold contract is unpinned (F3); helper tests cannot assert a single value until resolved. |
+| Boundaries | ✅ | Three tiers present; non-goals listed. |
+| Dependency graph | ✅ | Acyclic; all ACs mapped; T4 is large but acceptable. Task-dep wording inconsistency (F7) is minor. |
+| Parallel safety | ✅ | T2 `[P]` owns `economy.ts`/`economy.test.ts`, disjoint from T3's repository files; no shared-file contact. |
+| Security | ❌ | Concurrent-join double-credit gap (F1); in-memory `lastSeenAt` wipe (F4); type/conversion ambiguity (F5). |
+| Testing | ✅ | Unit + integration tiers named; commands from `AGENTS.md`; coverage ≥ 80% referenced; assertion bar stated. |
+| Consistency | ❌ | AC-10 factual error (F2); missing supersessions (F6); threshold ambiguity (F3). |
+| Real-time | ❌ | Rejoin touch semantics unspecified (F8); broadcast/welcome ordering unpinned (F11). |
+| Containers | ✅ | No new service/image/port/env; migration 004 + schema mirror; container diff gate in T6. |
+
+## Previous round verification (if iteration > 1)
+
+N/A (iteration 1).
+
+## Notes / backlog (non-blocking)
+
+- Q-1..Q-5 remain approval-gated before T2/T4; proposed defaults are used in the interim and flagged in tasks.
+- The documentation pass (T6) should remain minimal per `docs/architecture/documentation.md`: glossary term + proposed feature-index row; no README/architecture changes required for this feature.
+- No frontend changes are required; existing `session.test.ts` economy adoption covers the resulting totals.
