@@ -50,3 +50,14 @@ output "deploy_role_arn" {
   description = "ARN of the GitHubActionsCubeDeploy role."
   value       = null
 }
+
+output "db_host" {
+  description = "Hostname of the database (RDS address in default mode)."
+  value       = module.data.db_host
+}
+
+output "db_secret_arn" {
+  description = "ARN of the secret holding the database credentials/URL consumed by ECS."
+  value       = module.data.db_secret_arn
+  sensitive   = true
+}
