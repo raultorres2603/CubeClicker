@@ -65,6 +65,12 @@ permissions:
     resource: ".opencode/skills/**"
     effect: allow
   - action: edit
+    resource: "infra/**"
+    effect: allow
+  - action: edit
+    resource: ".github/**"
+    effect: allow
+  - action: edit
     resource: ".env*"
     effect: deny
   - action: shell
