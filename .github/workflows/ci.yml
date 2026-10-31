@@ -63,8 +63,11 @@ jobs:
           terraform_version: "1.15.9"
           terraform_wrapper: false
       - name: Terraform fmt
-        run: terraform fmt -check -recursive infra/terraform
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
       - name: Terraform init
-        run: terraform init -backend=false infra/terraform
+        working-directory: infra/terraform
+        run: terraform init -backend=false
       - name: Terraform validate
-        run: terraform validate infra/terraform
+        working-directory: infra/terraform
+        run: terraform validate

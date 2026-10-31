@@ -83,14 +83,19 @@ jobs:
           terraform_version: "1.15.9"
           terraform_wrapper: false
       - name: Terraform fmt
-        run: terraform fmt -check -recursive infra/terraform
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
       - name: Terraform init
-        run: terraform init -backend-config bucket=${{ vars.TF_STATE_BUCKET }} -backend-config region=${{ vars.AWS_REGION }} infra/terraform
+        working-directory: infra/terraform
+        run: terraform init -backend-config bucket=${{ vars.TF_STATE_BUCKET }} -backend-config region=${{ vars.AWS_REGION }}
       - name: Terraform validate
-        run: terraform validate infra/terraform
+        working-directory: infra/terraform
+        run: terraform validate
       - name: Terraform plan
-        run: terraform plan -var-file=envs/production.tfvars -var image_uri_backend=${{ needs.build-and-push.outputs.backend_image }} -var image_uri_frontend=${{ needs.build-and-push.outputs.frontend_image }} -out=tfplan infra/terraform
+        working-directory: infra/terraform
+        run: terraform plan -var-file=envs/production.tfvars -var image_uri_backend=${{ needs.build-and-push.outputs.backend_image }} -var image_uri_frontend=${{ needs.build-and-push.outputs.frontend_image }} -out=tfplan
       - name: Terraform apply
+        working-directory: infra/terraform
         run: terraform apply -input=false tfplan
 
   deploy-services:
@@ -110,31 +115,5 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Render backend task definition
-        id: render-backend
-        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
-        with:
-          task-definition: infra/ecs/backend-task-definition.json
-          container-name: backend
-          image: ${{ needs.build-and-push.outputs.backend_image }}
-      - name: Deploy backend service
-        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
-        with:
-          task-definition: ${{ steps.render-backend.outputs.task-definition }}
-          service: backend
-          cluster: cubeclicker
-          wait-for-service-stability: true
-      - name: Render frontend task definition
-        id: render-frontend
-        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
-        with:
-          task-definition: infra/ecs/frontend-task-definition.json
-          container-name: frontend
-          image: ${{ needs.build-and-push.outputs.frontend_image }}
-      - name: Deploy frontend service
-        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
-        with:
-          task-definition: ${{ steps.render-frontend.outputs.task-definition }}
-          service: frontend
-          cluster: cubeclicker
-          wait-for-service-stability: true
+      - name: Note
+        run: echo "ECS task definitions and services are updated by terraform apply in the infra job (image URI vars); no separate render/deploy step is required."

@@ -62,6 +62,11 @@ Conventions for deploying CubeClicker. The application stack and container conve
 - `deploy.yml` first calls `ci.yml` via `workflow_call` (`verify` job) so all three gates re-run on `main` before any build, push, plan, or apply. This is deliberate (F16): the PR gates are re-run on the merge commit rather than trusted from the PR run, so a red gate blocks deploy even if the PR run was green.
 - The deploy-side jobs (`build-and-push`, `infra`, `deploy-services`) then run sequentially with `needs` chaining, all assuming the deploy role via OIDC.
 
+## ECS service deployment mechanism
+
+- Task definitions and ECS service deployments are managed entirely by `terraform apply` in the `infra` job of `deploy.yml`. The image URIs flow in as Terraform variables (`image_uri_backend`, `image_uri_frontend`) derived from the SHA-tagged images pushed by `build-and-push`; `terraform apply` registers new task-definition revisions and updates the `backend`/`frontend` ECS services, which triggers a rolling deployment.
+- There is intentionally no separate `amazon-ecs-render-task-definition` / `amazon-ecs-deploy-task-definition` step: task definitions are Terraform-managed in `infra/terraform/modules/ecs/main.tf`, so rendering JSON templates in CI would create a second source of truth and drift. The `deploy-services` job is retained as a no-op placeholder for environment/OIDC gating and records that deployment is handled by Terraform.
+
 ## Dockerfile carve-out
 
 - The only `src/**` change owned by this feature is the two-line `ARG VITE_WS_URL` + `ENV VITE_WS_URL` bridge in `src/frontend/Dockerfile`'s build stage. Every other file under `src/**`, `tests/e2e/**`, `compose*`, and `src/backend/Dockerfile` is consumed, not modified.
