@@ -18,27 +18,27 @@ output "alb_dns_name" {
 
 output "ecs_cluster_name" {
   description = "Name of the ECS cluster."
-  value       = null
+  value       = module.ecs.cluster_name
 }
 
 output "backend_service_name" {
   description = "Name of the backend ECS service."
-  value       = null
+  value       = module.ecs.backend_service_name
 }
 
 output "frontend_service_name" {
   description = "Name of the frontend ECS service."
-  value       = null
+  value       = module.ecs.frontend_service_name
 }
 
 output "backend_task_family" {
   description = "Task family of the backend task definition."
-  value       = null
+  value       = module.ecs.backend_task_family
 }
 
 output "frontend_task_family" {
   description = "Task family of the frontend task definition."
-  value       = null
+  value       = module.ecs.frontend_task_family
 }
 
 output "ci_plan_role_arn" {
