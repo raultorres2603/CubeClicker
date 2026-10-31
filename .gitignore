@@ -8,3 +8,11 @@ coverage/
 
 # Local configuration and secrets (.env files are user-owned and never committed)
 .env*
+
+# Terraform state, plans, and local working directories
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+crash.log
+crash.*.log
