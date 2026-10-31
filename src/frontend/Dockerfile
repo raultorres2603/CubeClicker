@@ -35,6 +35,8 @@ COPY src/frontend/package.json src/frontend/package.json
 RUN npm ci
 
 COPY src/frontend src/frontend
+ARG VITE_WS_URL="ws://localhost:8080/ws"
+ENV VITE_WS_URL=${VITE_WS_URL}
 RUN npm run build -w @cubeclicker/frontend
 
 # --- prod: unprivileged nginx serving the static build on 8080 (non-root by image default) ---
