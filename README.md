@@ -102,15 +102,17 @@ CubeClicker deploys to AWS from the existing container images through Terraform-
   - `verify-app`: `npm ci` → `npm run lint` → `npm run typecheck` → `npm test` → `npm run coverage` → `npm run build`.
   - `smoke-e2e`: pre-start Mailpit (`docker compose -f compose.yaml -f compose.smoke.yaml up -d mailpit`) **before** `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (the one-shot run never starts Mailpit and fails 9/12; pre-started passes 12/12).
   - `verify-infra`: containerized `terraform fmt -check -recursive`, `terraform init -backend=false`, `terraform validate` (no AWS credentials).
-- `deploy.yml` (on push to `main`): calls `ci.yml` via `workflow_call` (gates re-run on `main` by design), then builds and pushes both images to ECR tagged with the commit SHA (frontend bakes `VITE_WS_URL` from `PUBLIC_WS_URL`), assumes the deploy role via OIDC, runs `terraform init`/`plan`/`apply`, then deploys both ECS services and waits for stability. Wrapped in a `deploy-production` concurrency group.
+- `deploy.yml` (manual, via `workflow_dispatch`): calls `ci.yml` via `workflow_call` (gates re-run on the selected ref by design), then builds and pushes both images to ECR tagged with the commit SHA (frontend bakes `VITE_WS_URL` from `PUBLIC_WS_URL`), assumes the deploy role via OIDC, runs `terraform init`/`plan`/`apply`, then deploys both ECS services and waits for stability. Wrapped in a `deploy-production` concurrency group.
 
 ### Deploy flow
 
-1. Push to `main` (only after a feature is accepted and merged).
+1. Trigger manually via `workflow_dispatch` (Actions → Deploy → Run workflow), selecting the ref to deploy (typically the merge commit on `main`, only after a feature is accepted and merged).
 2. `verify` job re-runs all three gates.
 3. `build-and-push` builds/pushes `cubeclicker-backend` and `cubeclicker-frontend` to ECR tagged with `github.sha`.
 4. `infra` runs `terraform plan` (with the SHA-tagged image URIs) then `terraform apply`.
 5. `deploy-services` renders and deploys both task definitions with `wait-for-service-stability: true`.
+
+Note: continuous deployment (CD) is manual because only the `production` environment exists; automatic deploy is deferred until a staging environment is added.
 
 ### User-side asset checklist (one-time, performed by the repository owner)
 

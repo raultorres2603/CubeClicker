@@ -25,7 +25,7 @@ Conventions for deploying CubeClicker. The application stack and container conve
 
 ## Environment strategy
 
-- Single deploy environment: `production`. Push to `main` → gates → build/push → plan/apply → deploy, gated by the GitHub `production` environment protection.
+- Single deploy environment: `production`. Manual trigger (`workflow_dispatch`) → gates → build/push → plan/apply → deploy, gated by the GitHub `production` environment protection.
 - Staging is deliberately not shipped. Additive recipe for a follow-up: copy `envs/production.tfvars` → `envs/<env>.tfvars`, state key `env/<env>/terraform.tfstate`, an additional GitHub environment + deploy-role trust constraints, and a second concurrency group. No staging roles, jobs, or tfvars are created by this feature.
 - `environment` is a validated Terraform variable with no default, so a plan cannot silently mis-target.
 
@@ -57,9 +57,16 @@ Conventions for deploying CubeClicker. The application stack and container conve
 - Sensitive Terraform outputs/variables are marked `sensitive`. Terraform state can contain sensitive values: the state bucket is encrypted, versioned, non-public, and access is restricted to the two CI/CD roles.
 - No state, plan, or `.terraform/` artifacts are committed (the committed `.terraform.lock.hcl` is build reproducibility, not state).
 
-## Double gate on `main` (by design)
+## Trigger policy
 
-- `deploy.yml` first calls `ci.yml` via `workflow_call` (`verify` job) so all three gates re-run on `main` before any build, push, plan, or apply. This is deliberate (F16): the PR gates are re-run on the merge commit rather than trusted from the PR run, so a red gate blocks deploy even if the PR run was green.
+- Deploy is triggered **manually** via `workflow_dispatch` only. There is no automatic deploy on push to the default branch (or on any other event): CI runs automatically on pushes to `main` and on pull requests, but CD requires an explicit human action (Actions → Deploy → Run workflow).
+- Automatic deploy is **deferred**. The reason is that only a single `production` environment exists: auto-deploying from a merge while no staging environment exists to absorb regressions is not acceptable. Automatic deployment will be reconsidered once a staging environment is added (staging is a future additive recipe — see Environment strategy above).
+- The selected ref's tip SHA (`github.sha`) is the image tag, so a manual run on any ref produces commit-SHA-tagged images without a new workflow input.
+- The `production` environment protection continues to apply on every manual run.
+
+## Double gate on the selected ref (by design)
+
+- `deploy.yml` first calls `ci.yml` via `workflow_call` (`verify` job) so all three gates re-run on the selected ref before any build, push, plan, or apply. This is deliberate: on a manual trigger the gates re-run on the ref chosen in the trigger UI (typically the merge commit on `main`) rather than being trusted from a prior run, so a red gate blocks deploy even if an earlier run was green.
 - The deploy-side jobs (`build-and-push`, `infra`, `deploy-services`) then run sequentially with `needs` chaining, all assuming the deploy role via OIDC.
 
 ## ECS service deployment mechanism
