@@ -589,18 +589,34 @@ async function checkAuthFlow() {
   const password = 'smokepassword12';
 
   let registerProblem = null;
-  try {
-    const response = await fetch(BACKEND_URL + '/auth/register', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, email, password }),
-      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
-    });
-    if (response.status !== 202) {
-      registerProblem = `expected 202, got ${response.status}: ${await response.text()}`;
+
+  // Wait for Mailpit to be ready before issuing registration, so a slow Mailpit start
+  // cannot surface as a false 500 from /auth/register (which sends the verification
+  // email over SMTP). On failure, record the problem as the registration failure and
+  // skip verify/login via the existing control flow; the guest check still runs.
+  const mailpitReadyProblem = await pollUntilReady(MAILPIT_URL + '/', (response) => {
+    if (response.status !== 200) {
+      return `expected 200, got ${response.status}`;
     }
-  } catch (error) {
-    registerProblem = problemText(error);
+    return null;
+  });
+
+  if (mailpitReadyProblem !== null) {
+    registerProblem = `Mailpit not ready: ${mailpitReadyProblem}`;
+  } else {
+    try {
+      const response = await fetch(BACKEND_URL + '/auth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, email, password }),
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+      });
+      if (response.status !== 202) {
+        registerProblem = `expected 202, got ${response.status}: ${await response.text()}`;
+      }
+    } catch (error) {
+      registerProblem = problemText(error);
+    }
   }
   record(registerProblem === null, 'auth register: POST /auth/register returns 202', registerProblem ?? '');
 
