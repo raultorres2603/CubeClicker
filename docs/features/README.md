@@ -33,5 +33,7 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | aws-deploy-pipeline | AWS Deploy Pipeline (Terraform infrastructure + GitHub Actions CI/CD + framework proof-of-working) | accepted | 2026-10-31 |
 | manual-deploy-trigger | Manual Deploy Trigger (manual `workflow_dispatch` deploy; automatic deploy deferred while only `production` exists) | accepted | 2026-11-01 |
 | workflow-hygiene | Workflow Hygiene (trailing newline in CI/CD workflows + scoped credential-audit command) | accepted | 2026-11-01 |
+| smoke-mailpit-ordering | Smoke Test Mailpit Ordering Fix (one-shot smoke green 12/12 without manual Mailpit pre-start) | accepted | 2026-11-01 |
+| smoke-test-hygiene | Smoke Test Hygiene (trailing newline in compose.smoke.yaml + MAILPIT_TIMEOUT_MS for readiness poll) | accepted | 2026-11-01 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

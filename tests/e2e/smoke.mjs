@@ -72,8 +72,8 @@ function delay(ms) {
  * Polls `url` until `validate` reports no problem, or the readiness budget runs out.
  * Returns `null` on success, otherwise the last observed problem as a string.
  */
-async function pollUntilReady(url, validate) {
-  const deadline = Date.now() + READY_TIMEOUT_MS;
+async function pollUntilReady(url, validate, timeoutMs = READY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
   let lastProblem = 'no attempt completed';
 
   for (;;) {
@@ -599,7 +599,7 @@ async function checkAuthFlow() {
       return `expected 200, got ${response.status}`;
     }
     return null;
-  });
+  }, MAILPIT_TIMEOUT_MS);
 
   if (mailpitReadyProblem !== null) {
     registerProblem = `Mailpit not ready: ${mailpitReadyProblem}`;
