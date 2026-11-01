@@ -31,5 +31,7 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | metallic-hud-frames | Metallic HUD Frames (beveled metal frames, cyan glow) | accepted | 2026-10-28 |
 | metallic-hud-frames-polish | Metallic HUD Frames Polish (trailing newline, mask guard) | accepted | 2026-10-28 |
 | aws-deploy-pipeline | AWS Deploy Pipeline (Terraform infrastructure + GitHub Actions CI/CD + framework proof-of-working) | accepted | 2026-10-31 |
+| manual-deploy-trigger | Manual Deploy Trigger (manual `workflow_dispatch` deploy; automatic deploy deferred while only `production` exists) | accepted | 2026-11-01 |
+| workflow-hygiene | Workflow Hygiene (trailing newline in CI/CD workflows + scoped credential-audit command) | accepted | 2026-11-01 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
