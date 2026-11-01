@@ -56,6 +56,7 @@ Conventions for deploying CubeClicker. The application stack and container conve
 - SMTP credentials are user-supplied SSM SecureStrings (values set out-of-band; names pinned in the manifest).
 - Sensitive Terraform outputs/variables are marked `sensitive`. Terraform state can contain sensitive values: the state bucket is encrypted, versioned, non-public, and access is restricted to the two CI/CD roles.
 - No state, plan, or `.terraform/` artifacts are committed (the committed `.terraform.lock.hcl` is build reproducibility, not state).
+- Credential audit (canonical scoped form): `git grep -nE "AKIA|aws_secret_access_key|AWS_SESSION_TOKEN" -- . ':(exclude)docs/'`. The full unscoped command is not used because `docs/features/**` contains benign references to the audit pattern in prior feature review/build-log artifacts, which are not credentials; excluding `docs/` keeps the audit effective over all tracked non-doc files (`src/`, `infra/`, `.github/`, etc.).
 
 ## Trigger policy
 
