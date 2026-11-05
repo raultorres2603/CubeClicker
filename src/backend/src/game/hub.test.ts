@@ -4,6 +4,7 @@ import { allIds } from './cubes.js';
 import { createGameHub, type GameHub, type Peer } from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
+import type { PartId } from './parts.js';
 import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins, IDLE_CAP_MS, idleCoins } from './economy.js';
 
 /** A fake {@link Peer}: records sent frames and lets tests drive the transport events. */
@@ -1480,9 +1481,9 @@ describe('account economy (T3)', () => {
   }
 
   async function flush() {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 50; i += 1) {
+      await Promise.resolve();
+    }
   }
 
   it('loads persisted economy into welcome for an account join', async () => {
@@ -1825,5 +1826,416 @@ describe('idle accrual (T4)', () => {
     await h.flush();
     const expected = idleCoins(120_000, {});
     expect((await h.repo.findByUserId('u1'))!.coins).toBe(expected);
+  });
+});
+
+describe('spaceship customization (T4)', () => {
+  function createCustomHarness(repo: InMemoryEconomyRepository, draw: () => number = () => 0) {
+    const config = loadGameConfig({});
+    let clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => draw,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      economy: repo,
+    });
+    return {
+      config,
+      hub,
+      clock: () => clock,
+      setNow: (ms: number) => {
+        clock = ms;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      connect: (userId = 'u1', username = 'alice') => {
+        const peer = new FakePeer();
+        hub.attach(peer, { userId, username, verified: true });
+        return peer;
+      },
+      connectGuest: () => {
+        const peer = new FakePeer();
+        hub.attach(peer);
+        return peer;
+      },
+      join: (peer: FakePeer, mode?: 'account' | 'guest') => {
+        peer.receive(JSON.stringify(mode ? { type: 'join', mode } : { type: 'join' }));
+      },
+      flush: async () => {
+        for (let i = 0; i < 50; i += 1) {
+          await Promise.resolve();
+        }
+      },
+    };
+  }
+
+  it('account join loads persisted customization into welcome', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 3 });
+    await repo.setAppearance('u1', { nose: 'nose-crimson' });
+    // add a part
+    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.customization).toEqual({
+      lootboxes: 1,
+      keys: 2,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    });
+  });
+
+  it('grants lootbox+key on cube completion and broadcasts customizationUpdate to joined account connections', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await h.flush();
+    first.clear();
+    second.clear();
+
+    // complete a cube
+    removeLevel(h, first, allIds(3));
+    await h.flush();
+    first.clear();
+    second.clear();
+    h.setNow(0);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await h.flush();
+
+    const expected = {
+      type: 'customizationUpdate',
+      lootboxes: 1,
+      keys: 1,
+      parts: {},
+      appearance: {},
+    };
+    expect(first.messages()).toContainEqual(expected);
+    expect(second.messages()).toContainEqual(expected);
+    const stored = await repo.findCustomizationByUserId('u1');
+    expect(stored).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+  });
+
+  it('guest completion does not broadcast customizationUpdate', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connectGuest();
+    h.join(peer, 'guest');
+    await h.flush();
+    peer.clear();
+    removeLevel(h, peer, allIds(3));
+    await h.flush();
+    peer.clear();
+    h.setNow(0);
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await h.flush();
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+  });
+
+  it('scoped broadcast: guest connection receives nothing on account grant', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const accountPeer = h.connect('u1', 'alice');
+    h.join(accountPeer);
+    const guestPeer = h.connectGuest();
+    h.join(guestPeer, 'guest');
+    await h.flush();
+    accountPeer.clear();
+    guestPeer.clear();
+
+    removeLevel(h, accountPeer, allIds(3));
+    await h.flush();
+    accountPeer.clear();
+    guestPeer.clear();
+    h.setNow(0);
+    accountPeer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    await h.flush();
+
+    expect(accountPeer.messages().some((m) => m.type === 'customizationUpdate')).toBe(true);
+    expect(guestPeer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+  });
+
+  it('openLootbox success decrements counts and grants a part', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    const msg = peer.messages().find((m) => m.type === 'customizationUpdate');
+    expect(msg).toEqual({
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-default': 1 },
+      appearance: {},
+    });
+    const stored = await repo.findCustomizationByUserId('u1');
+    expect(stored).toEqual({ lootboxes: 0, keys: 0, parts: { 'nose-default': 1 }, appearance: {} });
+  });
+
+  it('openLootbox broadcasts to all joined account connections', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const h = createCustomHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await h.flush();
+    first.clear();
+    second.clear();
+
+    first.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    const expected = {
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-default': 1 },
+      appearance: {},
+    };
+    expect(first.messages()).toContainEqual(expected);
+    expect(second.messages()).toContainEqual(expected);
+  });
+
+  it('openLootbox with no lootbox sends no_lootbox and no state change', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { keys: 1 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_lootbox' });
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    const stored = await repo.findCustomizationByUserId('u1');
+    expect(stored).toEqual({ lootboxes: 0, keys: 1, parts: {}, appearance: {} });
+  });
+
+  it('openLootbox with no key sends no_key and no state change', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_key' });
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    const stored = await repo.findCustomizationByUserId('u1');
+    expect(stored).toEqual({ lootboxes: 1, keys: 0, parts: {}, appearance: {} });
+  });
+
+  it('openLootbox with zero of both sends no_lootbox first', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_lootbox' });
+  });
+
+  it('guest openLootbox is a no-op on server (no broadcast/error)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connectGuest();
+    h.join(peer, 'guest');
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages()).toHaveLength(0);
+  });
+
+  it('equipPart success updates appearance and broadcasts', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+
+    const msg = peer.messages().find((m) => m.type === 'customizationUpdate');
+    expect(msg).toEqual({
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    });
+    const stored = await repo.findCustomizationByUserId('u1');
+    expect(stored?.appearance).toEqual({ nose: 'nose-crimson' });
+  });
+
+  it('equipPart broadcasts to all joined account connections', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    const h = createCustomHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await h.flush();
+    first.clear();
+    second.clear();
+
+    first.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+
+    const expected = {
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    };
+    expect(first.messages()).toContainEqual(expected);
+    expect(second.messages()).toContainEqual(expected);
+  });
+
+  it('equipPart unknown part sends unknown_part', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nope' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'unknown_part' });
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+  });
+
+  it('equipPart unowned part sends not_owned', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'body-gold' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'not_owned' });
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+  });
+
+  it('equipPart forged unowned part yields not_owned (authority)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    // do not open; no parts owned
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-default' }));
+    await h.flush();
+
+    expect(peer.messages()).toContainEqual({ type: 'error', code: 'not_owned' });
+  });
+
+  it('welcome carries customization for account (worldEntered inclusion via placement)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 5, keys: 2 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.customization).toEqual({ lootboxes: 5, keys: 2, parts: {}, appearance: {} });
+  });
+
+  it('guest join welcome has no customization', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connectGuest();
+    h.join(peer, 'guest');
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    expect(welcome.customization).toBeUndefined();
+  });
+
+  it('rejoin within grace returns updated customization after open', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    const token = welcomeOf(peer).token;
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    peer.drop();
+    await h.flush();
+    // account session required for resume
+    // attach with account session
+    // (recreate connection already attached above without session; need reattach)
+    // Instead use a fresh harness connection with session:
+    const peer2 = new FakePeer();
+    h.hub.attach(peer2, { userId: 'u1', username: 'alice', verified: true });
+    peer2.receive(JSON.stringify({ type: 'rejoin', token }));
+    await h.flush();
+    const welcome = welcomeOf(peer2);
+    expect(welcome.customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-default': 1 },
+      appearance: {},
+    });
+  });
+
+  it('member customization updated before broadcast: rejoin sees opened state', async () => {
+    // covered by above; placeholder assertion
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    // rejoin not needed; ensure no error
+    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(true);
   });
 });

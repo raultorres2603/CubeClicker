@@ -74,6 +74,8 @@ import {
   type Placement,
   type ServerMessage,
   type UpgradeState,
+  type CustomizationState,
+  customizationUpdateMessage,
 } from './protocol.js';
 import {
   createServerRegistry,
@@ -97,6 +99,7 @@ import {
   upgradeCost,
   UPGRADE_CATALOG,
 } from './upgrades.js';
+import { isValidPartId, partCategory, randomPartId } from './parts.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
@@ -205,6 +208,8 @@ interface Member {
   economy: EconomyState;
   /** Server-authoritative upgrade levels for this member. */
   upgrades: UpgradeState;
+  /** Server-authoritative customization state for this member. */
+  customization: CustomizationState;
   /** The live socket, or `null` while the member is inside the grace window. */
   connection: Connection | null;
   rate: RateWindow;
@@ -352,7 +357,9 @@ export function createGameHub(deps: HubDeps): GameHub {
       roster: rosterFor(location.serverId),
       identity,
       economy: member.economy,
-      ...(member.accountId !== null ? { upgrades: member.upgrades } : {}),
+      ...(member.accountId !== null
+        ? { upgrades: member.upgrades, customization: member.customization }
+        : {}),
     };
   }
 
@@ -525,6 +532,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Load persisted economy before creating the member (account + repo present).
     let loadedEconomy: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
     let loadedUpgrades: UpgradeState = {};
+    let loadedCustomization: CustomizationState = { lootboxes: 0, keys: 0, parts: {}, appearance: {} };
     let touched = false;
     let creditedCoins = 0;
     if (isAccount && accountId !== null && economyRepo !== null) {
@@ -533,6 +541,7 @@ export function createGameHub(deps: HubDeps): GameHub {
         loadedEconomy = found;
       }
       loadedUpgrades = await economyRepo.findUpgradesByUserId(accountId);
+      loadedCustomization = await economyRepo.findCustomizationByUserId(accountId);
       const lastSeenAt = await economyRepo.findLastSeenAt(accountId);
       const now = deps.now();
       touched = await economyRepo.touchLastSeen(accountId, now, lastSeenAt);
@@ -561,6 +570,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       cubeStartedAtMs: deps.now(),
       economy: loadedEconomy,
       upgrades: loadedUpgrades,
+      customization: loadedCustomization,
       connection,
       rate: { admitted: [], lastLimitedAt: null },
       rotateRate: { admitted: [], lastLimitedAt: null },
@@ -721,6 +731,21 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
+  function broadcastCustomizationUpdate(userId: string, customization: CustomizationState): void {
+    for (const connection of connections) {
+      if (connection.playerId === null) {
+        continue;
+      }
+      if (connection.accountSession?.userId !== userId) {
+        continue;
+      }
+      if (!connection.peer.isOpen()) {
+        continue;
+      }
+      send(connection, customizationUpdateMessage(customization));
+    }
+  }
+
 
   function handleCompletion(member: Member, connection: Connection, level: number): void {
     if (!isComplete(member.cube, level)) {
@@ -758,6 +783,21 @@ export function createGameHub(deps: HubDeps): GameHub {
             }
           }
           broadcastEconomyUpdate(accountId, result);
+        });
+    }
+
+    // Account customization grant (fire-and-forget): +1 lootbox +1 key on cube completion.
+    if (member.accountId !== null && economyRepo !== null) {
+      const accountId = member.accountId;
+      void economyRepo
+        .grantCustomization(accountId, { lootboxes: 1, keys: 1 })
+        .then((result) => {
+          for (const m of members.values()) {
+            if (m.accountId === accountId) {
+              m.customization = result;
+            }
+          }
+          broadcastCustomizationUpdate(accountId, result);
         });
     }
 
@@ -823,6 +863,57 @@ export function createGameHub(deps: HubDeps): GameHub {
     broadcastUpgradesUpdate(accountId, result.upgrades);
   }
 
+  async function handleOpenLootbox(member: Member, connection: Connection): Promise<void> {
+    if (member.accountId === null) {
+      return;
+    }
+    const accountId = member.accountId;
+    if (economyRepo === null) {
+      return;
+    }
+    const partId = randomPartId(deps.random());
+    const result = await economyRepo.applyLootboxOpen(accountId, partId);
+    if ('reason' in result) {
+      sendError(connection, result.reason === 'no_lootbox' ? 'no_lootbox' : 'no_key');
+      return;
+    }
+    const state = result.state;
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.customization = state;
+      }
+    }
+    broadcastCustomizationUpdate(accountId, state);
+  }
+
+  async function handleEquipPart(member: Member, connection: Connection, partId: string): Promise<void> {
+    if (member.accountId === null) {
+      return;
+    }
+    const accountId = member.accountId;
+    if (economyRepo === null) {
+      return;
+    }
+    if (!isValidPartId(partId)) {
+      sendError(connection, 'unknown_part');
+      return;
+    }
+    const current = await economyRepo.findCustomizationByUserId(accountId);
+    if ((current.parts[partId] ?? 0) <= 0) {
+      sendError(connection, 'not_owned');
+      return;
+    }
+    const category = partCategory(partId);
+    const nextAppearance: Record<string, string> = { ...current.appearance, [category]: partId };
+    const state = await economyRepo.setAppearance(accountId, nextAppearance);
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.customization = state;
+      }
+    }
+    broadcastCustomizationUpdate(accountId, state);
+  }
+
   function handleRotate(member: Member, connection: Connection, yawSteps: number, pitchSteps: number): void {
     const now = deps.now();
     const rate = member.rotateRate;
@@ -884,6 +975,14 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     if (message.type === 'purchaseUpgrade') {
       void handlePurchaseUpgrade(member, connection, message.upgradeId);
+      return;
+    }
+    if (message.type === 'openLootbox') {
+      void handleOpenLootbox(member, connection);
+      return;
+    }
+    if (message.type === 'equipPart') {
+      void handleEquipPart(member, connection, message.partId);
       return;
     }
   }
