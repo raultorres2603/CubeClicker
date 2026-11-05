@@ -10,11 +10,14 @@ import {
   MAX_ROTATE_BYTES,
   type MemberState,
   type Placement,
+  type CustomizationState,
   cubeRotatedMessage,
   encodeServerMessage,
   economyUpdateMessage,
   errorMessage,
   upgradesUpdateMessage,
+  customizationUpdateMessage,
+  copyCustomizationState,
   levelAdvancedMessage,
   memberJoinedMessage,
   memberLeftMessage,
@@ -674,5 +677,168 @@ describe('ErrorCode upgrades', () => {
     expect(errorMessage('insufficient_funds')).toStrictEqual({ type: 'error', code: 'insufficient_funds' });
     expect(errorMessage('unknown_upgrade')).toStrictEqual({ type: 'error', code: 'unknown_upgrade' });
     expect(errorMessage('max_level')).toStrictEqual({ type: 'error', code: 'max_level' });
+  });
+});
+
+describe('ErrorCode customization', () => {
+  it('builds errors for the new customization codes', () => {
+    expect(errorMessage('no_lootbox')).toStrictEqual({ type: 'error', code: 'no_lootbox' });
+    expect(errorMessage('no_key')).toStrictEqual({ type: 'error', code: 'no_key' });
+    expect(errorMessage('unknown_part')).toStrictEqual({ type: 'error', code: 'unknown_part' });
+    expect(errorMessage('not_owned')).toStrictEqual({ type: 'error', code: 'not_owned' });
+  });
+});
+
+describe('parseClientMessage — openLootbox', () => {
+  it('decodes openLootbox with no fields', () => {
+    expect(parseClientMessage('{"type":"openLootbox"}')).toEqual({
+      ok: true,
+      message: { type: 'openLootbox' },
+    });
+  });
+
+  it('drops unknown extra fields', () => {
+    expect(parseClientMessage('{"type":"openLootbox","foo":1}')).toEqual({
+      ok: true,
+      message: { type: 'openLootbox' },
+    });
+  });
+
+  it('rejects non-object frames', () => {
+    expect(parseClientMessage('null')).toEqual({ ok: false, error: 'bad_message' });
+  });
+});
+
+describe('parseClientMessage — equipPart', () => {
+  it('decodes equipPart with a non-empty partId', () => {
+    expect(parseClientMessage('{"type":"equipPart","partId":"nose-crimson"}')).toEqual({
+      ok: true,
+      message: { type: 'equipPart', partId: 'nose-crimson' },
+    });
+  });
+
+  it('rejects equipPart without partId', () => {
+    expect(parseClientMessage('{"type":"equipPart"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects equipPart with an empty partId', () => {
+    expect(parseClientMessage('{"type":"equipPart","partId":""}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects equipPart with a non-string partId', () => {
+    expect(parseClientMessage('{"type":"equipPart","partId":7}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('drops unknown extra fields', () => {
+    expect(parseClientMessage('{"type":"equipPart","partId":"body-gold","level":3}')).toEqual({
+      ok: true,
+      message: { type: 'equipPart', partId: 'body-gold' },
+    });
+  });
+});
+
+describe('customizationUpdateMessage', () => {
+  it('builds customizationUpdate from a CustomizationState', () => {
+    const state: CustomizationState = {
+      lootboxes: 2,
+      keys: 1,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    };
+    expect(customizationUpdateMessage(state)).toStrictEqual({
+      type: 'customizationUpdate',
+      lootboxes: 2,
+      keys: 1,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    });
+  });
+
+  it('builds from an empty state', () => {
+    expect(customizationUpdateMessage({ lootboxes: 0, keys: 0, parts: {}, appearance: {} })).toStrictEqual({
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('copies its input defensively', () => {
+    const state: CustomizationState = { lootboxes: 1, keys: 1, parts: { a: 1 }, appearance: { nose: 'a' } };
+    const message = customizationUpdateMessage(state);
+    state.parts.a = 99;
+    state.appearance.nose = 'b';
+    state.lootboxes = 5;
+    expect(message).toStrictEqual({
+      type: 'customizationUpdate',
+      lootboxes: 1,
+      keys: 1,
+      parts: { a: 1 },
+      appearance: { nose: 'a' },
+    });
+  });
+
+  it('encodes as one JSON frame', () => {
+    expect(
+      encodeServerMessage(customizationUpdateMessage({ lootboxes: 0, keys: 0, parts: {}, appearance: {} })),
+    ).toBe('{"type":"customizationUpdate","lootboxes":0,"keys":0,"parts":{},"appearance":{}}');
+  });
+});
+
+describe('copyCustomizationState', () => {
+  it('returns an equal deep copy', () => {
+    const state: CustomizationState = { lootboxes: 3, keys: 2, parts: { x: 2 }, appearance: { body: 'y' } };
+    const copy = copyCustomizationState(state);
+    expect(copy).toStrictEqual(state);
+    expect(copy).not.toBe(state);
+    expect(copy.parts).not.toBe(state.parts);
+    expect(copy.appearance).not.toBe(state.appearance);
+  });
+
+  it('does not alias nested maps', () => {
+    const state: CustomizationState = { lootboxes: 1, keys: 1, parts: { a: 1 }, appearance: { nose: 'a' } };
+    const copy = copyCustomizationState(state);
+    copy.parts.a = 5;
+    copy.appearance.nose = 'z';
+    expect(state.parts).toStrictEqual({ a: 1 });
+    expect(state.appearance).toStrictEqual({ nose: 'a' });
+  });
+});
+
+describe('placement customization field', () => {
+  it('welcomeMessage copies customization when present', () => {
+    const placement: Placement = {
+      ...PLACEMENT,
+      customization: { lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } },
+    };
+    const message = welcomeMessage(placement);
+    expect(message.type).toBe('welcome');
+    expect(message.customization).toStrictEqual({ lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } });
+    placement.customization!.parts['nose-crimson'] = 99;
+    expect(message.customization).toStrictEqual({ lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } });
+  });
+
+  it('worldEnteredMessage copies customization when present', () => {
+    const placement: Placement = {
+      ...PLACEMENT,
+      customization: { lootboxes: 0, keys: 0, parts: {}, appearance: {} },
+    };
+    const message = worldEnteredMessage(placement);
+    expect(message.type).toBe('worldEntered');
+    expect(message.customization).toStrictEqual({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+  });
+
+  it('omits customization when absent', () => {
+    expect(welcomeMessage(PLACEMENT)).not.toHaveProperty('customization');
   });
 });

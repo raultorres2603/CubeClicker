@@ -81,7 +81,11 @@ export type ErrorCode =
   | 'not_authenticated'
   | 'insufficient_funds'
   | 'unknown_upgrade'
-  | 'max_level';
+  | 'max_level'
+  | 'no_lootbox'
+  | 'no_key'
+  | 'unknown_part'
+  | 'not_owned';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
@@ -90,7 +94,9 @@ export type ClientMessage =
   | { type: 'explode'; id: MiniCubeId; level: number }
   | { type: 'cubeCompleted'; level: number }
   | { type: 'rotate'; yawSteps: number; pitchSteps: number }
-  | { type: 'purchaseUpgrade'; upgradeId: string };
+  | { type: 'purchaseUpgrade'; upgradeId: string }
+  | { type: 'openLootbox' }
+  | { type: 'equipPart'; partId: string };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -148,6 +154,7 @@ export type ServerMessage =
     }
   | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
   | { type: 'upgradesUpdate'; upgrades: UpgradeState }
+  | { type: 'customizationUpdate'; lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> }
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -257,6 +264,15 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
       }
       return { ok: true, message: { type: 'purchaseUpgrade', upgradeId: frame.upgradeId } };
 
+    case 'openLootbox':
+      return { ok: true, message: { type: 'openLootbox' } };
+
+    case 'equipPart':
+      if (!isNonEmptyString(frame.partId)) {
+        return badMessage();
+      }
+      return { ok: true, message: { type: 'equipPart', partId: frame.partId } };
+
     default:
       return badMessage();
   }
@@ -271,6 +287,13 @@ export type Identity =
   | { kind: 'guest'; playerId: string };
 
 export type UpgradeState = Record<string, number>;
+
+export interface CustomizationState {
+  lootboxes: number;
+  keys: number;
+  parts: Record<string, number>;
+  appearance: Record<string, string>;
+}
 
 export interface EconomyState {
   coins: number;
@@ -291,6 +314,7 @@ export interface Placement {
   identity: Identity;
   economy?: EconomyState;
   upgrades?: UpgradeState;
+  customization?: CustomizationState;
 }
 
 /** The payload of a fresh-cube broadcast (`levelAdvanced`; `removedIds` is always empty). */
@@ -335,6 +359,7 @@ function placementPayload(placement: Placement): Placement {
     identity,
     ...(placement.economy ? { economy: copyEconomyState(placement.economy) } : {}),
     ...(placement.upgrades ? { upgrades: copyUpgradeState(placement.upgrades) } : {}),
+    ...(placement.customization ? { customization: copyCustomizationState(placement.customization) } : {}),
   };
 }
 
@@ -379,6 +404,29 @@ export function economyUpdateMessage(
 /** Builds an `upgradesUpdate` message carrying the server's absolute upgrade levels. */
 export function upgradesUpdateMessage(upgrades: UpgradeState): ServerMessage {
   return { type: 'upgradesUpdate', upgrades: copyUpgradeState(upgrades) };
+}
+
+/** Builds a `customizationUpdate` message carrying the server's absolute customization state. */
+export function customizationUpdateMessage(state: CustomizationState): ServerMessage {
+  return { type: 'customizationUpdate', ...copyCustomizationState(state) };
+}
+
+/** Defensive copy of a customization state (lootboxes, keys, parts, appearance). */
+export function copyCustomizationState(state: CustomizationState): CustomizationState {
+  const parts: Record<string, number> = {};
+  for (const key of Object.keys(state.parts)) {
+    parts[key] = state.parts[key];
+  }
+  const appearance: Record<string, string> = {};
+  for (const key of Object.keys(state.appearance)) {
+    appearance[key] = state.appearance[key];
+  }
+  return {
+    lootboxes: state.lootboxes,
+    keys: state.keys,
+    parts,
+    appearance,
+  };
 }
 
 /** Builds a client `purchaseUpgrade` message. */
