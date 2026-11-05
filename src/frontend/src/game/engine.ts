@@ -100,6 +100,7 @@ import {
   miniCubeMultiplier,
   speedWindowSeconds,
 } from './upgrades';
+import { isValidPartId, partCategory, randomPartId } from './parts';
 import {
   createOrientation,
   frontFace,
@@ -121,6 +122,7 @@ import {
   type Phase,
   type TravelDirection,
   type UpgradeState,
+  type CustomizationState,
 } from './types';
 
 /** A camera-only travel: to another member's cube (`spectate`) or back home (`return`). */
@@ -247,6 +249,7 @@ export interface EngineSnapshot {
    * {@link createEngine}.
    */
   upgrades?: UpgradeState;
+  customization?: CustomizationState;
 }
 
 /**
@@ -258,6 +261,7 @@ export interface OnlineEngineSnapshot extends EngineSnapshot {
   travelDestination: Position | null;
   spectating: boolean;
   upgrades: UpgradeState;
+  customization: CustomizationState;
 }
 
 export interface GameEngine {
@@ -310,6 +314,12 @@ export interface GameEngine {
   adoptEconomy?(economy: EconomyState): void;
   /** Replaces the engine's upgrade levels with the carried absolute map. */
   adoptUpgrades?(upgrades: UpgradeState): void;
+  /** Replaces the engine's customization state with the carried absolute state. */
+  adoptCustomization?(state: CustomizationState): void;
+  /** Guest: opens a lootbox locally, granting a random part. */
+  openLootbox?(): void;
+  /** Guest: equips an owned part locally. */
+  equipPart?(partId: string): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -322,6 +332,9 @@ export interface OnlineGameEngine extends GameEngine {
   adoptCubeState(cube: AuthoritativeCubeState): void;
   adoptEconomy(economy: EconomyState): void;
   adoptUpgrades(upgrades: UpgradeState): void;
+  adoptCustomization(state: CustomizationState): void;
+  openLootbox(): void;
+  equipPart(partId: string): void;
   setSpectating(active: boolean): void;
 }
 
@@ -485,6 +498,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   let boardReplayArmed = false;
   let spectating = false;
   let upgrades: UpgradeState = {};
+  let customization: CustomizationState = { lootboxes: 0, keys: 0, parts: {}, appearance: {} };
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
@@ -542,6 +556,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       spectating,
       reducedMotion,
       upgrades,
+      customization,
     };
   }
 
@@ -670,6 +685,12 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         roundCoins(COINS_PER_CUBE * cubeMultiplier(upgrades) * multiplier),
       );
       progression = recordCubeDestroyed(progression);
+      customization = {
+        lootboxes: customization.lootboxes + 1,
+        keys: customization.keys + 1,
+        parts: customization.parts,
+        appearance: customization.appearance,
+      };
     }
     invalidate();
     settleFrontFace();
@@ -1126,6 +1147,50 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
 
     adoptUpgrades(next: UpgradeState): void {
       upgrades = next;
+      invalidate();
+    },
+
+    adoptCustomization(state: CustomizationState): void {
+      customization = {
+        lootboxes: state.lootboxes,
+        keys: state.keys,
+        parts: { ...state.parts },
+        appearance: { ...state.appearance },
+      };
+      invalidate();
+    },
+
+    openLootbox(): void {
+      if (customization.lootboxes < 1 || customization.keys < 1) {
+        return;
+      }
+      const granted = randomPartId(random);
+      const nextParts = { ...customization.parts };
+      nextParts[granted] = (nextParts[granted] ?? 0) + 1;
+      customization = {
+        lootboxes: customization.lootboxes - 1,
+        keys: customization.keys - 1,
+        parts: nextParts,
+        appearance: customization.appearance,
+      };
+      invalidate();
+    },
+
+    equipPart(partId: string): void {
+      if (!isValidPartId(partId)) {
+        return;
+      }
+      const owned = customization.parts[partId] ?? 0;
+      if (owned <= 0) {
+        return;
+      }
+      const category = partCategory(partId);
+      customization = {
+        lootboxes: customization.lootboxes,
+        keys: customization.keys,
+        parts: customization.parts,
+        appearance: { ...customization.appearance, [category]: partId },
+      };
       invalidate();
     },
 

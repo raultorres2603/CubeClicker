@@ -101,3 +101,11 @@ export const TRAVEL_DIRECTIONS: readonly TravelDirection[] = ['left', 'right', '
 
 /** Server-authoritative upgrade levels mirrored on the client (record of id -> level). */
 export type UpgradeState = Record<string, number>;
+
+/** Spaceship customization state mirrored on the client (guest + adopted from server). */
+export interface CustomizationState {
+  lootboxes: number;
+  keys: number;
+  parts: Record<string, number>;
+  appearance: Record<string, string>;
+}

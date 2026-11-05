@@ -2143,3 +2143,176 @@ describe('engine upgrades (AC-2, AC-3, AC-4, AC-5, AC-16, AC-17)', () => {
     expect(after.upgrades).toEqual({ mini_cube_value: 1 });
   });
 });
+
+describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
+  it('initial snapshot carries customization as the zero state', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('grants +1 lootbox and +1 key on cube completion', () => {
+    const engine = createEngine({ gridSize: 1, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:0:0` });
+    }
+
+    const customization = engine.getSnapshot().customization;
+    expect(customization).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('openLootbox decrements counts and adds a random part (guest)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+
+    engine.openLootbox();
+
+    const customization = engine.getSnapshot().customization;
+    expect(customization.lootboxes).toBe(0);
+    expect(customization.keys).toBe(0);
+    expect(customization.parts['wings-default']).toBe(1);
+    expect(customization.appearance).toEqual({});
+  });
+
+  it('openLootbox is a no-op when lootboxes === 0', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 1, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+
+    engine.openLootbox();
+
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.customization).toEqual({
+      lootboxes: 0,
+      keys: 1,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('openLootbox is a no-op when keys === 0', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 1, keys: 0, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+
+    engine.openLootbox();
+
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.customization).toEqual({
+      lootboxes: 1,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('equipPart updates appearance for an owned part', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: {},
+    });
+
+    engine.equipPart('nose-crimson');
+
+    const customization = engine.getSnapshot().customization;
+    expect(customization.appearance).toEqual({ nose: 'nose-crimson' });
+    expect(customization.parts).toEqual({ 'nose-crimson': 1 });
+  });
+
+  it('equipPart is a no-op for an unknown part id', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: {},
+    });
+    const before = engine.getSnapshot();
+
+    engine.equipPart('nose-unknown');
+
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.customization.appearance).toEqual({});
+  });
+
+  it('equipPart is a no-op for an unowned part', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+    const before = engine.getSnapshot();
+
+    engine.equipPart('nose-crimson');
+
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.customization.appearance).toEqual({});
+  });
+
+  it('adoptCustomization replaces the whole state', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 1, keys: 2, parts: { 'body-gold': 3 }, appearance: { body: 'body-gold' } });
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 1,
+      keys: 2,
+      parts: { 'body-gold': 3 },
+      appearance: { body: 'body-gold' },
+    });
+
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('adoptCustomization invalidates the snapshot', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    const before = engine.getSnapshot();
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization.lootboxes).toBe(1);
+  });
+
+  it('openLootbox invalidates the snapshot on success', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+    engine.openLootbox();
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+  });
+
+  it('equipPart invalidates the snapshot on success', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: { 'nose-crimson': 1 }, appearance: {} });
+    const before = engine.getSnapshot();
+    engine.equipPart('nose-crimson');
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+  });
+});
