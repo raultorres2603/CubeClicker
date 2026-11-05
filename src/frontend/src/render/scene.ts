@@ -51,6 +51,8 @@ import {
   DirectionalLight,
   InstancedMesh,
   Matrix4,
+  Mesh,
+  MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -75,6 +77,7 @@ import {
   type TravelDirection,
 } from '../game/types';
 import type { MemberState, Position, ServerMessage } from '../multiplayer/protocol';
+import { appearanceToSpaceshipParams } from '../game/parts';
 import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
 import { createParticleSystem, type ParticleSystem } from './particles';
 import { travelCameraPose as spectateTravelPose } from './spectate-travel';
@@ -316,6 +319,15 @@ export interface SceneView {
    */
   readonly lastFrameTime: number;
   /**
+   * The last appearance applied to the spaceship (shallow copy), defaulting to `{}`.
+   * Exposed for tests.
+   */
+  readonly lastAppearance: Record<string, string>;
+  /** Alias for {@link lastAppearance}. */
+  readonly lastAppliedAppearance: Record<string, string>;
+  /** Alias for {@link lastAppearance}. */
+  readonly appliedAppearance: Record<string, string>;
+  /**
    * Applies the engine's ordered effect intents: explosion → start the tile's pop and spawn
    * its burst in front of the face surface; `faceCleared` → start the face-removal
    * countdown; `levelChanged` → mark the cube rebuild pending (the next snapshot performs
@@ -356,6 +368,7 @@ export function createSceneView(options: {
   gridSize?: number;
   random?: () => number;
   ownPosition?: Position;
+  appearance?: Record<string, string>;
 }): SceneView {
   const gridSize = options.gridSize ?? GRID_SIZE;
   const random = options.random ?? Math.random;
@@ -381,7 +394,7 @@ export function createSceneView(options: {
   let cube: CubeView = createCubeView(options.style, gridSize);
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
-  const spaceship: Spaceship = createSpaceship();
+  const spaceship: Spaceship = createSpaceship(options.appearance);
   const backgroundLife: BackgroundLife = createBackgroundLife(random);
 
   scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup, backgroundLife.group);
@@ -435,6 +448,9 @@ export function createSceneView(options: {
   }
   const pendingExplosions: PendingExplosion[] = [];
   let retainedFrameTime = 0;
+  let lastAppliedAppearance: Record<string, string> = options.appearance
+    ? { ...options.appearance }
+    : {};
   const instanceMatrix = new Matrix4();
   const introPosition = new Vector3();
   const introTarget = new Vector3();
@@ -789,6 +805,30 @@ export function createSceneView(options: {
     }
   }
 
+  function applyAppearanceToSpaceship(appearance: Record<string, string>): void {
+    const params = appearanceToSpaceshipParams(appearance);
+    spaceship.group.traverse((object) => {
+      if (!(object instanceof Mesh)) {
+        return;
+      }
+      const material = object.material as MeshStandardMaterial;
+      if (object.name === 'ignition') {
+        material.color.set(params.engineColor);
+        if (material.emissive !== undefined) {
+          material.emissive.set(params.engineColor);
+        }
+      } else if (object.geometry.type === 'ConeGeometry') {
+        material.color.set(params.noseColor);
+      } else if (object.geometry.type === 'CylinderGeometry') {
+        material.color.set(params.bodyColor);
+      } else if (object.geometry.type === 'SphereGeometry') {
+        material.color.set(params.cockpitColor);
+      } else if (object.name === 'wing') {
+        material.color.set(params.wingColor);
+      }
+    });
+  }
+
   const view: SceneView = {
     scene,
     camera,
@@ -818,6 +858,18 @@ export function createSceneView(options: {
 
     get lastFrameTime(): number {
       return retainedFrameTime;
+    },
+
+    get lastAppearance(): Record<string, string> {
+      return { ...lastAppliedAppearance };
+    },
+
+    get lastAppliedAppearance(): Record<string, string> {
+      return { ...lastAppliedAppearance };
+    },
+
+    get appliedAppearance(): Record<string, string> {
+      return { ...lastAppliedAppearance };
     },
 
     enterWorld(state: SceneWorld): void {
@@ -889,6 +941,18 @@ export function createSceneView(options: {
       // Pinned order: motion setting → rebuild → camera → orientation → reduced settle.
       reducedMotion = snapshot.reducedMotion;
       spectating = snapshot.spectating ?? false;
+      const nextAppearance = snapshot.customization?.appearance;
+      const nextRecord: Record<string, string> =
+        nextAppearance === undefined ? {} : { ...nextAppearance };
+      const appearanceChanged =
+        Object.keys(nextRecord).length !== Object.keys(lastAppliedAppearance).length ||
+        Object.keys(nextRecord).some(
+          (key) => nextRecord[key] !== lastAppliedAppearance[key],
+        );
+      if (appearanceChanged) {
+        applyAppearanceToSpaceship(nextRecord);
+        lastAppliedAppearance = nextRecord;
+      }
       rebuildCubeIfNeeded(snapshot);
       applyCamera(snapshot);
       const from = snapshot.rotationFrom ?? snapshot.orientation;

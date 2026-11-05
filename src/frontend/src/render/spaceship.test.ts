@@ -361,3 +361,46 @@ describe('createSpaceship', () => {
     expect(ship.shots).toHaveLength(0);
   });
 });
+
+describe('createSpaceship appearance', () => {
+  function findMesh(ship: ReturnType<typeof createSpaceship>, predicate: (mesh: Mesh) => boolean): Mesh {
+    let found: Mesh | undefined;
+    ship.group.traverse((object) => {
+      if (object instanceof Mesh && predicate(object) && found === undefined) {
+        found = object;
+      }
+    });
+    if (found === undefined) {
+      throw new Error('mesh not found');
+    }
+    return found;
+  }
+
+  it('defaults the nose mesh to the default nose color', () => {
+    const ship = createSpaceship();
+    const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
+    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('88aaff');
+    ship.dispose();
+  });
+
+  it('applies a nose part color from an appearance record', () => {
+    const ship = createSpaceship({ nose: 'nose-crimson' });
+    const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
+    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('cc4444');
+    ship.dispose();
+  });
+
+  it('applies direct color params', () => {
+    const ship = createSpaceship({ noseColor: '#00ff00' });
+    const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
+    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('00ff00');
+    ship.dispose();
+  });
+
+  it('applies engine color to ignition meshes', () => {
+    const ship = createSpaceship({ engine: 'engine-blue' });
+    const ignition = findMesh(ship, (mesh) => mesh.name === 'ignition');
+    expect((ignition.material as MeshStandardMaterial).color.getHexString()).toBe('4488ff');
+    ship.dispose();
+  });
+});

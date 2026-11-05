@@ -32,6 +32,7 @@ import {
   SPACESHIP_PLANE_DISTANCE,
   SPACESHIP_SCALE,
 } from '../game/effects';
+import { appearanceToSpaceshipParams, type SpaceshipVisualParams } from '../game/parts';
 
 /** One in-flight shot: a small sphere travelling linearly from `start` to `target`. */
 export interface Shot {
@@ -115,8 +116,42 @@ export function spaceshipTargetPosition(camera: Camera, ndcX: number, ndcY: numb
   return camera.position.clone().add(direction.multiplyScalar(SPACESHIP_PLANE_DISTANCE));
 }
 
+function resolveSpaceshipAppearance(
+  input: Record<string, string> | Partial<SpaceshipVisualParams> | undefined,
+): SpaceshipVisualParams {
+  if (input === undefined) {
+    return appearanceToSpaceshipParams({});
+  }
+  const colorKeys: Array<keyof SpaceshipVisualParams> = [
+    'noseColor',
+    'bodyColor',
+    'wingColor',
+    'cockpitColor',
+    'engineColor',
+  ];
+  const hasColorKey = colorKeys.some((key) =>
+    Object.prototype.hasOwnProperty.call(input, key),
+  );
+  if (hasColorKey) {
+    const defaults = appearanceToSpaceshipParams({});
+    const record = input as Partial<SpaceshipVisualParams>;
+    return {
+      noseColor: record.noseColor ?? defaults.noseColor,
+      bodyColor: record.bodyColor ?? defaults.bodyColor,
+      wingColor: record.wingColor ?? defaults.wingColor,
+      cockpitColor: record.cockpitColor ?? defaults.cockpitColor,
+      engineColor: record.engineColor ?? defaults.engineColor,
+    };
+  }
+  return appearanceToSpaceshipParams(input as Record<string, string>);
+}
+
 /** Builds the spaceship (cone nose + cylinder body + sphere cockpit) and its shot manager. */
-export function createSpaceship(): Spaceship {
+export function createSpaceship(
+  appearance?: Record<string, string> | Partial<SpaceshipVisualParams>,
+): Spaceship {
+  const params = resolveSpaceshipAppearance(appearance);
+
   const group = new Group();
   group.name = 'spaceship';
   group.position.set(0, 0, 6);
@@ -124,20 +159,20 @@ export function createSpaceship(): Spaceship {
 
   const nose = new Mesh(
     new ConeGeometry(0.2, 0.8, 8),
-    new MeshStandardMaterial({ color: 0x88aaff, metalness: 0.5, roughness: 0.5 }),
+    new MeshStandardMaterial({ color: params.noseColor, metalness: 0.5, roughness: 0.5 }),
   );
   nose.position.set(0, 0, 0.4);
   nose.rotation.x = Math.PI / 2;
 
   const body = new Mesh(
     new CylinderGeometry(0.25, 0.25, 0.9, 8),
-    new MeshStandardMaterial({ color: 0x4466cc, metalness: 0.5, roughness: 0.5 }),
+    new MeshStandardMaterial({ color: params.bodyColor, metalness: 0.5, roughness: 0.5 }),
   );
   body.rotation.x = Math.PI / 2;
 
   const cockpit = new Mesh(
     new SphereGeometry(0.15, 8, 8),
-    new MeshStandardMaterial({ color: 0xffffff, metalness: 0.5, roughness: 0.5 }),
+    new MeshStandardMaterial({ color: params.cockpitColor, metalness: 0.5, roughness: 0.5 }),
   );
   cockpit.position.set(0, 0.15, 0.1);
 
@@ -145,7 +180,7 @@ export function createSpaceship(): Spaceship {
   for (let i = 0; i < 2; i += 1) {
     const wing = new Mesh(
       new BoxGeometry(0.6, 0.05, 0.3),
-      new MeshStandardMaterial({ color: 0x4466cc, metalness: 0.5, roughness: 0.5 }),
+      new MeshStandardMaterial({ color: params.wingColor, metalness: 0.5, roughness: 0.5 }),
     );
     wing.name = 'wing';
     const side = i === 0 ? 1 : -1;
@@ -161,10 +196,10 @@ export function createSpaceship(): Spaceship {
     const ignition = new Mesh(
       new ConeGeometry(0.12, 0.35, 8),
       new MeshStandardMaterial({
-        color: 0xff6600,
+        color: params.engineColor,
         transparent: true,
         opacity: 0.5,
-        emissive: 0xff3300,
+        emissive: params.engineColor,
         metalness: 0.5,
         roughness: 0.5,
       }),

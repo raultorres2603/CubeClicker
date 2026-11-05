@@ -1,4 +1,4 @@
-import { Group, Mesh } from 'three';
+import { Group, Mesh, MeshStandardMaterial } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
@@ -196,5 +196,64 @@ describe('scene spaceship integration', () => {
       (c) => c instanceof Group && c.name === 'spaceship',
     );
     expect(groups).toHaveLength(0);
+  });
+});
+
+describe('scene spaceship appearance', () => {
+  function noseColor(view: SceneView): string {
+    const group = spaceshipGroup(view);
+    let color = '';
+    group.traverse((object) => {
+      if (
+        object instanceof Mesh &&
+        object.geometry.type === 'ConeGeometry' &&
+        object.name !== 'ignition'
+      ) {
+        color = (object.material as MeshStandardMaterial).color.getHexString();
+      }
+    });
+    return color;
+  }
+
+  it('re-applies appearance when snapshot customization.appearance changes', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    expect(noseColor(view)).toBe('88aaff');
+    const base = snapshot();
+    const next = {
+      ...base,
+      customization: {
+        ...base.customization!,
+        appearance: { nose: 'nose-crimson' },
+      },
+    };
+    applySnapshot(view, next);
+    expect(noseColor(view)).toBe('cc4444');
+    expect(view.lastAppearance).toEqual({ nose: 'nose-crimson' });
+    view.dispose();
+  });
+
+  it('retains a shallow copy of the last applied appearance', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const first = view.lastAppearance;
+    const base = snapshot();
+    applySnapshot(view, {
+      ...base,
+      customization: { ...base.customization!, appearance: { body: 'body-gold' } },
+    });
+    expect(view.lastAppearance).toEqual({ body: 'body-gold' });
+    first.nose = 'mutated';
+    expect(view.lastAppearance).not.toHaveProperty('nose', 'mutated');
+    view.dispose();
+  });
+
+  it('does not update materials when appearance is unchanged', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const before = view.lastAppearance;
+    applySnapshot(view, snapshot());
+    expect(view.lastAppearance).toEqual(before);
+    view.dispose();
   });
 });
