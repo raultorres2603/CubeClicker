@@ -112,4 +112,15 @@ describe('UpgradesPanel', () => {
     expect(guest).toContain('data-mode="guest"');
     expect(account).toContain('data-mode="account"');
   });
+
+  it('renders the upgrades-panel class on the root section', () => {
+    const guest = renderToStaticMarkup(
+      <UpgradesPanel upgrades={{}} coins={0} mode="guest" onPurchase={() => {}} />,
+    );
+    const account = renderToStaticMarkup(
+      <UpgradesPanel upgrades={{}} coins={0} mode="account" onPurchase={() => {}} />,
+    );
+    expect(guest).toContain('<section aria-label="Upgrades" class="upgrades-panel" data-mode="guest">');
+    expect(account).toContain('<section aria-label="Upgrades" class="upgrades-panel" data-mode="account">');
+  });
 });

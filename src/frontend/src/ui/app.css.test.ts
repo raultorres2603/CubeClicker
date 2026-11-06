@@ -593,6 +593,19 @@ describe('spaceship customization placement (CSS guard)', () => {
   });
 });
 
+describe('upgrades panel placement (CSS guard)', () => {
+  it('positions .upgrades-panel as an absolutely positioned overlay at bottom-right', () => {
+    const m = css.match(/\.upgrades-panel\s*\{([\s\S]*?)\}/);
+    expect(m).not.toBeNull();
+    const body = m![1];
+    expect(body).toContain('position: absolute;');
+    expect(body).toContain('top: auto;');
+    expect(body).toContain('bottom: calc(1rem + env(safe-area-inset-bottom, 0px));');
+    expect(body).toContain('left: auto;');
+    expect(body).toContain('right: calc(1rem + env(safe-area-inset-right, 0px));');
+  });
+});
+
 describe('stylesheet hygiene', () => {
   it('ends with exactly one trailing newline', () => {
     expect(css.endsWith('\n')).toBe(true);
