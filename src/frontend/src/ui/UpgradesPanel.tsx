@@ -52,7 +52,11 @@ export function UpgradesPanel({
   const guestLocked = mode === 'guest' && !GUESTS_CAN_SPEND;
 
   return (
-    <section aria-label="Upgrades" data-mode={mode}>
+    <section
+      aria-label="Upgrades"
+      className="upgrades-panel"
+      data-mode={mode}
+    >
       <ul>
         {UPGRADE_CATALOG.map((def) => {
           const level = upgradeLevel(upgrades, def.id);
