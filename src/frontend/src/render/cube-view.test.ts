@@ -18,6 +18,8 @@ import {
   CUBE_HALF_SIZE,
   CUBE_SIZE,
   FACE_NORMALS,
+  MATERIAL_CLEARCOAT,
+  MATERIAL_CLEARCOAT_ROUGHNESS,
   MINI_CUBE_THICKNESS,
   MINI_CUBE_TILE_RATIO,
   type CubeView,
@@ -914,5 +916,28 @@ describe('dispose', () => {
 
     expect(meshGeometrySpy).toHaveBeenCalledTimes(1);
     expect(meshMaterialSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('materials (AC-3)', () => {
+  it('pins the clearcoat constants and applies them to every PBR surface', () => {
+    expect(MATERIAL_CLEARCOAT).toBe(0.35);
+    expect(MATERIAL_CLEARCOAT_ROUGHNESS).toBe(0.2);
+
+    const view = createCubeView(STYLE);
+
+    const body = view.body.material as MeshPhysicalMaterial;
+    expect(body).toBeInstanceOf(MeshPhysicalMaterial);
+    expect(body.clearcoat).toBe(MATERIAL_CLEARCOAT);
+    expect(body.clearcoatRoughness).toBe(MATERIAL_CLEARCOAT_ROUGHNESS);
+
+    for (const faceId of FACE_IDS) {
+      const material = tileMaterial(view, faceId);
+      expect(material).toBeInstanceOf(MeshPhysicalMaterial);
+      expect(material.clearcoat).toBe(MATERIAL_CLEARCOAT);
+      expect(material.clearcoatRoughness).toBe(MATERIAL_CLEARCOAT_ROUGHNESS);
+    }
+
+    view.dispose();
   });
 });

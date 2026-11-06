@@ -52,7 +52,7 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -825,7 +825,7 @@ export function createSceneView(options: {
       if (!(object instanceof Mesh)) {
         return;
       }
-      const material = object.material as MeshStandardMaterial;
+      const material = object.material as MeshPhysicalMaterial;
       if (object.name === 'ignition') {
         material.color.set(params.engineColor);
         if (material.emissive !== undefined) {

@@ -9,6 +9,8 @@ import {
 } from '../game/effects';
 import {
   createSpaceship,
+  MATERIAL_CLEARCOAT,
+  MATERIAL_CLEARCOAT_ROUGHNESS,
   spaceshipFollowFactor,
   spaceshipTargetPosition,
 } from './spaceship';
@@ -401,6 +403,24 @@ describe('createSpaceship appearance', () => {
     const ship = createSpaceship({ engine: 'engine-blue' });
     const ignition = findMesh(ship, (mesh) => mesh.name === 'ignition');
     expect((ignition.material as MeshPhysicalMaterial).color.getHexString()).toBe('4488ff');
+    ship.dispose();
+  });
+});
+
+describe('materials (AC-3)', () => {
+  it('pins the clearcoat constants and applies them to every PBR surface', () => {
+    expect(MATERIAL_CLEARCOAT).toBe(0.35);
+    expect(MATERIAL_CLEARCOAT_ROUGHNESS).toBe(0.2);
+
+    const ship = createSpaceship();
+    ship.group.traverse((object) => {
+      if (object instanceof Mesh) {
+        const material = object.material as MeshPhysicalMaterial;
+        expect(material).toBeInstanceOf(MeshPhysicalMaterial);
+        expect(material.clearcoat).toBe(MATERIAL_CLEARCOAT);
+        expect(material.clearcoatRoughness).toBe(MATERIAL_CLEARCOAT_ROUGHNESS);
+      }
+    });
     ship.dispose();
   });
 });
