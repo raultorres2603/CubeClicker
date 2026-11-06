@@ -37,6 +37,10 @@ import {
   createSceneView,
   CUBE_SPACING,
   introCameraPose,
+  KEY_SHADOW_BIAS,
+  KEY_SHADOW_MAP_SIZE,
+  KEY_SHADOW_NORMAL_BIAS,
+  KEY_SHADOW_RADIUS,
   snapToQuarterTurns,
   TRAVEL_DIRECTION_OFFSETS,
   travelCameraPose,
@@ -484,10 +488,13 @@ describe('scene composition', () => {
     );
     expect((view.scene.children[1] as DirectionalLight).intensity).toBe(1.2);
     expect((view.scene.children[1] as DirectionalLight).position.toArray()).toEqual([6, 8, 10]);
-    // AC-4: key light casts shadows with a 1024×1024 shadow map.
+    // AC-2: key light casts shadows with the pinned shadow quality.
     expect((view.scene.children[1] as DirectionalLight).castShadow).toBe(true);
-    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.width).toBe(1024);
-    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.height).toBe(1024);
+    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.width).toBe(KEY_SHADOW_MAP_SIZE);
+    expect((view.scene.children[1] as DirectionalLight).shadow.mapSize.height).toBe(KEY_SHADOW_MAP_SIZE);
+    expect((view.scene.children[1] as DirectionalLight).shadow.bias).toBe(KEY_SHADOW_BIAS);
+    expect((view.scene.children[1] as DirectionalLight).shadow.normalBias).toBe(KEY_SHADOW_NORMAL_BIAS);
+    expect((view.scene.children[1] as DirectionalLight).shadow.radius).toBe(KEY_SHADOW_RADIUS);
 
     // Exactly one starfield `Points` with exactly STAR_COUNT (1200) stars.
     expect(starfieldPoints(view)).toBeInstanceOf(Points);
@@ -2441,5 +2448,23 @@ describe('background life scene integration (AC-9, AC-10)', () => {
     const motionBefore = motionStar.position.x;
     viewMotion.update(100);
     expect(motionStar.position.x).not.toBe(motionBefore);
+  });
+});
+
+describe('shadow quality constants (AC-2)', () => {
+  it('pins KEY_SHADOW_MAP_SIZE', () => {
+    expect(KEY_SHADOW_MAP_SIZE).toBe(2048);
+  });
+
+  it('pins KEY_SHADOW_BIAS', () => {
+    expect(KEY_SHADOW_BIAS).toBe(-0.0001);
+  });
+
+  it('pins KEY_SHADOW_NORMAL_BIAS', () => {
+    expect(KEY_SHADOW_NORMAL_BIAS).toBe(0.02);
+  });
+
+  it('pins KEY_SHADOW_RADIUS', () => {
+    expect(KEY_SHADOW_RADIUS).toBe(2);
   });
 });

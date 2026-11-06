@@ -100,6 +100,17 @@ export const AMBIENT_INTENSITY_MAX = 1.0;
 /** Key-light intensity. */
 const KEY_INTENSITY = 1.2;
 
+/** Key-light shadow map size (width and height) — AC-2. */
+export const KEY_SHADOW_MAP_SIZE = 2048;
+
+/** Key-light shadow bias — AC-2. */
+export const KEY_SHADOW_BIAS = -0.0001;
+
+/** Key-light shadow normal bias — AC-2. */
+export const KEY_SHADOW_NORMAL_BIAS = 0.02;
+
+/** Key-light shadow radius (PCF softness) — AC-2. */
+export const KEY_SHADOW_RADIUS = 2;
 /** Key-light position: front-top-right of the cube. */
 const KEY_LIGHT_POSITION = { x: 6, y: 8, z: 10 };
 
@@ -384,7 +395,10 @@ export function createSceneView(options: {
   const keyLight = new DirectionalLight(0xffffff, KEY_INTENSITY);
   keyLight.position.set(KEY_LIGHT_POSITION.x, KEY_LIGHT_POSITION.y, KEY_LIGHT_POSITION.z);
   keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(1024, 1024);
+  keyLight.shadow.mapSize.set(KEY_SHADOW_MAP_SIZE, KEY_SHADOW_MAP_SIZE);
+  keyLight.shadow.bias = KEY_SHADOW_BIAS;
+  keyLight.shadow.normalBias = KEY_SHADOW_NORMAL_BIAS;
+  keyLight.shadow.radius = KEY_SHADOW_RADIUS;
   /** The own cube's world position on the flat plane (z = 0). */
   const cubePosition = new Vector3(
     options.ownPosition?.x ?? 0,
