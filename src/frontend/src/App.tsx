@@ -475,6 +475,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
       {welcomed ? (
         <button
           type="button"
+          className="customization-toggle"
           aria-expanded={customizationOpen}
           onClick={() => setCustomizationOpen((value) => !value)}
         >
