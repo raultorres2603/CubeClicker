@@ -10,6 +10,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** An optional, persistent player identity created by registering a username, email and password. An account is activated only after email verification, and its username is also its display name. Accounts are additive: a player may always choose guest play instead, and no account is ever required to play. Account identity is resolved server-side from the session cookie; the client never supplies an account id or verified flag.
 **Example:** A returning player logs in with username and password to resume the same account identity across sessions.
 
+### appearance
+
+**Definition:** The equipped look of a player's spaceship, expressed as a map from part category (nose, body, wings, cockpit, engine) to a part id. It is persisted per **account** in the `user_economy.appearance` column and broadcast to that account's joined connections; **guests** keep an ephemeral copy for the session. Changing appearance updates the live 3D preview and the in-game spaceship cursor.
+**Example:** Equipping a crimson nose sets the `nose` category to `nose-crimson`, recoloring the ship's nose.
+
 ### click
 
 **Definition:** The player's primary action on the cube, and also the discrete event that action produces; each click earns points. This is the canonical word for the action, preferred over informal synonyms.
@@ -55,6 +60,16 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** Progress that accrues while the game is open and the player is present but not clicking; it is distinct from offline progress. Earning mechanics for this accrual remain to be defined by a future feature.
 **Example:** Idle progress keeps earning points while the game is open and you stop clicking.
 
+### key
+
+**Definition:** A resource required to open a **lootbox**. Earned alongside a lootbox when a **cube** is completed (one key per completed cube). Keys are persisted per **account** in the `user_economy.keys` column; **guests** earn them for the session only. Spending a key together with a lootbox grants a random **part**.
+**Example:** Completing a cube awards `+1` key; opening a lootbox consumes `1` key.
+
+### lootbox
+
+**Definition:** A closed container earned by completing (destroying) a **cube**. A lootbox requires a **key** to open; opening grants a random **part** (a cosmetic spaceship component). Lootboxes are persisted per **account** in the `user_economy.lootboxes` column; **guests** earn them for the session only.
+**Example:** Completing a cube awards `+1` lootbox.
+
 ### mini-cube
 
 **Definition:** A single clickable tile of a **face**: one of the N² cells of that face's N×N grid (N is the cube level's random grid size, 3 to 7), identified as `face:row:col` with 0-based rows and columns (for example `front:0:0`). The tiles sit with a thin uniform seam between them — the dark interior shows through as the tile lines — so the cube's surface reads as one giant cube built from mini-cubes; destroying a mini-cube removes it from its face for good and exposes the dark interior behind it. It is the unit of destruction for the cube.
@@ -64,6 +79,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** Progress credited for the time the player was away with the game not running, delivered on return; it is distinct from idle progress. This is the concept behind the idle-friendly principle.
 **Example:** When you return after a break, offline progress grants the points you would have earned.
+
+### part
+
+**Definition:** A cosmetic spaceship component belonging to one of five categories (nose, body, wings, cockpit, engine). Parts are granted by opening **lootboxes** and can be equipped in the spaceship customization menu to change the ship's colors. Owned part counts are persisted per **account** in the `user_economy.parts` column.
+**Example:** `nose-crimson` is a nose part that recolors the ship's nose.
 
 ### points
 

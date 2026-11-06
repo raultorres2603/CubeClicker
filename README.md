@@ -2,6 +2,10 @@
 
 A web-based, online, real-time, multi-client clicker game — connected clients see each other's live activity.
 
+## Gameplay
+
+Players earn points by clicking the cube and progress through cube levels. Completing a cube grants a **lootbox** and a **key**; opening a lootbox with a key yields a random spaceship **part**. The **Spaceship Customization** menu (appearance editor) shows a live 3D preview and lets players equip owned parts; the in-game spaceship cursor reflects the equipped appearance. Appearance and inventory are persisted per **account**; **guests** keep an ephemeral copy for the session. (Feature: `spaceship-customization`, see `docs/features/spaceship-customization/`.)
+
 ## Prerequisites
 
 - **Running the environment:** Podman with a working compose provider (`podman compose`). No other host prerequisites.
