@@ -16,7 +16,7 @@ import {
   Group,
   Mesh,
   MeshBasicMaterial,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   SphereGeometry,
   Vector3,
 } from 'three';
@@ -33,6 +33,12 @@ import {
   SPACESHIP_SCALE,
 } from '../game/effects';
 import { appearanceToSpaceshipParams, type SpaceshipVisualParams } from '../game/parts';
+
+/** Clearcoat amount for the spaceship's PBR surfaces (AC-3). */
+export const MATERIAL_CLEARCOAT = 0.35;
+
+/** Clearcoat roughness for the spaceship's PBR surfaces (AC-3). */
+export const MATERIAL_CLEARCOAT_ROUGHNESS = 0.2;
 
 /** One in-flight shot: a small sphere travelling linearly from `start` to `target`. */
 export interface Shot {
@@ -159,20 +165,38 @@ export function createSpaceship(
 
   const nose = new Mesh(
     new ConeGeometry(0.2, 0.8, 8),
-    new MeshStandardMaterial({ color: params.noseColor, metalness: 0.5, roughness: 0.5 }),
+    new MeshPhysicalMaterial({
+      color: params.noseColor,
+      metalness: 0.5,
+      roughness: 0.5,
+      clearcoat: MATERIAL_CLEARCOAT,
+      clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
+    }),
   );
   nose.position.set(0, 0, 0.4);
   nose.rotation.x = Math.PI / 2;
 
   const body = new Mesh(
     new CylinderGeometry(0.25, 0.25, 0.9, 8),
-    new MeshStandardMaterial({ color: params.bodyColor, metalness: 0.5, roughness: 0.5 }),
+    new MeshPhysicalMaterial({
+      color: params.bodyColor,
+      metalness: 0.5,
+      roughness: 0.5,
+      clearcoat: MATERIAL_CLEARCOAT,
+      clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
+    }),
   );
   body.rotation.x = Math.PI / 2;
 
   const cockpit = new Mesh(
     new SphereGeometry(0.15, 8, 8),
-    new MeshStandardMaterial({ color: params.cockpitColor, metalness: 0.5, roughness: 0.5 }),
+    new MeshPhysicalMaterial({
+      color: params.cockpitColor,
+      metalness: 0.5,
+      roughness: 0.5,
+      clearcoat: MATERIAL_CLEARCOAT,
+      clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
+    }),
   );
   cockpit.position.set(0, 0.15, 0.1);
 
@@ -180,7 +204,13 @@ export function createSpaceship(
   for (let i = 0; i < 2; i += 1) {
     const wing = new Mesh(
       new BoxGeometry(0.6, 0.05, 0.3),
-      new MeshStandardMaterial({ color: params.wingColor, metalness: 0.5, roughness: 0.5 }),
+      new MeshPhysicalMaterial({
+        color: params.wingColor,
+        metalness: 0.5,
+        roughness: 0.5,
+        clearcoat: MATERIAL_CLEARCOAT,
+        clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
+      }),
     );
     wing.name = 'wing';
     const side = i === 0 ? 1 : -1;
@@ -195,13 +225,15 @@ export function createSpaceship(
   for (let i = 0; i < SPACESHIP_IGNITION_COUNT; i += 1) {
     const ignition = new Mesh(
       new ConeGeometry(0.12, 0.35, 8),
-      new MeshStandardMaterial({
+      new MeshPhysicalMaterial({
         color: params.engineColor,
         transparent: true,
         opacity: 0.5,
         emissive: params.engineColor,
         metalness: 0.5,
         roughness: 0.5,
+        clearcoat: MATERIAL_CLEARCOAT,
+        clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
       }),
     );
     ignition.name = 'ignition';
@@ -289,7 +321,7 @@ export function createSpaceship(
       flame.visible = true;
       const s = Math.abs(Math.sin((ignitionTimeMs / SPACESHIP_IGNITION_FLICKER_PERIOD_MS) * 2 * Math.PI));
       flame.scale.z = 0.6 + 0.4 * s;
-      const material = flame.material as MeshStandardMaterial;
+      const material = flame.material as MeshPhysicalMaterial;
       material.opacity = 0.5 + 0.5 * s;
     }
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
+import { Mesh, MeshPhysicalMaterial, PerspectiveCamera, Vector3 } from 'three';
 
 import {
   SHOT_TRAVEL_MS,
@@ -97,12 +97,12 @@ describe('createSpaceship', () => {
     ship.dispose();
   });
 
-  it('all meshes under group use MeshStandardMaterial with metalness >= 0.4 and roughness <= 0.6', () => {
+  it('all meshes under group use MeshPhysicalMaterial with metalness >= 0.4 and roughness <= 0.6', () => {
     const ship = createSpaceship();
     ship.group.traverse((o) => {
       if (o instanceof Mesh) {
-        expect(o.material).toBeInstanceOf(MeshStandardMaterial);
-        const material = o.material as MeshStandardMaterial;
+        expect(o.material).toBeInstanceOf(MeshPhysicalMaterial);
+        const material = o.material as MeshPhysicalMaterial;
         expect(material.metalness).toBeGreaterThanOrEqual(0.4);
         expect(material.roughness).toBeLessThanOrEqual(0.6);
       }
@@ -115,7 +115,7 @@ describe('createSpaceship', () => {
     let found = false;
     ship.group.traverse((o) => {
       if (o instanceof Mesh) {
-        const material = o.material as MeshStandardMaterial;
+        const material = o.material as MeshPhysicalMaterial;
         if (
           material.emissive &&
           (material.emissive.r > 0 || material.emissive.g > 0 || material.emissive.b > 0)
@@ -379,28 +379,28 @@ describe('createSpaceship appearance', () => {
   it('defaults the nose mesh to the default nose color', () => {
     const ship = createSpaceship();
     const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
-    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('88aaff');
+    expect((nose.material as MeshPhysicalMaterial).color.getHexString()).toBe('88aaff');
     ship.dispose();
   });
 
   it('applies a nose part color from an appearance record', () => {
     const ship = createSpaceship({ nose: 'nose-crimson' });
     const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
-    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('cc4444');
+    expect((nose.material as MeshPhysicalMaterial).color.getHexString()).toBe('cc4444');
     ship.dispose();
   });
 
   it('applies direct color params', () => {
     const ship = createSpaceship({ noseColor: '#00ff00' });
     const nose = findMesh(ship, (mesh) => mesh.geometry.type === 'ConeGeometry' && mesh.name !== 'ignition');
-    expect((nose.material as MeshStandardMaterial).color.getHexString()).toBe('00ff00');
+    expect((nose.material as MeshPhysicalMaterial).color.getHexString()).toBe('00ff00');
     ship.dispose();
   });
 
   it('applies engine color to ignition meshes', () => {
     const ship = createSpaceship({ engine: 'engine-blue' });
     const ignition = findMesh(ship, (mesh) => mesh.name === 'ignition');
-    expect((ignition.material as MeshStandardMaterial).color.getHexString()).toBe('4488ff');
+    expect((ignition.material as MeshPhysicalMaterial).color.getHexString()).toBe('4488ff');
     ship.dispose();
   });
 });

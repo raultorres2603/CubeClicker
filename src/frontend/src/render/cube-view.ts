@@ -35,7 +35,7 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   Vector3,
   type BufferGeometry,
   type Material,
@@ -68,6 +68,12 @@ export const MINI_CUBE_THICKNESS = 0.25;
  * (`1 − MINI_CUBE_TILE_RATIO`), never a second constant.
  */
 export const MINI_CUBE_TILE_RATIO = 0.95;
+
+/** Clearcoat amount for the cube's PBR surfaces (AC-3). */
+export const MATERIAL_CLEARCOAT = 0.35;
+
+/** Clearcoat roughness for the cube's PBR surfaces (AC-3). */
+export const MATERIAL_CLEARCOAT_ROUGHNESS = 0.2;
 
 /** The view handed to the scene: meshes plus the intent/time entry points. */
 export interface CubeView {
@@ -156,7 +162,7 @@ interface FaceRecord {
   /** Instance centre per index (`row * gridSize + col`), in group space. */
   readonly positions: Vector3[];
   readonly mesh: InstancedMesh;
-  readonly tileMaterial: MeshStandardMaterial;
+  readonly tileMaterial: MeshPhysicalMaterial;
 }
 
 /** One running pop: which instance of which face, and how far along the timeline it is. */
@@ -224,10 +230,12 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
   const instanceCount = gridSize * gridSize;
 
   const group = new Group();
-  const bodyMaterial = new MeshStandardMaterial({
+  const bodyMaterial = new MeshPhysicalMaterial({
     color: style.cubeColor,
     metalness: style.metalness,
     roughness: style.roughness,
+    clearcoat: MATERIAL_CLEARCOAT,
+    clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
   });
   const body = new Mesh(new BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE), bodyMaterial);
   body.castShadow = true;
@@ -250,10 +258,12 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
 
     // One geometry per face (rather than one shared tile geometry) so a face removal
     // can dispose its own resources without touching the surviving faces.
-    const tileMaterial = new MeshStandardMaterial({
+    const tileMaterial = new MeshPhysicalMaterial({
       color: style.miniCubeColor,
       metalness: style.metalness,
       roughness: style.roughness,
+      clearcoat: MATERIAL_CLEARCOAT,
+      clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
     });
     const mesh = new InstancedMesh(new BoxGeometry(1, 1, 1), tileMaterial, instanceCount);
     mesh.castShadow = true;

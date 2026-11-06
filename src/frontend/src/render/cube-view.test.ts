@@ -5,7 +5,7 @@ import {
   InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   Vector3,
   type Material,
 } from 'three';
@@ -192,8 +192,8 @@ function faceMesh(view: CubeView, faceId: FaceId): InstancedMesh {
   return mesh;
 }
 
-function tileMaterial(view: CubeView, faceId: FaceId): MeshStandardMaterial {
-  return faceMesh(view, faceId).material as MeshStandardMaterial;
+function tileMaterial(view: CubeView, faceId: FaceId): MeshPhysicalMaterial {
+  return faceMesh(view, faceId).material as MeshPhysicalMaterial;
 }
 
 /** The component of a position along one face axis. */
@@ -312,7 +312,7 @@ describe('createCubeView', () => {
 
   it('takes the pinned colours and PBR values from the style (body = dark interior)', () => {
     const view = createCubeView(CUBE_STYLES[0]!);
-    const body = view.body.material as MeshStandardMaterial;
+    const body = view.body.material as MeshPhysicalMaterial;
 
     expect(STYLE.id).toBe('obsidian-neon');
     expect(body.color.getHexString()).toBe(STYLE.cubeColor.replace('#', ''));
@@ -817,7 +817,7 @@ describe('applyStyle', () => {
   it('re-colours the body and the live tiles in place without touching instance colours', () => {
     const view = createCubeView(CUBE_STYLES[0]!);
     const mesh = faceMesh(view, 'front');
-    const body = view.body.material as MeshStandardMaterial;
+    const body = view.body.material as MeshPhysicalMaterial;
 
     view.hideMiniCube('front:0:0');
     view.update(100);
@@ -853,7 +853,7 @@ describe('applyStyle', () => {
     expect(frontMaterial.color.getHexString()).toBe('1de9b6');
     expect(frontMaterial.metalness).toBe(0.6);
     expect(tileMaterial(view, 'back').color.getHexString()).toBe('ff4d6d');
-    expect((view.body.material as MeshStandardMaterial).color.getHexString()).toBe('1a0b0e');
+    expect((view.body.material as MeshPhysicalMaterial).color.getHexString()).toBe('1a0b0e');
   });
 });
 
