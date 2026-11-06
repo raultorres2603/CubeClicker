@@ -12,24 +12,47 @@
  * adapter only forwards the values it is handed.
  */
 
-import { WebGLRenderer, type PerspectiveCamera, type Scene } from 'three';
+import {
+  ACESFilmicToneMapping,
+  PCFSoftShadowMap,
+  SRGBColorSpace,
+  WebGLRenderer,
+  type PerspectiveCamera,
+  type Scene,
+} from 'three';
+
+import { createPostprocessing } from './postprocessing';
+import type { Postprocessing } from './postprocessing';
 
 import type { CanvasLike, FrameScheduler, RendererAdapter } from '../game/session';
 
-/**
- * Creates the WebGL renderer for `canvas` behind {@link RendererAdapter}.
- *
- * The constructor arguments are pinned by the plan: the host canvas plus `antialias`.
- */
-export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
-  // The session's `CanvasLike` is structurally the canvas element (plan § session
-  // contract keeps the surface minimal so tests can fake it); three.js needs the DOM
-  // element type for its own parameters object.
+/** Pinned renderer tone-mapping exposure (AC-1). */
+export const TONE_MAPPING_EXPOSURE = 1.0;
+
+/** Configures the base renderer's tone mapping, color space and soft-shadow type (AC-1). */
+function configureBaseRenderer(renderer: WebGLRenderer): void {
+  renderer.toneMapping = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE;
+  renderer.outputColorSpace = SRGBColorSpace;
+  renderer.shadowMap.type = PCFSoftShadowMap;
+  renderer.shadowMap.enabled = true;
+}
+
+/** Constructs and configures the base WebGL renderer for `canvas`. */
+function buildBaseRenderer(canvas: CanvasLike): WebGLRenderer {
   const renderer = new WebGLRenderer({
     canvas: canvas as unknown as HTMLCanvasElement,
     antialias: true,
   });
-  renderer.shadowMap.enabled = true;
+  configureBaseRenderer(renderer);
+  return renderer;
+}
+
+/**
+ * Creates the WebGL renderer for `canvas` behind {@link RendererAdapter}.
+ */
+export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
+  const renderer = buildBaseRenderer(canvas);
 
   return {
     setSize(width: number, height: number): void {
@@ -43,6 +66,63 @@ export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
     },
     dispose(): void {
       renderer.dispose();
+    },
+  };
+}
+
+/**
+ * Builds a renderer whose post-processing composer is constructed lazily on the first
+ * `render(scene, camera)` call (AC-6).
+ */
+export function createRealisticRenderer(canvas: CanvasLike): RendererAdapter {
+  const renderer = buildBaseRenderer(canvas);
+
+  let composer: Postprocessing | null = null;
+  let bufferedWidth: number | null = null;
+  let bufferedHeight: number | null = null;
+  let bufferedPixelRatio: number | null = null;
+  let disposed = false;
+
+  return {
+    setSize(width: number, height: number): void {
+      renderer.setSize(width, height);
+      if (composer !== null) {
+        composer.setSize(width, height);
+      } else {
+        bufferedWidth = width;
+        bufferedHeight = height;
+      }
+    },
+    setPixelRatio(ratio: number): void {
+      renderer.setPixelRatio(ratio);
+      if (composer !== null) {
+        composer.setPixelRatio(ratio);
+      } else {
+        bufferedPixelRatio = ratio;
+      }
+    },
+    render(scene: Scene, camera: PerspectiveCamera): void {
+      if (disposed) {
+        return;
+      }
+      if (composer === null) {
+        composer = createPostprocessing(renderer, scene, camera);
+        if (bufferedWidth !== null && bufferedHeight !== null) {
+          composer.setSize(bufferedWidth, bufferedHeight);
+        }
+        if (bufferedPixelRatio !== null) {
+          composer.setPixelRatio(bufferedPixelRatio);
+        }
+      }
+      composer.render();
+    },
+    dispose(): void {
+      if (composer !== null) {
+        composer.dispose();
+        composer = null;
+      }
+      renderer.dispose();
+      disposed = true;
     },
   };
 }

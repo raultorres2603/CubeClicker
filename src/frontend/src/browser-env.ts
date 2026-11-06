@@ -24,7 +24,7 @@ import type {
   SessionEnvironment,
   VisibilitySource,
 } from './game/session';
-import { createRafScheduler, createWebGLRenderer } from './render/webgl';
+import { createRafScheduler, createRealisticRenderer } from './render/webgl';
 
 /** The pinned reduced-motion query (AC-12). */
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
@@ -80,7 +80,7 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     visibility,
     resize,
     orientation,
-    rendererFactory: createWebGLRenderer,
+    rendererFactory: createRealisticRenderer,
     now: () => performance.now(),
     random: () => Math.random(),
     devicePixelRatio: () => window.devicePixelRatio,

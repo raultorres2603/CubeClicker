@@ -13,12 +13,12 @@ import { browserEnvironment } from './browser-env';
  */
 
 const webgl = vi.hoisted(() => ({
-  createWebGLRenderer: vi.fn(),
+  createRealisticRenderer: vi.fn(),
   createRafScheduler: vi.fn(),
 }));
 
 vi.mock('./render/webgl', () => ({
-  createWebGLRenderer: webgl.createWebGLRenderer,
+  createRealisticRenderer: webgl.createRealisticRenderer,
   createRafScheduler: webgl.createRafScheduler,
 }));
 
@@ -138,7 +138,7 @@ const canvas: CanvasLike = {
 };
 
 beforeEach(() => {
-  webgl.createWebGLRenderer.mockReset();
+  webgl.createRealisticRenderer.mockReset();
   webgl.createRafScheduler.mockReset();
   const scheduler: FrameScheduler = {
     schedule: () => 1,
@@ -199,12 +199,12 @@ describe('browserEnvironment', () => {
     expect(webgl.createRafScheduler).toHaveBeenCalledWith();
     expect(host.fakeWindow.query.media).toBe('(prefers-reduced-motion: reduce)');
     // The renderer factory is the WebGL bootstrap, not an eager renderer.
-    expect(env.rendererFactory).toBe(webgl.createWebGLRenderer);
-    expect(webgl.createWebGLRenderer).not.toHaveBeenCalled();
+    expect(env.rendererFactory).toBe(webgl.createRealisticRenderer);
+    expect(webgl.createRealisticRenderer).not.toHaveBeenCalled();
 
     env.rendererFactory(canvas);
-    expect(webgl.createWebGLRenderer).toHaveBeenCalledTimes(1);
-    expect(webgl.createWebGLRenderer).toHaveBeenCalledWith(canvas);
+    expect(webgl.createRealisticRenderer).toHaveBeenCalledTimes(1);
+    expect(webgl.createRealisticRenderer).toHaveBeenCalledWith(canvas);
   });
 
   it('reads the globals at call time, not at module load', () => {
