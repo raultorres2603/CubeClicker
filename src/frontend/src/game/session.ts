@@ -93,7 +93,7 @@ import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } fr
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
-import type { Board, CubeStyle, CustomizationState, MiniCubeId } from './types';
+import type { Board, CubeStyle, MiniCubeId } from './types';
 
 /** The drawing surface the session listens on and sizes. */
 export interface CanvasLike {
@@ -529,7 +529,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
       engine.adoptUpgrades(message.upgrades);
     }
-    const welcomeCustomization = (message as { customization?: CustomizationState }).customization;
+    const welcomeCustomization = message.customization;
     if (welcomeCustomization !== undefined && engine.adoptCustomization !== undefined) {
       engine.adoptCustomization(welcomeCustomization);
     }
@@ -591,7 +591,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
       engine.adoptUpgrades(message.upgrades);
     }
-    const worldEnteredCustomization = (message as { customization?: CustomizationState }).customization;
+    const worldEnteredCustomization = message.customization;
     if (worldEnteredCustomization !== undefined && engine.adoptCustomization !== undefined) {
       engine.adoptCustomization(worldEnteredCustomization);
     }
