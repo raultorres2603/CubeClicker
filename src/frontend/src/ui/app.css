@@ -808,3 +808,12 @@ main > section[data-blinking="true"] {
   bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
   left: calc(1rem + env(safe-area-inset-left, 0px));
 }
+
+/* Upgrades panel placement (bottom-right). */
+.upgrades-panel {
+  position: absolute;
+  top: auto;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  left: auto;
+  right: calc(1rem + env(safe-area-inset-right, 0px));
+}
