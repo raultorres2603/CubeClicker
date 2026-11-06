@@ -40,5 +40,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | spaceship-customization-layout-fix | Spaceship Customization Layout Fix (move customization menu to bottom-left) | accepted | 2026-11-06 |
 | upgrades-panel-bottom-right | Upgrades Panel Bottom Right (position upgrades panel bottom-right) | accepted | 2026-11-06 |
 | upgrades-buy-icon | Upgrades Buy Icon (replace Buy text with icon) | accepted | 2026-11-06 |
+| realistic-lighting-materials | Realistic Lighting & Materials (ACES tone mapping, soft PCF shadows, PBR materials with clearcoat, SSAO + bloom post-processing) | accepted | 2026-11-06 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
