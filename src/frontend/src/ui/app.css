@@ -817,3 +817,8 @@ main > section[data-blinking="true"] {
   left: auto;
   right: calc(1rem + env(safe-area-inset-right, 0px));
 }
+
+/* Upgrades panel buy icon (upgrades-buy-icon): override inherited '▾' glyph. */
+.upgrades-panel button::before {
+  content: '+';
+}

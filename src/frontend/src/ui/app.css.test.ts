@@ -606,6 +606,20 @@ describe('upgrades panel placement (CSS guard)', () => {
   });
 });
 
+describe('upgrades panel buy icon (CSS guard, upgrades-buy-icon)', () => {
+  it('defines a .upgrades-panel button::before rule with a content: declaration', () => {
+    const m = css.match(/\.upgrades-panel button::before\s*\{([\s\S]*?)\}/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toMatch(/content:/);
+  });
+
+  it('overrides the inherited glyph with content: \'+\'', () => {
+    const m = css.match(/\.upgrades-panel button::before\s*\{([\s\S]*?)\}/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toContain("content: '+';");
+  });
+});
+
 describe('stylesheet hygiene', () => {
   it('ends with exactly one trailing newline', () => {
     expect(css.endsWith('\n')).toBe(true);
