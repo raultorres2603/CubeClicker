@@ -141,6 +141,8 @@ function sessionFor(
     retryConnection: () => {},
     join: () => {},
     purchaseUpgrade: () => {},
+    openLootbox: () => {},
+    equipPart: () => {},
     setPointerTarget: () => {},
     ...overrides,
   };
@@ -181,6 +183,8 @@ function mutableSession(
     retryConnection: () => {},
     join: () => {},
     purchaseUpgrade: () => {},
+    openLootbox: () => {},
+    equipPart: () => {},
     setPointerTarget: () => {},
   };
   return {
@@ -250,6 +254,7 @@ function shellHtml({
     (welcomed
       ? '<section aria-label="Upgrades" data-mode="guest"><ul><li data-upgrade="mini_cube_value"><span data-name="true">Click Power</span><span data-level="true">0/10</span><span data-effect="true">+10% coins per mini-cube</span><span data-cost="true">10</span><button type="button" disabled="">Buy</button></li><li data-upgrade="cube_value"><span data-name="true">Cube Bonus</span><span data-level="true">0/10</span><span data-effect="true">+10% coins per cube</span><span data-cost="true">50</span><button type="button" disabled="">Buy</button></li><li data-upgrade="speed_window"><span data-name="true">Quick Hands</span><span data-level="true">0/5</span><span data-effect="true">+2s speed-bonus window</span><span data-cost="true">25</span><button type="button" disabled="">Buy</button></li></ul></section>'
       : '') +
+    (welcomed ? '<button type="button" aria-expanded="false">Spaceship customization</button>' : '') +
     `<div class="phase-announcement" role="status" aria-live="polite">${regionText}</div>` +
     '</main>'
   );

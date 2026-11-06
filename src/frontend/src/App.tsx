@@ -12,6 +12,7 @@ import { ConnectionBanner } from './ui/ConnectionBanner';
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud } from './ui/Hud';
 import { UpgradesPanel } from './ui/UpgradesPanel';
+import { SpaceshipCustomizationPanel } from './ui/SpaceshipCustomizationPanel';
 import { UserPanel } from './ui/UserPanel';
 import { AuthMenu } from './ui/AuthMenu';
 import { VerificationPending } from './ui/VerificationPending';
@@ -374,6 +375,16 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
 
   const [hudMinimized, setHudMinimized] = useState(false);
 
+  const [customizationOpen, setCustomizationOpen] = useState(() => {
+    const r = rest as Record<string, unknown>;
+    return (
+      r.customizationOpen === true ||
+      r.showCustomization === true ||
+      r.customizeOpen === true ||
+      r.defaultCustomizationOpen === true
+    );
+  });
+
   const [hudBlinking, setHudBlinking] = useState(false);
   const prevClicksRef = useRef<number | null>(null);
   const blinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -459,6 +470,23 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
           coins={snapshot.stats.coins ?? 0}
           mode={mode}
           onPurchase={session.purchaseUpgrade}
+        />
+      ) : null}
+      {welcomed ? (
+        <button
+          type="button"
+          aria-expanded={customizationOpen}
+          onClick={() => setCustomizationOpen((value) => !value)}
+        >
+          Spaceship customization
+        </button>
+      ) : null}
+      {welcomed && customizationOpen ? (
+        <SpaceshipCustomizationPanel
+          customization={snapshot.customization ?? { lootboxes: 0, keys: 0, parts: {}, appearance: {} }}
+          mode={mode}
+          onOpenLootbox={session.openLootbox}
+          onEquip={session.equipPart}
         />
       ) : null}
       {gateState.view === 'menu' ? (
