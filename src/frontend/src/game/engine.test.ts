@@ -2173,6 +2173,36 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     });
   });
 
+  it('grants a defensive copy of parts/appearance on cube completion', () => {
+    const engine = createEngine({ gridSize: 1, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'body-gold': 1 },
+      appearance: { body: 'body-gold' },
+    });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    const before = engine.getSnapshot();
+    const beforeParts = before.customization.parts;
+    const beforeAppearance = before.customization.appearance;
+
+    for (const faceId of FACE_IDS) {
+      engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:0:0` });
+    }
+
+    const after = engine.getSnapshot();
+    // Mutating the granted snapshot's maps must not touch the prior snapshot's maps.
+    after.customization.parts['extra'] = 99;
+    after.customization.appearance['extra'] = 'x';
+
+    expect(before.customization.parts).toEqual({ 'body-gold': 1 });
+    expect(before.customization.appearance).toEqual({ body: 'body-gold' });
+    expect(beforeParts).not.toBe(after.customization.parts);
+    expect(beforeAppearance).not.toBe(after.customization.appearance);
+  });
+
   it('openLootbox decrements counts and adds a random part (guest)', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
     engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });

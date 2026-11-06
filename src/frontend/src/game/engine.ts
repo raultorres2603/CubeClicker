@@ -688,8 +688,8 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       customization = {
         lootboxes: customization.lootboxes + 1,
         keys: customization.keys + 1,
-        parts: customization.parts,
-        appearance: customization.appearance,
+        parts: { ...customization.parts },
+        appearance: { ...customization.appearance },
       };
     }
     invalidate();
