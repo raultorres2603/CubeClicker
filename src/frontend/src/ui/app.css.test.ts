@@ -572,6 +572,27 @@ describe('responsive fit (CSS guard, AC-11)', () => {
     expect(block).toMatch(/main > section[^{]*\{[\s\S]*?(?:padding:|font-size:)/);
   });
 });
+describe('spaceship customization placement (CSS guard)', () => {
+  it('positions .customization-panel as an absolutely positioned overlay at bottom-left', () => {
+    const m = css.match(/\.customization-panel\s*\{([\s\S]*?)\}/);
+    expect(m).not.toBeNull();
+    const body = m![1];
+    expect(body).toContain('position: absolute;');
+    expect(body).toContain('top: auto;');
+    expect(body).toContain('bottom: calc(4rem + env(safe-area-inset-bottom, 0px));');
+    expect(body).toContain('left: calc(1rem + env(safe-area-inset-left, 0px));');
+  });
+
+  it('positions .customization-toggle as an absolutely positioned overlay at bottom-left', () => {
+    const m = css.match(/\.customization-toggle\s*\{([\s\S]*?)\}/);
+    expect(m).not.toBeNull();
+    const body = m![1];
+    expect(body).toContain('position: absolute;');
+    expect(body).toContain('bottom: calc(1rem + env(safe-area-inset-bottom, 0px));');
+    expect(body).toContain('left: calc(1rem + env(safe-area-inset-left, 0px));');
+  });
+});
+
 describe('stylesheet hygiene', () => {
   it('ends with exactly one trailing newline', () => {
     expect(css.endsWith('\n')).toBe(true);
