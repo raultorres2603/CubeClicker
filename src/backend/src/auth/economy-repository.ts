@@ -1,11 +1,13 @@
 /**
- * Economy repository (coin-economy T2, extended for spending-upgrades T2).
+ * Economy repository (coin-economy T2, extended for spending-upgrades T2,
+ * and spaceship-customization T3).
  *
  * Persists per-user coins and in-game stats (`clicks`, `facesDestroyed`,
- * `cubesDestroyed`) plus upgrade levels (`upgrades` JSONB, migration 003) in
- * the `user_economy` table. Follows the `user-repository.ts` pattern: a
- * `UserDb`-style injected pool, parameterized SQL only, and both an in-memory
- * and a Postgres implementation.
+ * `cubesDestroyed`) plus upgrade levels (`upgrades` JSONB, migration 003) and
+ * spaceship customization (`lootboxes`, `keys`, `parts` JSONB, `appearance`
+ * JSONB, migration 005) in the `user_economy` table. Follows the
+ * `user-repository.ts` pattern: a `UserDb`-style injected pool, parameterized
+ * SQL only, and both an in-memory and a Postgres implementation.
  *
  * `credit` MUST use atomic SQL increments (INSERT ... ON CONFLICT DO UPDATE
  * SET ... = user_economy.<col> + $delta), never read-modify-write, so that
@@ -19,12 +21,20 @@
 
 import { roundCoins } from '../game/economy.js';
 import type { UpgradeId, UpgradeState } from '../game/upgrades.js';
+import type { PartId } from '../game/parts.js';
 
 export interface EconomyState {
   coins: number;
   clicks: number;
   facesDestroyed: number;
   cubesDestroyed: number;
+}
+
+export interface CustomizationState {
+  lootboxes: number;
+  keys: number;
+  parts: Record<string, number>;
+  appearance: Record<string, string>;
 }
 
 export type EconomyDelta = Partial<EconomyState>;
@@ -48,6 +58,23 @@ export interface EconomyRepository {
   ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null>;
   findLastSeenAt(userId: string): Promise<number | null>;
   touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean>;
+  findCustomizationByUserId(userId: string): Promise<CustomizationState>;
+  grantCustomization(
+    userId: string,
+    delta: { lootboxes?: number; keys?: number },
+  ): Promise<CustomizationState>;
+  applyLootboxOpen(
+    userId: string,
+    partId: PartId,
+  ): Promise<
+    | { state: CustomizationState }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  >;
+  setAppearance(
+    userId: string,
+    appearance: Record<string, string>,
+  ): Promise<CustomizationState>;
 }
 
 export interface InMemoryEconomyRepositoryOptions {
@@ -61,10 +88,35 @@ const ZERO: EconomyState = {
   cubesDestroyed: 0,
 };
 
+const ZERO_CUSTOMIZATION: CustomizationState = {
+  lootboxes: 0,
+  keys: 0,
+  parts: {},
+  appearance: {},
+};
+
 interface StoredRow {
   economy: EconomyState;
   upgrades: UpgradeState;
+  customization: CustomizationState;
   lastSeenAt: number | null;
+}
+
+function copyCustomization(state: CustomizationState): CustomizationState {
+  const parts: Record<string, number> = {};
+  for (const key of Object.keys(state.parts)) {
+    parts[key] = state.parts[key] as number;
+  }
+  const appearance: Record<string, string> = {};
+  for (const key of Object.keys(state.appearance)) {
+    appearance[key] = state.appearance[key] as string;
+  }
+  return {
+    lootboxes: state.lootboxes,
+    keys: state.keys,
+    parts,
+    appearance,
+  };
 }
 
 export class InMemoryEconomyRepository implements EconomyRepository {
@@ -90,8 +142,11 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       cubesDestroyed: base.cubesDestroyed + (delta.cubesDestroyed ?? 0),
     };
     const upgrades: UpgradeState = existing ? { ...existing.upgrades } : {};
+    const customization: CustomizationState = existing
+      ? copyCustomization(existing.customization)
+      : { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} };
     const lastSeenAt = existing ? existing.lastSeenAt : null;
-    this.store.set(userId, { economy: next, upgrades, lastSeenAt });
+    this.store.set(userId, { economy: next, upgrades, customization, lastSeenAt });
     return { ...next };
   }
 
@@ -120,7 +175,12 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       coins: roundCoins(economy.coins - cost),
     };
     const nextUpgrades: UpgradeState = { ...row.upgrades, [upgradeId]: currentLevel + 1 };
-    this.store.set(userId, { economy: nextEconomy, upgrades: nextUpgrades, lastSeenAt: row.lastSeenAt });
+    this.store.set(userId, {
+      economy: nextEconomy,
+      upgrades: nextUpgrades,
+      customization: copyCustomization(row.customization),
+      lastSeenAt: row.lastSeenAt,
+    });
     return { economy: { ...nextEconomy }, upgrades: { ...nextUpgrades } };
   }
 
@@ -132,10 +192,16 @@ export class InMemoryEconomyRepository implements EconomyRepository {
   async touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean> {
     const row = this.store.get(userId);
     if (expectedMs === undefined) {
-      const base = row ?? { economy: { ...ZERO }, upgrades: {}, lastSeenAt: null };
+      const base = row ?? {
+        economy: { ...ZERO },
+        upgrades: {},
+        customization: { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} },
+        lastSeenAt: null,
+      };
       this.store.set(userId, {
         economy: { ...base.economy },
         upgrades: { ...base.upgrades },
+        customization: copyCustomization(base.customization),
         lastSeenAt: nowMs,
       });
       return true;
@@ -145,6 +211,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         this.store.set(userId, {
           economy: { ...ZERO },
           upgrades: {},
+          customization: { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} },
           lastSeenAt: nowMs,
         });
         return true;
@@ -155,11 +222,121 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       this.store.set(userId, {
         economy: { ...row.economy },
         upgrades: { ...row.upgrades },
+        customization: copyCustomization(row.customization),
         lastSeenAt: nowMs,
       });
       return true;
     }
     return false;
+  }
+
+  async findCustomizationByUserId(userId: string): Promise<CustomizationState> {
+    const row = this.store.get(userId);
+    return row ? copyCustomization(row.customization) : copyCustomization(ZERO_CUSTOMIZATION);
+  }
+
+  async grantCustomization(
+    userId: string,
+    delta: { lootboxes?: number; keys?: number },
+  ): Promise<CustomizationState> {
+    const existing = this.store.get(userId);
+    const baseCustom = existing
+      ? copyCustomization(existing.customization)
+      : copyCustomization(ZERO_CUSTOMIZATION);
+    const nextCustom: CustomizationState = {
+      lootboxes: baseCustom.lootboxes + (delta.lootboxes ?? 0),
+      keys: baseCustom.keys + (delta.keys ?? 0),
+      parts: { ...baseCustom.parts },
+      appearance: { ...baseCustom.appearance },
+    };
+    if (existing) {
+      this.store.set(userId, {
+        economy: { ...existing.economy },
+        upgrades: { ...existing.upgrades },
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: existing.lastSeenAt,
+      });
+    } else {
+      this.store.set(userId, {
+        economy: { ...ZERO },
+        upgrades: {},
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: null,
+      });
+    }
+    return copyCustomization(nextCustom);
+  }
+
+  async applyLootboxOpen(
+    userId: string,
+    partId: PartId,
+  ): Promise<
+    | { state: CustomizationState }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  > {
+    const existing = this.store.get(userId);
+    const baseCustom = existing
+      ? copyCustomization(existing.customization)
+      : copyCustomization(ZERO_CUSTOMIZATION);
+    if (baseCustom.lootboxes <= 0) return { reason: 'no_lootbox' };
+    if (baseCustom.keys <= 0) return { reason: 'no_key' };
+    const nextParts: Record<string, number> = { ...baseCustom.parts };
+    nextParts[partId] = (nextParts[partId] ?? 0) + 1;
+    const nextCustom: CustomizationState = {
+      lootboxes: baseCustom.lootboxes - 1,
+      keys: baseCustom.keys - 1,
+      parts: nextParts,
+      appearance: { ...baseCustom.appearance },
+    };
+    if (existing) {
+      this.store.set(userId, {
+        economy: { ...existing.economy },
+        upgrades: { ...existing.upgrades },
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: existing.lastSeenAt,
+      });
+    } else {
+      this.store.set(userId, {
+        economy: { ...ZERO },
+        upgrades: {},
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: null,
+      });
+    }
+    return { state: copyCustomization(nextCustom) };
+  }
+
+  async setAppearance(
+    userId: string,
+    appearance: Record<string, string>,
+  ): Promise<CustomizationState> {
+    const existing = this.store.get(userId);
+    const baseCustom = existing
+      ? copyCustomization(existing.customization)
+      : copyCustomization(ZERO_CUSTOMIZATION);
+    const nextCustom: CustomizationState = {
+      lootboxes: baseCustom.lootboxes,
+      keys: baseCustom.keys,
+      parts: { ...baseCustom.parts },
+      appearance: { ...appearance },
+    };
+    if (existing) {
+      this.store.set(userId, {
+        economy: { ...existing.economy },
+        upgrades: { ...existing.upgrades },
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: existing.lastSeenAt,
+      });
+    } else {
+      this.store.set(userId, {
+        economy: { ...ZERO },
+        upgrades: {},
+        customization: copyCustomization(nextCustom),
+        lastSeenAt: null,
+      });
+    }
+    return copyCustomization(nextCustom);
   }
 }
 
@@ -193,6 +370,52 @@ function parseUpgrades(raw: unknown): UpgradeState {
     if (Number.isFinite(n)) out[key] = n;
   }
   return out;
+}
+
+function parseParts(raw: unknown): Record<string, number> {
+  if (raw === null || raw === undefined) return {};
+  let obj: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) out[key] = n;
+  }
+  return out;
+}
+
+function parseAppearance(raw: unknown): Record<string, string> {
+  if (raw === null || raw === undefined) return {};
+  let obj: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
+function rowToCustomization(row: Record<string, unknown>): CustomizationState {
+  return {
+    lootboxes: Number(row.lootboxes ?? 0),
+    keys: Number(row.keys ?? 0),
+    parts: parseParts(row.parts),
+    appearance: parseAppearance(row.appearance),
+  };
 }
 
 function toEpochMsOrNull(value: unknown): number | null {
@@ -330,5 +553,105 @@ export class PgEconomyRepository implements EconomyRepository {
       [userId, nowMs, expectedMs],
     );
     return (result.rows?.length ?? 0) > 0;
+  }
+
+  async findCustomizationByUserId(userId: string): Promise<CustomizationState> {
+    const result = await this.db.query(
+      'SELECT lootboxes, keys, parts, appearance FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    const row = result.rows[0];
+    return row ? rowToCustomization(row) : copyCustomization(ZERO_CUSTOMIZATION);
+  }
+
+  async grantCustomization(
+    userId: string,
+    delta: { lootboxes?: number; keys?: number },
+  ): Promise<CustomizationState> {
+    const lootboxesDelta = delta.lootboxes ?? 0;
+    const keysDelta = delta.keys ?? 0;
+    const result = await this.db.query(
+      `INSERT INTO user_economy (user_id, lootboxes, keys)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET
+         lootboxes = user_economy.lootboxes + EXCLUDED.lootboxes,
+         keys = user_economy.keys + EXCLUDED.keys,
+         updated_at = now()
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, lootboxesDelta, keysDelta],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error('INSERT/UPDATE returned no row');
+    }
+    return rowToCustomization(row);
+  }
+
+  async applyLootboxOpen(
+    userId: string,
+    partId: PartId,
+  ): Promise<
+    | { state: CustomizationState }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  > {
+    const result = await this.db.query(
+      `UPDATE user_economy
+       SET lootboxes = lootboxes - 1,
+           keys = keys - 1,
+           parts = jsonb_set(parts, $2::text[], to_jsonb(COALESCE((parts->>$3)::int, 0) + 1)),
+           updated_at = now()
+       WHERE user_id = $1
+         AND lootboxes >= 1
+         AND keys >= 1
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, [partId], partId],
+    );
+    const row = result.rows[0];
+    if (row) {
+      return { state: rowToCustomization(row) };
+    }
+    // Determine which condition failed.
+    const check = await this.db.query(
+      'SELECT lootboxes, keys FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    const existing = check.rows[0];
+    const lootboxes = existing ? Number(existing.lootboxes ?? 0) : 0;
+    if (lootboxes <= 0) return { reason: 'no_lootbox' };
+    return { reason: 'no_key' };
+  }
+
+  async setAppearance(
+    userId: string,
+    appearance: Record<string, string>,
+  ): Promise<CustomizationState> {
+    const result = await this.db.query(
+      `UPDATE user_economy
+       SET appearance = $2::jsonb,
+           updated_at = now()
+       WHERE user_id = $1
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, appearance],
+    );
+    const row = result.rows[0];
+    if (row) {
+      return rowToCustomization(row);
+    }
+    // No existing row: upsert a zero row carrying the appearance.
+    const inserted = await this.db.query(
+      `INSERT INTO user_economy (user_id, appearance)
+       VALUES ($1, $2::jsonb)
+       ON CONFLICT (user_id) DO UPDATE SET
+         appearance = EXCLUDED.appearance,
+         updated_at = now()
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, appearance],
+    );
+    const insertedRow = inserted.rows[0];
+    if (!insertedRow) {
+      throw new Error('INSERT/UPDATE returned no row');
+    }
+    return rowToCustomization(insertedRow);
   }
 }

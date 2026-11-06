@@ -655,3 +655,156 @@ describe('PgEconomyRepository last-seen', () => {
     await expect(repo.touchLastSeen(FIXED_USER, NOW)).rejects.toBe(err);
   });
 });
+describe('InMemoryEconomyRepository customization', () => {
+  it('findCustomizationByUserId returns default zero state for unknown user', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const found = await repo.findCustomizationByUserId('nope');
+    expect(found).toEqual({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+  });
+
+  it('grantCustomization increments lootboxes and keys', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const result = await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    expect(result).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    const found = await repo.findCustomizationByUserId(FIXED_USER);
+    expect(found).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+  });
+
+  it('applyLootboxOpen success decrements and adds part', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    const result = await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson');
+    expect(result).toEqual({
+      state: { lootboxes: 0, keys: 0, parts: { 'nose-crimson': 1 }, appearance: {} },
+    });
+  });
+
+  it('applyLootboxOpen returns no_lootbox first when both zero', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const result = await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson');
+    expect(result).toEqual({ reason: 'no_lootbox' });
+  });
+
+  it('applyLootboxOpen returns no_key when lootboxes sufficient but no key', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 0 });
+    const result = await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson');
+    expect(result).toEqual({ reason: 'no_key' });
+  });
+
+  it('setAppearance updates appearance', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    const result = await repo.setAppearance(FIXED_USER, { nose: 'nose-crimson' });
+    expect(result).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: { nose: 'nose-crimson' } });
+  });
+
+  it('credit preserves customization', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 1 });
+    await repo.credit(FIXED_USER, { coins: 5 });
+    const found = await repo.findCustomizationByUserId(FIXED_USER);
+    expect(found).toEqual({ lootboxes: 2, keys: 1, parts: {}, appearance: {} });
+  });
+});
+
+describe('PgEconomyRepository customization', () => {
+  function makeDb(handler: (text: string, values?: unknown[]) => unknown) {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      calls,
+      async query(text: string, values?: unknown[]) {
+        calls.push({ text, values });
+        const result = handler(text, values);
+        if (result instanceof Error) throw result;
+        return result as { rows: Array<Record<string, unknown>>; rowCount?: number | null };
+      },
+    };
+    return db;
+  }
+
+  it('findCustomizationByUserId issues SELECT ... WHERE user_id = $1', async () => {
+    const db = makeDb(() => ({
+      rows: [{ lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    const found = await repo.findCustomizationByUserId(FIXED_USER);
+    expect(found).toEqual({ lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('FROM user_economy');
+    expect(db.calls[0].text).toContain('WHERE user_id = $1');
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('findCustomizationByUserId returns default zero state when no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+  });
+
+  it('grantCustomization issues upsert and returns parsed row', async () => {
+    const db = makeDb(() => ({
+      rows: [{ lootboxes: 1, keys: 1, parts: {}, appearance: {} }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    const result = await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    expect(result).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('INSERT INTO user_economy');
+    expect(call.text).toContain('ON CONFLICT (user_id)');
+    expect(call.text).toContain('lootboxes = user_economy.lootboxes + EXCLUDED.lootboxes');
+    expect(call.text).toContain('keys = user_economy.keys + EXCLUDED.keys');
+    expect(call.values).toEqual([FIXED_USER, 1, 1]);
+  });
+
+  it('applyLootboxOpen success issues conditional UPDATE', async () => {
+    const db = makeDb(() => ({
+      rows: [{ lootboxes: 0, keys: 0, parts: { 'nose-crimson': 1 }, appearance: {} }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    const result = await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson');
+    expect(result).toEqual({ state: { lootboxes: 0, keys: 0, parts: { 'nose-crimson': 1 }, appearance: {} } });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE user_economy');
+    expect(call.text).toContain('jsonb_set(parts');
+    expect(call.values).toEqual([FIXED_USER, ['nose-crimson'], 'nose-crimson']);
+  });
+
+  it('applyLootboxOpen returns no_lootbox when count zero', async () => {
+    const db = makeDb((text) => {
+      if (text.includes('UPDATE')) return { rows: [], rowCount: 0 };
+      return { rows: [{ lootboxes: 0, keys: 1 }], rowCount: 1 };
+    });
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson')).toEqual({ reason: 'no_lootbox' });
+  });
+
+  it('applyLootboxOpen returns no_key when keys zero', async () => {
+    const db = makeDb((text) => {
+      if (text.includes('UPDATE')) return { rows: [], rowCount: 0 };
+      return { rows: [{ lootboxes: 1, keys: 0 }], rowCount: 1 };
+    });
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson')).toEqual({ reason: 'no_key' });
+  });
+
+  it('setAppearance issues UPDATE and returns parsed row', async () => {
+    const db = makeDb(() => ({
+      rows: [{ lootboxes: 1, keys: 1, parts: {}, appearance: { nose: 'nose-crimson' } }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    const result = await repo.setAppearance(FIXED_USER, { nose: 'nose-crimson' });
+    expect(result).toEqual({ lootboxes: 1, keys: 1, parts: {}, appearance: { nose: 'nose-crimson' } });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE user_economy');
+    expect(call.text).toContain('SET appearance');
+    expect(call.values).toEqual([FIXED_USER, { nose: 'nose-crimson' }]);
+  });
+});
