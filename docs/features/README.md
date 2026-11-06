@@ -36,5 +36,8 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | smoke-mailpit-ordering | Smoke Test Mailpit Ordering Fix (one-shot smoke green 12/12 without manual Mailpit pre-start) | accepted | 2026-11-01 |
 | smoke-test-hygiene | Smoke Test Hygiene (trailing newline in compose.smoke.yaml + MAILPIT_TIMEOUT_MS for readiness poll) | accepted | 2026-11-01 |
 | spaceship-customization | Spaceship Customization (lootboxes from cubes, keys, appearance editor menu, live preview) | accepted | 2026-11-06 |
+| spaceship-customization-minor-fixes | Spaceship Customization Minor Fixes (protocol customization type, defensive copy) | accepted | 2026-11-06 |
+| spaceship-customization-layout-fix | Spaceship Customization Layout Fix (move customization menu to bottom-left) | accepted | 2026-11-06 |
+| upgrades-panel-bottom-right | Upgrades Panel Bottom Right (position upgrades panel bottom-right) | accepted | 2026-11-06 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
