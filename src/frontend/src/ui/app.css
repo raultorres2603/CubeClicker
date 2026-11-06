@@ -759,6 +759,11 @@ main > section[data-blinking="true"] {
   gap: 0.75rem;
   padding: 0.75rem 1rem;
   max-width: min(22rem, calc(100vw - 2rem));
+  position: absolute;
+  top: auto;
+  bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+  left: calc(1rem + env(safe-area-inset-left, 0px));
+  right: auto;
 }
 
 .customization-counts {
@@ -795,4 +800,11 @@ main > section[data-blinking="true"] {
   display: block;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--frame-metal-dark);
+}
+
+/* Spaceship customization placement (bottom-left). */
+.customization-toggle {
+  position: absolute;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  left: calc(1rem + env(safe-area-inset-left, 0px));
 }
