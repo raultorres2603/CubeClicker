@@ -62,7 +62,7 @@ describe('UpgradesPanel', () => {
     expect(html).toContain('5/5');
     expect(html).toContain('Infinity');
     // all buy buttons disabled
-    expect(html).not.toContain('<button type="button">Buy</button>');
+    expect(html).not.toContain('<button type="button" aria-label="Buy"></button>');
   });
 
   it('disables buy buttons when coins are below cost', () => {
@@ -71,7 +71,7 @@ describe('UpgradesPanel', () => {
     );
 
     // cost 10/50/25, none affordable with 5 coins -> all disabled
-    expect(html).not.toContain('<button type="button">Buy</button>');
+    expect(html).not.toContain('<button type="button" aria-label="Buy"></button>');
   });
 
   it('enables a buy button when affordable', () => {
@@ -80,7 +80,7 @@ describe('UpgradesPanel', () => {
     );
 
     // mini_cube_value cost 10 affordable -> one enabled button
-    expect(html).toContain('<button type="button">Buy</button>');
+    expect(html).toContain('<button type="button" aria-label="Buy"></button>');
   });
 
   it('calls onPurchase with the upgrade id when the buy button is clicked (enabled)', () => {
@@ -99,7 +99,7 @@ describe('UpgradesPanel', () => {
       <UpgradesPanel upgrades={{}} coins={10} mode="guest" onPurchase={() => {}} />,
     );
 
-    expect(html).toContain('<button type="button">Buy</button>');
+    expect(html).toContain('<button type="button" aria-label="Buy"></button>');
   });
 
   it('exposes the mode via a data attribute', () => {

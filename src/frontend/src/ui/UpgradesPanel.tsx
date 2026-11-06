@@ -8,36 +8,14 @@ import {
 } from '../game/upgrades';
 import type { UpgradeState } from '../game/types';
 
-/**
- * Pinned effect preview copy for each upgrade (mirrors the catalog's pinned effects).
- * Kept here so the panel does not need to re-derive human-readable text from numbers.
- */
 const EFFECT_PREVIEW: Record<UpgradeId, string> = {
   mini_cube_value: '+10% coins per mini-cube',
   cube_value: '+10% coins per cube',
   speed_window: '+2s speed-bonus window',
 };
 
-/**
- * Q-5 resolved to "yes" (approved default): guests may spend ephemeral coins, so the
- * guest mode does not lock the buy buttons. The `mode` prop is still honoured so a
- * later "no" resolution can flip this single flag without touching call sites.
- */
 const GUESTS_CAN_SPEND = true;
 
-/**
- * Shop panel for spending coins on upgrades (T10, AC-19).
- *
- * Props:
- *  - `upgrades`: current upgrade levels (record of id -> level).
- *  - `coins`: current coin balance used for affordability.
- *  - `mode`: session-owned mode signal (`'guest' | 'account'`).
- *  - `onPurchase`: called with the upgrade id when its buy button is activated while
- *    affordable.
- *
- * A buy button is enabled only when `coins >= cost` and `level < maxLevel`; otherwise
- * it is disabled. There is no in-flight `pendingId` in v1 (deferred, F16).
- */
 export function UpgradesPanel({
   upgrades,
   coins,
@@ -74,6 +52,7 @@ export function UpgradesPanel({
               <span data-cost>{cost}</span>
               <button
                 type="button"
+                aria-label="Buy"
                 disabled={!affordable}
                 onClick={() => {
                   if (affordable) {
@@ -81,7 +60,6 @@ export function UpgradesPanel({
                   }
                 }}
               >
-                Buy
               </button>
             </li>
           );
