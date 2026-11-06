@@ -98,4 +98,4 @@ depends_on: T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13
 files_owned: (none — verification only)
 verify: `npm run lint`, `npm run typecheck`, `npm test`, `npm run coverage`, `npm run build`, `git diff --exit-code -- compose.yaml compose.smoke.yaml src/backend/Dockerfile src/frontend/Dockerfile src/backend/src/server.ts`
 acceptance: AC-17, AC-18
-status: [ ]
+status: [x]

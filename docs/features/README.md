@@ -35,5 +35,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | workflow-hygiene | Workflow Hygiene (trailing newline in CI/CD workflows + scoped credential-audit command) | accepted | 2026-11-01 |
 | smoke-mailpit-ordering | Smoke Test Mailpit Ordering Fix (one-shot smoke green 12/12 without manual Mailpit pre-start) | accepted | 2026-11-01 |
 | smoke-test-hygiene | Smoke Test Hygiene (trailing newline in compose.smoke.yaml + MAILPIT_TIMEOUT_MS for readiness poll) | accepted | 2026-11-01 |
+| spaceship-customization | Spaceship Customization (lootboxes from cubes, keys, appearance editor menu, live preview) | accepted | 2026-11-06 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
