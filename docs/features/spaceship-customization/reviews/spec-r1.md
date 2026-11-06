@@ -1,0 +1,57 @@
+---
+feature: spaceship-customization
+phase: spec
+iteration: 1
+verdict: changes_requested
+blocking: 5
+nonblocking: 11
+---
+
+# Spec Review — r1
+
+## Summary
+❌ changes requested — 5 MAJOR + 11 MINOR/INFO findings. The spec/plan/tasks are well-structured and mirror the upgrades feature, but several contracts are under-specified (part catalog contents, protocol placement/customization fields, reactive in-game ship appearance seam, lootbox-open failure-reason mapping, engine grant/adopt semantics), which will surface as wrong work or mid-build ambiguity. No BLOCKERs (dependency graph acyclic, parallel file ownership disjoint, no security holes). Verdict changes_requested.
+
+## Findings
+| # | Severity | Location | Finding | Required action | Status |
+| --- | --- | --- | --- | --- | --- |
+| F1 | MAJOR | spec.md § Acceptance criteria (AC-3, AC-7, AC-13); plan.md § Interfaces (Part catalog); tasks.md T1/T6 | The part catalog (~12 parts across 5 categories) is never enumerated: no pinned ids, categories, or names, unlike the upgrades catalog (exact 3 upgrades pinned). "Pinned part catalog" is referenced but undefined, so validation/RNG/UI tests have no concrete fixtures and AC-3 ("granted id is a member of the pinned part catalog") and AC-13 ("pin the mapping for the default and one equipped part") cannot be evidenced with concrete values. | Pin a default catalog table (id, category, name, and the visual params it drives) in spec.md (or plan § Interfaces), or mark Q-2 BLOCKING with the default list, matching the upgrades precedent. | open |
+| F2 | MAJOR | spec.md § Acceptance criteria (AC-10, AC-11); plan.md § Interfaces (Protocol additions); frontend/backend protocol.ts | Protocol contract is incomplete for customization. AC-10 requires `welcome`/`worldEntered` to carry `customization`, but AC-11 only enumerates client messages, `customizationUpdate`, and error codes; the `customization?` field on `Placement` (accounts) is not listed. Codec validation rules for `customizationUpdate` and the placement `customization` field (lootboxes/keys non-negative integers, parts counts positive integers, appearance keys as categories with part-id values) are unspecified, and no `customizationUpdateMessage` builder is named. Frontend/backend parity tests cannot be written unambiguously. | Extend AC-11 and plan § Interfaces to: (a) add `customization?: CustomizationState` to `Placement` (accounts only), (b) pin `customizationUpdate` codec rules (integer/non-negative lootboxes & keys, integer positive parts counts, non-empty-string appearance keys/values), (c) name the `customizationUpdateMessage` builder + defensive copy helper. | open |
+| F3 | MAJOR | spec.md § Acceptance criteria (AC-14); plan.md § Modules/Interfaces (Render); tasks.md T9 | Reactive seam for the in-game ship appearance is unspecified. AC-14 requires equipping a part to change the cursor ship's materials, but neither spec nor plan defines how the scene detects/applies an appearance change (recreate `createSpaceship` vs. mutate materials), nor the trigger (snapshot customization change). The engine snapshot must carry `customization` (plan says so) but scene consumption is not pinned, so `scene-spaceship.test.ts` cannot assert a concrete mechanism. | Pin the seam in plan § Interfaces: e.g. `EngineSnapshot.customization` (optional on base, always populated by createEngine) and a `SceneView` re-apply of appearance when `snapshot.customization.appearance` changes (rebuild or material update), with the test assertion path. | open |
+| F4 | MAJOR | spec.md § Acceptance criteria (AC-4); plan.md § Interfaces (Economy repository additions) | `applyLootboxOpen(userId, partId)` returns `CustomizationState \| null`, giving no failure reason. AC-4 requires distinct `no_lootbox` vs `no_key` errors. A null result leaves the hub unable to map which count was insufficient (especially after a concurrent open), and the check order (lootboxes first) is not pinned. | Change the repo contract to a discriminated result (`{ state } \| { reason: 'no_lootbox' \| 'no_key' }`) OR specify hub pre-check of member counts plus an atomic conditional UPDATE that reports which condition failed; pin the check order (lootboxes first). | open |
+| F5 | MAJOR | spec.md § Acceptance criteria (AC-2, AC-10); plan.md § Interfaces (Engine snapshot); Real-time impact | Engine grant/adopt semantics for accounts are ambiguous. The risk note says "engine grants optimistically; server customizationUpdate overwrites for accounts", but AC-2 only defines the guest grant, and it is not pinned whether `createEngine` always populates `customization` on the snapshot (optional-on-base vs always), nor that `adoptCustomization` replaces the whole state. A builder could implement guest-only grants, leaving accounts without optimistic updates or with stale counts. | Clarify AC-2/AC-10 and plan: engine grants +1 lootbox/+1 key on every cube completion (guest and account, matching economy), `customization?` is optional on the base contract but always populated by createEngine (default zero state), and `adoptCustomization(state)` replaces the entire customization state. | open |
+| F6 | MINOR | plan.md § Interfaces (Part catalog) | `isValidPartId(id: string): id is string` type predicate to `string` is redundant (param already `string`) and conveys no narrowing; should mirror `isValidUpgradeId` (boolean) or predicate to a `PartId` type. | Fix the signature to `isValidPartId(id: string): boolean` (or a proper type predicate) in plan § Interfaces. | open |
+| F7 | MINOR | tasks.md (T6 acceptance) | T6 (frontend parts catalog, parallel-safe) claims AC-8 (guest equip), but guest equip is implemented in the engine (T8); a catalog-only task cannot satisfy it. Misleading AC-to-task ownership. | Remove AC-8 from T6 acceptance (keep AC-13); T8 already owns AC-8. | open |
+| F8 | MINOR | spec.md § Acceptance criteria (AC-8); plan.md § Interfaces (Engine) | Guest equip validation is unspecified: behavior when `equipPart` targets an unknown or unowned part on a guest (no-op vs. ignore) is not defined, and ownership check (parts count > 0) is implied only. | Specify that guest `equipPart(partId)` validates against the catalog and owned inventory (count > 0), no-oping on invalid/unowned, mirroring server AC-7. | open |
+| F9 | MINOR | plan.md § Interfaces (Part catalog) | `partCategory(id: string): PartCategory` behavior for an unknown id (throw vs. undefined) is not specified. | Pin the contract (e.g. throws / returns undefined) and add a test case. | open |
+| F10 | MINOR | plan.md § Interfaces (Economy repository); spec.md § Open questions | Hub RNG injection for `openLootbox` part selection is unspecified: which RNG source (reused `deps.random` factory vs. a new injection), and how tests inject determinism. | Specify the RNG source for openLootbox and how it is injected/tested (mirroring the cube-grid RNG). | open |
+| F11 | MINOR | plan.md § Interfaces (Economy repository) | `findCustomizationByUserId` return for a missing row is unspecified (default zero state vs. null); accounts with no prior activity have no `user_economy` row. | Specify it returns a default zero-state `CustomizationState` for missing rows, mirroring `findUpgradesByUserId` → `{}`. | open |
+| F12 | MINOR | spec.md § Acceptance criteria (AC-1); Real-time impact | Broadcast scoping wording: AC-1 says "every connection authenticated as that account", while the upgrades pattern (`broadcastEconomyUpdate`) only sends to joined connections (skips `playerId === null`). Ambiguous whether unjoined account sockets receive `customizationUpdate`. | Align AC-1 wording to "joined connections authenticated as that account" (matching upgrades), or explicitly state unjoined sockets are included. | open |
+| F13 | MINOR | spec.md § Acceptance criteria (AC-13); plan.md § Interfaces (Render) | `appearanceToSpaceshipParams(appearance)` output shape is vague ("`{ bodyColor, noseColor, ... }`"); the concrete params and their types are not pinned, so the mapping test cannot assert exact values. | Pin the returned object's keys and types in plan § Interfaces. | open |
+| F14 | MINOR | plan.md § Interfaces (Session/Engine); tasks.md T8/T11 | `openLootbox`/`equipPart`/`adoptCustomization` are not explicitly placed on the `GameEngine`/`OnlineGameSession` interfaces (optional-on-base vs. required), and `CustomizationState`'s definition location (backend/frontend) is unspecified. | Add the methods to the interfaces (optional on base for fakes, implemented by createEngine/createGameSession) and state where `CustomizationState` is defined in both workspaces, mirroring upgrades. | open |
+| F15 | INFO | spec.md § Open questions (Q-2) | Q-2 part catalog is a "user checkpoint" without a blocking gate, yet it pins test fixtures; consider marking BLOCKING or pinning the default list (folded into F1). | Mark Q-2 blocking-before-T1 or pin the default list; record in build log. | open |
+| F16 | INFO | spec.md § Open questions (Q-1, Q-3, …) | Other open questions (Q-1 key ratio, Q-3 guest persistence, etc.) are "user checkpoint" without approval gates, unlike upgrades which marked Q-1..Q-5 BLOCKING. Defaults are reasonable; flagging only for consistency. | Optionally mark as default-with-notice or approval-gated per the upgrades convention; no change required if defaults are accepted. | open |
+
+## Checklist results
+| Area | Result | Notes |
+| --- | --- | --- |
+| Completeness | ✅ | All request asks (lootboxes from cube completion, keys to open, appearance editor menu, live preview, server-authoritative persistence, guest ephemeral) covered by ACs or non-goals. |
+| Testability | ❌ | AC-3/AC-7/AC-13/AC-14 lack pinned fixtures/seams (F1, F2, F3, F13); codec rules unspecified (F2). |
+| Boundaries | ✅ | Three tiers present; non-goals listed (trading, multiplayer visibility, key purchase, guest persistence, rarity/pity, animation, deps). |
+| Dependency graph | ✅ | Acyclic; dependencies point earlier; every AC mapped (some loosely, F7). |
+| Parallel safety | ✅ | `[P]` tasks (T1, T2, T5, T6) have disjoint `files_owned`; no shared-file contact. |
+| Security | ✅ | User-controlled `partId` validated server-side; parameterized SQL; no new secrets; abuse bounds via MAX_MESSAGE_BYTES. |
+| Testing | ✅ | Unit + integration tiers; `npm run coverage` ≥80% named; concrete-assertion bar referenced. |
+| Consistency | ✅ | Reuses upgrades/economy pattern, containerization unchanged, accounts optional. |
+| Real-time impact | ⚠️ | Connection lifecycle/reconnection/multi-client/authority described; minor wording gaps (F5, F12). |
+| Containers | ✅ | No new services/images/ports; migration 005 via existing runner; AC-18 guards container paths. |
+
+## Previous round verification (if iteration > 1)
+| Finding | Status | Evidence |
+| --- | --- | --- |
+| (none — first iteration) | | |
+
+## Notes / backlog (non-blocking)
+- Q-5 duplicate-part handling (increment count) and Q-7 appearance scope (client-local only) are reasonable defaults; keep as deferred.
+- The documentation pass at acceptance (per docs/architecture/documentation.md) should also propose the `docs/features/README.md` row update (orchestrator-owned) and glossary terms for lootbox/key/part/appearance.
+- Consider adding an integration test for `customizationUpdate` end-to-end in `app.test.ts` (optional, as in upgrades).
