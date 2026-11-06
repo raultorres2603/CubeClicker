@@ -780,6 +780,7 @@ function welcomeMessage(options: {
   maxUsers?: number;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
+  customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
 } = {}): WelcomeMessage {
   const playerId = options.playerId ?? 'p1';
   const name = options.name ?? 'Player 1';
@@ -804,6 +805,7 @@ function welcomeMessage(options: {
     identity: { kind: 'guest', playerId },
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
+    ...(options.customization === undefined ? {} : { customization: options.customization }),
   };
 }
 
@@ -818,6 +820,7 @@ function worldEnteredMessage(options: {
   maxUsers?: number;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
+  customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
 } = {}): WorldEnteredMessage {
   const position = options.position ?? { x: 0, y: 24 };
   const levelIndex = options.levelIndex ?? 1;
@@ -839,6 +842,7 @@ function worldEnteredMessage(options: {
     identity: { kind: 'guest', playerId: 'p1' },
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
+    ...(options.customization === undefined ? {} : { customization: options.customization }),
   };
 }
 
@@ -2952,5 +2956,171 @@ describe('multiplayer upgrades wiring (T9)', () => {
     expect(session.getMultiplayerSnapshot().mode).toBe('account');
     session.join('guest');
     expect(session.getMultiplayerSnapshot().mode).toBe('guest');
+  });
+});
+
+describe('multiplayer customization wiring (T11)', () => {
+  it('adopts customization from welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        customization: { lootboxes: 2, keys: 1, parts: { 'nose-crimson': 1 }, appearance: { nose: 'nose-crimson' } },
+        roster: [selfMember(), member()],
+      }),
+    );
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 2,
+      keys: 1,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    });
+  });
+
+  it('adopts customization from worldEntered', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    fake.scheduler.tick(0);
+    wire.emit(
+      worldEnteredMessage({
+        customization: { lootboxes: 3, keys: 2, parts: {}, appearance: {} },
+        roster: [selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }), member()],
+      }),
+    );
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 3,
+      keys: 2,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('adopts customization from customizationUpdate and publishes', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    const listener = vi.fn();
+    session.subscribe(listener);
+    wire.emit({ type: 'customizationUpdate', lootboxes: 0, keys: 0, parts: { 'body-gold': 2 }, appearance: { body: 'body-gold' } });
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'body-gold': 2 },
+      appearance: { body: 'body-gold' },
+    });
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it('sends openLootbox for accounts', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+    const before = session.getSnapshot().customization;
+    session.openLootbox();
+    expect(wire.sent).toContainEqual({ type: 'openLootbox' });
+    // no optimistic mutation
+    expect(session.getSnapshot().customization).toEqual(before);
+  });
+
+  it('sends equipPart for accounts', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+    session.equipPart('nose-crimson');
+    expect(wire.sent).toContainEqual({ type: 'equipPart', partId: 'nose-crimson' });
+  });
+
+  it('applies guest local open', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    // default joinedMode guest
+    const listener = vi.fn();
+    session.subscribe(listener);
+    session.openLootbox();
+    expect(wire.sent).toEqual([]);
+    const c = session.getSnapshot().customization!;
+    expect(c.lootboxes).toBe(0);
+    expect(c.keys).toBe(0);
+    const totalCount = Object.values(c.parts).reduce((a, b) => a + b, 0);
+    expect(totalCount).toBe(1);
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it('applies guest local equip', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: { 'nose-crimson': 1 }, appearance: {} });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.equipPart('nose-crimson');
+    expect(session.getSnapshot().customization!.appearance).toEqual({ nose: 'nose-crimson' });
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('guest open with insufficient counts is a no-op', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 1, parts: {}, appearance: {} });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    const before = session.getSnapshot().customization;
+    const listener = vi.fn();
+    session.subscribe(listener);
+    session.openLootbox();
+    expect(session.getSnapshot().customization).toEqual(before);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('guest equip unknown/unowned is a no-op', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    const before = session.getSnapshot().customization;
+    const listener = vi.fn();
+    session.subscribe(listener);
+    session.equipPart('nose-crimson');
+    session.equipPart('totally-unknown');
+    expect(session.getSnapshot().customization).toEqual(before);
+    expect(listener).not.toHaveBeenCalled();
   });
 });

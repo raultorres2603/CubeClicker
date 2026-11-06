@@ -93,7 +93,7 @@ import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } fr
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
-import type { Board, CubeStyle, MiniCubeId } from './types';
+import type { Board, CubeStyle, CustomizationState, MiniCubeId } from './types';
 
 /** The drawing surface the session listens on and sizes. */
 export interface CanvasLike {
@@ -209,6 +209,10 @@ export interface OnlineGameSession extends GameSession {
   join(mode: 'guest' | 'account'): void;
   /** Spends coins on an upgrade (account: sends a message; guest: local debit). */
   purchaseUpgrade(upgradeId: string): void;
+  /** Opens a lootbox (account: sends a message; guest: local open). */
+  openLootbox(): void;
+  /** Equips an owned part (account: sends a message; guest: local equip). */
+  equipPart(partId: string): void;
 }
 
 /** Construction options; the environment, the engine and the transport are all injectable. */
@@ -525,6 +529,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
       engine.adoptUpgrades(message.upgrades);
     }
+    const welcomeCustomization = (message as { customization?: CustomizationState }).customization;
+    if (welcomeCustomization !== undefined && engine.adoptCustomization !== undefined) {
+      engine.adoptCustomization(welcomeCustomization);
+    }
     welcomed = true;
     completionLevel = null;
     flushPendingRotate();
@@ -582,6 +590,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     if (message.upgrades !== undefined && engine.adoptUpgrades !== undefined) {
       engine.adoptUpgrades(message.upgrades);
+    }
+    const worldEnteredCustomization = (message as { customization?: CustomizationState }).customization;
+    if (worldEnteredCustomization !== undefined && engine.adoptCustomization !== undefined) {
+      engine.adoptCustomization(worldEnteredCustomization);
     }
     flushPendingRotate();
     publish(engine.getSnapshot());
@@ -645,6 +657,20 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     publish(engine.getSnapshot());
   }
 
+  /** `customizationUpdate`: replace the engine's customization state with the carried absolute state. */
+  function handleCustomizationUpdate(message: Extract<ServerMessage, { type: 'customizationUpdate' }>): void {
+    if (engine.adoptCustomization !== undefined) {
+      engine.adoptCustomization({
+        lootboxes: message.lootboxes,
+        keys: message.keys,
+        parts: message.parts,
+        appearance: message.appearance,
+      });
+    }
+    publish(engine.getSnapshot());
+    publishMultiplayer();
+  }
+
   /** A member left: the spectated/travelled target triggers the flight home (AC-19 a/b). */
   function handleMemberLeft(playerId: string): void {
     const mode = spectate.get().mode;
@@ -692,6 +718,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         break;
       case 'upgradesUpdate':
         handleUpgradesUpdate(message);
+        break;
+      case 'customizationUpdate':
+        handleCustomizationUpdate(message);
         break;
       default:
         // `hello` (transport handshake) and `error` carry no world/engine action here.
@@ -861,6 +890,30 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     const nextUpgrades: Record<string, number> = { ...upgrades };
     nextUpgrades[upgradeId] = currentLevel + 1;
     engine.adoptUpgrades?.(nextUpgrades);
+    publish(engine.getSnapshot());
+  }
+
+  function openLootbox(): void {
+    if (!online || transport === undefined) {
+      return;
+    }
+    if (joinedMode === 'account') {
+      transport.send({ type: 'openLootbox' });
+      return;
+    }
+    engine.openLootbox?.();
+    publish(engine.getSnapshot());
+  }
+
+  function equipPart(partId: string): void {
+    if (!online || transport === undefined) {
+      return;
+    }
+    if (joinedMode === 'account') {
+      transport.send({ type: 'equipPart', partId });
+      return;
+    }
+    engine.equipPart?.(partId);
     publish(engine.getSnapshot());
   }
 
@@ -1204,6 +1257,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     retryConnection,
     join,
     purchaseUpgrade,
+    openLootbox,
+    equipPart,
     setPointerTarget,
   };
 }
