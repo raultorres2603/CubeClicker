@@ -114,6 +114,7 @@ export type ServerMessage =
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
+      customization?: CustomizationState;
     }
   | {
       type: 'worldEntered';
@@ -128,6 +129,7 @@ export type ServerMessage =
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
+      customization?: CustomizationState;
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
