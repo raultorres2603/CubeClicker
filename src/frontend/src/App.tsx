@@ -9,6 +9,7 @@ import type { WorldState } from './multiplayer/server-state';
 import type { SpectateStatus } from './multiplayer/spectate';
 import { createTransport } from './multiplayer/transport';
 import { ConnectionBanner } from './ui/ConnectionBanner';
+import { CustomizationToggle } from './ui/CustomizationToggle';
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud } from './ui/Hud';
 import { UpgradesPanel } from './ui/UpgradesPanel';
@@ -18,6 +19,7 @@ import { AuthMenu } from './ui/AuthMenu';
 import { VerificationPending } from './ui/VerificationPending';
 import { VerifyEmail } from './ui/VerifyEmail';
 import './ui/app.css';
+import './ui/game-view.css';
 
 const PHASE_ANNOUNCEMENT: Record<Phase, string> = {
   intro: 'Click or press any key to skip',
@@ -430,7 +432,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   }
 
   return (
-    <main>
+    <main data-customization-open={customizationOpen ? 'true' : 'false'}>
       <GameCanvas session={session} />
       {welcomed ? (
         <Hud
@@ -473,14 +475,10 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
         />
       ) : null}
       {welcomed ? (
-        <button
-          type="button"
-          className="customization-toggle"
-          aria-expanded={customizationOpen}
-          onClick={() => setCustomizationOpen((value) => !value)}
-        >
-          Spaceship customization
-        </button>
+        <CustomizationToggle
+          open={customizationOpen}
+          onToggle={() => setCustomizationOpen((value) => !value)}
+        />
       ) : null}
       {welcomed && customizationOpen ? (
         <SpaceshipCustomizationPanel

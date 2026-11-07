@@ -1,4 +1,5 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -40,13 +41,118 @@ const BANNER_EXHAUSTED =
   '<button type="button">Retry</button>' +
   '</div>';
 
-const PANEL_CLOSED =
-  '<div class="user-panel">' +
-  '<button type="button" aria-expanded="false">Users on Server</button>' +
-  '</div>';
+const ICON_PREFIX = '<svg aria-hidden="true" data-icon="';
+const ICON_SUFFIX =
+  '" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round"' +
+  ' stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">';
+
+/** Exact icon markup for the five HUD rows (T4, AC-4). */
+const CURSOR_ICON =
+  ICON_PREFIX +
+  'cursor' +
+  ICON_SUFFIX +
+  '<path d="M5.5 3.2l14 7.6-6.3 1.6-2.9 6.4z" fill="currentColor" stroke-width="1.1"></path>' +
+  '</svg>';
+const CUBE_ICON =
+  ICON_PREFIX +
+  'cube' +
+  ICON_SUFFIX +
+  '<path d="M12 2.8l8 4.4v9.6l-8 4.4-8-4.4V7.2z"></path>' +
+  '<path d="M4 7.2l8 4.4 8-4.4M12 11.6v9.6"></path>' +
+  '</svg>';
+const COIN_ICON =
+  ICON_PREFIX +
+  'coin' +
+  ICON_SUFFIX +
+  '<circle cx="12" cy="12" r="8.75"></circle>' +
+  '<path d="M12 7.4l1.12 3.06 3.25.12-2.56 2.01.89 3.13L12 13.9l-2.7 1.82.89-3.13-2.56-2.01 3.25-.12z" fill="currentColor" stroke-width="1"></path>' +
+  '</svg>';
+const CUBE_LEVEL_ICON =
+  ICON_PREFIX +
+  'cube-level' +
+  ICON_SUFFIX +
+  '<path d="M9 3.6l6.4 3.3v6.9L9 17.1l-6.4-3.3V6.9z"></path>' +
+  '<path d="M2.6 6.9L9 10.2l6.4-3.3M9 10.2v6.9"></path>' +
+  '<path d="M18.2 12.2V5.4M15.4 8.2l2.8-2.8 2.8 2.8"></path>' +
+  '</svg>';
+const SERVER_ICON =
+  ICON_PREFIX +
+  'server' +
+  ICON_SUFFIX +
+  '<rect x="3.5" y="4" width="17" height="6" rx="1.8"></rect>' +
+  '<rect x="3.5" y="14" width="17" height="6" rx="1.8"></rect>' +
+  '<circle cx="7" cy="7" r="0.9" fill="currentColor" stroke="none"></circle>' +
+  '<circle cx="7" cy="17" r="0.9" fill="currentColor" stroke="none"></circle>' +
+  '<path d="M11 7h6M11 17h6"></path>' +
+  '</svg>';
+
+/** Exact Users-on-Server badge icon (T5, AC-5). */
+const GROUP_ICON =
+  ICON_PREFIX +
+  'group' +
+  ICON_SUFFIX +
+  '<circle cx="9" cy="8" r="3.1"></circle>' +
+  '<path d="M3.4 20.2a5.6 5.6 0 0111.2 0"></path>' +
+  '<circle cx="17.3" cy="9.2" r="2.3"></circle>' +
+  '<path d="M14.9 14.9a4.3 4.3 0 015.7 4.1"></path>' +
+  '</svg>';
+
+/** Exact gear + ship icons in the customization toggle (T7, AC-7). */
+const GEAR_ICON =
+  ICON_PREFIX +
+  'gear' +
+  ICON_SUFFIX +
+  '<path d="M12 3.2l2.49 2.79 3.73-.21-.21 3.73L20.8 12l-2.79 2.49.21 3.73-3.73-.21L12 20.8l-2.49-2.79-3.73.21.21-3.73L3.2 12l2.79-2.49-.21-3.73 3.73.21z"></path>' +
+  '<circle cx="12" cy="12" r="3.2"></circle>' +
+  '</svg>';
+const SHIP_ICON =
+  ICON_PREFIX +
+  'ship' +
+  ICON_SUFFIX +
+  '<path d="M12 2.6c2.7 2.5 4.1 5.8 4.1 9.3l2.7 3.4-3.2-.7a6.2 6.2 0 01-7.2 0l-3.2.7 2.7-3.4c0-3.5 1.4-6.8 4.1-9.3z"></path>' +
+  '<circle cx="12" cy="8.8" r="1.5"></circle>' +
+  '<path d="M10 18.7l2 2.7 2-2.7"></path>' +
+  '</svg>';
+
+/** Exact per-row icons and the cost diamond in the upgrades panel (T6, AC-6). */
+const UPGRADE_CLICK_ICON =
+  ICON_PREFIX +
+  'upgrade-click' +
+  ICON_SUFFIX +
+  '<path d="M6 3.2l10.4 5.7-4.4 1.1-2 4.6z" fill="currentColor" stroke-width="1.1"></path>' +
+  '<path d="M17.4 14.6v6.2M14.3 17.7h6.2"></path>' +
+  '</svg>';
+const UPGRADE_CUBE_ICON =
+  ICON_PREFIX +
+  'upgrade-cube' +
+  ICON_SUFFIX +
+  '<path d="M8.4 3.4l6 3.2v6.8l-6 3.2-6-3.2V6.6z"></path>' +
+  '<path d="M2.4 6.6L8.4 9.8l6-3.2M8.4 9.8v6.8"></path>' +
+  '<path d="M18.6 13v6.6M15.3 16.3h6.6"></path>' +
+  '</svg>';
+const UPGRADE_SPEED_ICON =
+  ICON_PREFIX +
+  'upgrade-speed' +
+  ICON_SUFFIX +
+  '<path d="M13.2 2.6L4.8 14.1h6.1L10.8 21.4l8.4-11.5h-6.1z" fill="currentColor" stroke-width="1.1"></path>' +
+  '</svg>';
+const DIAMOND_ICON =
+  ICON_PREFIX +
+  'diamond' +
+  ICON_SUFFIX +
+  '<path d="M7.2 3.4h9.6l3.8 5.4L12 20.8 3.4 8.8z"></path>' +
+  '<path d="M3.4 8.8h17.2M7.2 3.4L12 8.8l4.8-5.4M12 20.8V8.8"></path>' +
+  '</svg>';
+
+const USERS_BADGE_CLOSED =
+  '<button type="button" class="users-badge" aria-expanded="false">' +
+  GROUP_ICON +
+  'Users on Server</button>';
+
+const PANEL_CLOSED = '<div class="user-panel">' + USERS_BADGE_CLOSED + '</div>';
 const PANEL_CLOSED_WITH_RETURN =
   '<div class="user-panel">' +
-  '<button type="button" aria-expanded="false">Users on Server</button>' +
+  USERS_BADGE_CLOSED +
   '<button type="button">Return to my cube</button>' +
   '</div>';
 
@@ -220,6 +326,101 @@ function occurrences(html: string, needle: string): number {
   return html.split(needle).length - 1;
 }
 
+/** Exact HUD markup for the welcomed shell (T4): five icon rows, toggle last. */
+function hudMarkup({
+  clicks,
+  facesDestroyed,
+  coins,
+  cube,
+  server,
+}: {
+  clicks: number;
+  facesDestroyed: number;
+  coins: string;
+  cube: number;
+  server: number;
+}): string {
+  return (
+    '<section aria-label="Game statistics" class="hud-panel">' +
+    `<p class="hud-row" data-row="clicks">${CURSOR_ICON}Clicks: <span data-stat="clicks">${clicks}</span></p>` +
+    `<p class="hud-row" data-row="faces-destroyed">${CUBE_ICON}Faces destroyed: <span data-stat="faces-destroyed">${facesDestroyed}</span></p>` +
+    `<p class="hud-row" data-row="coins">${COIN_ICON}Coins <span data-stat="coins">${coins}</span></p>` +
+    `<p class="hud-row" data-row="cube">${CUBE_LEVEL_ICON}Cube <span data-stat="cube">${cube}</span></p>` +
+    `<p class="hud-row" data-row="server">${SERVER_ICON}Server <span data-stat="server">${server}</span></p>` +
+    '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' +
+    '</section>'
+  );
+}
+
+type UpgradeRowId = 'mini_cube_value' | 'cube_value' | 'speed_window';
+
+interface UpgradeRowFixture {
+  id: UpgradeRowId;
+  name: string;
+  level: string;
+  effect: string;
+  cost: number;
+}
+
+const ZERO_UPGRADE_ROWS: readonly UpgradeRowFixture[] = [
+  {
+    id: 'mini_cube_value',
+    name: 'Click Power',
+    level: '0/10',
+    effect: '+10% coins per mini-cube',
+    cost: 10,
+  },
+  {
+    id: 'cube_value',
+    name: 'Cube Bonus',
+    level: '0/10',
+    effect: '+10% coins per cube',
+    cost: 50,
+  },
+  {
+    id: 'speed_window',
+    name: 'Quick Hands',
+    level: '0/5',
+    effect: '+2s speed-bonus window',
+    cost: 25,
+  },
+];
+
+const UPGRADE_ROW_ICONS: Record<UpgradeRowId, string> = {
+  mini_cube_value: UPGRADE_CLICK_ICON,
+  cube_value: UPGRADE_CUBE_ICON,
+  speed_window: UPGRADE_SPEED_ICON,
+};
+
+/** Exact upgrades panel markup for the zero state rendered by the shell (T6). */
+function upgradesPanel(mode: 'guest' | 'account', coins: number): string {
+  const rows = ZERO_UPGRADE_ROWS.map((row) => {
+    const enabled = coins >= row.cost;
+    return (
+      `<li class="upgrade-row" data-upgrade="${row.id}">` +
+      UPGRADE_ROW_ICONS[row.id] +
+      `<span data-name="true">${row.name}</span>` +
+      `<span data-level="true">${row.level}</span>` +
+      `<span data-effect="true">${row.effect}</span>` +
+      DIAMOND_ICON +
+      `<span data-cost="true">${row.cost}</span>` +
+      `<button type="button" class="upgrade-buy" aria-label="Buy"${enabled ? '' : ' disabled=""'}></button>` +
+      '</li>'
+    );
+  }).join('');
+  return `<section aria-label="Upgrades" class="upgrades-panel" data-mode="${mode}"><ul>${rows}</ul></section>`;
+}
+
+/** Exact CustomizationToggle markup for the welcomed shell (T7). */
+function customizationToggle(open: boolean): string {
+  return (
+    `<button type="button" class="customization-toggle" aria-expanded="${open}">` +
+    GEAR_ICON +
+    SHIP_ICON +
+    'Spaceship customization</button>'
+  );
+}
+
 /** The shell markup with the store's server id, banner, panel and live-region copy filled in. */
 function shellHtml({
   serverId,
@@ -239,28 +440,41 @@ function shellHtml({
   // `serverId` doubles as the welcomed signal (F7): before the first `welcome` the shell
   // renders the stats without the server line and no users panel at all.
   const welcomed = serverId > 0;
+  const coins = stats.coins ?? 0;
   return (
-    `<main><canvas tabindex="0" aria-label="${ARIA_LABEL}" style="touch-action:none"></canvas>` +
-    '<section aria-label="Game statistics">' +
-    `<p>Clicks: <span data-stat="clicks">${stats.clicks}</span></p>` +
-    `<p>Faces destroyed: <span data-stat="faces-destroyed">${stats.facesDestroyed}</span></p>` +
-    (welcomed ? `<p>Coins <span data-stat="coins">${(stats.coins ?? 0).toFixed(2)}</span></p>` : '') +
-    `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
-    (welcomed ? `<p>Server <span data-stat="server">${serverId}</span></p>` : '') +
-    (welcomed ? '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' : '') +
-    '</section>' +
+    '<main data-customization-open="false">' +
+    `<canvas tabindex="0" aria-label="${ARIA_LABEL}" style="touch-action:none"></canvas>` +
+    (welcomed
+      ? hudMarkup({
+          clicks: stats.clicks,
+          facesDestroyed: stats.facesDestroyed,
+          coins: coins.toFixed(2),
+          cube: levelIndex + 1,
+          server: serverId,
+        })
+      : '<section aria-label="Game statistics">' +
+        `<p>Clicks: <span data-stat="clicks">${stats.clicks}</span></p>` +
+        `<p>Faces destroyed: <span data-stat="faces-destroyed">${stats.facesDestroyed}</span></p>` +
+        `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
+        '</section>') +
     banner +
     (welcomed ? panel : '') +
-    (welcomed
-      ? '<section aria-label="Upgrades" class="upgrades-panel" data-mode="guest"><ul><li data-upgrade="mini_cube_value"><span data-name="true">Click Power</span><span data-level="true">0/10</span><span data-effect="true">+10% coins per mini-cube</span><span data-cost="true">10</span><button type="button" aria-label="Buy" disabled=""></button></li><li data-upgrade="cube_value"><span data-name="true">Cube Bonus</span><span data-level="true">0/10</span><span data-effect="true">+10% coins per cube</span><span data-cost="true">50</span><button type="button" aria-label="Buy" disabled=""></button></li><li data-upgrade="speed_window"><span data-name="true">Quick Hands</span><span data-level="true">0/5</span><span data-effect="true">+2s speed-bonus window</span><span data-cost="true">25</span><button type="button" aria-label="Buy" disabled=""></button></li></ul></section>'
-      : '') +
-    (welcomed ? '<button type="button" class="customization-toggle" aria-expanded="false">Spaceship customization</button>' : '') +
+    (welcomed ? upgradesPanel('guest', coins) : '') +
+    (welcomed ? customizationToggle(false) : '') +
     `<div class="phase-announcement" role="status" aria-live="polite">${regionText}</div>` +
     '</main>'
   );
 }
 
 describe('App', () => {
+  it('imports the gameplay stylesheet immediately after app.css (AC-2)', () => {
+    // Vitest runs a jsdom test file with an http-style module URL, so read through the
+    // workspace cwd (the frontend package root) instead of `import.meta.url`.
+    const source = readFileSync('src/App.tsx', 'utf8');
+
+    expect(source).toContain("import './ui/app.css';\nimport './ui/game-view.css';");
+  });
+
   it('renders the auth menu with its three choices before a choice, over the canvas', () => {
     const html = renderToStaticMarkup(<App />);
 
@@ -284,6 +498,12 @@ describe('App', () => {
     expect(html).toContain('Verifying your email…');
     expect(html).toContain('<a href="/">Continue to login</a>');
     expect(html).not.toContain('class="auth-menu"');
+  });
+
+  it('keeps the email-verification shell free of the game-shell state attribute (AC-18)', () => {
+    const html = renderToStaticMarkup(<App verifyToken="token-123" />);
+
+    expect(html).not.toContain('data-customization-open');
   });
 
   it('renders the full intro shell on first paint (default online session, no DOM)', () => {
@@ -399,7 +619,9 @@ describe('App', () => {
 
     // AC-14: `playing` is empty text content — the element is neither removed nor hidden.
     expect(html).toBe(shellHtml({ serverId: 1, banner: '', regionText: '' }));
-    expect(html).not.toContain('hidden');
+    expect(html).toContain(
+      '<div class="phase-announcement" role="status" aria-live="polite"></div></main>',
+    );
     expect(occurrences(html, 'role="status"')).toBe(1);
   });
 
@@ -411,10 +633,18 @@ describe('App', () => {
       />,
     );
 
-    expect(html).toContain('<p>Clicks: <span data-stat="clicks">12</span></p>');
-    expect(html).toContain('<p>Faces destroyed: <span data-stat="faces-destroyed">4</span></p>');
-    expect(html).toContain('<p>Cube <span data-stat="cube">4</span></p>');
-    expect(html).toContain('<p>Server <span data-stat="server">7</span></p>');
+    expect(html).toContain(
+      `<p class="hud-row" data-row="clicks">${CURSOR_ICON}Clicks: <span data-stat="clicks">12</span></p>`,
+    );
+    expect(html).toContain(
+      `<p class="hud-row" data-row="faces-destroyed">${CUBE_ICON}Faces destroyed: <span data-stat="faces-destroyed">4</span></p>`,
+    );
+    expect(html).toContain(
+      `<p class="hud-row" data-row="cube">${CUBE_LEVEL_ICON}Cube <span data-stat="cube">4</span></p>`,
+    );
+    expect(html).toContain(
+      `<p class="hud-row" data-row="server">${SERVER_ICON}Server <span data-stat="server">7</span></p>`,
+    );
     // Still exactly one live region in the shell (AC-14).
     expect(occurrences(html, 'aria-live=')).toBe(1);
   });
@@ -449,7 +679,7 @@ describe('App', () => {
     );
 
     expect(playing).not.toContain('Return to my cube');
-    expect(playing).toContain('aria-expanded="false">Users on Server</button>');
+    expect(playing).toContain(USERS_BADGE_CLOSED);
   });
 
   it('renders the pinned banner copy per transport status (AC-22)', () => {
@@ -489,6 +719,34 @@ describe('App', () => {
     expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBe('true');
     await userEvent.click(screen.getByRole('button', { name: 'Toggle HUD' }));
     expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBeNull();
+  });
+
+  it('drives data-customization-open from the customization toggle (AC-7, AC-18)', async () => {
+    render(<App hasChosen session={sessionFor(snapshotFor('playing'), multiplayerFor())} />);
+    const main = screen.getByRole('main');
+    const toggle = screen.getByRole('button', { name: 'Spaceship customization' });
+
+    expect(main.getAttribute('data-customization-open')).toBe('false');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
+
+    await userEvent.click(toggle);
+
+    expect(main.getAttribute('data-customization-open')).toBe('true');
+    expect(
+      screen.getByRole('button', { name: 'Spaceship customization' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(1);
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Spaceship customization' }),
+    );
+
+    expect(main.getAttribute('data-customization-open')).toBe('false');
+    expect(
+      screen.getByRole('button', { name: 'Spaceship customization' }).getAttribute('aria-expanded'),
+    ).toBe('false');
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
   });
 
   it('blinks the welcomed HUD when clicks increase (AC-5)', async () => {
