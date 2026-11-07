@@ -1,0 +1,241 @@
+/*
+ * Gameplay HUD presentation (reference-image-game-view, T2).
+ *
+ * Imported after `app.css`. This file owns the rounded, translucent cyan gameplay
+ * chrome only; the four base corner placements stay in `app.css` (AC-2), and the
+ * `@media (max-width: 720px)` bottom-band overrides below are the only position
+ * declarations here. The nine `:root` custom properties mirror the exported
+ * `ui/theme.ts` tokens 1:1; `game-view.css.test.ts` keeps the pair honest (AC-3).
+ */
+
+:root {
+  --panel-bg-top: rgba(5, 11, 24, 0.86);
+  --panel-bg-bottom: rgba(10, 22, 44, 0.8);
+  --panel-border: rgba(124, 246, 255, 0.62);
+  --panel-glow: rgba(124, 246, 255, 0.35);
+  --panel-radius: 1rem;
+  --users-badge-top: #d63a2f;
+  --users-badge-bottom: #a51f1f;
+  --coin-gold: #ffcc66;
+  --upgrade-green: #16a34a;
+}
+
+/*
+ * One rounded chrome treatment for the gameplay surfaces (AC-3). The resets
+ * (`border-image`, `clip-path`, `filter`) shed the metallic frame that `app.css`
+ * paints on every `main > section`.
+ */
+.hud-panel,
+.upgrades-panel,
+.customization-panel,
+.user-panel .users-list {
+  border: 2px solid var(--panel-border);
+  border-image: none;
+  border-radius: var(--panel-radius);
+  background: linear-gradient(180deg, var(--panel-bg-top), var(--panel-bg-bottom));
+  box-shadow: 0 0 24px var(--panel-glow);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  backdrop-filter: blur(12px) saturate(1.2);
+  clip-path: none;
+  filter: none;
+}
+
+/*
+ * `app.css` paints a metallic sheen on `::before` and a HUD scanline on
+ * `::after`; `content: none` drops both from the rounded surfaces (AC-3).
+ */
+.hud-panel::before,
+.hud-panel::after,
+.upgrades-panel::before,
+.upgrades-panel::after,
+.customization-panel::before,
+.customization-panel::after,
+.user-panel .users-list::before {
+  content: none;
+}
+
+/* Stat rows: icon, label and value on one line (AC-4). */
+.hud-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+/* Decorative icons follow the surrounding text size instead of the SVG default. */
+.hud-row svg,
+.user-panel > .users-badge svg,
+.upgrade-row svg,
+.customization-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: none;
+  vertical-align: middle;
+}
+
+/* Coins read in the reference gold (AC-3 token, AC-4 row). */
+.hud-row[data-row='coins'] [data-stat] {
+  color: var(--coin-gold);
+}
+
+/* Users-on-Server pill (AC-5): resets the metallic button frame from `app.css`. */
+.user-panel > .users-badge {
+  border: 2px solid var(--panel-border);
+  border-image: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--users-badge-top), var(--users-badge-bottom));
+  color: #ffffff;
+  clip-path: none;
+  filter: none;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+}
+
+.user-panel > .users-badge:hover {
+  color: #ffffff;
+  box-shadow: none;
+  filter: brightness(1.08);
+}
+
+.user-panel > .users-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The open roster scrolls inside the rounded panel on short viewports. */
+.user-panel .users-list {
+  max-height: 50vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Upgrades panel (AC-6): interactive scroll container, placement stays in `app.css`. */
+.upgrades-panel {
+  pointer-events: auto;
+  max-width: min(22rem, calc(50vw - 1.5rem));
+  max-height: 60vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Upgrade rows (AC-6). */
+.upgrade-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid rgba(124, 246, 255, 0.18);
+}
+
+.upgrade-row:first-child {
+  border-top: none;
+}
+
+/* Circular green buy button (AC-6); `app.css` supplies the `+` glyph. */
+.upgrade-buy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--upgrade-green);
+  background: var(--upgrade-green);
+  color: #ffffff;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.upgrade-buy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.upgrade-buy:disabled {
+  background: rgba(22, 163, 74, 0.35);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: not-allowed;
+}
+
+/* Spaceship customization toggle (AC-7); base placement stays in `app.css`. */
+.customization-toggle {
+  border: 2px solid var(--panel-border);
+  border-image: none;
+  border-radius: var(--panel-radius);
+  background: linear-gradient(180deg, var(--panel-bg-top), var(--panel-bg-bottom));
+  color: var(--hud-text);
+  clip-path: none;
+  filter: none;
+  min-height: 44px;
+}
+
+.customization-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The open customization panel receives input (AC-7). */
+.customization-panel {
+  pointer-events: auto;
+}
+
+/*
+ * Mobile bottom band (AC-18): both panels span the viewport above the
+ * always-visible bottom-left toggle; while customization is open the upgrades
+ * panel is hidden instead of overlapping it.
+ */
+@media (max-width: 720px) {
+  .hud-panel {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+  }
+
+  .upgrades-panel {
+    left: calc(1rem + env(safe-area-inset-left, 0px));
+    right: calc(1rem + env(safe-area-inset-right, 0px));
+    bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+    max-width: none;
+    max-height: 35vh;
+    overflow-y: auto;
+  }
+
+  .customization-panel {
+    left: calc(1rem + env(safe-area-inset-left, 0px));
+    right: calc(1rem + env(safe-area-inset-right, 0px));
+    bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+    max-width: none;
+    max-height: 45vh;
+    overflow-y: auto;
+  }
+
+  main[data-customization-open='true'] .upgrades-panel {
+    display: none;
+  }
+}
+
+/* Existing motion stays off for the gameplay chrome (AC-19). */
+@media (prefers-reduced-motion: reduce) {
+  .hud-panel,
+  .hud-panel::before,
+  .hud-panel::after,
+  .user-panel > .users-badge,
+  .user-panel .users-list,
+  .user-panel .users-list::before,
+  .upgrades-panel,
+  .upgrades-panel::before,
+  .upgrades-panel::after,
+  .upgrade-row,
+  .upgrade-buy,
+  .customization-toggle,
+  .customization-panel,
+  .customization-panel::before,
+  .customization-panel::after {
+    animation: none;
+    transition: none;
+  }
+}
