@@ -1,13 +1,15 @@
 import { useState, type ReactElement } from 'react';
 
 import type { MemberState } from '../multiplayer/protocol';
+import { GroupIcon } from './icons';
 
 /**
  * The `Users on Server` panel and the spectate return command (T14, AC-16/AC-18).
  *
  * Pinned markup/copy (plan § UI):
- * - toggle button, exact label `Users on Server`, with `aria-expanded`;
- * - open panel: `aria-label="Users on server"`, the disabled own row first
+ * - toggle button `class="users-badge"`, exact label `Users on Server`, a decorative
+ *   group icon (`aria-hidden`, not focusable) and `aria-expanded`;
+ * - open panel: `class="users-list"`, `aria-label="Users on server"`, the disabled own row first
  *   (`{name} (You)`), then one `<button>` per other member in slot order showing
  *   `{name} · Cube {levelIndex + 1}`;
  * - `Return to my cube` rendered exactly while the session is spectating (mode
@@ -61,11 +63,13 @@ export function UserPanel({
     <div className="user-panel">
       <button
         type="button"
+        className="users-badge"
         aria-expanded={open}
         onClick={() => {
           setOpen((current) => !current);
         }}
       >
+        <GroupIcon />
         Users on Server
       </button>
       {spectating ? (
@@ -74,7 +78,7 @@ export function UserPanel({
         </button>
       ) : null}
       {open ? (
-        <section aria-label="Users on server">
+        <section className="users-list" aria-label="Users on server">
           <ul>
             <li>
               <button type="button" disabled>
