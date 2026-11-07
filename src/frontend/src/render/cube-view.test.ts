@@ -9,6 +9,7 @@ import {
   Vector3,
   type Material,
 } from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 import { MINI_CUBE_POP_PEAK_SCALE } from '../game/effects';
 import { CUBE_STYLES } from '../game/progression';
@@ -20,6 +21,8 @@ import {
   FACE_NORMALS,
   MATERIAL_CLEARCOAT,
   MATERIAL_CLEARCOAT_ROUGHNESS,
+  MINI_CUBE_BEVEL_RADIUS,
+  MINI_CUBE_BEVEL_SEGMENTS,
   MINI_CUBE_THICKNESS,
   MINI_CUBE_TILE_RATIO,
   type CubeView,
@@ -229,6 +232,9 @@ describe('cube geometry constants', () => {
     expect(TILE_SIZE).toBe(0.95);
     expect(TILE_SIZE_F32).toBe(Math.fround(0.95));
     expect(TILE_DISTANCE).toBe(2.625);
+    // Beveled tile geometry (spec AC-14).
+    expect(MINI_CUBE_BEVEL_SEGMENTS).toBe(2);
+    expect(MINI_CUBE_BEVEL_RADIUS).toBe(0.08);
   });
 
   it('pins the group-space face normals (spec AC-3)', () => {
@@ -241,7 +247,7 @@ describe('cube geometry constants', () => {
 });
 
 describe('createCubeView', () => {
-  it('builds exactly one body and six face grids, in order (AC-2: no plates)', () => {
+  it('builds exactly one body and six beveled face grids, in order (AC-2, AC-14)', () => {
     const view = createCubeView(STYLE);
 
     expect(view.group).toBeInstanceOf(Group);
@@ -251,6 +257,8 @@ describe('createCubeView', () => {
     expect(view.group.children.filter((child) => child instanceof InstancedMesh)).toHaveLength(6);
 
     expect(view.body.geometry).toBeInstanceOf(BoxGeometry);
+    // The body stays a plain box: only the tiles are beveled (spec AC-14).
+    expect(view.body.geometry).not.toBeInstanceOf(RoundedBoxGeometry);
     expect((view.body.geometry as BoxGeometry).parameters).toEqual({
       width: 5,
       height: 5,
@@ -270,7 +278,15 @@ describe('createCubeView', () => {
       expect(mesh).toBeInstanceOf(InstancedMesh);
       expect(mesh.count).toBe(25);
       expect(mesh.instanceMatrix.count).toBe(25);
-      expect(mesh.geometry).toBeInstanceOf(BoxGeometry);
+      expect(mesh.geometry).toBeInstanceOf(RoundedBoxGeometry);
+      expect(mesh.geometry.type).toBe('RoundedBoxGeometry');
+      expect((mesh.geometry as RoundedBoxGeometry).parameters).toEqual({
+        width: 1,
+        height: 1,
+        depth: 1,
+        segments: MINI_CUBE_BEVEL_SEGMENTS,
+        radius: MINI_CUBE_BEVEL_RADIUS,
+      });
       // AC-4: every face InstancedMesh casts and receives shadows.
       expect(mesh.castShadow).toBe(true);
       expect(mesh.receiveShadow).toBe(true);
@@ -318,15 +334,15 @@ describe('createCubeView', () => {
 
     expect(STYLE.id).toBe('obsidian-neon');
     expect(body.color.getHexString()).toBe(STYLE.cubeColor.replace('#', ''));
-    expect(body.color.getHexString()).toBe('0b0b12');
-    expect(body.metalness).toBe(0.6);
-    expect(body.roughness).toBe(0.35);
-    expect(tileMaterial(view, 'front').color.getHexString()).toBe('1de9b6');
-    expect(tileMaterial(view, 'front').metalness).toBe(0.6);
-    expect(tileMaterial(view, 'front').roughness).toBe(0.35);
+    expect(body.color.getHexString()).toBe('0a2418');
+    expect(body.metalness).toBe(0.3);
+    expect(body.roughness).toBe(0.18);
+    expect(tileMaterial(view, 'front').color.getHexString()).toBe('2ee27f');
+    expect(tileMaterial(view, 'front').metalness).toBe(0.3);
+    expect(tileMaterial(view, 'front').roughness).toBe(0.18);
     // Every face carries its own tile material, all in the style's mini-cube colour.
     for (const faceId of FACE_IDS) {
-      expect(tileMaterial(view, faceId).color.getHexString()).toBe('1de9b6');
+      expect(tileMaterial(view, faceId).color.getHexString()).toBe('2ee27f');
     }
   });
 
@@ -852,8 +868,8 @@ describe('applyStyle', () => {
     view.applyStyle(CUBE_STYLES[1]!);
 
     // The disposed material keeps the palette it had when it left the scene.
-    expect(frontMaterial.color.getHexString()).toBe('1de9b6');
-    expect(frontMaterial.metalness).toBe(0.6);
+    expect(frontMaterial.color.getHexString()).toBe('2ee27f');
+    expect(frontMaterial.metalness).toBe(0.3);
     expect(tileMaterial(view, 'back').color.getHexString()).toBe('ff4d6d');
     expect((view.body.material as MeshPhysicalMaterial).color.getHexString()).toBe('1a0b0e');
   });

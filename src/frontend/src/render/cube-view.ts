@@ -14,7 +14,9 @@
  * are inset inside their cells, so the body shows through the gaps between adjacent tiles
  * as thin tile lines and through the half-seam rim around each face's perimeter — no plate,
  * no extra geometry, no new drawable. The body is the dark interior a player sees in those
- * seams and where tiles have been removed. Tile thickness is the exported constant below —
+ * seams and where tiles have been removed. Each tile is a `RoundedBoxGeometry` with the
+ * pinned bevel segments/radius (spec AC-14) so the face reads as glossy beveled mini-cubes;
+ * the body stays a plain `BoxGeometry`. Tile thickness is the exported constant below —
  * the single home for the cube-view geometry numbers (the plan's non-grid effect constants
  * live in `game/effects.ts` and are imported, never redefined).
  *
@@ -40,6 +42,7 @@ import {
   type BufferGeometry,
   type Material,
 } from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 import {
   MINI_CUBE_POP_MS,
@@ -68,6 +71,12 @@ export const MINI_CUBE_THICKNESS = 0.25;
  * (`1 − MINI_CUBE_TILE_RATIO`), never a second constant.
  */
 export const MINI_CUBE_TILE_RATIO = 0.95;
+
+/** Bevel segments per tile edge for the rounded mini-cube geometry (spec AC-14). */
+export const MINI_CUBE_BEVEL_SEGMENTS = 2;
+
+/** Bevel radius of the tile geometry, in tile-local units (spec AC-14). */
+export const MINI_CUBE_BEVEL_RADIUS = 0.08;
 
 /** Clearcoat amount for the cube's PBR surfaces (AC-3). */
 export const MATERIAL_CLEARCOAT = 0.35;
@@ -265,7 +274,13 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       clearcoat: MATERIAL_CLEARCOAT,
       clearcoatRoughness: MATERIAL_CLEARCOAT_ROUGHNESS,
     });
-    const mesh = new InstancedMesh(new BoxGeometry(1, 1, 1), tileMaterial, instanceCount);
+    // Beveled tile (spec AC-14): the instance matrix still scales this unit tile to
+    // `tileSize × tileSize × MINI_CUBE_THICKNESS`, so the pop math is geometry-agnostic.
+    const mesh = new InstancedMesh(
+      new RoundedBoxGeometry(1, 1, 1, MINI_CUBE_BEVEL_SEGMENTS, MINI_CUBE_BEVEL_RADIUS),
+      tileMaterial,
+      instanceCount,
+    );
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     // Static per-instance colour multiplier, white by default: idle tiles are unchanged,
