@@ -21,7 +21,8 @@
  *   pose over the current cube) → cube orientation → reduced-motion pop settle.
  * - {@link SceneView.update} advances the frame-driven parts: the camera-anchored starfield
  *   swirl and scale, particle aging, the face-removal countdowns, the background life, the
- *   cosmic backdrop's slow drift and the running mini-cube pops (AC-4, AC-12).
+ *   camera-anchored cosmic backdrop's slow drift and the running mini-cube pops (AC-4,
+ *   AC-12).
  *
  * World model (spec § 3): cubes live on a flat plane and the camera is always axis-aligned
  * with the identity quaternion, so screen-right is world +x and screen-up is world +y. A
@@ -45,7 +46,11 @@
  * `InstancedMesh`), one pooled particle `Points`, one background-life group, one
  * `cosmic-backdrop` group (28 objects) owning the nebula `DataTexture` used as
  * `scene.background`, and, online, one remote world of ≤ (X − 1) cube views (AC-10,
- * AC-16).
+ * AC-16). The backdrop group is camera-anchored like the starfield: every `update` copies
+ * the live camera `x`/`y` into the group with `z = 0` (and construction anchors the first
+ * frame), so the pinned right-side comet and hero ship keep their screen composition from
+ * every server slot while their local `z < -4` depth stays world-behind the cube (AC-11,
+ * AC-17).
  */
 
 import {
@@ -433,6 +438,11 @@ export function createSceneView(options: {
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
   camera.lookAt(cubePosition.x, cubePosition.y, 0);
+
+  // Anchor the decorative backdrop at construction so the first rendered frame already has
+  // the pinned right-side comet/hero composition from this slot (AC-11, AC-17). The group
+  // copies only the camera x/y; z stays 0, so the children's local z remains world depth.
+  cosmicBackdrop.group.position.set(camera.position.x, camera.position.y, 0);
 
   /**
    * The camera pose the starfield anchors to. The anchor holds the camera's live vectors
@@ -1018,6 +1028,10 @@ export function createSceneView(options: {
         }
       }
       backgroundLife.update(dtMs, reducedMotion);
+      // The decorative group follows the live camera x/y (the starfield's anchoring
+      // precedent) before its slow drift; z stays 0 so the pinned child depth is unchanged
+      // (AC-11, AC-17).
+      cosmicBackdrop.group.position.set(camera.position.x, camera.position.y, 0);
       cosmicBackdrop.update(dtMs, reducedMotion);
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       particles.update(dtMs);

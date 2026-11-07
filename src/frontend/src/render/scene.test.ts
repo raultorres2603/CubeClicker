@@ -2581,6 +2581,97 @@ describe('cosmic backdrop scene integration (AC-10, AC-12)', () => {
   });
 });
 
+describe('camera-anchored cosmic composition (AC-10, AC-11, AC-17)', () => {
+  it('anchors the group to the injected own slot at construction', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: 7.64, y: 0 },
+    });
+
+    // The first rendered frame already copies the camera rest pose; z stays 0, so the
+    // children's pinned local depth remains world depth.
+    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([7.64, 0, 0]);
+
+    // The y component follows the slot as well as x.
+    const offsetView = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      ownPosition: { x: -7.64, y: 7.64 },
+    });
+    expect(offsetView.cosmicBackdrop.group.position.toArray()).toEqual([-7.64, 7.64, 0]);
+  });
+
+  it('keeps the comet and hero ship right of and behind the cube from every slot (AC-11, AC-17)', () => {
+    const slots: ReadonlyArray<{
+      label: string;
+      ownX: number;
+      ownY: number;
+      maxUsers: number;
+    }> = [
+      { label: 'slot 1', ownX: 7.64, ownY: 0, maxUsers: 2 },
+      { label: 'slot 2', ownX: -7.64, ownY: 0, maxUsers: 2 },
+      { label: '10-user ring slot 1', ownX: 38.2, ownY: 0, maxUsers: 10 },
+    ];
+
+    for (const { ownX, ownY, maxUsers } of slots) {
+      const view = createView();
+      view.enterWorld(serverWorld({ maxUsers, ownPosition: { x: ownX, y: ownY } }));
+      applySnapshot(view, snapshot({ phase: 'playing' }));
+      view.update(0);
+
+      expect(view.cosmicBackdrop.group.position.toArray()).toEqual([ownX, ownY, 0]);
+      expect(view.cosmicBackdrop.group.position.z).toBe(0);
+
+      const cubeX = cubeGroup(view).position.x;
+      expect(cubeX).toBe(ownX);
+
+      const cometWorld = view.cosmicBackdrop.comet.getWorldPosition(new Vector3());
+      const heroWorld = view.cosmicBackdrop.heroShip.getWorldPosition(new Vector3());
+      expect(cometWorld.toArray()).toEqual([
+        ownX + COMET_POSITION.x,
+        ownY + COMET_POSITION.y,
+        COMET_POSITION.z,
+      ]);
+      expect(heroWorld.toArray()).toEqual([
+        ownX + HERO_SHIP_POSITION.x,
+        ownY + HERO_SHIP_POSITION.y,
+        HERO_SHIP_POSITION.z,
+      ]);
+      expect(cometWorld.x).toBeGreaterThan(cubeX);
+      expect(heroWorld.x).toBeGreaterThan(cubeX);
+      expect(cometWorld.z).toBeLessThan(-4);
+      expect(heroWorld.z).toBeLessThan(-4);
+
+      // The children keep their pinned group-local transforms.
+      expect(view.cosmicBackdrop.comet.position.toArray()).toEqual([
+        COMET_POSITION.x,
+        COMET_POSITION.y,
+        COMET_POSITION.z,
+      ]);
+      expect(view.cosmicBackdrop.heroShip.position.toArray()).toEqual([
+        HERO_SHIP_POSITION.x,
+        HERO_SHIP_POSITION.y,
+        HERO_SHIP_POSITION.z,
+      ]);
+    }
+  });
+
+  it('follows the travel camera x while the group z stays 0', () => {
+    const view = createView();
+
+    applySnapshot(
+      view,
+      snapshot({ phase: 'travel', phaseProgress: 0.5, travelDirection: 'right' }),
+    );
+    expect(view.camera.position.toArray()).toEqual([12, 0, 90]);
+
+    view.update(0);
+
+    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([12, 0, 0]);
+  });
+});
+
 describe('shadow quality constants (AC-2)', () => {
   it('pins KEY_SHADOW_MAP_SIZE', () => {
     expect(KEY_SHADOW_MAP_SIZE).toBe(2048);
