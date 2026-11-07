@@ -10,36 +10,92 @@ afterEach(() => {
   cleanup();
 });
 
+const CURSOR_ICON =
+  '<svg aria-hidden="true" data-icon="cursor" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">' +
+  '<path d="M5.5 3.2l14 7.6-6.3 1.6-2.9 6.4z" fill="currentColor" stroke-width="1.1"></path>' +
+  '</svg>';
+
+const CUBE_ICON =
+  '<svg aria-hidden="true" data-icon="cube" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">' +
+  '<path d="M12 2.8l8 4.4v9.6l-8 4.4-8-4.4V7.2z"></path>' +
+  '<path d="M4 7.2l8 4.4 8-4.4M12 11.6v9.6"></path>' +
+  '</svg>';
+
+const COIN_ICON =
+  '<svg aria-hidden="true" data-icon="coin" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">' +
+  '<circle cx="12" cy="12" r="8.75"></circle>' +
+  '<path d="M12 7.4l1.12 3.06 3.25.12-2.56 2.01.89 3.13L12 13.9l-2.7 1.82.89-3.13-2.56-2.01 3.25-.12z" fill="currentColor" stroke-width="1"></path>' +
+  '</svg>';
+
+const CUBE_LEVEL_ICON =
+  '<svg aria-hidden="true" data-icon="cube-level" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">' +
+  '<path d="M9 3.6l6.4 3.3v6.9L9 17.1l-6.4-3.3V6.9z"></path>' +
+  '<path d="M2.6 6.9L9 10.2l6.4-3.3M9 10.2v6.9"></path>' +
+  '<path d="M18.2 12.2V5.4M15.4 8.2l2.8-2.8 2.8 2.8"></path>' +
+  '</svg>';
+
+const SERVER_ICON =
+  '<svg aria-hidden="true" data-icon="server" fill="none" focusable="false" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewBox="0 0 24 24">' +
+  '<rect x="3.5" y="4" width="17" height="6" rx="1.8"></rect>' +
+  '<rect x="3.5" y="14" width="17" height="6" rx="1.8"></rect>' +
+  '<circle cx="7" cy="7" r="0.9" fill="currentColor" stroke="none"></circle>' +
+  '<circle cx="7" cy="17" r="0.9" fill="currentColor" stroke="none"></circle>' +
+  '<path d="M11 7h6M11 17h6"></path>' +
+  '</svg>';
+
+/** The exact reference HUD markup: panel class, five icon rows, optional toggle last. */
+function hudMarkup({
+  clicks,
+  facesDestroyed,
+  coins = '0.00',
+  cube,
+  server,
+  minimized = false,
+  blinking = false,
+  toggle = false,
+}: {
+  clicks: number;
+  facesDestroyed: number;
+  coins?: string;
+  cube: number;
+  server: number;
+  minimized?: boolean;
+  blinking?: boolean;
+  toggle?: boolean;
+}): string {
+  return (
+    '<section aria-label="Game statistics" class="hud-panel"' +
+    (minimized ? ' data-minimized="true"' : '') +
+    (blinking ? ' data-blinking="true"' : '') +
+    '>' +
+    `<p class="hud-row" data-row="clicks">${CURSOR_ICON}Clicks: <span data-stat="clicks">${clicks}</span></p>` +
+    `<p class="hud-row" data-row="faces-destroyed">${CUBE_ICON}Faces destroyed: <span data-stat="faces-destroyed">${facesDestroyed}</span></p>` +
+    `<p class="hud-row" data-row="coins">${COIN_ICON}Coins <span data-stat="coins">${coins}</span></p>` +
+    `<p class="hud-row" data-row="cube">${CUBE_LEVEL_ICON}Cube <span data-stat="cube">${cube}</span></p>` +
+    `<p class="hud-row" data-row="server">${SERVER_ICON}Server <span data-stat="server">${server}</span></p>` +
+    (toggle
+      ? `<button type="button" aria-expanded="${minimized ? 'false' : 'true'}" aria-label="Toggle HUD"></button>`
+      : '') +
+    '</section>'
+  );
+}
+
 describe('Hud', () => {
-  it('renders the zero state with the pinned labels and data hooks', () => {
+  it('renders the zero state with the pinned labels, data hooks and hud-panel class', () => {
     const html = renderToStaticMarkup(
       <Hud stats={{ clicks: 0, facesDestroyed: 0 }} levelIndex={0} serverId={0} />,
     );
 
-    expect(html).toBe(
-      '<section aria-label="Game statistics">' +
-        '<p>Clicks: <span data-stat="clicks">0</span></p>' +
-        '<p>Faces destroyed: <span data-stat="faces-destroyed">0</span></p>' +
-        '<p>Coins <span data-stat="coins">0.00</span></p>' +
-        '<p>Cube <span data-stat="cube">1</span></p>' +
-        '<p>Server <span data-stat="server">0</span></p>' +
-        '</section>',
-    );
+    expect(html).toBe(hudMarkup({ clicks: 0, facesDestroyed: 0, cube: 1, server: 0 }));
   });
 
   it('renders live counters, the 1-based cube level and the server id from its props', () => {
     const html = renderToStaticMarkup(
-      <Hud stats={{ clicks: 42, facesDestroyed: 3 }} levelIndex={2} serverId={7} />,
+      <Hud stats={{ clicks: 42, facesDestroyed: 3, coins: 12.5 }} levelIndex={2} serverId={7} />,
     );
 
     expect(html).toBe(
-      '<section aria-label="Game statistics">' +
-        '<p>Clicks: <span data-stat="clicks">42</span></p>' +
-        '<p>Faces destroyed: <span data-stat="faces-destroyed">3</span></p>' +
-        '<p>Coins <span data-stat="coins">0.00</span></p>' +
-        '<p>Cube <span data-stat="cube">3</span></p>' +
-        '<p>Server <span data-stat="server">7</span></p>' +
-        '</section>',
+      hudMarkup({ clicks: 42, facesDestroyed: 3, coins: '12.50', cube: 3, server: 7 }),
     );
   });
 
@@ -74,16 +130,12 @@ describe('Hud', () => {
       />,
     );
 
-    expect(html).toBe(
-      '<section aria-label="Game statistics">' +
-        '<p>Clicks: <span data-stat="clicks">1</span></p>' +
-        '<p>Faces destroyed: <span data-stat="faces-destroyed">1</span></p>' +
-        '<p>Coins <span data-stat="coins">0.00</span></p>' +
-        '<p>Cube <span data-stat="cube">1</span></p>' +
-        '<p>Server <span data-stat="server">1</span></p>' +
-        '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' +
-        '</section>',
-    );
+    expect(html).toBe(hudMarkup({ clicks: 1, facesDestroyed: 1, cube: 1, server: 1, toggle: true }));
+    expect(
+      html.endsWith(
+        '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button></section>',
+      ),
+    ).toBe(true);
   });
 
   it('sets aria-expanded from minimized on the toggle button (AC-6)', () => {
@@ -97,6 +149,9 @@ describe('Hud', () => {
       />,
     );
 
+    expect(html).toBe(
+      hudMarkup({ clicks: 0, facesDestroyed: 0, cube: 1, server: 0, minimized: true, toggle: true }),
+    );
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('data-minimized="true"');
   });
@@ -140,18 +195,66 @@ describe('Hud', () => {
   });
 });
 
+describe('Hud icon rows (AC-4, AC-19)', () => {
+  it('renders five decorative icon rows in the pinned order with the pinned labels and values', () => {
+    const { container } = render(
+      <Hud stats={{ clicks: 0, facesDestroyed: 0 }} levelIndex={0} serverId={0} />,
+    );
+    const rows = Array.from(container.querySelectorAll('p.hud-row'));
+
+    expect(rows.map((row) => row.getAttribute('data-row'))).toEqual([
+      'clicks',
+      'faces-destroyed',
+      'coins',
+      'cube',
+      'server',
+    ]);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'Clicks: 0',
+      'Faces destroyed: 0',
+      'Coins 0.00',
+      'Cube 1',
+      'Server 0',
+    ]);
+    expect(rows.map((row) => row.querySelectorAll('svg')).map((icons) => icons.length)).toEqual([
+      1, 1, 1, 1, 1,
+    ]);
+    expect(rows.map((row) => row.querySelector('svg')?.getAttribute('data-icon'))).toEqual([
+      'cursor',
+      'cube',
+      'coin',
+      'cube-level',
+      'server',
+    ]);
+    expect(rows.map((row) => row.querySelector('svg')?.getAttribute('aria-hidden'))).toEqual([
+      'true',
+      'true',
+      'true',
+      'true',
+      'true',
+    ]);
+    expect(rows.map((row) => row.querySelector('svg')?.getAttribute('focusable'))).toEqual([
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+    ]);
+    expect(container.querySelector('section')?.getAttribute('class')).toBe('hud-panel');
+  });
+});
+
 describe('responsive overlay contract', () => {
-  it('renders the HUD as the bare `main > section` overlay with no inline layout (AC-4, AC-5)', () => {
+  it('renders the HUD as a `main > section` overlay with the hud-panel class and no inline layout (AC-4)', () => {
     const html = renderToStaticMarkup(
       <Hud stats={{ clicks: 5, facesDestroyed: 2 }} levelIndex={1} serverId={4} />,
     );
 
-    expect(html.startsWith('<section aria-label="Game statistics">')).toBe(true);
-    expect(html).not.toContain('class=');
+    expect(html.slice(0, html.indexOf('>'))).toBe(
+      '<section aria-label="Game statistics" class="hud-panel"',
+    );
     expect(html).not.toContain('style=');
     expect(html).not.toContain('z-index');
-    expect(html).not.toContain('width=');
-    expect(html).not.toContain('height=');
   });
 
   it('has no interactive descendants unless a toggle handler is provided (AC-4)', () => {
@@ -200,14 +303,6 @@ describe('Hud blinking prop (AC-3)', () => {
       <Hud stats={{ clicks: 1, facesDestroyed: 1 }} levelIndex={0} serverId={1} />,
     );
     expect(html).not.toContain('data-blinking');
-    expect(html).toBe(
-      '<section aria-label="Game statistics">' +
-        '<p>Clicks: <span data-stat="clicks">1</span></p>' +
-        '<p>Faces destroyed: <span data-stat="faces-destroyed">1</span></p>' +
-        '<p>Coins <span data-stat="coins">0.00</span></p>' +
-        '<p>Cube <span data-stat="cube">1</span></p>' +
-        '<p>Server <span data-stat="server">1</span></p>' +
-        '</section>',
-    );
+    expect(html).toBe(hudMarkup({ clicks: 1, facesDestroyed: 1, cube: 1, server: 1 }));
   });
 });
