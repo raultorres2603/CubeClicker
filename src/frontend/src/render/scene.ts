@@ -46,11 +46,13 @@
  * `InstancedMesh`), one pooled particle `Points`, one background-life group, one
  * `cosmic-backdrop` group (28 objects) owning the nebula `DataTexture` used as
  * `scene.background`, and, online, one remote world of ≤ (X − 1) cube views (AC-10,
- * AC-16). The backdrop group is camera-anchored like the starfield: every `update` copies
- * the live camera `x`/`y` into the group with `z = 0` (and construction anchors the first
- * frame), so the pinned right-side comet and hero ship keep their screen composition from
+ * AC-16). The backdrop group is camera-relative anchored like the starfield, extended with
+ * the pinned presentation-only offsets {@link COSMIC_ANCHOR_OFFSET_X} and
+ * {@link COSMIC_ANCHOR_OFFSET_Y}: every `update` (and construction, for the first frame)
+ * places the group at the live camera `x`/`y` plus `(6, 4)` with `z = 0`, so the pinned
+ * right-side comet and hero ship keep their screen composition above/right of the cube from
  * every server slot while their local `z < -4` depth stays world-behind the cube (AC-11,
- * AC-17).
+ * AC-17). The offsets move the decorative group only: they carry no game or protocol state.
  */
 
 import {
@@ -141,6 +143,23 @@ const QUARTER_TURN_EPSILON = 1e-9;
 
 /** Distance between consecutive cube world positions (spec § 3). */
 export const CUBE_SPACING = 24;
+
+/**
+ * Presentation-only screen-right offset added to the camera anchor of the cosmic backdrop
+ * group (T16). The comet keeps its pinned local `(7.5, 2.2, -18)`: at the rest camera's
+ * depth of 30 this offset gives a camera-relative screen angle of
+ * `atan((7.5 + 6) / 30) = 24.23°`, outside the measured `14.7°–16.6°` cube silhouette. It
+ * carries no game or protocol state and consumes no `random` draw.
+ */
+export const COSMIC_ANCHOR_OFFSET_X = 6;
+
+/**
+ * Presentation-only screen-up offset added to the camera anchor of the cosmic backdrop
+ * group (T16). The hero ship becomes camera-relative `(15, 1.5, -14)`, so its 1280×720
+ * projection clears the bottom-right upgrades panel. It carries no game or protocol state
+ * and consumes no `random` draw.
+ */
+export const COSMIC_ANCHOR_OFFSET_Y = 4;
 
 /**
  * World offsets of the four travel directions (spec § 3, pinned): screen axes equal world
@@ -441,8 +460,13 @@ export function createSceneView(options: {
 
   // Anchor the decorative backdrop at construction so the first rendered frame already has
   // the pinned right-side comet/hero composition from this slot (AC-11, AC-17). The group
-  // copies only the camera x/y; z stays 0, so the children's local z remains world depth.
-  cosmicBackdrop.group.position.set(camera.position.x, camera.position.y, 0);
+  // follows the camera plus the presentation-only offsets; z stays 0, so the children's
+  // local z remains world depth.
+  cosmicBackdrop.group.position.set(
+    camera.position.x + COSMIC_ANCHOR_OFFSET_X,
+    camera.position.y + COSMIC_ANCHOR_OFFSET_Y,
+    0,
+  );
 
   /**
    * The camera pose the starfield anchors to. The anchor holds the camera's live vectors
@@ -1028,10 +1052,14 @@ export function createSceneView(options: {
         }
       }
       backgroundLife.update(dtMs, reducedMotion);
-      // The decorative group follows the live camera x/y (the starfield's anchoring
-      // precedent) before its slow drift; z stays 0 so the pinned child depth is unchanged
-      // (AC-11, AC-17).
-      cosmicBackdrop.group.position.set(camera.position.x, camera.position.y, 0);
+      // The decorative group follows the live camera x/y plus the presentation-only
+      // right/up composition offsets before its slow drift; z stays 0 so the pinned child
+      // depth is unchanged (AC-11, AC-17).
+      cosmicBackdrop.group.position.set(
+        camera.position.x + COSMIC_ANCHOR_OFFSET_X,
+        camera.position.y + COSMIC_ANCHOR_OFFSET_Y,
+        0,
+      );
       cosmicBackdrop.update(dtMs, reducedMotion);
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       particles.update(dtMs);

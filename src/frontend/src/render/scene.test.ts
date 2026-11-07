@@ -44,6 +44,8 @@ import {
   AMBIENT_INTENSITY,
   AMBIENT_INTENSITY_MAX,
   AMBIENT_INTENSITY_MIN,
+  COSMIC_ANCHOR_OFFSET_X,
+  COSMIC_ANCHOR_OFFSET_Y,
   createSceneView,
   CUBE_SPACING,
   introCameraPose,
@@ -2581,25 +2583,38 @@ describe('cosmic backdrop scene integration (AC-10, AC-12)', () => {
   });
 });
 
-describe('camera-anchored cosmic composition (AC-10, AC-11, AC-17)', () => {
-  it('anchors the group to the injected own slot at construction', () => {
+describe('camera-relative cosmic composition (AC-10, AC-11, AC-17)', () => {
+  it('pins the presentation-only anchor offsets', () => {
+    expect(COSMIC_ANCHOR_OFFSET_X).toBe(6);
+    expect(COSMIC_ANCHOR_OFFSET_Y).toBe(4);
+  });
+
+  it('anchors the group to the injected own slot plus the offsets at construction', () => {
     const view = createSceneView({
       style: STYLE,
       random: fixedRandom,
       ownPosition: { x: 7.64, y: 0 },
     });
 
-    // The first rendered frame already copies the camera rest pose; z stays 0, so the
-    // children's pinned local depth remains world depth.
-    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([7.64, 0, 0]);
+    // The first rendered frame already applies the camera-relative composition offsets;
+    // z stays 0, so the children's pinned local depth remains world depth.
+    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([
+      7.64 + COSMIC_ANCHOR_OFFSET_X,
+      0 + COSMIC_ANCHOR_OFFSET_Y,
+      0,
+    ]);
 
-    // The y component follows the slot as well as x.
+    // Both anchors follow a diagonal slot too.
     const offsetView = createSceneView({
       style: STYLE,
       random: fixedRandom,
       ownPosition: { x: -7.64, y: 7.64 },
     });
-    expect(offsetView.cosmicBackdrop.group.position.toArray()).toEqual([-7.64, 7.64, 0]);
+    expect(offsetView.cosmicBackdrop.group.position.toArray()).toEqual([
+      -7.64 + COSMIC_ANCHOR_OFFSET_X,
+      7.64 + COSMIC_ANCHOR_OFFSET_Y,
+      0,
+    ]);
   });
 
   it('keeps the comet and hero ship right of and behind the cube from every slot (AC-11, AC-17)', () => {
@@ -2620,28 +2635,40 @@ describe('camera-anchored cosmic composition (AC-10, AC-11, AC-17)', () => {
       applySnapshot(view, snapshot({ phase: 'playing' }));
       view.update(0);
 
-      expect(view.cosmicBackdrop.group.position.toArray()).toEqual([ownX, ownY, 0]);
+      expect(view.cosmicBackdrop.group.position.toArray()).toEqual([
+        ownX + COSMIC_ANCHOR_OFFSET_X,
+        ownY + COSMIC_ANCHOR_OFFSET_Y,
+        0,
+      ]);
       expect(view.cosmicBackdrop.group.position.z).toBe(0);
 
-      const cubeX = cubeGroup(view).position.x;
-      expect(cubeX).toBe(ownX);
+      const cube = cubeGroup(view);
+      expect(cube.position.x).toBe(ownX);
 
       const cometWorld = view.cosmicBackdrop.comet.getWorldPosition(new Vector3());
       const heroWorld = view.cosmicBackdrop.heroShip.getWorldPosition(new Vector3());
-      expect(cometWorld.toArray()).toEqual([
-        ownX + COMET_POSITION.x,
-        ownY + COMET_POSITION.y,
-        COMET_POSITION.z,
-      ]);
-      expect(heroWorld.toArray()).toEqual([
-        ownX + HERO_SHIP_POSITION.x,
-        ownY + HERO_SHIP_POSITION.y,
-        HERO_SHIP_POSITION.z,
-      ]);
-      expect(cometWorld.x).toBeGreaterThan(cubeX);
-      expect(heroWorld.x).toBeGreaterThan(cubeX);
+      expect(cometWorld.toArray()).toEqual([ownX + 13.5, ownY + 6.2, -18]);
+      expect(heroWorld.toArray()).toEqual([ownX + 15, ownY + 1.5, -14]);
+      expect(cometWorld.x).toBeGreaterThan(cube.position.x);
+      expect(heroWorld.x).toBeGreaterThan(cube.position.x);
+      expect(heroWorld.x - cube.position.x).toBe(15);
+      expect(heroWorld.y - cube.position.y).toBe(1.5);
       expect(cometWorld.z).toBeLessThan(-4);
       expect(heroWorld.z).toBeLessThan(-4);
+
+      // The comet clears the measured cube silhouette from the live camera: its
+      // camera-relative screen angle is 24.23° (pinned minimum > 20°).
+      const cometAngleDegrees =
+        (Math.atan2(
+          cometWorld.x - view.camera.position.x,
+          view.camera.position.z - cometWorld.z,
+        ) *
+          180) /
+        Math.PI;
+      expect(cometAngleDegrees).toBeGreaterThan(20);
+      // Float trig: the exact atan2 result is not representable; this is the task's pinned
+      // 24.23° value and the single close-to assertion in this task.
+      expect(cometAngleDegrees).toBeCloseTo(24.23, 1);
 
       // The children keep their pinned group-local transforms.
       expect(view.cosmicBackdrop.comet.position.toArray()).toEqual([
@@ -2657,7 +2684,7 @@ describe('camera-anchored cosmic composition (AC-10, AC-11, AC-17)', () => {
     }
   });
 
-  it('follows the travel camera x while the group z stays 0', () => {
+  it('follows the travel camera plus the offsets while the group z stays 0', () => {
     const view = createView();
 
     applySnapshot(
@@ -2668,7 +2695,12 @@ describe('camera-anchored cosmic composition (AC-10, AC-11, AC-17)', () => {
 
     view.update(0);
 
-    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([12, 0, 0]);
+    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([
+      12 + COSMIC_ANCHOR_OFFSET_X,
+      COSMIC_ANCHOR_OFFSET_Y,
+      0,
+    ]);
+    expect(view.cosmicBackdrop.group.position.toArray()).toEqual([18, 4, 0]);
   });
 });
 
