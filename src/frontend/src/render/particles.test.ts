@@ -11,7 +11,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBurst, EXPLOSION_PARTICLE_COUNT, PARTICLE_POOL_CAP, type Burst } from '../game/effects';
-import { createParticleSystem, type ParticleSystem } from './particles';
+import { createParticleSystem, PARTICLE_COLOR, type ParticleSystem } from './particles';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
 function sequenceRandom(draws: readonly number[]): () => number {
@@ -128,6 +128,14 @@ describe('createParticleSystem', () => {
     // Above the starfield and the face plates, which keep three's default order 0 (AC-3).
     expect(points.renderOrder).toBe(10);
     expect(points.frustumCulled).toBe(false);
+  });
+
+  it('tints the shared material with the pinned gold PARTICLE_COLOR (AC-15)', () => {
+    const points = pointsOf(createParticleSystem(noJitter));
+
+    expect(PARTICLE_COLOR).toBe(0xffcc66);
+    expect(points.material.color.getHex()).toBe(0xffcc66);
+    expect(points.material.color.getHex()).toBe(PARTICLE_COLOR);
   });
 });
 

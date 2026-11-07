@@ -15,10 +15,10 @@
  * push the active total past `cap`, the pool recycles the earliest-spawned burst, so the
  * newest explosion always plays.
  *
- * Appearance. Fragments are additive points of the pinned world size
- * {@link PARTICLE_POINT_SIZE}; each burst fades linearly to black over its lifetime through
- * the per-vertex colour attribute (one material, one draw call for the whole pool). The
- * per-fragment `BurstParticle.size` of the burst contract is not consumed here:
+ * Appearance. Fragments are additive gold points ({@link PARTICLE_COLOR}, spec AC-15) of the
+ * pinned world size {@link PARTICLE_POINT_SIZE}; each burst fades linearly to black over its
+ * lifetime through the per-vertex colour attribute (one material, one draw call for the whole
+ * pool). The per-fragment `BurstParticle.size` of the burst contract is not consumed here:
  * `PointsMaterial` carries a single size per draw call, and the pool deliberately stays one
  * drawable (AC-16) rather than one `Points` per fragment.
  *
@@ -47,6 +47,14 @@ import { PARTICLE_POOL_CAP, type Burst, type BurstParticle } from '../game/effec
 
 /** World-space point size of one fragment (attenuated by distance). */
 const PARTICLE_POINT_SIZE = 0.15;
+
+/**
+ * Gold tint of the shared burst material (spec AC-15). The per-vertex colour attribute
+ * supplies only the fade, so every fragment draws as this gold scaled to black — the
+ * reference's golden spark burst. `0xffcc66` matches the HUD's `COIN_GOLD` token
+ * (`ui/theme.ts`), keeping the burst and the coin readout in one gold family.
+ */
+export const PARTICLE_COLOR = 0xffcc66;
 
 /**
  * Render order of the particle drawable (spec AC-3). Above the starfield and the face
@@ -139,6 +147,7 @@ export function createParticleSystem(
   geometry.setDrawRange(0, 0);
 
   const material = new PointsMaterial({
+    color: PARTICLE_COLOR,
     size: PARTICLE_POINT_SIZE,
     sizeAttenuation: true,
     vertexColors: true,
