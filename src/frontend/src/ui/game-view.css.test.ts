@@ -262,18 +262,74 @@ describe('spaceship customization controls (AC-7)', () => {
   });
 });
 
-describe('mobile bottom band (AC-18)', () => {
+describe('mobile bands (AC-18)', () => {
   it('has exactly one 720px block and no 480px block', () => {
     expect(cssSource.match(/@media\s*\(\s*max-width:\s*720px\s*\)/g) ?? []).toHaveLength(1);
     expect(cssSource).not.toMatch(/@media\s*\(\s*max-width:\s*480px\s*\)/);
   });
 
-  it('reduces the HUD padding and font size', () => {
+  it('reserves the pill width in the HUD while reducing its padding and font size', () => {
     const block = mediaBlock(cssSource, '@media (max-width: 720px)');
     expect(declarations(ruleBody(block, /\.hud-panel\s*\{([\s\S]*?)\}/))).toEqual([
+      'box-sizing: border-box',
       'padding: 0.5rem 0.75rem',
       'font-size: 0.85rem',
+      'max-width: calc(100vw - 2rem - 9rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))',
     ]);
+  });
+
+  it('caps the users panel and tightens the mobile pill', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    expect(declarations(ruleBody(block, /^\s*\.user-panel\s*\{([\s\S]*?)\}/m))).toEqual([
+      'max-width: 8.5rem',
+    ]);
+    expect(declarations(ruleBody(block, /\.user-panel > \.users-badge\s*\{([\s\S]*?)\}/))).toEqual([
+      'padding: 0.5rem 0.5rem',
+      'font-size: 0.8rem',
+    ]);
+  });
+
+  it('keeps at least a 0.5rem (8px) gap between the HUD reserve and the pill cap', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    const hudMaxWidth = declarations(ruleBody(block, /\.hud-panel\s*\{([\s\S]*?)\}/)).find(
+      (declaration) => declaration.startsWith('max-width: '),
+    );
+    if (hudMaxWidth === undefined) {
+      throw new Error('mobile HUD max-width not found');
+    }
+    const reserve = hudMaxWidth.match(/-\s*(\d+(?:\.\d+)?)rem\s*-\s*env\(safe-area-inset-left/);
+    const cap = ruleBody(block, /^\s*\.user-panel\s*\{([\s\S]*?)\}/m).match(
+      /max-width:\s*(\d+(?:\.\d+)?)rem/,
+    );
+    if (reserve === null || cap === null) {
+      throw new Error('mobile reserve or cap not found');
+    }
+
+    expect(Number(reserve[1])).toBe(9);
+    expect(Number(cap[1])).toBe(8.5);
+    const gapRem = Number(reserve[1]) - Number(cap[1]);
+    expect(gapRem).toBeGreaterThanOrEqual(0.5);
+    expect(gapRem * 16).toBeGreaterThanOrEqual(8);
+  });
+
+  it('adds no top-band position declaration inside the 720px block (AC-2)', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    const topBandRules = [
+      ['.hud-panel', /^\s*\.hud-panel\s*\{([\s\S]*?)\}/m],
+      ['.user-panel', /^\s*\.user-panel\s*\{([\s\S]*?)\}/m],
+      ['.user-panel > .users-badge', /^\s*\.user-panel > \.users-badge\s*\{([\s\S]*?)\}/m],
+    ] as const;
+    const found: string[] = [];
+
+    for (const [selector, pattern] of topBandRules) {
+      for (const declaration of declarations(ruleBody(block, pattern))) {
+        if (/^(?:position|top|right|bottom|left)\s*:/.test(declaration)) {
+          found.push(`${selector} { ${declaration}; }`);
+        }
+      }
+    }
+
+    expect(found).toEqual([]);
   });
 
   it('stacks the upgrades panel above the toggle with the pinned safe-area offsets', () => {

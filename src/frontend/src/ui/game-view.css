@@ -4,8 +4,10 @@
  * Imported after `app.css`. This file owns the rounded, translucent cyan gameplay
  * chrome only; the four base corner placements stay in `app.css` (AC-2), and the
  * `@media (max-width: 720px)` bottom-band overrides below are the only position
- * declarations here. The nine `:root` custom properties mirror the exported
- * `ui/theme.ts` tokens 1:1; `game-view.css.test.ts` keeps the pair honest (AC-3).
+ * declarations here. The same block's top-band sizing reserves keep the HUD and
+ * the users pill apart without moving either corner (T17). The nine `:root`
+ * custom properties mirror the exported `ui/theme.ts` tokens 1:1;
+ * `game-view.css.test.ts` keeps the pair honest (AC-3).
  */
 
 :root {
@@ -185,14 +187,27 @@
 }
 
 /*
- * Mobile bottom band (AC-18): both panels span the viewport above the
- * always-visible bottom-left toggle; while customization is open the upgrades
- * panel is hidden instead of overlapping it.
+ * Mobile bands (AC-18). Top band: reserve the users pill's width in the HUD
+ * (border-box so the cap includes padding and border) with sizing only, keeping
+ * both base corners unchanged (T17). Bottom band: both panels span the viewport
+ * above the always-visible bottom-left toggle; while customization is open the
+ * upgrades panel is hidden instead of overlapping it.
  */
 @media (max-width: 720px) {
   .hud-panel {
+    box-sizing: border-box;
     padding: 0.5rem 0.75rem;
     font-size: 0.85rem;
+    max-width: calc(100vw - 2rem - 9rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  }
+
+  .user-panel {
+    max-width: 8.5rem;
+  }
+
+  .user-panel > .users-badge {
+    padding: 0.5rem 0.5rem;
+    font-size: 0.8rem;
   }
 
   .upgrades-panel {
