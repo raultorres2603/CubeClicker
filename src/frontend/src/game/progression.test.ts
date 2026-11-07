@@ -22,12 +22,12 @@ describe('CUBE_STYLES', () => {
     expect(CUBE_STYLES).toEqual([
       {
         id: 'obsidian-neon',
-        name: 'Obsidian Neon',
-        cubeColor: '#0b0b12',
-        miniCubeColor: '#1de9b6',
-        accentColor: '#7cf6ff',
-        metalness: 0.6,
-        roughness: 0.35,
+        name: 'Emerald Neon',
+        cubeColor: '#0a2418',
+        miniCubeColor: '#2ee27f',
+        accentColor: '#b6ffd9',
+        metalness: 0.3,
+        roughness: 0.18,
       },
       {
         id: 'crimson-alloy',

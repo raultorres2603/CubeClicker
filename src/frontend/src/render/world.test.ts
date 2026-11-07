@@ -162,10 +162,10 @@ describe('applyRoster', () => {
     expect(p2View.faces.get('front')!.count).toBe(25);
     expect(p3View.faces.get('front')!.count).toBe(9);
     expect(p2View.faces.size).toBe(6);
-    expect((p2View.body.material as MeshStandardMaterial).color.getHexString()).toBe('0b0b12');
+    expect((p2View.body.material as MeshStandardMaterial).color.getHexString()).toBe('0a2418');
     expect(
       (p2View.faces.get('front')!.material as MeshStandardMaterial).color.getHexString(),
-    ).toBe('1de9b6');
+    ).toBe('2ee27f');
     expect((p3View.body.material as MeshStandardMaterial).color.getHexString()).toBe('1a0b0e');
   });
 
@@ -299,14 +299,14 @@ describe('applyRoster', () => {
     expect(meshes).toBeLessThanOrEqual(10 * 7);
   });
 
-  it('falls back to the pinned first style for an unknown style id', () => {
+  it('falls back to the pinned emerald first style for an unknown style id', () => {
     const world = createWorld();
 
     world.applyRoster([member('p2', SLOT_2, { styleId: 'not-a-style' })]);
 
     expect(
       (world.views().get('p2')!.body.material as MeshStandardMaterial).color.getHexString(),
-    ).toBe('0b0b12');
+    ).toBe('0a2418');
   });
 });
 
