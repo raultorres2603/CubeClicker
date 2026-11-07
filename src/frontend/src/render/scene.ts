@@ -4,9 +4,10 @@
  *
  * Layer: render adapter (`render/**`) — three.js only, no DOM, no game rules. The scene
  * assembles the pieces the other render tasks own ({@link createStarfield} backdrop,
- * {@link createCubeView} cube, {@link createParticleSystem} explosions) plus the lights
- * and the pinned camera, and is the single place that turns engine output into three.js
- * state:
+ * {@link createCubeView} cube, {@link createParticleSystem} explosions,
+ * {@link createBackgroundLife} distant life, {@link createCosmicBackdrop} nebula,
+ * asteroids, meteors, comet and hero ship) plus the lights and the pinned camera, and is
+ * the single place that turns engine output into three.js state:
  *
  * - {@link SceneView.applyIntents} consumes the engine's one-shot `EffectIntent`s:
  *   an `explosion` reads the tile's world origin and outward face normal, starts the
@@ -19,8 +20,8 @@
  *   setting → rebuild step → camera (intro dolly, directional travel flight or the rest
  *   pose over the current cube) → cube orientation → reduced-motion pop settle.
  * - {@link SceneView.update} advances the frame-driven parts: the camera-anchored starfield
- *   swirl and scale, particle aging, the face-removal countdowns and the running mini-cube
- *   pops (AC-4).
+ *   swirl and scale, particle aging, the face-removal countdowns, the background life, the
+ *   cosmic backdrop's slow drift and the running mini-cube pops (AC-4, AC-12).
  *
  * World model (spec § 3): cubes live on a flat plane and the camera is always axis-aligned
  * with the identity quaternion, so screen-right is world +x and screen-up is world +y. A
@@ -41,13 +42,14 @@
  * The scene receives values only; it never reads the engine (plan § Data flow) and it
  * owns every three.js object it creates, so `dispose()` can release them exactly once
  * (AC-15). Drawables stay bounded: one starfield `Points`, one cube view (body + ≤ 6
- * `InstancedMesh`), one pooled particle `Points` and, online, one remote world of ≤ (X − 1)
- * cube views (AC-16).
+ * `InstancedMesh`), one pooled particle `Points`, one background-life group, one
+ * `cosmic-backdrop` group (28 objects) owning the nebula `DataTexture` used as
+ * `scene.background`, and, online, one remote world of ≤ (X − 1) cube views (AC-10,
+ * AC-16).
  */
 
 import {
   AmbientLight,
-  Color,
   DirectionalLight,
   InstancedMesh,
   Matrix4,
@@ -84,10 +86,8 @@ import { travelCameraPose as spectateTravelPose } from './spectate-travel';
 import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
 import { createSpaceship, type Shot, type Spaceship } from './spaceship';
 import { createBackgroundLife, type BackgroundLife } from './background-life';
+import { createCosmicBackdrop, type CosmicBackdrop } from './cosmic-backdrop';
 import { createWorldView, type WorldView } from './world';
-
-/** Black backdrop behind the starfield (AC-3). */
-const BACKGROUND_COLOR = 0x000000;
 
 /** Ambient fill-light intensity. */
 export const AMBIENT_INTENSITY = 0.6;
@@ -298,6 +298,12 @@ export interface SceneView {
    */
   readonly worldView: WorldView | null;
   /**
+   * The procedural cosmic backdrop (AC-10, AC-11): its `group` is the ninth scene child,
+   * after `background-life`, and its `nebulaTexture` is `scene.background`. Created once
+   * and never rebuilt, so the seeded starfield/background-life draws keep their sequence.
+   */
+  readonly cosmicBackdrop: CosmicBackdrop;
+  /**
    * Enters a server world immediately (`welcome`/resume): builds the {@link WorldView} with
    * the server's `maxUsers`, applies the remote roster, moves the own cube to
    * `ownPosition` and clears any queued cross-server swap. Replaces a previous world by
@@ -358,9 +364,15 @@ export interface SceneView {
    * scene does not consume it.
    */
   applySnapshot(snapshot: EngineSnapshot, nowMs: number): void;
-  /** Advances the frame-driven parts: the starfield swirl/scale, particles, removals, pops. */
+  /**
+   * Advances the frame-driven parts: the starfield swirl/scale, particles, removals, pops
+   * and the cosmic backdrop (forwarded with the frame `dtMs` and `reducedMotion`).
+   */
   update(dtMs: number): void;
-  /** Disposes every geometry/material it owns (exactly once) and empties the scene. */
+  /**
+   * Disposes every geometry/material it owns (exactly once), clears the nebula
+   * `scene.background` before releasing the backdrop, and empties the scene.
+   */
   dispose(): void;
 }
 
@@ -369,8 +381,9 @@ export interface SceneView {
  *
  * @param options.style starting cube style (the cube view's materials).
  * @param options.gridSize tiles per face edge; defaults to the pinned `GRID_SIZE` (5).
- * @param options.random source for the starfield layout and the particle jitter; injected
- * so a seeded source makes the whole scene deterministic (defaults to `Math.random`).
+ * @param options.random source for the starfield layout, the particle jitter, the
+ * background life and the nebula texture; injected so a seeded source makes the whole
+ * scene deterministic (defaults to `Math.random`).
  * @param options.ownPosition the own member's server slot position; defaults to the
  * offline origin `(0, 0)`, so the offline rest pose and intro stay exactly at `(0,0,12)`.
  */
@@ -385,7 +398,6 @@ export function createSceneView(options: {
   const random = options.random ?? Math.random;
 
   const scene = new Scene();
-  scene.background = new Color(BACKGROUND_COLOR);
 
   const starfield: Starfield = createStarfield(random);
   const ambientLight = new AmbientLight(
@@ -410,8 +422,13 @@ export function createSceneView(options: {
   const particles: ParticleSystem = createParticleSystem(random);
   const spaceship: Spaceship = createSpaceship(options.appearance);
   const backgroundLife: BackgroundLife = createBackgroundLife(random);
+  // Created after the starfield, the particle pool and the background life so their seeded
+  // draw sequences stay unchanged (AC-16). The backdrop owns the nebula `DataTexture` the
+  // scene renders as its background, replacing the old black `Color` (AC-10).
+  const cosmicBackdrop: CosmicBackdrop = createCosmicBackdrop(random);
+  scene.background = cosmicBackdrop.nebulaTexture;
 
-  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup, backgroundLife.group);
+  scene.add(ambientLight, keyLight, starfield.points, cube.group, particles.group, spaceship.group, spaceship.shotsGroup, backgroundLife.group, cosmicBackdrop.group);
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(cubePosition.x, cubePosition.y, REST_Z);
@@ -857,6 +874,8 @@ export function createSceneView(options: {
       return world;
     },
 
+    cosmicBackdrop,
+
     setPointerTarget(ndcX: number, ndcY: number): void {
       if (disposed) {
         return;
@@ -999,6 +1018,7 @@ export function createSceneView(options: {
         }
       }
       backgroundLife.update(dtMs, reducedMotion);
+      cosmicBackdrop.update(dtMs, reducedMotion);
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       particles.update(dtMs);
       advanceFaceRemovals(dtMs);
@@ -1015,6 +1035,9 @@ export function createSceneView(options: {
       disposed = true;
       faceRemovals.clear();
       pendingExplosions.length = 0;
+      // The backdrop owns the texture: detach it from the scene first, then release it.
+      scene.background = null;
+      cosmicBackdrop.dispose();
       starfield.dispose();
       cube.dispose();
       particles.dispose();

@@ -1,6 +1,5 @@
 import {
   AmbientLight,
-  Color,
   DirectionalLight,
   Frustum,
   Group,
@@ -29,6 +28,17 @@ import {
   type TravelDirection,
 } from '../game/types';
 import type { MemberState } from '../multiplayer/protocol';
+import {
+  COSMIC_ASTEROID_ROTATION_SPEED,
+  COSMIC_BACKDROP_OBJECT_COUNT,
+  COSMIC_COMET_BOB_AMPLITUDE,
+  COSMIC_COMET_BOB_SPEED,
+  COSMIC_HERO_BOB_AMPLITUDE,
+  COSMIC_HERO_BOB_SPEED,
+  COSMIC_METEOR_SPEED_X,
+  COMET_POSITION,
+  HERO_SHIP_POSITION,
+} from './cosmic-backdrop';
 import { CUBE_HALF_SIZE } from './cube-view';
 import {
   AMBIENT_INTENSITY,
@@ -470,15 +480,16 @@ const TRAVEL_POSES: Readonly<
 const DIRECTIONS: readonly TravelDirection[] = ['left', 'right', 'top', 'bottom'];
 
 describe('scene composition', () => {
-  it('sets a black background and assembles the starfield, lights, cube and particles (AC-16)', () => {
+  it('uses the nebula background and assembles the starfield, lights, cube, particles and backdrop (AC-10, AC-16)', () => {
     const view = createView();
 
     expect(view.scene).toBeInstanceOf(Scene);
-    expect(view.scene.background).toBeInstanceOf(Color);
-    expect((view.scene.background as Color).getHex()).toBe(0x000000);
+    // AC-10: the procedural nebula `DataTexture` replaces the old black `Color`.
+    expect(view.scene.background).toBe(view.cosmicBackdrop.nebulaTexture);
 
-    // Starfield + cube + particles + two lights + background life: a fixed, bounded child list.
-    expect(view.scene.children).toHaveLength(8);
+    // Two lights + starfield + cube + particles + spaceship + background life + cosmic
+    // backdrop: a fixed, bounded child list.
+    expect(view.scene.children).toHaveLength(9);
     expect(view.scene.children[0]).toBeInstanceOf(AmbientLight);
     expect(view.scene.children[1]).toBeInstanceOf(DirectionalLight);
     const starfield = createStarfield(fixedRandom);
@@ -1593,7 +1604,7 @@ describe('intent application', () => {
 
     // The accessor answers with the cube view the scene holds right now.
     expect(initial.group).toBe(cubeGroup(view));
-    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0b0b12');
+    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0a2418');
 
     // `levelChanged` alone is pending; the snapshot performs the rebuild.
     applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
@@ -1620,7 +1631,7 @@ describe('intent application', () => {
       '1a0b0e',
     );
     // The stale handle is untouched by the rebuild — it was a different cube view.
-    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0b0b12');
+    expect((initial.body.material as MeshStandardMaterial).color.getHexString()).toBe('0a2418');
   });
 });
 
@@ -1647,8 +1658,10 @@ describe('frame updates and lifecycle', () => {
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
-    // Scene + two lights + starfield + cube group (body + 6 grids) + particle group + pool.
-    expect(baselineObjects).toBe(32);
+    // The 32 pre-backdrop objects plus the cosmic backdrop's 28
+    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 60 (AC-10, AC-11).
+    expect(baselineObjects).toBe(32 + COSMIC_BACKDROP_OBJECT_COUNT);
+    expect(baselineObjects).toBe(60);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
@@ -1686,7 +1699,7 @@ describe('frame updates and lifecycle', () => {
     );
 
     expect(countObjects(view.scene)).toBe(baselineObjects);
-    expect(view.scene.children).toHaveLength(8);
+    expect(view.scene.children).toHaveLength(9);
     expect(cubeGroup(view).children).toHaveLength(7);
     expect(faceMeshes(view)).toHaveLength(6);
   });
@@ -1698,6 +1711,7 @@ describe('frame updates and lifecycle', () => {
     const particles = particlePoints(view);
     const body = cubeGroup(view).children[0] as Mesh;
 
+    const nebulaDispose = vi.spyOn(view.cosmicBackdrop.nebulaTexture, 'dispose');
     const spies = [
       vi.spyOn(starfield.geometry, 'dispose'),
       vi.spyOn(starfield.material as Material, 'dispose'),
@@ -1716,6 +1730,8 @@ describe('frame updates and lifecycle', () => {
       expect(spy).toHaveBeenCalledTimes(1);
       expect(spy).toHaveBeenCalledWith();
     }
+    expect(nebulaDispose).toHaveBeenCalledTimes(1);
+    expect(view.scene.background).toBeNull();
     expect(view.scene.children).toEqual([]);
   });
 });
@@ -1734,7 +1750,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
     // No `welcome` yet: the remote world does not exist.
     expect(view.worldView).toBeNull();
-    expect(view.scene.children).toHaveLength(8);
+    expect(view.scene.children).toHaveLength(9);
   });
 
   it('dollies the intro onto the own position, keeping the accepted z table', () => {
@@ -1776,7 +1792,8 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(cubeGroup(view).position.toArray()).toEqual([24, 0, 0]);
     expect(view.worldView!.views().size).toBe(1);
     expect(view.worldView!.views().get('p2')!.group.position.toArray()).toEqual([12, 12, 0]);
-    expect(view.scene.children).toHaveLength(9);
+    // Nine base children plus the remote world group.
+    expect(view.scene.children).toHaveLength(10);
 
     applySnapshot(view, snapshot({ phase: 'playing' }));
     expect(view.camera.position.toArray()).toEqual([24, 0, 12]);
@@ -1983,7 +2000,8 @@ describe('online destination travel (AC-12)', () => {
     expect(view.worldView!.views().get('p3')!.group.position.toArray()).toEqual([0, 12, 0]);
     expect(oldWorldDispose).toHaveBeenCalledTimes(1);
     expect(oldRemoteDispose).toHaveBeenCalledTimes(1);
-    expect(view.scene.children).toHaveLength(9);
+    // Nine base children plus the replacement world group.
+    expect(view.scene.children).toHaveLength(10);
     const newWorld = view.worldView!;
     const newWorldDispose = vi.spyOn(newWorld, 'dispose');
 
@@ -2448,6 +2466,118 @@ describe('background life scene integration (AC-9, AC-10)', () => {
     const motionBefore = motionStar.position.x;
     viewMotion.update(100);
     expect(motionStar.position.x).not.toBe(motionBefore);
+  });
+});
+
+describe('cosmic backdrop scene integration (AC-10, AC-12)', () => {
+  function cosmicGroup(view: SceneView): Group {
+    const group = view.scene.children.find(
+      (child): child is Group => child instanceof Group && child.name === 'cosmic-backdrop',
+    );
+    if (group === undefined) {
+      throw new Error('the scene has no cosmic-backdrop group');
+    }
+    return group;
+  }
+
+  function cosmicGroups(view: SceneView): Group[] {
+    return view.scene.children.filter(
+      (child): child is Group => child instanceof Group && child.name === 'cosmic-backdrop',
+    );
+  }
+
+  it('adds exactly one cosmic-backdrop group as the ninth child, after background life (AC-10)', () => {
+    const view = createView();
+
+    expect(cosmicGroups(view)).toHaveLength(1);
+    expect(cosmicGroup(view)).toBe(view.cosmicBackdrop.group);
+    expect(view.scene.children).toHaveLength(9);
+    expect(view.scene.children[7]!.name).toBe('background-life');
+    expect(view.scene.children[8]).toBe(view.cosmicBackdrop.group);
+    expect(countObjects(view.cosmicBackdrop.group)).toBe(COSMIC_BACKDROP_OBJECT_COUNT);
+    expect(view.scene.background).toBe(view.cosmicBackdrop.nebulaTexture);
+  });
+
+  it('keeps the backdrop and the nebula background across a levelChanged rebuild (AC-10)', () => {
+    const view = createView();
+    const backdrop = view.cosmicBackdrop;
+    applySnapshot(view, snapshot());
+
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelDirection: 'right',
+        style: NEXT_STYLE,
+        levelIndex: 1,
+      }),
+    );
+
+    expect(view.cosmicBackdrop).toBe(backdrop);
+    expect(cosmicGroups(view)).toHaveLength(1);
+    expect(cosmicGroup(view)).toBe(backdrop.group);
+    expect(view.scene.children).toHaveLength(9);
+    expect(view.scene.background).toBe(backdrop.nebulaTexture);
+  });
+
+  it('forwards dtMs and reducedMotion to the backdrop update (AC-12)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ reducedMotion: false }));
+    const asteroid = view.cosmicBackdrop.asteroids[0]!;
+    const meteor = view.cosmicBackdrop.meteors[0]!;
+    const comet = view.cosmicBackdrop.comet;
+    const heroShip = view.cosmicBackdrop.heroShip;
+    const asteroidRotation = asteroid.rotation.x;
+    const meteorX = meteor.position.x;
+
+    view.update(100);
+
+    expect(asteroid.rotation.x).toBe(
+      asteroidRotation + COSMIC_ASTEROID_ROTATION_SPEED * 100,
+    );
+    expect(meteor.position.x).toBe(meteorX + COSMIC_METEOR_SPEED_X * 100);
+    expect(comet.position.y).toBe(
+      COMET_POSITION.y + Math.sin(100 * COSMIC_COMET_BOB_SPEED) * COSMIC_COMET_BOB_AMPLITUDE,
+    );
+    expect(heroShip.position.y).toBe(
+      HERO_SHIP_POSITION.y + Math.sin(100 * COSMIC_HERO_BOB_SPEED) * COSMIC_HERO_BOB_AMPLITUDE,
+    );
+
+    // The reduced-motion flag reaches the backdrop: a later frame changes nothing.
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+    const frozen = {
+      asteroidRotation: asteroid.rotation.x,
+      meteorX: meteor.position.x,
+      cometY: comet.position.y,
+      heroY: heroShip.position.y,
+    };
+    view.update(100);
+
+    expect(asteroid.rotation.x).toBe(frozen.asteroidRotation);
+    expect(meteor.position.x).toBe(frozen.meteorX);
+    expect(comet.position.y).toBe(frozen.cometY);
+    expect(heroShip.position.y).toBe(frozen.heroY);
+  });
+
+  it('clears the nebula background before disposing the backdrop (AC-10, AC-12)', () => {
+    const view = createView();
+    const backdrop = view.cosmicBackdrop;
+    const backgroundAtDispose: unknown[] = [];
+    const disposeBackdrop = backdrop.dispose.bind(backdrop);
+    vi.spyOn(backdrop, 'dispose').mockImplementation(() => {
+      backgroundAtDispose.push(view.scene.background);
+      disposeBackdrop();
+    });
+    const textureDispose = vi.spyOn(backdrop.nebulaTexture, 'dispose');
+
+    view.dispose();
+
+    expect(backgroundAtDispose).toEqual([null]);
+    expect(textureDispose).toHaveBeenCalledTimes(1);
+    expect(view.scene.background).toBeNull();
+    expect(view.scene.children).toEqual([]);
   });
 });
 
