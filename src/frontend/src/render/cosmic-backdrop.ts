@@ -21,14 +21,14 @@
  * advance) nothing changes. No per-frame allocations: the loop touches preallocated
  * meshes/groups only.
  *
- * Disposal (AC-12). {@link CosmicBackdrop.dispose} detaches the group from its parent and
- * releases every geometry and material it owns plus the nebula texture exactly once; calling
- * it again is a no-op.
+ * Disposal (AC-12). {@link CosmicBackdrop.dispose} detaches the group from its parent,
+ * releases the 15 non-hero meshes' geometries/materials, calls the detailed hero model's own
+ * disposal seam once and releases the nebula texture exactly once; calling it again is a
+ * no-op.
  */
 
 import {
   AdditiveBlending,
-  BoxGeometry,
   ConeGeometry,
   DataTexture,
   DodecahedronGeometry,
@@ -40,6 +40,9 @@ import {
 } from 'three';
 
 import { createNebulaTexture } from './nebula';
+import { createHeroSpaceshipModel } from './spaceship-model';
+
+export { HERO_FLAME_COLOR, HERO_HULL_COLOR } from './spaceship-model';
 
 /** Number of asteroids in the backdrop (AC-11). */
 export const COSMIC_ASTEROID_COUNT = 7;
@@ -50,18 +53,16 @@ export const COSMIC_METEOR_COUNT = 3;
 /**
  * Total object count of the backdrop, including the `cosmic-backdrop` group itself
  * (AC-11): 1 group + 7 asteroids + 3 meteor groups + 6 meteor meshes + 1 comet group +
- * 2 comet meshes + 1 hero-ship group + 7 hero meshes.
+ * 2 comet meshes + 1 hero-ship group + 1 hero model group + 48 hero meshes (the 50-object
+ * hero subtree).
  */
-export const COSMIC_BACKDROP_OBJECT_COUNT = 28;
+export const COSMIC_BACKDROP_OBJECT_COUNT = 70;
 
 /** Pinned comet-head colour (AC-11) — glowing orange. */
 export const COMET_HEAD_COLOR = 0xff8a3d;
 
-/** Pinned hero-ship hull colour (AC-11) — blue. */
-export const HERO_HULL_COLOR = 0x2f6fd6;
-
-/** Pinned hero-ship engine-flame colour (AC-11) — orange. */
-export const HERO_FLAME_COLOR = 0xff9a3c;
+// The hero palette is owned by `render/spaceship-model.ts` and re-exported above for the
+// existing callers/tests (AC-11): HERO_HULL_COLOR 0x2f6fd6 and HERO_FLAME_COLOR 0xff9a3c.
 
 /** Pinned comet position (AC-11): right side, behind the cube. */
 export const COMET_POSITION = { x: 7.5, y: 2.2, z: -18 } as const;
@@ -105,11 +106,6 @@ const METEOR_TAIL_COLOR = 0xffa94d;
 
 /** Comet tail tint (the head keeps the pinned {@link COMET_HEAD_COLOR}). */
 const COMET_TAIL_COLOR = 0xffb27a;
-
-/** Nose, wing and cockpit tints around the pinned blue hull. */
-const HERO_NOSE_COLOR = 0x8ec5ff;
-const HERO_WING_COLOR = 0x1d4ed8;
-const HERO_COCKPIT_COLOR = 0x9bd8ff;
 
 /** Meteor drift band on x; a meteor past the maximum wraps back to the minimum. */
 const METEOR_BAND_MIN_X = -16;
@@ -159,7 +155,10 @@ export interface CosmicBackdrop {
   readonly meteors: readonly Group[];
   /** The comet group (`name === 'comet'`): `comet-head` + `comet-tail`. */
   readonly comet: Group;
-  /** The hero-ship group (`name === 'hero-ship'`, `rotation.y === Math.PI / 2`). */
+  /**
+   * The hero-ship group (`name === 'hero-ship'`, `rotation.y === Math.PI / 2`); its only
+   * child is the detailed `hero-ship-model` group.
+   */
   readonly heroShip: Group;
   /**
    * Advances the backdrop by `dtMs` milliseconds (clamped with `Math.max(0, dtMs)`).
@@ -181,7 +180,11 @@ export function createCosmicBackdrop(random: () => number): CosmicBackdrop {
   group.name = 'cosmic-backdrop';
 
   const nebulaTexture = createNebulaTexture(random);
-  /** Every mesh the backdrop owns, disposed exactly once (one geometry/material each). */
+  /**
+   * Every non-hero mesh the backdrop owns, disposed exactly once (one geometry/material
+   * each). The detailed hero subtree is owned by its model and released through
+   * `heroModel.dispose()` (AC-12).
+   */
   const ownedMeshes: Mesh[] = [];
   const asteroids: Mesh[] = [];
   const meteors: Group[] = [];
@@ -279,94 +282,10 @@ export function createCosmicBackdrop(random: () => number): CosmicBackdrop {
   heroShip.position.set(HERO_SHIP_POSITION.x, HERO_SHIP_POSITION.y, HERO_SHIP_POSITION.z);
   // The ship model points along local +z; the quarter turn makes the nose face world +x.
   heroShip.rotation.y = Math.PI / 2;
-
-  const heroHull = new Mesh(
-    new BoxGeometry(1, 0.42, 2.2),
-    new MeshStandardMaterial({
-      color: HERO_HULL_COLOR,
-      metalness: 0.55,
-      roughness: 0.35,
-    }),
-  );
-  heroHull.name = 'hero-hull';
-
-  const heroNose = new Mesh(
-    new ConeGeometry(0.38, 1, 4),
-    new MeshStandardMaterial({
-      color: HERO_NOSE_COLOR,
-      metalness: 0.5,
-      roughness: 0.3,
-    }),
-  );
-  heroNose.name = 'hero-nose';
-  heroNose.position.z = 1.55;
-  heroNose.rotation.x = Math.PI / 2;
-
-  const heroWingLeft = new Mesh(
-    new BoxGeometry(1.3, 0.1, 0.85),
-    new MeshStandardMaterial({
-      color: HERO_WING_COLOR,
-      metalness: 0.5,
-      roughness: 0.4,
-    }),
-  );
-  heroWingLeft.name = 'hero-wing-left';
-  heroWingLeft.position.set(-1, 0, -0.35);
-
-  const heroWingRight = new Mesh(
-    new BoxGeometry(1.3, 0.1, 0.85),
-    new MeshStandardMaterial({
-      color: HERO_WING_COLOR,
-      metalness: 0.5,
-      roughness: 0.4,
-    }),
-  );
-  heroWingRight.name = 'hero-wing-right';
-  heroWingRight.position.set(1, 0, -0.35);
-
-  const heroCockpit = new Mesh(
-    new SphereGeometry(0.3, 12, 10),
-    new MeshStandardMaterial({
-      color: HERO_COCKPIT_COLOR,
-      metalness: 0.2,
-      roughness: 0.15,
-    }),
-  );
-  heroCockpit.name = 'hero-cockpit';
-  heroCockpit.position.set(0, 0.3, 0.45);
-
-  const heroEngines: Mesh[] = [];
-  for (const offset of [-0.32, 0.32]) {
-    const engine = new Mesh(
-      new ConeGeometry(0.2, 0.8, 10),
-      new MeshBasicMaterial({
-        color: HERO_FLAME_COLOR,
-        transparent: true,
-        opacity: 0.9,
-        blending: AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    engine.name = 'hero-engine';
-    engine.position.set(offset, 0, -1.5);
-    // The cone points backwards along local −z, away from the nose at local +z.
-    engine.rotation.x = -Math.PI / 2;
-    heroEngines.push(engine);
-  }
-
-  for (const mesh of [
-    heroHull,
-    heroNose,
-    heroWingLeft,
-    heroWingRight,
-    heroCockpit,
-    ...heroEngines,
-  ]) {
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    ownedMeshes.push(mesh);
-    heroShip.add(mesh);
-  }
+  // The detailed craft owns its 48 meshes and its disposal seam; the outer group keeps the
+  // pinned position/rotation so the camera-anchored composition is unchanged (AC-11).
+  const heroModel = createHeroSpaceshipModel();
+  heroShip.add(heroModel.group);
   group.add(heroShip);
 
   /** Accumulated comet bob phase in milliseconds. */
@@ -418,6 +337,9 @@ export function createCosmicBackdrop(random: () => number): CosmicBackdrop {
     if (group.parent !== null) {
       group.parent.remove(group);
     }
+    // The detailed hero subtree disposes itself once (unique geometry/material sets, AC-12);
+    // the loop below owns only the 15 non-hero meshes (7 asteroids + 6 meteor + 2 comet).
+    heroModel.dispose();
     for (const mesh of ownedMeshes) {
       mesh.geometry.dispose();
       (mesh.material as MeshBasicMaterial | MeshStandardMaterial).dispose();

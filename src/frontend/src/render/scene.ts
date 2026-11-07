@@ -44,7 +44,7 @@
  * owns every three.js object it creates, so `dispose()` can release them exactly once
  * (AC-15). Drawables stay bounded: one starfield `Points`, one cube view (body + ≤ 6
  * `InstancedMesh`), one pooled particle `Points`, one background-life group, one
- * `cosmic-backdrop` group (28 objects) owning the nebula `DataTexture` used as
+ * `cosmic-backdrop` group (70 objects) owning the nebula `DataTexture` used as
  * `scene.background`, and, online, one remote world of ≤ (X − 1) cube views (AC-10,
  * AC-16). The backdrop group is camera-relative anchored like the starfield, extended with
  * the pinned presentation-only offsets {@link COSMIC_ANCHOR_OFFSET_X} and

@@ -1660,10 +1660,10 @@ describe('frame updates and lifecycle', () => {
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
-    // The 32 pre-backdrop objects plus the cosmic backdrop's 28
-    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 60 (AC-10, AC-11).
+    // The 32 pre-backdrop objects plus the cosmic backdrop's 70
+    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 102 (AC-10, AC-11).
     expect(baselineObjects).toBe(32 + COSMIC_BACKDROP_OBJECT_COUNT);
-    expect(baselineObjects).toBe(60);
+    expect(baselineObjects).toBe(102);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
