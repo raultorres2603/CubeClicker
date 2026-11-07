@@ -41,5 +41,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | upgrades-panel-bottom-right | Upgrades Panel Bottom Right (position upgrades panel bottom-right) | accepted | 2026-11-06 |
 | upgrades-buy-icon | Upgrades Buy Icon (replace Buy text with icon) | accepted | 2026-11-06 |
 | realistic-lighting-materials | Realistic Lighting & Materials (ACES tone mapping, soft PCF shadows, PBR materials with clearcoat, SSAO + bloom post-processing) | accepted | 2026-11-06 |
+| reference-image-game-view | Reference-Image Game View (procedural nebula/comet/ship, emerald beveled cube, rounded cyan HUD) | accepted | 2026-11-07 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
