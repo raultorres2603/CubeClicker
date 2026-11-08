@@ -1,6 +1,6 @@
 /**
  * Economy repository (coin-economy T2, extended for spending-upgrades T2,
- * and spaceship-customization T3).
+ * spaceship-customization T3, and granular spaceship parts T4).
  *
  * Persists per-user coins and in-game stats (`clicks`, `facesDestroyed`,
  * `cubesDestroyed`) plus upgrade levels (`upgrades` JSONB, migration 003) and
@@ -17,11 +17,22 @@
  * with a level guard, returning `null` on insufficient funds / stale level /
  * no row, so concurrent multi-tab purchases cannot overdraw or clobber a level
  * increment (F1, F2).
+ *
+ * T4 adds the granular v2 contract (`applyLootboxOpenV2`, `setSlotAppearance`)
+ * while keeping the legacy `applyLootboxOpen`/`setAppearance` methods for the
+ * pre-migration hub. Every customization read is normalized: legacy keys/ids
+ * are mapped to the v2 slot catalog and unknown/mismatched entries are
+ * dropped, regardless of the persisted `customization_version` (F15).
  */
 
 import { roundCoins } from '../game/economy.js';
 import type { UpgradeId, UpgradeState } from '../game/upgrades.js';
 import type { PartId } from '../game/parts.js';
+import {
+  normalizeCustomizationState,
+  type PartIdV2,
+  type SlotId,
+} from '../game/parts-v2.js';
 
 export interface EconomyState {
   coins: number;
@@ -75,6 +86,19 @@ export interface EconomyRepository {
     userId: string,
     appearance: Record<string, string>,
   ): Promise<CustomizationState>;
+  applyLootboxOpenV2(
+    userId: string,
+    partId: PartIdV2,
+  ): Promise<
+    | { state: CustomizationState; duplicate: boolean }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  >;
+  setSlotAppearance(
+    userId: string,
+    slot: SlotId,
+    partId: PartIdV2 | null,
+  ): Promise<CustomizationState>;
 }
 
 export interface InMemoryEconomyRepositoryOptions {
@@ -117,6 +141,16 @@ function copyCustomization(state: CustomizationState): CustomizationState {
     parts,
     appearance,
   };
+}
+
+/**
+ * The single read shape of both implementations: a defensive copy normalized
+ * to the v2 slot catalog. Normalization is unconditional (it is idempotent for
+ * canonical v2 state), so a legacy row restored with `customization_version=2`
+ * still yields v2 keys/ids and unknown/mismatched entries are dropped (F15).
+ */
+function normalizeRead(state: CustomizationState): CustomizationState {
+  return normalizeCustomizationState(state);
 }
 
 export class InMemoryEconomyRepository implements EconomyRepository {
@@ -232,7 +266,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
 
   async findCustomizationByUserId(userId: string): Promise<CustomizationState> {
     const row = this.store.get(userId);
-    return row ? copyCustomization(row.customization) : copyCustomization(ZERO_CUSTOMIZATION);
+    return normalizeRead(row ? row.customization : ZERO_CUSTOMIZATION);
   }
 
   async grantCustomization(
@@ -264,7 +298,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         lastSeenAt: null,
       });
     }
-    return copyCustomization(nextCustom);
+    return normalizeRead(nextCustom);
   }
 
   async applyLootboxOpen(
@@ -304,7 +338,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         lastSeenAt: null,
       });
     }
-    return { state: copyCustomization(nextCustom) };
+    return { state: normalizeRead(nextCustom) };
   }
 
   async setAppearance(
@@ -336,7 +370,69 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         lastSeenAt: null,
       });
     }
-    return copyCustomization(nextCustom);
+    return normalizeRead(nextCustom);
+  }
+
+  async applyLootboxOpenV2(
+    userId: string,
+    partId: PartIdV2,
+  ): Promise<
+    | { state: CustomizationState; duplicate: boolean }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  > {
+    const existing = this.store.get(userId);
+    const baseCustom = normalizeRead(
+      existing ? existing.customization : ZERO_CUSTOMIZATION,
+    );
+    if (baseCustom.lootboxes <= 0) return { reason: 'no_lootbox' };
+    if (baseCustom.keys <= 0) return { reason: 'no_key' };
+    const duplicate = Object.prototype.hasOwnProperty.call(baseCustom.parts, partId);
+    const nextParts: Record<string, number> = { ...baseCustom.parts };
+    nextParts[partId] = (nextParts[partId] ?? 0) + 1;
+    const nextCustom: CustomizationState = {
+      lootboxes: baseCustom.lootboxes - 1,
+      keys: baseCustom.keys - 1,
+      parts: nextParts,
+      appearance: { ...baseCustom.appearance },
+    };
+    this.store.set(userId, {
+      economy: existing ? { ...existing.economy } : { ...ZERO },
+      upgrades: existing ? { ...existing.upgrades } : {},
+      customization: copyCustomization(nextCustom),
+      lastSeenAt: existing ? existing.lastSeenAt : null,
+    });
+    return { state: normalizeRead(nextCustom), duplicate };
+  }
+
+  async setSlotAppearance(
+    userId: string,
+    slot: SlotId,
+    partId: PartIdV2 | null,
+  ): Promise<CustomizationState> {
+    const existing = this.store.get(userId);
+    const baseCustom = normalizeRead(
+      existing ? existing.customization : ZERO_CUSTOMIZATION,
+    );
+    const appearance: Record<string, string> = { ...baseCustom.appearance };
+    if (partId === null) {
+      delete appearance[slot];
+    } else {
+      appearance[slot] = partId;
+    }
+    const nextCustom: CustomizationState = {
+      lootboxes: baseCustom.lootboxes,
+      keys: baseCustom.keys,
+      parts: { ...baseCustom.parts },
+      appearance,
+    };
+    this.store.set(userId, {
+      economy: existing ? { ...existing.economy } : { ...ZERO },
+      upgrades: existing ? { ...existing.upgrades } : {},
+      customization: copyCustomization(nextCustom),
+      lastSeenAt: existing ? existing.lastSeenAt : null,
+    });
+    return normalizeRead(nextCustom);
   }
 }
 
@@ -385,8 +481,8 @@ function parseParts(raw: unknown): Record<string, number> {
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return {};
   const out: Record<string, number> = {};
   for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    const n = Number(value);
-    if (Number.isFinite(n)) out[key] = n;
+    // Only JSON numbers pass; strings/booleans/null are malformed counts.
+    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
   }
   return out;
 }
@@ -410,12 +506,12 @@ function parseAppearance(raw: unknown): Record<string, string> {
 }
 
 function rowToCustomization(row: Record<string, unknown>): CustomizationState {
-  return {
+  return normalizeRead({
     lootboxes: Number(row.lootboxes ?? 0),
     keys: Number(row.keys ?? 0),
     parts: parseParts(row.parts),
     appearance: parseAppearance(row.appearance),
-  };
+  });
 }
 
 function toEpochMsOrNull(value: unknown): number | null {
@@ -647,6 +743,101 @@ export class PgEconomyRepository implements EconomyRepository {
          updated_at = now()
        RETURNING lootboxes, keys, parts, appearance`,
       [userId, appearance],
+    );
+    const insertedRow = inserted.rows[0];
+    if (!insertedRow) {
+      throw new Error('INSERT/UPDATE returned no row');
+    }
+    return rowToCustomization(insertedRow);
+  }
+
+  async applyLootboxOpenV2(
+    userId: string,
+    partId: PartIdV2,
+  ): Promise<
+    | { state: CustomizationState; duplicate: boolean }
+    | { reason: 'no_lootbox' }
+    | { reason: 'no_key' }
+  > {
+    // One conditional atomic statement: `target` locks the row and captures the
+    // pre-increment parts map, so `duplicate` is exact even for concurrent
+    // opens, and the UPDATE consumes one lootbox and one key in the same
+    // statement (counts cannot go negative because the target gate is >= 1).
+    const result = await this.db.query(
+      `WITH target AS (
+         SELECT user_id, parts AS previous_parts
+         FROM user_economy
+         WHERE user_id = $1
+           AND lootboxes >= 1
+           AND keys >= 1
+         FOR UPDATE
+       )
+       UPDATE user_economy e
+       SET lootboxes = e.lootboxes - 1,
+           keys = e.keys - 1,
+           parts = jsonb_set(e.parts, $2::text[], to_jsonb(COALESCE((e.parts->>$3)::int, 0) + 1)),
+           updated_at = now()
+       FROM target t
+       WHERE e.user_id = t.user_id
+       RETURNING e.lootboxes, e.keys, e.parts, e.appearance,
+                 t.previous_parts ? $3 AS duplicate`,
+      [userId, [partId], partId],
+    );
+    const row = result.rows[0];
+    if (row) {
+      return {
+        state: rowToCustomization(row),
+        duplicate: row.duplicate === true,
+      };
+    }
+    // Determine which condition failed; no row counts as no_lootbox.
+    const check = await this.db.query(
+      'SELECT lootboxes, keys FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    const existing = check.rows[0];
+    const lootboxes = existing ? Number(existing.lootboxes ?? 0) : 0;
+    if (lootboxes <= 0) return { reason: 'no_lootbox' };
+    return { reason: 'no_key' };
+  }
+
+  async setSlotAppearance(
+    userId: string,
+    slot: SlotId,
+    partId: PartIdV2 | null,
+  ): Promise<CustomizationState> {
+    // One key changes: set with jsonb_set or delete with the jsonb `-`
+    // operator; every other slot is untouched.
+    const result = await this.db.query(
+      `UPDATE user_economy
+       SET appearance = CASE
+             WHEN $3::text IS NULL THEN appearance - $2::text
+             ELSE jsonb_set(appearance, ARRAY[$2::text], to_jsonb($3::text))
+           END,
+           updated_at = now()
+       WHERE user_id = $1
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, slot, partId],
+    );
+    const row = result.rows[0];
+    if (row) {
+      return rowToCustomization(row);
+    }
+    // No existing row: upsert a zero row carrying the single slot change.
+    const inserted = await this.db.query(
+      `INSERT INTO user_economy (user_id, appearance)
+       VALUES ($1, CASE
+                 WHEN $3::text IS NULL THEN '{}'::jsonb
+                 ELSE jsonb_build_object($2::text, $3::text)
+               END)
+       ON CONFLICT (user_id) DO UPDATE SET
+         appearance = CASE
+           WHEN $3::text IS NULL THEN user_economy.appearance - $2::text
+           ELSE jsonb_set(user_economy.appearance, ARRAY[$2::text], to_jsonb($3::text))
+         END,
+         updated_at = now()
+       RETURNING lootboxes, keys, parts, appearance`,
+      [userId, slot, partId],
     );
     const insertedRow = inserted.rows[0];
     if (!insertedRow) {

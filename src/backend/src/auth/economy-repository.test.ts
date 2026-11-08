@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+
+import { Client } from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   InMemoryEconomyRepository,
@@ -7,8 +10,37 @@ import {
   type EconomyState,
 } from './economy-repository.js';
 import type { UpgradeState } from '../game/upgrades.js';
+import type { PartId } from '../game/parts.js';
 
 const FIXED_USER = '11111111-2222-3333-4444-555555555555';
+
+/** The AC-33 fixture: a restored version-2 row that still carries legacy ids. */
+const LEGACY_ROW = {
+  lootboxes: 3,
+  keys: 2,
+  parts: { 'wings-silver': 2, 'engine-blue': 1, 'body-gold': 1 },
+  appearance: { wings: 'wings-silver', engine: 'engine-blue', body: 'body-gold' },
+  customization_version: 2,
+};
+
+const LEGACY_STATE = {
+  lootboxes: 3,
+  keys: 2,
+  parts: {
+    'hull-gold': 1,
+    'wing-left-silver': 2,
+    'wing-right-silver': 2,
+    'ignition-left-blue': 1,
+    'ignition-right-blue': 1,
+  },
+  appearance: {
+    hull: 'hull-gold',
+    'wing-left': 'wing-left-silver',
+    'wing-right': 'wing-right-silver',
+    'ignition-left': 'ignition-left-blue',
+    'ignition-right': 'ignition-right-blue',
+  },
+};
 
 function sampleState(overrides: Partial<EconomyState> = {}): EconomyState {
   return {
@@ -806,5 +838,818 @@ describe('PgEconomyRepository customization', () => {
     expect(call.text).toContain('UPDATE user_economy');
     expect(call.text).toContain('SET appearance');
     expect(call.values).toEqual([FIXED_USER, { nose: 'nose-crimson' }]);
+  });
+});
+
+describe('customization read normalization (T4)', () => {
+  it('in-memory read normalizes the AC-33 legacy fixture regardless of version', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 5, keys: 5 });
+    await repo.setAppearance(FIXED_USER, {
+      wings: 'wings-silver',
+      engine: 'engine-blue',
+      body: 'body-gold',
+    });
+    await repo.applyLootboxOpen(FIXED_USER, 'wings-silver' as PartId);
+    await repo.applyLootboxOpen(FIXED_USER, 'wings-silver' as PartId);
+    await repo.applyLootboxOpen(FIXED_USER, 'engine-blue' as PartId);
+    await repo.applyLootboxOpen(FIXED_USER, 'body-gold' as PartId);
+
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: LEGACY_STATE.parts,
+      appearance: LEGACY_STATE.appearance,
+    });
+  });
+
+  it('in-memory read drops unknown ids, mismatched slots and unknown appearance keys', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    await repo.applyLootboxOpen(FIXED_USER, 'mystery' as unknown as PartId);
+    await repo.setAppearance(FIXED_USER, {
+      hull: 'wing-left-silver',
+      wings: 'wings-silver',
+      bogus: 'hull-gold',
+      nose: 'not-a-part',
+    });
+
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {
+        'wing-left': 'wing-left-silver',
+        'wing-right': 'wing-right-silver',
+      },
+    });
+  });
+
+  it('in-memory grant returns a normalized state (legacy appearance)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.setAppearance(FIXED_USER, { wings: 'wings-silver' });
+    expect(await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 })).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: {},
+      appearance: {
+        'wing-left': 'wing-left-silver',
+        'wing-right': 'wing-right-silver',
+      },
+    });
+  });
+
+  it('pg read normalizes a restored version-2 row with legacy ids (AC-33)', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      calls,
+      async query(text: string, values?: unknown[]) {
+        calls.push({ text, values });
+        return { rows: [LEGACY_ROW], rowCount: 1 };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual(LEGACY_STATE);
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('SELECT lootboxes, keys, parts, appearance');
+    expect(db.calls[0].text).toContain('FROM user_economy');
+    expect(db.calls[0].text).toContain('WHERE user_id = $1');
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('pg read normalizes a version-1 row and drops invalid entries', async () => {
+    const db = {
+      async query() {
+        return {
+          rows: [
+            {
+              lootboxes: 0,
+              keys: 0,
+              parts: { 'hull-gold': 1, mystery: 4 },
+              appearance: { hull: 'hull-gold', nose: 'wing-left-silver' },
+              customization_version: 1,
+            },
+          ],
+          rowCount: 1,
+        };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-gold': 1 },
+      appearance: { hull: 'hull-gold' },
+    });
+  });
+
+  it('pg read tolerates malformed parts/appearance JSON', async () => {
+    const db = {
+      async query() {
+        return {
+          rows: [{ lootboxes: 1, keys: 1, parts: '{"hull-', appearance: 'not json' }],
+          rowCount: 1,
+        };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('pg read drops non-numeric, negative, fractional, overflowing and array values', async () => {
+    const db = {
+      async query() {
+        return {
+          rows: [
+            {
+              lootboxes: 0,
+              keys: 0,
+              parts: {
+                'hull-gold': 1,
+                'hull-obsidian': -1,
+                'nose-crimson': 1.5,
+                'nose-emerald': 2_147_483_648,
+                'cockpit-amber': '3',
+                'cockpit-oracle': null,
+                'wing-left-gold': true,
+              },
+              appearance: { hull: 'hull-gold', nose: 4, cockpit: null, bogus: 'hull-gold' },
+              customization_version: 2,
+            },
+          ],
+          rowCount: 1,
+        };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-gold': 1 },
+      appearance: { hull: 'hull-gold' },
+    });
+  });
+
+  it('pg read returns a defensive copy of the nested maps', async () => {
+    const db = {
+      async query() {
+        return { rows: [LEGACY_ROW], rowCount: 1 };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    const first = await repo.findCustomizationByUserId(FIXED_USER);
+    first.parts['hull-gold'] = 99;
+    first.appearance.hull = 'hull-default';
+    const second = await repo.findCustomizationByUserId(FIXED_USER);
+    expect(second).toEqual(LEGACY_STATE);
+  });
+
+  it('pg grantCustomization normalizes a legacy row on return', async () => {
+    const db = {
+      async query() {
+        return {
+          rows: [
+            {
+              lootboxes: 1,
+              keys: 1,
+              parts: { 'wings-silver': 2 },
+              appearance: { wings: 'wings-silver' },
+            },
+          ],
+          rowCount: 1,
+        };
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 })).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'wing-left-silver': 2, 'wing-right-silver': 2 },
+      appearance: {
+        'wing-left': 'wing-left-silver',
+        'wing-right': 'wing-right-silver',
+      },
+    });
+  });
+});
+
+describe('InMemoryEconomyRepository v2 lootbox/appearance', () => {
+  it('applyLootboxOpenV2 reports duplicate false then true and increments the owned count', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 2 });
+
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      state: { lootboxes: 1, keys: 1, parts: { 'hull-obsidian': 1 }, appearance: {} },
+      duplicate: false,
+    });
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      state: { lootboxes: 0, keys: 0, parts: { 'hull-obsidian': 2 }, appearance: {} },
+      duplicate: true,
+    });
+  });
+
+  it('applyLootboxOpenV2 never lets counts go negative', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    await repo.applyLootboxOpenV2(FIXED_USER, 'nose-crimson');
+
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'nose-crimson')).toEqual({
+      reason: 'no_lootbox',
+    });
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: {},
+    });
+  });
+
+  it('applyLootboxOpenV2 returns no_lootbox first when both counts are zero', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'nose-crimson')).toEqual({
+      reason: 'no_lootbox',
+    });
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('applyLootboxOpenV2 returns no_key when lootboxes exist but keys do not', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 0 });
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'nose-crimson')).toEqual({
+      reason: 'no_key',
+    });
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 2,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('applyLootboxOpenV2 returns a defensive copy', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 1, keys: 1 });
+    const result = await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian');
+    expect(result).toEqual({
+      state: { lootboxes: 0, keys: 0, parts: { 'hull-obsidian': 1 }, appearance: {} },
+      duplicate: false,
+    });
+    if (!('state' in result)) throw new Error('expected a granted state');
+    result.state.parts['hull-obsidian'] = 99;
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+  });
+
+  it('setSlotAppearance sets one slot and preserves the others', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 3, keys: 2 });
+    await repo.setAppearance(FIXED_USER, { nose: 'nose-crimson' });
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 3,
+      keys: 2,
+      parts: {},
+      appearance: { nose: 'nose-crimson', hull: 'hull-gold' },
+    });
+    expect((await repo.findCustomizationByUserId(FIXED_USER)).appearance).toEqual({
+      nose: 'nose-crimson',
+      hull: 'hull-gold',
+    });
+  });
+
+  it('setSlotAppearance(null) deletes exactly one slot', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.setAppearance(FIXED_USER, {
+      nose: 'nose-crimson',
+      hull: 'hull-gold',
+    });
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', null)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { nose: 'nose-crimson' },
+    });
+    expect((await repo.findCustomizationByUserId(FIXED_USER)).appearance).toEqual({
+      nose: 'nose-crimson',
+    });
+  });
+
+  it('setSlotAppearance upserts a zero row when the user has none', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { hull: 'hull-gold' },
+    });
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { hull: 'hull-gold' },
+    });
+  });
+
+  it('setSlotAppearance(null) on a missing row creates an empty zero row', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', null)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+});
+
+describe('PgEconomyRepository v2 lootbox/appearance', () => {
+  function makeDb(handler: (text: string, values?: unknown[]) => unknown): EconomyDb & {
+    calls: Array<{ text: string; values?: unknown[] }>;
+  } {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      calls,
+      async query(text: string, values?: unknown[]) {
+        calls.push({ text, values });
+        const result = handler(text, values);
+        if (result instanceof Error) throw result;
+        return result as { rows: Array<Record<string, unknown>>; rowCount?: number | null };
+      },
+    };
+    return db;
+  }
+
+  it('applyLootboxOpenV2 issues one conditional atomic UPDATE and reports a new part', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 2,
+          keys: 0,
+          parts: { 'hull-obsidian': 1 },
+          appearance: {},
+          duplicate: false,
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      state: { lootboxes: 2, keys: 0, parts: { 'hull-obsidian': 1 }, appearance: {} },
+      duplicate: false,
+    });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE user_economy e');
+    expect(call.text).toContain('lootboxes = e.lootboxes - 1');
+    expect(call.text).toContain('keys = e.keys - 1');
+    expect(call.text).toContain('jsonb_set(e.parts');
+    expect(call.text).toContain('COALESCE((e.parts->>$3)::int, 0) + 1');
+    expect(call.text).toContain('FOR UPDATE');
+    expect(call.text).toContain('t.previous_parts ? $3 AS duplicate');
+    expect(call.text).toContain('WHERE user_id = $1');
+    expect(call.text).toContain('lootboxes >= 1');
+    expect(call.text).toContain('keys >= 1');
+    expect(call.values).toEqual([FIXED_USER, ['hull-obsidian'], 'hull-obsidian']);
+  });
+
+  it('applyLootboxOpenV2 reports a duplicate from the returned row', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 0,
+          keys: 0,
+          parts: { 'hull-obsidian': 2 },
+          appearance: {},
+          duplicate: true,
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      state: { lootboxes: 0, keys: 0, parts: { 'hull-obsidian': 2 }, appearance: {} },
+      duplicate: true,
+    });
+  });
+
+  it('applyLootboxOpenV2 returns no_lootbox first using the fallback SELECT', async () => {
+    const db = makeDb((text) => {
+      if (text.includes('FOR UPDATE')) return { rows: [], rowCount: 0 };
+      return { rows: [{ lootboxes: 0, keys: 3 }], rowCount: 1 };
+    });
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      reason: 'no_lootbox',
+    });
+    expect(db.calls).toHaveLength(2);
+    expect(db.calls[1].text).toContain('SELECT lootboxes, keys');
+    expect(db.calls[1].values).toEqual([FIXED_USER]);
+  });
+
+  it('applyLootboxOpenV2 returns no_key after the update misses', async () => {
+    const db = makeDb((text) => {
+      if (text.includes('FOR UPDATE')) return { rows: [], rowCount: 0 };
+      return { rows: [{ lootboxes: 2, keys: 0 }], rowCount: 1 };
+    });
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      reason: 'no_key',
+    });
+  });
+
+  it('applyLootboxOpenV2 treats a missing row as no_lootbox', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'hull-obsidian')).toEqual({
+      reason: 'no_lootbox',
+    });
+  });
+
+  it('setSlotAppearance sets one slot with an atomic jsonb_set UPDATE', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 1,
+          keys: 2,
+          parts: {},
+          appearance: { nose: 'nose-crimson', hull: 'hull-gold' },
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 1,
+      keys: 2,
+      parts: {},
+      appearance: { nose: 'nose-crimson', hull: 'hull-gold' },
+    });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain('UPDATE user_economy');
+    expect(call.text).toContain(
+      'jsonb_set(appearance, ARRAY[$2::text], to_jsonb($3::text))',
+    );
+    expect(call.text).toContain('WHERE user_id = $1');
+    expect(call.values).toEqual([FIXED_USER, 'hull', 'hull-gold']);
+  });
+
+  it('setSlotAppearance(null) deletes one slot with the jsonb minus operator', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 0,
+          keys: 0,
+          parts: {},
+          appearance: { nose: 'nose-crimson' },
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', null)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { nose: 'nose-crimson' },
+    });
+    const call = db.calls[0];
+    expect(call.text).toContain('appearance - $2::text');
+    expect(call.text).toContain('$3::text IS NULL');
+    expect(call.values).toEqual([FIXED_USER, 'hull', null]);
+  });
+
+  it('setSlotAppearance upserts a zero row when no row exists', async () => {
+    const db = makeDb((text) => {
+      if (text.startsWith('UPDATE')) return { rows: [], rowCount: 0 };
+      return {
+        rows: [
+          {
+            lootboxes: 0,
+            keys: 0,
+            parts: {},
+            appearance: { hull: 'hull-gold' },
+          },
+        ],
+        rowCount: 1,
+      };
+    });
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { hull: 'hull-gold' },
+    });
+    expect(db.calls).toHaveLength(2);
+    const insert = db.calls[1];
+    expect(insert.text).toContain('INSERT INTO user_economy (user_id, appearance)');
+    expect(insert.text).toContain('ON CONFLICT (user_id) DO UPDATE');
+    expect(insert.text).toContain('jsonb_build_object($2::text, $3::text)');
+    expect(insert.values).toEqual([FIXED_USER, 'hull', 'hull-gold']);
+  });
+
+  it('setSlotAppearance(null) upserts an empty zero row when no row exists', async () => {
+    const db = makeDb((text) => {
+      if (text.startsWith('UPDATE')) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{ lootboxes: 0, keys: 0, parts: {}, appearance: {} }],
+        rowCount: 1,
+      };
+    });
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'hull', null)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+    const insert = db.calls[1];
+    expect(insert.text).toContain("'{}'::jsonb");
+    expect(insert.values).toEqual([FIXED_USER, 'hull', null]);
+  });
+
+  it('setSlotAppearance throws when the upsert returns no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    await expect(repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).rejects.toThrow(
+      'INSERT/UPDATE returned no row',
+    );
+  });
+});
+
+type ContainerRuntime = 'podman' | 'docker';
+
+function detectContainerRuntime(): ContainerRuntime | null {
+  for (const candidate of ['podman', 'docker'] as const) {
+    const result = spawnSync(candidate, ['info'], {
+      stdio: 'ignore',
+      timeout: 10_000,
+    });
+    if (result.status === 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function startPostgres(runtime: ContainerRuntime): {
+  connectionString: string;
+  stop: () => void;
+} {
+  const name = `cubeclicker-economy-${process.pid}-${Date.now()}`;
+  const run = spawnSync(
+    runtime,
+    [
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      name,
+      '-e',
+      'POSTGRES_USER=cubeclicker',
+      '-e',
+      'POSTGRES_PASSWORD=cubeclicker',
+      '-e',
+      'POSTGRES_DB=cubeclicker',
+      '-p',
+      '127.0.0.1::5432',
+      'docker.io/library/postgres:16-alpine',
+    ],
+    { encoding: 'utf8', timeout: 120_000 },
+  );
+  if (run.status !== 0) {
+    throw new Error(`failed to start postgres:16-alpine: ${run.stderr}`);
+  }
+
+  const stop = (): void => {
+    spawnSync(runtime, ['rm', '-f', name], { stdio: 'ignore', timeout: 30_000 });
+  };
+
+  try {
+    const portResult = spawnSync(runtime, ['port', name, '5432/tcp'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    if (portResult.status !== 0) {
+      throw new Error(`failed to read mapped port: ${portResult.stderr}`);
+    }
+    const match =
+      portResult.stdout.match(/127\.0\.0\.1:(\d+)/) ??
+      portResult.stdout.match(/0\.0\.0\.0:(\d+)/) ??
+      portResult.stdout.match(/:(\d+)\s*$/m);
+    if (match === null) {
+      throw new Error(`could not parse mapped port from: ${portResult.stdout}`);
+    }
+    return {
+      connectionString: `postgres://cubeclicker:cubeclicker@127.0.0.1:${match[1]}/cubeclicker`,
+      stop,
+    };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+async function waitForPostgres(connectionString: string): Promise<Client> {
+  const deadline = Date.now() + 60_000;
+  let lastError: unknown = new Error('not attempted');
+  while (Date.now() < deadline) {
+    const client = new Client({ connectionString });
+    try {
+      await client.connect();
+      await client.query('SELECT 1');
+      return client;
+    } catch (error) {
+      lastError = error;
+      await client.end().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error(`PostgreSQL did not become ready: ${String(lastError)}`);
+}
+
+const containerRuntime = detectContainerRuntime();
+const dbDescribe = containerRuntime === null ? describe.skip : describe;
+
+dbDescribe('PgEconomyRepository v2 against PostgreSQL', () => {
+  const LEGACY_USER = '20000000-0000-4000-8000-000000000001';
+  const OPEN_USER = '20000000-0000-4000-8000-000000000002';
+  const DUPLICATE_USER = '20000000-0000-4000-8000-000000000003';
+  const SLOT_USER = '20000000-0000-4000-8000-000000000004';
+  const UPSERT_USER = '20000000-0000-4000-8000-000000000005';
+  const DELETE_UPSERT_USER = '20000000-0000-4000-8000-000000000006';
+
+  let client: Client;
+  let repo: PgEconomyRepository;
+  let stopContainer: () => void;
+
+  beforeAll(async () => {
+    const database = startPostgres(containerRuntime as ContainerRuntime);
+    stopContainer = database.stop;
+    client = await waitForPostgres(database.connectionString);
+    await client.query(
+      `CREATE TABLE user_economy (
+         user_id UUID PRIMARY KEY,
+         lootboxes INT NOT NULL DEFAULT 0,
+         keys INT NOT NULL DEFAULT 0,
+         parts JSONB NOT NULL DEFAULT '{}'::jsonb,
+         appearance JSONB NOT NULL DEFAULT '{}'::jsonb,
+         customization_version INT NOT NULL DEFAULT 2,
+         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`,
+    );
+    const db: EconomyDb = {
+      async query(text, values) {
+        const result = await client.query(text, values);
+        return {
+          rows: result.rows as Array<Record<string, unknown>>,
+          rowCount: result.rowCount,
+        };
+      },
+    };
+    repo = new PgEconomyRepository(db);
+  }, 120_000);
+
+  afterAll(async () => {
+    await client?.end().catch(() => undefined);
+    stopContainer?.();
+  });
+
+  async function seed(
+    userId: string,
+    lootboxes: number,
+    keys: number,
+    parts: Record<string, unknown>,
+    appearance: Record<string, unknown>,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO user_economy
+         (user_id, lootboxes, keys, parts, appearance, customization_version)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, 2)`,
+      [userId, lootboxes, keys, JSON.stringify(parts), JSON.stringify(appearance)],
+    );
+  }
+
+  async function storedRow(userId: string): Promise<Record<string, unknown>> {
+    const result = await client.query(
+      'SELECT lootboxes, keys, parts, appearance FROM user_economy WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0] as Record<string, unknown>;
+  }
+
+  it('normalizes the restored version-2 legacy row on read', async () => {
+    await seed(
+      LEGACY_USER,
+      LEGACY_ROW.lootboxes,
+      LEGACY_ROW.keys,
+      LEGACY_ROW.parts,
+      LEGACY_ROW.appearance,
+    );
+    expect(await repo.findCustomizationByUserId(LEGACY_USER)).toEqual(LEGACY_STATE);
+    expect(await storedRow(LEGACY_USER)).toEqual({
+      lootboxes: 3,
+      keys: 2,
+      parts: LEGACY_ROW.parts,
+      appearance: LEGACY_ROW.appearance,
+    });
+  });
+
+  it('atomically consumes one lootbox and one key and grants a new part', async () => {
+    await seed(OPEN_USER, 1, 1, {}, {});
+    expect(await repo.applyLootboxOpenV2(OPEN_USER, 'hull-obsidian')).toEqual({
+      state: {
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 1 },
+        appearance: {},
+      },
+      duplicate: false,
+    });
+    expect(await repo.applyLootboxOpenV2(OPEN_USER, 'hull-obsidian')).toEqual({
+      reason: 'no_lootbox',
+    });
+    expect(await storedRow(OPEN_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+  });
+
+  it('reports duplicate true and increments the owned count', async () => {
+    await seed(DUPLICATE_USER, 1, 1, { 'hull-gold': 1 }, {});
+    expect(await repo.applyLootboxOpenV2(DUPLICATE_USER, 'hull-gold')).toEqual({
+      state: {
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-gold': 2 },
+        appearance: {},
+      },
+      duplicate: true,
+    });
+  });
+
+  it('sets then deletes exactly one slot', async () => {
+    await seed(SLOT_USER, 2, 1, {}, { nose: 'nose-crimson' });
+    expect(await repo.setSlotAppearance(SLOT_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 2,
+      keys: 1,
+      parts: {},
+      appearance: { nose: 'nose-crimson', hull: 'hull-gold' },
+    });
+    expect(await repo.setSlotAppearance(SLOT_USER, 'hull', null)).toEqual({
+      lootboxes: 2,
+      keys: 1,
+      parts: {},
+      appearance: { nose: 'nose-crimson' },
+    });
+    expect(await storedRow(SLOT_USER)).toEqual({
+      lootboxes: 2,
+      keys: 1,
+      parts: {},
+      appearance: { nose: 'nose-crimson' },
+    });
+  });
+
+  it('upserts a zero row when the user has none', async () => {
+    expect(await repo.setSlotAppearance(UPSERT_USER, 'hull', 'hull-gold')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { hull: 'hull-gold' },
+    });
+    expect(await repo.setSlotAppearance(DELETE_UPSERT_USER, 'hull', null)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+    expect(await storedRow(UPSERT_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { hull: 'hull-gold' },
+    });
   });
 });
