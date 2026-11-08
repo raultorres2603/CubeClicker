@@ -6,7 +6,7 @@ A web-based, online, real-time, multi-client clicker game — connected clients 
 
 Players earn points by clicking the cube and progress through cube levels. Completing a cube grants a **lootbox** and a **key**; opening a lootbox with a key yields a random spaceship **part**. The **Spaceship Customization** menu (appearance editor) shows a live 3D preview and lets players equip owned parts; the in-game spaceship cursor reflects the equipped appearance. Appearance and inventory are persisted per **account**; **guests** keep an ephemeral copy for the session. (Feature: `spaceship-customization`, see `docs/features/spaceship-customization/`.)
 
-The game view is generated in code (no external image assets): a procedural nebula in purple/blue/pink with asteroids, meteors, an orange comet and a decorative spaceship, an emerald beveled cube with golden spark bursts, and rounded translucent cyan HUD panels. (Feature: `reference-image-game-view`, see `docs/features/reference-image-game-view/`.)
+The game view is generated in code (no external image assets): a procedural nebula in purple/blue/pink with asteroids, meteors, an orange comet and a detailed blue/orange hero spaceship (layered hull, swept wings, twin glowing engines), an emerald beveled cube with golden spark bursts, and rounded translucent cyan HUD panels. (Feature: `reference-image-game-view`, see `docs/features/reference-image-game-view/`.)
 
 ## Prerequisites
 
