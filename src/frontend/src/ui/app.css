@@ -752,13 +752,17 @@ main > section[data-blinking="true"] {
   }
 }
 
-/* Spaceship customization panel (T10, AC-12). */
+/* Spaceship customization panel (T10, AC-12; slots T12, AC-29/AC-30). */
 .customization-panel {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
+  box-sizing: border-box;
   max-width: min(22rem, calc(100vw - 2rem));
+  max-height: 60vh;
+  overflow-x: hidden;
+  overflow-y: auto;
   position: absolute;
   top: auto;
   bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
@@ -772,7 +776,8 @@ main > section[data-blinking="true"] {
   font-variant-numeric: tabular-nums;
 }
 
-.customization-parts {
+.customization-slots,
+.customization-variants {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -781,15 +786,59 @@ main > section[data-blinking="true"] {
   list-style: none;
 }
 
-.customization-parts li {
+.customization-slot {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid rgba(124, 246, 255, 0.18);
 }
 
+.customization-slot:first-child {
+  border-top: none;
+}
+
+.customization-slot-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+.customization-slot-name {
+  font-weight: 600;
+}
+
+.customization-equipped-name {
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.customization-variant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.5rem;
+}
+
+.customization-variant-name {
+  font-size: 0.85rem;
+}
+
+.customization-locked {
+  color: rgba(232, 246, 255, 0.62);
+  font-size: 0.8rem;
+}
+
+/* Every panel control is at least a 44x44 px pointer target (AC-30). */
 .customization-open,
-.customization-equip {
-  min-height: 32px;
+.customization-equip,
+.customization-unequip,
+.customization-reveal-equip,
+.customization-reveal-dismiss {
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.35rem 0.7rem;
   cursor: pointer;
 }

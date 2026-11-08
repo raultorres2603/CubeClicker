@@ -187,6 +187,525 @@
 }
 
 /*
+ * Motion tokens v2 (T12; AC-34). The 13 CSS-mapped presentation tokens live on `main`,
+ * never on `:root`; every other motion token is intentionally JS-only. `lootbox-reveal`
+ * sums the five loot phases (420 + 250 + 120 + 360 + 140 = 1290 ms).
+ */
+main {
+  --motion-coin-pop-ms: 1100ms;
+  --motion-loot-charge-ms: 420ms;
+  --motion-loot-orb-ms: 250ms;
+  --motion-loot-flash-ms: 120ms;
+  --motion-loot-reveal-ms: 360ms;
+  --motion-loot-settle-ms: 140ms;
+  --motion-level-burst-ms: 760ms;
+  --motion-banner-peak-ms: 250ms;
+  --motion-banner-settle-ms: 450ms;
+  --motion-banner-halo-ms: 250ms;
+  --motion-equip-row-ms: 260ms;
+  --motion-equip-pulse-ms: 260ms;
+  --motion-upgrade-pulse-ms: 260ms;
+}
+
+/*
+ * Coin popup (AC-39). One popup per coin gain, at most three kept by the owner; the
+ * numeric HUD value is the authoritative display and updates in the same frame. The
+ * popup never animates the HUD panel itself (no pulse, no shake).
+ */
+.hud-row[data-row='coins'] {
+  position: relative;
+}
+
+.hud-coin-pops {
+  position: absolute;
+  top: 50%;
+  left: 2.75rem;
+  display: block;
+  pointer-events: none;
+}
+
+.hud-coin-pop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--coin-gold);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: coin-pop var(--motion-coin-pop-ms) cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+.hud-coin-pop:nth-child(2) {
+  left: 3.25rem;
+}
+
+.hud-coin-pop:nth-child(3) {
+  left: 4rem;
+}
+
+@keyframes coin-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.7);
+  }
+  7.27% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(-45px) scale(1);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-45px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-45px) scale(1);
+  }
+}
+
+/* Equip-row flash (AC-43): one 260 ms accent wash on the equipped slot row. */
+.customization-slot[data-equipping='true'] {
+  animation: equip-row-flash var(--motion-equip-row-ms) ease-out both;
+}
+
+@keyframes equip-row-flash {
+  0% {
+    background-color: rgba(124, 246, 255, 0.3);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+/* Upgrade purchase pulse (AC-43): one subtle row pulse, never the panel. */
+.upgrade-row[data-purchased='true'] {
+  animation: upgrade-purchased var(--motion-upgrade-pulse-ms) ease-out both;
+}
+
+@keyframes upgrade-purchased {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  35% {
+    transform: scale(1.02);
+    filter: brightness(1.25);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/*
+ * Lootbox reveal (AC-41 `[E]`): wireframe charge orb with an orange core, 420 ms charge,
+ * 250 ms 25 % overshoot, 120 ms flash, 360 ms card reveal with an 8 % overshoot and a
+ * 140 ms settle. The root `lootbox-reveal` keyframe is the full 1290 ms envelope.
+ */
+.lootbox-reveal {
+  --loot-card-delay: calc(
+    var(--motion-loot-charge-ms) + var(--motion-loot-orb-ms) + var(--motion-loot-flash-ms)
+  );
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: rgba(0, 0, 0, 0.35);
+  text-align: center;
+  animation: lootbox-reveal 1290ms linear both;
+}
+
+@keyframes lootbox-reveal {
+  0%,
+  51.94% {
+    filter: brightness(1);
+  }
+  56% {
+    filter: brightness(2.4);
+  }
+  61.24%,
+  100% {
+    filter: brightness(1);
+  }
+}
+
+.lootbox-orb {
+  width: 5rem;
+  height: 5rem;
+  color: var(--accent);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  animation:
+    lootbox-charge var(--motion-loot-charge-ms) ease-in-out both,
+    lootbox-orb-overshoot var(--motion-loot-orb-ms) var(--motion-loot-charge-ms)
+      cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    lootbox-orb-hide var(--motion-loot-flash-ms)
+      calc(var(--motion-loot-charge-ms) + var(--motion-loot-orb-ms)) linear both;
+}
+
+.lootbox-orb-core {
+  fill: #ff7a1a;
+  stroke: none;
+}
+
+@keyframes lootbox-charge {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes lootbox-orb-overshoot {
+  0% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1.25);
+  }
+}
+
+@keyframes lootbox-orb-hide {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.lootbox-flash {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+  opacity: 0;
+  animation: lootbox-flash var(--motion-loot-flash-ms)
+    calc(var(--motion-loot-charge-ms) + var(--motion-loot-orb-ms)) linear both;
+}
+
+@keyframes lootbox-flash {
+  0% {
+    opacity: 0;
+  }
+  40% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.lootbox-reveal-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  opacity: 1;
+  animation:
+    lootbox-reveal-card var(--motion-loot-reveal-ms) var(--loot-card-delay)
+      cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    lootbox-reveal-settle var(--motion-loot-settle-ms)
+      calc(var(--loot-card-delay) + var(--motion-loot-reveal-ms)) ease-out both;
+}
+
+@keyframes lootbox-reveal-card {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes lootbox-reveal-settle {
+  0% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.lootbox-reveal-rarity {
+  margin: 0;
+  color: var(--coin-gold);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.lootbox-reveal-part {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.lootbox-reveal-slot,
+.lootbox-reveal-duplicate {
+  margin: 0;
+  color: rgba(232, 246, 255, 0.72);
+  font-size: 0.85rem;
+}
+
+/* Reduced-motion reveal: instant result, static orb, no flash/overshoot (AC-41/AC-48). */
+.lootbox-reveal[data-reduced-motion='true'],
+.lootbox-reveal[data-reduced-motion='true'] .lootbox-orb,
+.lootbox-reveal[data-reduced-motion='true'] .lootbox-reveal-card {
+  animation: none;
+  transform: none;
+  filter: none;
+  opacity: 1;
+}
+
+.lootbox-reveal[data-reduced-motion='true'] .lootbox-flash {
+  display: none;
+}
+
+/* Panel control focus rings (AC-30): visible accent outline on every interactive control. */
+.customization-open:focus-visible,
+.customization-equip:focus-visible,
+.customization-unequip:focus-visible,
+.customization-reveal-equip:focus-visible,
+.customization-reveal-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Level-complete burst and banner (AC-40). Full-screen DOM burst: 16 gold + 8 cyan rays,
+ * 3 rings, 12 stars and 20 coins over 760 ms; the banner peaks at 1.08/250 ms and settles
+ * by 450 ms with a ±2° decaying wobble and a 250 ms halo. No camera/HUD shake.
+ */
+.level-complete {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.level-burst {
+  position: absolute;
+  inset: 0;
+  animation: level-burst var(--motion-level-burst-ms) cubic-bezier(0.33, 1, 0.68, 1)
+    both;
+}
+
+@keyframes level-burst {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  32.89% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+}
+
+.level-burst-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18rem;
+  height: 18rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.95), transparent 70%);
+  transform: translate(-50%, -50%);
+}
+
+.level-ray {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9rem;
+  height: 2px;
+  transform: rotate(var(--ray-angle));
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, currentColor, transparent);
+}
+
+.level-ray-gold {
+  color: #ffcc66;
+}
+
+.level-ray-cyan {
+  color: var(--accent);
+}
+
+.level-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6rem;
+  height: 6rem;
+  border: 2px solid rgba(255, 204, 102, 0.8);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(calc(1 + var(--ring-index) * 0.5));
+}
+
+.level-star,
+.level-coin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  font-size: 1.1rem;
+  transform: rotate(calc(var(--glyph-index) * 30deg)) translateY(-8rem);
+}
+
+.level-star {
+  color: #ffffff;
+}
+
+.level-coin {
+  color: var(--coin-gold);
+}
+
+.level-banner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1rem 2rem;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: linear-gradient(180deg, var(--panel-bg-top), var(--panel-bg-bottom));
+  box-shadow: 0 0 32px var(--panel-glow);
+  animation: level-banner var(--motion-banner-settle-ms) cubic-bezier(0.34, 1.56, 0.64, 1)
+    both;
+}
+
+@keyframes level-banner {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-8deg);
+  }
+  37.78% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+  55.56% {
+    transform: scale(1.08) rotate(0deg);
+  }
+  66% {
+    transform: scale(1.07) rotate(2deg);
+  }
+  77% {
+    transform: scale(1.05) rotate(-2deg);
+  }
+  88% {
+    transform: scale(1.02) rotate(1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.level-banner-title {
+  margin: 0;
+  color: var(--hud-text);
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.level-banner-level {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.level-banner-halo {
+  position: absolute;
+  inset: -0.8rem;
+  border: 2px solid var(--accent);
+  border-radius: var(--panel-radius);
+  animation: banner-halo var(--motion-banner-halo-ms) ease-out both;
+}
+
+@keyframes banner-halo {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+
+/* Reduced-motion level feedback (AC-40/AC-48): 150 ms ≤15 % overlay, static banner. */
+.level-complete[data-reduced-motion='true'] .level-burst,
+.level-complete[data-reduced-motion='true'] .level-banner-halo {
+  display: none;
+}
+
+.level-complete[data-reduced-motion='true']::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #ffffff;
+  pointer-events: none;
+  opacity: 0;
+  animation: level-reduced-overlay 150ms ease-out both;
+}
+
+@keyframes level-reduced-overlay {
+  0% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.15;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.level-complete[data-reduced-motion='true'] .level-banner {
+  animation: level-banner-reduced 120ms linear both;
+}
+
+@keyframes level-banner-reduced {
+  0% {
+    opacity: 0;
+    transform: scale(1) rotate(0deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/*
  * Mobile bands (AC-18). Top band: reserve the users pill's width in the HUD
  * (border-box so the cap includes padding and border) with sizing only, keeping
  * both base corners unchanged (T17). Bottom band: both panels span the viewport
@@ -249,7 +768,23 @@
   .customization-toggle,
   .customization-panel,
   .customization-panel::before,
-  .customization-panel::after {
+  .customization-panel::after,
+  .hud-coin-pop,
+  .customization-slot,
+  .upgrade-row[data-purchased='true'],
+  .lootbox-reveal,
+  .lootbox-orb,
+  .lootbox-flash,
+  .lootbox-reveal-card,
+  .level-complete,
+  .level-complete::before,
+  .level-burst,
+  .level-banner,
+  .level-banner-halo,
+  .level-ray,
+  .level-ring,
+  .level-star,
+  .level-coin {
     animation: none;
     transition: none;
   }

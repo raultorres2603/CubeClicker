@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } 
 import { createAuthApi, type AuthApi } from './auth/api';
 import { createAuthStore, type AuthStore } from './auth/store';
 import type { EngineSnapshot } from './game/engine';
+import { MOTION } from './game/motion';
 import { createGameSession, type OnlineGameSession } from './game/session';
 import type { Phase } from './game/types';
 import type { WorldState } from './multiplayer/server-state';
@@ -11,7 +12,8 @@ import { createTransport } from './multiplayer/transport';
 import { ConnectionBanner } from './ui/ConnectionBanner';
 import { CustomizationToggle } from './ui/CustomizationToggle';
 import { GameCanvas } from './ui/GameCanvas';
-import { HUD_BLINK_MS, Hud } from './ui/Hud';
+import { HUD_BLINK_MS, Hud, type HudCoinPop } from './ui/Hud';
+import { LevelCompleteBanner } from './ui/LevelCompleteBanner';
 import { UpgradesPanel } from './ui/UpgradesPanel';
 import { SpaceshipCustomizationPanel } from './ui/SpaceshipCustomizationPanel';
 import { UserPanel } from './ui/UserPanel';
@@ -26,6 +28,12 @@ const PHASE_ANNOUNCEMENT: Record<Phase, string> = {
   travel: 'Traveling to the next cube…',
   playing: '',
 };
+
+/**
+ * Reduced-motion coin popup lifetime (AC-39): the popup is static for 600 ms instead of
+ * the 1100 ms rise/fade.
+ */
+export const REDUCED_MOTION_COIN_POP_MS = 600;
 
 function announcementFor(
   snapshot: EngineSnapshot,
@@ -367,7 +375,13 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
     session.getSnapshot,
     session.getSnapshot,
   );
-  const { status, world, spectate, mode = 'guest' } = useSyncExternalStore(
+  const {
+    status,
+    world,
+    spectate,
+    mode = 'guest',
+    pendingLootboxOpen = false,
+  } = useSyncExternalStore(
     session.subscribeMultiplayer,
     session.getMultiplayerSnapshot,
     session.getMultiplayerSnapshot,
@@ -420,6 +434,92 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
     };
   }, [snapshot.stats.clicks, snapshot.reducedMotion]);
 
+  // Coin popups (AC-39): one popup per coin increase, at most `coinMaxConcurrent` kept
+  // (oldest dropped); lifetime 1100 ms, or a static 600 ms under reduced motion. The HUD
+  // numeric value is rendered from the same snapshot, so it updates in the same frame.
+  const [coinPops, setCoinPops] = useState<HudCoinPop[]>([]);
+  const coinPopsRef = useRef<HudCoinPop[]>([]);
+  const coinPopSequenceRef = useRef(0);
+  const coinPopTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const prevCoinsRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const coins = snapshot.stats.coins ?? 0;
+    const previous = prevCoinsRef.current;
+    prevCoinsRef.current = coins;
+    if (previous === null || coins <= previous) {
+      return;
+    }
+    const amount = Math.round((coins - previous) * 100) / 100;
+    if (amount <= 0) {
+      return;
+    }
+    const id = ++coinPopSequenceRef.current;
+    const next = [...coinPopsRef.current, { id, amount }];
+    while (next.length > MOTION.coinMaxConcurrent) {
+      const dropped = next.shift();
+      if (dropped !== undefined) {
+        const droppedTimer = coinPopTimersRef.current.get(dropped.id);
+        if (droppedTimer !== undefined) {
+          clearTimeout(droppedTimer);
+          coinPopTimersRef.current.delete(dropped.id);
+        }
+      }
+    }
+    coinPopsRef.current = next;
+    setCoinPops(next);
+
+    const lifetime = snapshot.reducedMotion ? REDUCED_MOTION_COIN_POP_MS : MOTION.coinPopMs;
+    const timer = setTimeout(() => {
+      const remaining = coinPopsRef.current.filter((pop) => pop.id !== id);
+      coinPopsRef.current = remaining;
+      setCoinPops(remaining);
+      coinPopTimersRef.current.delete(id);
+    }, lifetime);
+    coinPopTimersRef.current.set(id, timer);
+  }, [snapshot.stats.coins, snapshot.reducedMotion]);
+
+  useEffect(() => {
+    const timers = coinPopTimersRef.current;
+    return () => {
+      for (const timer of timers.values()) {
+        clearTimeout(timer);
+      }
+      timers.clear();
+    };
+  }, []);
+
+  // Level-complete banner (AC-40): shown for `bannerHoldMs` after a level increase.
+  const [levelBanner, setLevelBanner] = useState<number | null>(null);
+  const prevLevelRef = useRef<number | null>(null);
+  const levelBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const levelIndex = snapshot.levelIndex;
+    const previous = prevLevelRef.current;
+    prevLevelRef.current = levelIndex;
+    if (previous === null || levelIndex <= previous) {
+      return;
+    }
+    if (levelBannerTimerRef.current !== null) {
+      clearTimeout(levelBannerTimerRef.current);
+    }
+    setLevelBanner(levelIndex + 1);
+    levelBannerTimerRef.current = setTimeout(() => {
+      setLevelBanner(null);
+      levelBannerTimerRef.current = null;
+    }, MOTION.bannerHoldMs);
+  }, [snapshot.levelIndex]);
+
+  useEffect(() => {
+    return () => {
+      if (levelBannerTimerRef.current !== null) {
+        clearTimeout(levelBannerTimerRef.current);
+        levelBannerTimerRef.current = null;
+      }
+    };
+  }, []);
+
   if (verify) {
     return (
       <main>
@@ -441,6 +541,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
           serverId={world.serverId}
           minimized={hudMinimized}
           blinking={hudBlinking}
+          coinPops={coinPops}
           onToggleMinimize={() => setHudMinimized((value) => !value)}
         />
       ) : (
@@ -457,6 +558,13 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
           </p>
         </section>
       )}
+      {welcomed && levelBanner !== null ? (
+        <LevelCompleteBanner
+          visible
+          reducedMotion={snapshot.reducedMotion}
+          levelNumber={levelBanner}
+        />
+      ) : null}
       <ConnectionBanner status={status} onRetry={session.retryConnection} />
       <UserPanel
         welcomed={welcomed}
@@ -471,6 +579,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
           upgrades={snapshot.upgrades ?? {}}
           coins={snapshot.stats.coins ?? 0}
           mode={mode}
+          reducedMotion={snapshot.reducedMotion}
           onPurchase={session.purchaseUpgrade}
         />
       ) : null}
@@ -484,8 +593,13 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
         <SpaceshipCustomizationPanel
           customization={snapshot.customization ?? { lootboxes: 0, keys: 0, parts: {}, appearance: {} }}
           mode={mode}
+          pendingOpen={pendingLootboxOpen}
+          lastLootboxGrant={snapshot.lastLootboxGrant ?? null}
+          reducedMotion={snapshot.reducedMotion}
           onOpenLootbox={session.openLootbox}
           onEquip={session.equipPart}
+          onUnequip={(slotId) => session.unequipPart?.(slotId)}
+          onDismissReveal={() => session.dismissLootboxReveal?.()}
         />
       ) : null}
       {gateState.view === 'menu' ? (

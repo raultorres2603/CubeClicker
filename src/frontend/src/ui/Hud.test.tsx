@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HUD_BLINK_MS, Hud } from './Hud';
+import { HUD_BLINK_MS, Hud, formatCoinPop } from './Hud';
 
 afterEach(() => {
   cleanup();
@@ -304,5 +304,63 @@ describe('Hud blinking prop (AC-3)', () => {
     );
     expect(html).not.toContain('data-blinking');
     expect(html).toBe(hudMarkup({ clicks: 1, facesDestroyed: 1, cube: 1, server: 1 }));
+  });
+});
+
+describe('Hud coin popups (AC-39)', () => {
+  it('renders no coin-pop container when there is no gain', () => {
+    const { container } = render(
+      <Hud stats={{ clicks: 0, facesDestroyed: 0, coins: 0 }} levelIndex={0} serverId={0} />,
+    );
+
+    expect(container.querySelector('[data-coin-pops="true"]')).toBeNull();
+    expect(container.querySelectorAll('[data-coin-pop]')).toHaveLength(0);
+  });
+
+  it('renders one exact +<delta> popup per queued gain in queue order', () => {
+    const { container } = render(
+      <Hud
+        stats={{ clicks: 0, facesDestroyed: 0, coins: 1.25 }}
+        levelIndex={0}
+        serverId={0}
+        coinPops={[
+          { id: 1, amount: 0.5 },
+          { id: 2, amount: 0.25 },
+          { id: 3, amount: 0.4 },
+        ]}
+      />,
+    );
+
+    const pops = Array.from(container.querySelectorAll<HTMLElement>('[data-coin-pop]'));
+    expect(pops).toHaveLength(3);
+    expect(pops.map((pop) => pop.getAttribute('data-coin-pop'))).toEqual(['1', '2', '3']);
+    expect(pops.map((pop) => pop.getAttribute('data-amount'))).toEqual(['0.5', '0.25', '0.4']);
+    expect(pops.map((pop) => pop.textContent)).toEqual(['+0.50', '+0.25', '+0.40']);
+    expect(container.querySelector('[data-coin-pops="true"]')?.getAttribute('aria-hidden')).toBe(
+      'true',
+    );
+  });
+
+  it('updates the numeric HUD value in the same frame without a HUD pulse', () => {
+    const { container } = render(
+      <Hud
+        stats={{ clicks: 4, facesDestroyed: 1, coins: 2.75 }}
+        levelIndex={1}
+        serverId={3}
+        coinPops={[{ id: 7, amount: 0.75 }]}
+      />,
+    );
+
+    const section = container.querySelector('section');
+    expect(section?.getAttribute('class')).toBe('hud-panel');
+    expect(section?.hasAttribute('data-blinking')).toBe(false);
+    expect(container.querySelector('[data-stat="coins"]')?.textContent).toBe('2.75');
+    expect(container.querySelector('[data-coin-pop="7"]')?.textContent).toBe('+0.75');
+  });
+
+  it('formats deltas to exactly two decimals with a leading plus', () => {
+    expect(formatCoinPop(0.5)).toBe('+0.50');
+    expect(formatCoinPop(2)).toBe('+2.00');
+    expect(formatCoinPop(0.125)).toBe('+0.13');
   });
 });

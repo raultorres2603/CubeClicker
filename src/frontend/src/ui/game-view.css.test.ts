@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { MOTION } from '../game/motion';
+
 const css = readFileSync(new URL('./game-view.css', import.meta.url), 'utf8');
 const themeSource = readFileSync(new URL('./theme.ts', import.meta.url), 'utf8');
 const appCss = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
@@ -447,5 +449,265 @@ describe('stylesheet hygiene', () => {
     expect(cssSource).not.toContain('!important');
     expect(css.endsWith('\n')).toBe(true);
     expect(css.endsWith('\n\n')).toBe(false);
+  });
+});
+
+describe('motion tokens v2 (AC-34, T12)', () => {
+  const MAIN_RULE = /^main\s*\{([\s\S]*?)\}/m;
+
+  it('declares exactly the thirteen CSS-mapped tokens on main, not :root', () => {
+    const mainDeclarations = declarations(ruleBody(cssSource, MAIN_RULE));
+    expect(mainDeclarations).toEqual([
+      '--motion-coin-pop-ms: 1100ms',
+      '--motion-loot-charge-ms: 420ms',
+      '--motion-loot-orb-ms: 250ms',
+      '--motion-loot-flash-ms: 120ms',
+      '--motion-loot-reveal-ms: 360ms',
+      '--motion-loot-settle-ms: 140ms',
+      '--motion-level-burst-ms: 760ms',
+      '--motion-banner-peak-ms: 250ms',
+      '--motion-banner-settle-ms: 450ms',
+      '--motion-banner-halo-ms: 250ms',
+      '--motion-equip-row-ms: 260ms',
+      '--motion-equip-pulse-ms: 260ms',
+      '--motion-upgrade-pulse-ms: 260ms',
+    ]);
+    const rootDeclarations = declarations(ruleBody(cssSource, /:root\s*\{([^}]*)\}/));
+    expect(rootDeclarations.filter((entry) => entry.startsWith('--motion-'))).toEqual([]);
+  });
+
+  it('mirrors each mapped value from MOTION', () => {
+    const mainDeclarations = declarations(ruleBody(cssSource, MAIN_RULE));
+    const pairs = [
+      ['--motion-coin-pop-ms', 'coinPopMs'],
+      ['--motion-loot-charge-ms', 'lootboxChargeMs'],
+      ['--motion-loot-orb-ms', 'orbOvershootMs'],
+      ['--motion-loot-flash-ms', 'lootboxFlashMs'],
+      ['--motion-loot-reveal-ms', 'lootboxRevealMs'],
+      ['--motion-loot-settle-ms', 'lootboxSettleMs'],
+      ['--motion-level-burst-ms', 'levelBurstMs'],
+      ['--motion-banner-peak-ms', 'bannerPeakMs'],
+      ['--motion-banner-settle-ms', 'bannerOvershootMs'],
+      ['--motion-banner-halo-ms', 'bannerHaloMs'],
+      ['--motion-equip-row-ms', 'equipRowFlashMs'],
+      ['--motion-equip-pulse-ms', 'equipPulseMs'],
+      ['--motion-upgrade-pulse-ms', 'upgradePulseMs'],
+    ] as const;
+
+    for (const [cssName, token] of pairs) {
+      expect(cssToken(mainDeclarations, cssName)).toBe(`${MOTION[token]}ms`);
+    }
+  });
+});
+
+describe('lootbox reveal (AC-41)', () => {
+  it('uses the 1290 ms envelope and the five pinned phase tokens', () => {
+    expect(
+      MOTION.lootboxChargeMs +
+        MOTION.orbOvershootMs +
+        MOTION.lootboxFlashMs +
+        MOTION.lootboxRevealMs +
+        MOTION.lootboxSettleMs,
+    ).toBe(1290);
+    expect(MOTION.lootboxTotalMs).toBe(1290);
+
+    const root = ruleBody(cssSource, /^\.lootbox-reveal\s*\{([\s\S]*?)\}/m);
+    expect(root).toContain('animation: lootbox-reveal 1290ms linear both');
+
+    const envelope = ruleBody(cssSource, /@keyframes\s+lootbox-reveal\s*\{([\s\S]*?)\n\}/);
+    expect(envelope).toContain('51.94%');
+    expect(envelope).toContain('56%');
+    expect(envelope).toContain('61.24%');
+    expect(envelope).toContain('filter: brightness(2.4)');
+
+    const orb = ruleBody(cssSource, /^\.lootbox-orb\s*\{([\s\S]*?)\}/m);
+    expect(orb).toContain('var(--motion-loot-charge-ms)');
+    expect(orb).toContain('var(--motion-loot-orb-ms)');
+    expect(orb).toContain('var(--motion-loot-flash-ms)');
+    const orbOvershoot = ruleBody(
+      cssSource,
+      /@keyframes\s+lootbox-orb-overshoot\s*\{([\s\S]*?)\n\}/,
+    );
+    expect(orbOvershoot).toContain('scale(1.25)');
+
+    const card = ruleBody(cssSource, /^\.lootbox-reveal-card\s*\{([\s\S]*?)\}/m);
+    expect(card).toContain('var(--motion-loot-reveal-ms)');
+    expect(card).toContain('var(--motion-loot-settle-ms)');
+    const cardReveal = ruleBody(cssSource, /@keyframes\s+lootbox-reveal-card\s*\{([\s\S]*?)\n\}/);
+    expect(cardReveal).toContain('scale(1.08)');
+
+    const flash = ruleBody(cssSource, /^\.lootbox-flash\s*\{([\s\S]*?)\}/m);
+    expect(flash).toContain('var(--motion-loot-flash-ms)');
+    const flashKeyframes = ruleBody(
+      cssSource,
+      /@keyframes\s+lootbox-flash\s*\{([\s\S]*?)\n\}/,
+    );
+    expect(flashKeyframes).toContain('opacity: 0.85');
+  });
+
+  it('instantly settles and hides the flash under reduced motion', () => {
+    const reduced = ruleBody(
+      cssSource,
+      /\.lootbox-reveal\[data-reduced-motion='true'\][\s\S]*?\{([\s\S]*?)\}/,
+    );
+    expect(reduced).toContain('animation: none');
+    expect(cssSource).toContain(
+      ".lootbox-reveal[data-reduced-motion='true'] .lootbox-flash",
+    );
+  });
+});
+
+describe('coin popup (AC-39)', () => {
+  it('runs the 1100 ms popup with the 45 px rise and 0.7 start scale', () => {
+    expect(MOTION.coinPopMs).toBe(1100);
+    expect(MOTION.coinRisePx).toBe(45);
+
+    const pop = ruleBody(cssSource, /^\.hud-coin-pop\s*\{([\s\S]*?)\}/m);
+    expect(pop).toContain('animation: coin-pop var(--motion-coin-pop-ms)');
+    expect(pop).toContain('color: var(--coin-gold)');
+
+    const keyframes = ruleBody(cssSource, /@keyframes\s+coin-pop\s*\{([\s\S]*?)\n\}/);
+    expect(keyframes).toContain('7.27%');
+    expect(keyframes).toContain('20%');
+    expect(keyframes).toContain('scale(0.7)');
+    expect(keyframes).toContain('translateY(-45px)');
+    expect(keyframes).toContain('opacity: 0');
+  });
+
+  it('never animates the HUD panel and adds no shake', () => {
+    expect(cssSource).not.toMatch(/@keyframes\s+[a-z-]*shake/i);
+    expect(cssSource).not.toMatch(/random/i);
+    const hud = ruleBody(cssSource, PANEL_RULE);
+    expect(hud).not.toMatch(/(?:animation|transform|translate|rotate|scale)\s*:/);
+  });
+});
+
+describe('level burst and banner (AC-40)', () => {
+  it('runs the 760 ms burst with the pinned counts and banner keyframes', () => {
+    expect(MOTION.levelBurstMs).toBe(760);
+    expect(MOTION.bannerPeakMs).toBe(250);
+    expect(MOTION.bannerOvershootMs).toBe(450);
+    expect(MOTION.bannerHaloMs).toBe(250);
+    expect(MOTION.levelRayGold).toBe(16);
+    expect(MOTION.levelRayCyan).toBe(8);
+    expect(MOTION.levelRingCount).toBe(3);
+    expect(MOTION.levelStarCount).toBe(12);
+    expect(MOTION.levelCoinCount).toBe(20);
+
+    const burst = ruleBody(cssSource, /^\.level-burst\s*\{([\s\S]*?)\}/m);
+    expect(burst).toContain('var(--motion-level-burst-ms)');
+    const burstKeyframes = ruleBody(cssSource, /@keyframes\s+level-burst\s*\{([\s\S]*?)\n\}/);
+    expect(burstKeyframes).toContain('32.89%');
+
+    const banner = ruleBody(cssSource, /^\.level-banner\s*\{([\s\S]*?)\}/m);
+    expect(banner).toContain('var(--motion-banner-settle-ms)');
+    const bannerKeyframes = ruleBody(cssSource, /@keyframes\s+level-banner\s*\{([\s\S]*?)\n\}/);
+    expect(bannerKeyframes).toContain('rotate(-8deg)');
+    expect(bannerKeyframes).toContain('37.78%');
+    expect(bannerKeyframes).toContain('55.56%');
+    expect(bannerKeyframes).toContain('scale(1.08)');
+    expect(bannerKeyframes).toContain('rotate(2deg)');
+    expect(bannerKeyframes).toContain('rotate(-2deg)');
+    expect(bannerKeyframes).toContain('scale(1) rotate(0deg)');
+
+    const halo = ruleBody(cssSource, /^\.level-banner-halo\s*\{([\s\S]*?)\}/m);
+    expect(halo).toContain('var(--motion-banner-halo-ms)');
+  });
+
+  it('uses the pinned 150 ms ≤15 % reduced overlay and a static reduced banner', () => {
+    const overlay = ruleBody(
+      cssSource,
+      /\.level-complete\[data-reduced-motion='true'\]::before\s*\{([\s\S]*?)\}/,
+    );
+    expect(overlay).toContain('animation: level-reduced-overlay 150ms ease-out both');
+
+    const overlayKeyframes = ruleBody(
+      cssSource,
+      /@keyframes\s+level-reduced-overlay\s*\{([\s\S]*?)\n\}/,
+    );
+    expect(overlayKeyframes).toContain('opacity: 0.15');
+
+    const reducedBanner = ruleBody(
+      cssSource,
+      /\.level-complete\[data-reduced-motion='true'\] \.level-banner\s*\{([\s\S]*?)\}/,
+    );
+    expect(reducedBanner).toContain('animation: level-banner-reduced 120ms linear both');
+    expect(cssSource).toContain(
+      ".level-complete[data-reduced-motion='true'] .level-burst",
+    );
+  });
+});
+
+describe('equip and upgrade feedback (AC-43)', () => {
+  it('flashes the equipped row for 260 ms with no transform', () => {
+    expect(MOTION.equipRowFlashMs).toBe(260);
+    const rule = ruleBody(
+      cssSource,
+      /^\.customization-slot\[data-equipping='true'\]\s*\{([\s\S]*?)\}/m,
+    );
+    expect(rule).toContain('animation: equip-row-flash var(--motion-equip-row-ms)');
+    const keyframes = ruleBody(cssSource, /@keyframes\s+equip-row-flash\s*\{([\s\S]*?)\n\}/);
+    expect(keyframes).not.toContain('transform');
+    expect(keyframes).toContain('var(--accent)');
+  });
+
+  it('pulses the purchased upgrade row for 260 ms without pulsing the panel', () => {
+    expect(MOTION.upgradePulseMs).toBe(260);
+    const rule = ruleBody(
+      cssSource,
+      /^\.upgrade-row\[data-purchased='true'\]\s*\{([\s\S]*?)\}/m,
+    );
+    expect(rule).toContain('animation: upgrade-purchased var(--motion-upgrade-pulse-ms)');
+    const keyframes = ruleBody(cssSource, /@keyframes\s+upgrade-purchased\s*\{([\s\S]*?)\n\}/);
+    expect(keyframes).toContain('scale(1.02)');
+    expect(keyframes).toContain('scale(1)');
+    const panel = ruleBody(cssSource, /^\.upgrades-panel\s*\{([\s\S]*?)\}/m);
+    expect(panel).not.toMatch(/(?:animation|transform|translate|rotate|scale)\s*:/);
+  });
+});
+
+describe('no screen shake (AC-44)', () => {
+  it('keeps main and the three panels free of transform/translate/rotate/scale', () => {
+    const main = ruleBody(cssSource, /^main\s*\{([\s\S]*?)\}/m);
+    const hud = ruleBody(cssSource, PANEL_RULE);
+    const upgrades = ruleBody(cssSource, /^\.upgrades-panel\s*\{([\s\S]*?)\}/m);
+    const customization = ruleBody(cssSource, /^\.customization-panel\s*\{([\s\S]*?)\}/m);
+
+    for (const body of [main, hud, upgrades, customization]) {
+      expect(body).not.toMatch(/(?:transform|translate|rotate|scale)\s*:/);
+    }
+  });
+});
+
+describe('motion accessibility (AC-30, AC-48)', () => {
+  it('gives every customization control an accent focus-visible ring', () => {
+    const focus = declarations(
+      ruleBody(
+        cssSource,
+        /^\.customization-open:focus-visible,\s*\n\s*\.customization-equip:focus-visible,\s*\n\s*\.customization-unequip:focus-visible,\s*\n\s*\.customization-reveal-equip:focus-visible,\s*\n\s*\.customization-reveal-dismiss:focus-visible\s*\{([\s\S]*?)\}/m,
+      ),
+    );
+    expect(focus).toEqual(['outline: 2px solid var(--accent)', 'outline-offset: 2px']);
+  });
+
+  it('disables every new animation in the reduced-motion block', () => {
+    const block = mediaBlock(cssSource, '@media (prefers-reduced-motion: reduce)');
+    for (const selector of [
+      '.hud-coin-pop,',
+      '.customization-slot,',
+      ".upgrade-row[data-purchased='true'],",
+      '.lootbox-reveal,',
+      '.lootbox-orb,',
+      '.lootbox-flash,',
+      '.lootbox-reveal-card,',
+      '.level-complete,',
+      '.level-burst,',
+      '.level-banner,',
+      '.level-banner-halo,',
+    ]) {
+      expect(block).toContain(selector);
+    }
+    expect(block).toContain('animation: none;');
+    expect(block).toContain('transition: none;');
   });
 });

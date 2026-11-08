@@ -1,16 +1,17 @@
 /** @vitest-environment jsdom */
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { App, createAuthGate } from './App';
+import { App, REDUCED_MOTION_COIN_POP_MS, createAuthGate } from './App';
 import { createBoard } from './game/board';
 import type { EngineSnapshot } from './game/engine';
+import { MOTION } from './game/motion';
 import { CUBE_STYLES } from './game/progression';
 import type { MultiplayerSnapshot, OnlineGameSession } from './game/session';
-import { GRID_SIZE, type GameStats, type Phase } from './game/types';
+import { GRID_SIZE, type CustomizationState, type GameStats, type LootboxGrant, type Phase } from './game/types';
 import type { MemberState } from './multiplayer/protocol';
 import type { WorldState } from './multiplayer/server-state';
 import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
@@ -1083,5 +1084,369 @@ describe('App — auth interaction', () => {
     expect(alert.textContent).toBe('invalid credentials');
     expect(join).toHaveBeenCalledTimes(0);
     expect(retryConnection).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => {
+  const CUSTOMIZATION: CustomizationState = {
+    lootboxes: 1,
+    keys: 1,
+    parts: { 'hull-gold': 1, 'wing-left-silver': 1 },
+    appearance: { hull: 'hull-gold' },
+  };
+
+  function panelSession(
+    customization: CustomizationState,
+    overrides: {
+      grant?: LootboxGrant | null;
+      pending?: boolean;
+      sessionOverrides?: Partial<OnlineGameSession>;
+    } = {},
+  ): OnlineGameSession {
+    return sessionFor(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }, 0, {
+        customization,
+        lastLootboxGrant: overrides.grant ?? null,
+      }),
+      multiplayerFor({ pendingLootboxOpen: overrides.pending ?? false }),
+      overrides.sessionOverrides,
+    );
+  }
+
+  it('passes pendingLootboxOpen to the panel and disables Open lootbox while pending', () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={panelSession(CUSTOMIZATION, { pending: true })}
+      />,
+    );
+
+    const open = screen.getByRole('button', { name: 'Open lootbox' }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(1);
+  });
+
+  it('enables Open lootbox when the open is not pending', () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={panelSession(CUSTOMIZATION, { pending: false })}
+      />,
+    );
+
+    const open = screen.getByRole('button', { name: 'Open lootbox' }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+  });
+
+  it('passes the last grant into the reveal region and dismisses it through the session', () => {
+    const dismissLootboxReveal = vi.fn();
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={panelSession(CUSTOMIZATION, {
+          grant: {
+            partId: 'wing-left-silver',
+            slot: 'wing-left',
+            rarity: 'rare',
+            duplicate: false,
+            sequence: 5,
+          },
+          sessionOverrides: { dismissLootboxReveal },
+        })}
+      />,
+    );
+
+    const region = document.querySelector<HTMLElement>('[data-reveal-active="true"]');
+    expect(region?.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(region?.getAttribute('data-slot')).toBe('wing-left');
+    expect(region?.getAttribute('data-rarity')).toBe('rare');
+    expect(region?.getAttribute('data-duplicate')).toBe('false');
+    expect(region?.textContent).toContain('Port Silver Wing');
+    expect(region?.textContent).toContain('Rare');
+    expect(region?.textContent).toContain('New');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }));
+    expect(dismissLootboxReveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes panel equip and unequip controls to the session commands', () => {
+    const equipPart = vi.fn();
+    const unequipPart = vi.fn();
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={panelSession(CUSTOMIZATION, {
+          sessionOverrides: { equipPart, unequipPart },
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Equip Port Silver Wing' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unequip Hull' }));
+
+    expect(equipPart).toHaveBeenCalledTimes(1);
+    expect(equipPart).toHaveBeenCalledWith('wing-left-silver');
+    expect(unequipPart).toHaveBeenCalledTimes(1);
+    expect(unequipPart).toHaveBeenCalledWith('hull');
+  });
+});
+
+describe('App — coin pop queue (AC-39)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function coinsSection(): HTMLElement {
+    return screen.getByLabelText('Game statistics');
+  }
+
+  function pops(): string[] {
+    return Array.from(coinsSection().querySelectorAll('[data-coin-pop]')).map(
+      (pop) => pop.textContent ?? '',
+    );
+  }
+
+  it('renders one popup per gain with the same-frame numeric value and no HUD pulse', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+
+    expect(coinsSection().querySelector('[data-stat="coins"]')?.textContent).toBe('0.00');
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0.5 }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(coinsSection().querySelector('[data-stat="coins"]')?.textContent).toBe('0.50');
+    expect(pops()).toEqual(['+0.50']);
+    expect(coinsSection().getAttribute('data-blinking')).toBeNull();
+  });
+
+  it('keeps a popup for 1100 ms', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    act(() => {
+      setSnapshot(snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0.5 }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(pops()).toEqual(['+0.50']);
+
+    act(() => {
+      vi.advanceTimersByTime(1099);
+    });
+    expect(pops()).toEqual(['+0.50']);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(pops()).toEqual([]);
+  });
+
+  it('keeps at most three popups and drops the oldest first', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+
+    for (const coins of [0.1, 0.3, 0.6, 1.0]) {
+      act(() => {
+        setSnapshot(snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins }));
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    expect(pops()).toEqual(['+0.20', '+0.30', '+0.40']);
+    expect(MOTION.coinMaxConcurrent).toBe(3);
+  });
+
+  it('uses the static 600 ms lifetime under reduced motion', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }, 0, {
+        reducedMotion: true,
+      }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    act(() => {
+      setSnapshot(
+        snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0.5 }, 0, {
+          reducedMotion: true,
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(pops()).toEqual(['+0.50']);
+
+    act(() => {
+      vi.advanceTimersByTime(599);
+    });
+    expect(pops()).toEqual(['+0.50']);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(pops()).toEqual([]);
+    expect(REDUCED_MOTION_COIN_POP_MS).toBe(600);
+  });
+});
+
+describe('App — level banner and upgrade pulse (AC-40, AC-43)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows LevelCompleteBanner for exactly 1600 ms after a level increase', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', undefined, 0),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+
+    expect(document.querySelector('[data-level-complete="true"]')).toBeNull();
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', undefined, 1));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(document.querySelector('[data-level-complete="true"]')).not.toBeNull();
+    expect(document.querySelector('.level-banner-title')?.textContent).toBe('LEVEL COMPLETE');
+    expect(document.querySelector('.level-banner-level')?.textContent).toBe('Cube 2');
+    expect(document.querySelectorAll('[data-ray="gold"]')).toHaveLength(16);
+    expect(document.querySelectorAll('[data-ray="cyan"]')).toHaveLength(8);
+    expect(document.querySelectorAll('[data-ring]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-star]')).toHaveLength(12);
+    expect(document.querySelectorAll('[data-coin]')).toHaveLength(20);
+
+    act(() => {
+      vi.advanceTimersByTime(1599);
+    });
+    expect(document.querySelector('[data-level-complete="true"]')).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(document.querySelector('[data-level-complete="true"]')).toBeNull();
+    expect(MOTION.bannerHoldMs).toBe(1600);
+  });
+
+  it('marks the banner reduced under reduced motion', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', undefined, 0, { reducedMotion: true }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', undefined, 1, { reducedMotion: true }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(
+      document
+        .querySelector('[data-level-complete="true"]')
+        ?.getAttribute('data-reduced-motion'),
+    ).toBe('true');
+  });
+
+  it('restarts the banner hold when another level completes while it is visible', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', undefined, 0),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', undefined, 1));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(document.querySelector('.level-banner-level')?.textContent).toBe('Cube 2');
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', undefined, 2));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(document.querySelector('.level-banner-level')?.textContent).toBe('Cube 3');
+    act(() => {
+      vi.advanceTimersByTime(1599);
+    });
+    expect(document.querySelector('[data-level-complete="true"]')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(document.querySelector('[data-level-complete="true"]')).toBeNull();
+  });
+
+  it('pulses the upgraded row for 260 ms without pulsing the panel', async () => {
+    vi.useFakeTimers();
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing', undefined, 0, { upgrades: {} }),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    const row = (): HTMLElement | null =>
+      document.querySelector<HTMLElement>('li[data-upgrade="mini_cube_value"]');
+
+    expect(row()?.getAttribute('data-purchased')).toBeNull();
+
+    act(() => {
+      setSnapshot(
+        snapshotFor('playing', undefined, 0, { upgrades: { mini_cube_value: 1 } }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(row()?.getAttribute('data-purchased')).toBe('true');
+    expect(document.querySelector('.upgrades-panel')?.hasAttribute('data-purchased')).toBe(false);
+
+    act(() => {
+      vi.advanceTimersByTime(259);
+    });
+    expect(row()?.getAttribute('data-purchased')).toBe('true');
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(row()?.getAttribute('data-purchased')).toBeNull();
   });
 });

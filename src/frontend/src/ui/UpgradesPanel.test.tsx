@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { MOTION } from '../game/motion';
 import type { UpgradeState } from '../game/types';
 import { UpgradesPanel } from './UpgradesPanel';
 
@@ -285,5 +286,99 @@ describe('UpgradesPanel', () => {
     await user.click(buyButtons[2]);
     expect(onPurchase).toHaveBeenCalledTimes(1);
     expect(onPurchase).toHaveBeenCalledWith('mini_cube_value');
+  });
+});
+
+describe('UpgradesPanel purchase pulse (AC-43, AC-48)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sets data-purchased on the upgraded row for exactly 260 ms', () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(
+      <UpgradesPanel upgrades={{}} coins={100} mode="account" onPurchase={() => {}} />,
+    );
+    const row = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>('li[data-upgrade="mini_cube_value"]');
+
+    expect(row()?.getAttribute('data-purchased')).toBeNull();
+
+    rerender(
+      <UpgradesPanel
+        upgrades={{ mini_cube_value: 1 }}
+        coins={90}
+        mode="account"
+        onPurchase={() => {}}
+      />,
+    );
+    expect(row()?.getAttribute('data-purchased')).toBe('true');
+
+    act(() => {
+      vi.advanceTimersByTime(259);
+    });
+    expect(row()?.getAttribute('data-purchased')).toBe('true');
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(row()?.getAttribute('data-purchased')).toBeNull();
+  });
+
+  it('pulses only the row whose level increased', () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(
+      <UpgradesPanel upgrades={{}} coins={100} mode="account" onPurchase={() => {}} />,
+    );
+
+    rerender(
+      <UpgradesPanel
+        upgrades={{ cube_value: 1 }}
+        coins={50}
+        mode="account"
+        onPurchase={() => {}}
+      />,
+    );
+
+    expect(
+      container.querySelector('li[data-upgrade="mini_cube_value"]')?.getAttribute('data-purchased'),
+    ).toBeNull();
+    expect(
+      container.querySelector('li[data-upgrade="cube_value"]')?.getAttribute('data-purchased'),
+    ).toBe('true');
+    expect(
+      container.querySelector('li[data-upgrade="speed_window"]')?.getAttribute('data-purchased'),
+    ).toBeNull();
+  });
+
+  it('adds no purchase pulse under reduced motion', () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(
+      <UpgradesPanel
+        upgrades={{}}
+        coins={100}
+        mode="account"
+        reducedMotion
+        onPurchase={() => {}}
+      />,
+    );
+
+    rerender(
+      <UpgradesPanel
+        upgrades={{ mini_cube_value: 1 }}
+        coins={90}
+        mode="account"
+        reducedMotion
+        onPurchase={() => {}}
+      />,
+    );
+
+    expect(
+      container.querySelector('li[data-upgrade="mini_cube_value"]')?.getAttribute('data-purchased'),
+    ).toBeNull();
+  });
+
+  it('uses the pinned 260 ms pulse token', () => {
+    expect(MOTION.upgradePulseMs).toBe(260);
   });
 });

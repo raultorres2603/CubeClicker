@@ -626,3 +626,38 @@ describe('stylesheet hygiene', () => {
     expect(css.endsWith('\n\n')).toBe(false);
   });
 });
+
+describe('customization panel slots and targets (AC-29, AC-30)', () => {
+  it('scrolls within max-height 60vh and clips horizontal overflow', () => {
+    const body = ruleBody(/\.customization-panel\s*\{([\s\S]*?)\}/);
+    expect(body).toContain('box-sizing: border-box;');
+    expect(body).toContain('max-width: min(22rem, calc(100vw - 2rem));');
+    expect(body).toContain('max-height: 60vh;');
+    expect(body).toContain('overflow-x: hidden;');
+    expect(body).toContain('overflow-y: auto;');
+  });
+
+  it('gives open, equip, unequip and reveal controls a 44x44 minimum target', () => {
+    const body = ruleBody(
+      /\.customization-open,\s*\n\s*\.customization-equip,\s*\n\s*\.customization-unequip,\s*\n\s*\.customization-reveal-equip,\s*\n\s*\.customization-reveal-dismiss\s*\{([\s\S]*?)\}/,
+    );
+    expect(body).toContain('min-width: 44px;');
+    expect(body).toContain('min-height: 44px;');
+  });
+
+  it('lays out the ten slot rows and three-variant lists without bullets', () => {
+    const body = ruleBody(
+      /\.customization-slots,\s*\n\s*\.customization-variants\s*\{([\s\S]*?)\}/,
+    );
+    expect(body).toContain('display: flex;');
+    expect(body).toContain('flex-direction: column;');
+    expect(body).toContain('list-style: none;');
+    expect(body).toContain('margin: 0;');
+    expect(body).toContain('padding: 0;');
+  });
+
+  it('does not scale or translate the panel itself (no shake)', () => {
+    const body = ruleBody(/\.customization-panel\s*\{([\s\S]*?)\}/);
+    expect(body).not.toMatch(/(?:transform|translate|rotate|scale|animation)\s*:/);
+  });
+});
