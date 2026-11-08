@@ -12,8 +12,8 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### appearance
 
-**Definition:** The equipped look of a player's spaceship, expressed as a map from part category (nose, body, wings, cockpit, engine) to a part id. It is persisted per **account** in the `user_economy.appearance` column and broadcast to that account's joined connections; **guests** keep an ephemeral copy for the session. Changing appearance updates the live 3D preview and the in-game spaceship cursor.
-**Example:** Equipping a crimson nose sets the `nose` category to `nose-crimson`, recoloring the ship's nose.
+**Definition:** The equipped look of a player's spaceship, expressed as a map from **part slot** to a part id; a missing slot resolves to that slot's standard part. Slots are equipped and unequipped independently, so a loadout may be asymmetric (for example a silver port wing and a gold starboard wing). It is persisted per **account** in the `user_economy.appearance` column and broadcast to that account's joined connections; **guests** keep an ephemeral copy for the session. Changing appearance updates the live 3D preview and the in-game pointer ship.
+**Example:** Equipping `wing-left-silver` sets the `wing-left` slot to that part and recolors the port wing, while the starboard wing keeps its previous part.
 
 ### click
 
@@ -67,13 +67,23 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### lootbox
 
-**Definition:** A closed container earned by completing (destroying) a **cube**. A lootbox requires a **key** to open; opening grants a random **part** (a cosmetic spaceship component). Lootboxes are persisted per **account** in the `user_economy.lootboxes` column; **guests** earn them for the session only.
+**Definition:** A closed container earned by completing (destroying) a **cube**. A lootbox requires a **key** to open; opening consumes one of each and grants exactly one random lootable **part** for one **part slot** (75% rare, 25% epic). Lootboxes are persisted per **account** in the `user_economy.lootboxes` column; **guests** earn them for the session only.
 **Example:** Completing a cube awards `+1` lootbox.
+
+### lootbox reveal
+
+**Definition:** The client-local panel animation that presents a lootbox opening to the connection that opened it: a 1290 ms sequence of 420 ms wireframe charge, 250 ms orb pulse with overshoot, 120 ms flash, 360 ms card reveal and 140 ms settle, followed by the granted **part**'s name, **part slot**, rarity (rare or epic) and new/duplicate status. The server remains authoritative and sends the grant plus the absolute inventory; other connections of the account receive the inventory update without replaying the reveal. Under reduced motion the settled result appears instantly.
+**Example:** Opening a lootbox charges the wireframe orb, flashes, and reveals `Port Silver Wing` for the `wing-left` slot marked `Rare · New`.
 
 ### mini-cube
 
 **Definition:** A single clickable tile of a **face**: one of the N² cells of that face's N×N grid (N is the cube level's random grid size, 3 to 7), identified as `face:row:col` with 0-based rows and columns (for example `front:0:0`). The tiles sit with a thin uniform seam between them — the dark interior shows through as the tile lines — so the cube's surface reads as one giant cube built from mini-cubes; destroying a mini-cube removes it from its face for good and exposes the dark interior behind it. It is the unit of destruction for the cube.
 **Example:** The mini-cube `front:0:0` is the top-left tile of the front face; on a 5×5 face destroying it leaves 24 mini-cubes on that face.
+
+### motion token
+
+**Definition:** A named, pinned presentation constant — a duration, count, distance, scale, speed or angle — in the `MOTION` table (`src/frontend/src/game/motion.ts`) that the 3D renderer, React UI and CSS animations share, so one motion language has a single source of truth. The 13 CSS-mapped durations are declared as `--motion-*` custom properties on `main` in `game-view.css` and asserted equal to their `MOTION` values by tests; all other tokens stay JS-only.
+**Example:** `MOTION.coinPopMs` (1100 ms) drives the coin popup, and its CSS mirror is `--motion-coin-pop-ms: 1100ms`.
 
 ### offline progress
 
@@ -82,8 +92,13 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### part
 
-**Definition:** A cosmetic spaceship component belonging to one of five categories (nose, body, wings, cockpit, engine). Parts are granted by opening **lootboxes** and can be equipped in the spaceship customization menu to change the ship's colors. Owned part counts are persisted per **account** in the `user_economy.parts` column.
-**Example:** `nose-crimson` is a nose part that recolors the ship's nose.
+**Definition:** A cosmetic spaceship component belonging to exactly one of the ten **part slots** (hull, nose, cockpit, wing-left, wing-right, engine-left, engine-right, ignition-left, ignition-right, tail-fin). The catalog has 30 parts — one standard, one rare and one epic part for every slot; the 10 standard parts are always owned and never looted, while the 20 rare/epic parts are granted one per **lootbox** opening. Parts can be equipped in the spaceship customization menu to change the ship's colours, accents and some shapes. Owned part counts are persisted per **account** in the `user_economy.parts` column.
+**Example:** `wing-left-silver` is a rare port-wing part; a lootbox opening can grant it once, and equipping it changes only the port wing.
+
+### part slot
+
+**Definition:** One of the ten independently customizable positions on a player's spaceship: `hull`, `nose`, `cockpit`, `wing-left`, `wing-right`, `engine-left`, `engine-right`, `ignition-left`, `ignition-right` and `tail-fin` (displayed as Hull, Nose, Cockpit, Port Wing, Starboard Wing, Port Engine, Starboard Engine, Port Ignition, Starboard Ignition and Tail Fin). Each slot has its own appearance entry and its own three parts in the 30-part catalog (standard, rare and epic), so the left and right sides are independent. A slot with no equipped part resolves to its standard part, which is always owned.
+**Example:** Equipping `tail-fin-comet` fills only the `tail-fin` slot; the hull, wings and engines keep their own parts.
 
 ### points
 
