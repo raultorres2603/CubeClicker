@@ -4,6 +4,7 @@ import { buildApp, helloMessage, toPeer } from './app.js';
 import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
+import type { PartId } from './game/parts.js';
 import { roundCoins, idleCoins } from './game/economy.js';
 
 interface HelloEnvelope {
@@ -607,6 +608,8 @@ describe('toPeer', () => {
 interface TestClient {
   send(message: unknown): void;
   next(): Promise<ServerMessage>;
+  /** Frames received and not yet consumed by `next()` (used to assert silence). */
+  queuedCount(): number;
   close(): void;
 }
 
@@ -649,6 +652,9 @@ function connectClient(url: string): Promise<TestClient> {
             });
           });
         },
+        queuedCount(): number {
+          return queued.length;
+        },
         close(): void {
           socket.close();
         },
@@ -686,6 +692,14 @@ function nextOrTimeout(client: TestClient, ms: number): Promise<ServerMessage | 
       setTimeout(() => resolve(null), ms);
     }),
   ]);
+}
+
+/** Waits briefly and asserts the client received no frame (no waiter is left behind). */
+async function expectNoFrame(client: TestClient): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 50);
+  });
+  expect(client.queuedCount()).toBe(0);
 }
 
 describe('account economy integration (T12)', () => {
@@ -1083,6 +1097,205 @@ describe('idle accrual integration (T5)', () => {
       expect(maybeUpdate).toBeNull();
 
       expect(await repo.findLastSeenAt('u1')).toBe(now);
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+});
+
+describe('granular customization integration (T5)', () => {
+  it('account open reveals to the opener only, second tabs adopt state, and equip/unequip persist', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+
+    const app = buildApp({}, {
+      now: () => 0,
+      random: () => () => 0,
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const opener = await connectClient(url);
+    const secondTab = await connectClient(url);
+
+    try {
+      expect(helloOf(await opener.next()).type).toBe('hello');
+      expect(helloOf(await secondTab.next()).type).toBe('hello');
+
+      opener.send({ type: 'join' });
+      expect(welcomeOf(await opener.next()).customization).toEqual({
+        lootboxes: 2,
+        keys: 2,
+        parts: {},
+        appearance: {},
+      });
+
+      secondTab.send({ type: 'join' });
+      expect(welcomeOf(await secondTab.next()).customization).toEqual({
+        lootboxes: 2,
+        keys: 2,
+        parts: {},
+        appearance: {},
+      });
+      expect((await opener.next()).type).toBe('memberJoined');
+
+      opener.send({ type: 'openLootbox' });
+      const openedUpdate = await opener.next();
+      expect(openedUpdate).toEqual({
+        type: 'customizationUpdate',
+        lootboxes: 1,
+        keys: 1,
+        parts: { 'hull-obsidian': 1 },
+        appearance: {},
+      });
+      expect(await opener.next()).toEqual({
+        type: 'lootboxOpened',
+        partId: 'hull-obsidian',
+        slot: 'hull',
+        rarity: 'rare',
+        duplicate: false,
+        lootboxes: 1,
+        keys: 1,
+        parts: { 'hull-obsidian': 1 },
+        appearance: {},
+      });
+
+      // The second tab receives the absolute state without replaying the reveal.
+      expect(await secondTab.next()).toEqual(openedUpdate);
+      await expectNoFrame(secondTab);
+
+      // The second tab opens the next box: duplicate feedback goes to that tab only.
+      secondTab.send({ type: 'openLootbox' });
+      const duplicateUpdate = {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 2 },
+        appearance: {},
+      };
+      expect(await opener.next()).toEqual(duplicateUpdate);
+      expect(await secondTab.next()).toEqual(duplicateUpdate);
+      expect(await secondTab.next()).toEqual({
+        type: 'lootboxOpened',
+        partId: 'hull-obsidian',
+        slot: 'hull',
+        rarity: 'rare',
+        duplicate: true,
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 2 },
+        appearance: {},
+      });
+      await expectNoFrame(opener);
+
+      secondTab.send({ type: 'equipPart', partId: 'hull-obsidian' });
+      const equipped = {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 2 },
+        appearance: { hull: 'hull-obsidian' },
+      };
+      expect(await opener.next()).toEqual(equipped);
+      expect(await secondTab.next()).toEqual(equipped);
+
+      // A later connection adopts the persisted loadout with no reveal.
+      const late = await connectClient(url);
+      try {
+        expect(helloOf(await late.next()).type).toBe('hello');
+        late.send({ type: 'join' });
+        expect(welcomeOf(await late.next()).customization).toEqual({
+          lootboxes: 0,
+          keys: 0,
+          parts: { 'hull-obsidian': 2 },
+          appearance: { hull: 'hull-obsidian' },
+        });
+        await expectNoFrame(late);
+        expect((await opener.next()).type).toBe('memberJoined');
+        expect((await secondTab.next()).type).toBe('memberJoined');
+
+        late.send({ type: 'unequipPart', slotId: 'hull' });
+        const unequipped = {
+          type: 'customizationUpdate',
+          lootboxes: 0,
+          keys: 0,
+          parts: { 'hull-obsidian': 2 },
+          appearance: {},
+        };
+        expect(await late.next()).toEqual(unequipped);
+        expect(await opener.next()).toEqual(unequipped);
+        expect(await secondTab.next()).toEqual(unequipped);
+
+        late.send({ type: 'unequipPart', slotId: 'wings' });
+        expect(await late.next()).toEqual({ type: 'error', code: 'unknown_slot' });
+        await expectNoFrame(opener);
+        await expectNoFrame(secondTab);
+      } finally {
+        late.close();
+      }
+
+      expect(await repo.findCustomizationByUserId('u1')).toEqual({
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 2 },
+        appearance: {},
+      });
+    } finally {
+      opener.close();
+      secondTab.close();
+      await app.close();
+    }
+  });
+
+  it('normalizes a legacy customization row on account join (AC-33 fixture)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 4, keys: 4 });
+    await repo.applyLootboxOpen('u1', 'wings-silver' as PartId);
+    await repo.applyLootboxOpen('u1', 'wings-silver' as PartId);
+    await repo.applyLootboxOpen('u1', 'engine-blue' as PartId);
+    await repo.applyLootboxOpen('u1', 'body-gold' as PartId);
+    await repo.setAppearance('u1', {
+      wings: 'wings-silver',
+      engine: 'engine-blue',
+      body: 'body-gold',
+    });
+
+    const app = buildApp({}, {
+      now: () => 0,
+      auth: {
+        sessionResolver: () => ({ userId: 'u1', username: 'alice', verified: true }),
+        economy: repo,
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      expect(welcomeOf(await client.next()).customization).toEqual({
+        lootboxes: 0,
+        keys: 0,
+        parts: {
+          'hull-gold': 1,
+          'wing-left-silver': 2,
+          'wing-right-silver': 2,
+          'ignition-left-blue': 1,
+          'ignition-right-blue': 1,
+        },
+        appearance: {
+          hull: 'hull-gold',
+          'wing-left': 'wing-left-silver',
+          'wing-right': 'wing-right-silver',
+          'ignition-left': 'ignition-left-blue',
+          'ignition-right': 'ignition-right-blue',
+        },
+      });
     } finally {
       client.close();
       await app.close();

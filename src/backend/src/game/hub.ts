@@ -32,6 +32,18 @@
  * - the connection cap is enforced before anything is sent: `hasCapacity()` lets the route
  *   close an over-cap upgrade before `hello`, and `attach` keeps the same guard as a backstop.
  *
+ * Granular customization (T5, spec AC-12/AC-18…AC-22/AC-26/AC-28/AC-33):
+ * - an account `openLootbox` takes a per-member `openingMembers` guard (a second open while the
+ *   repository is awaiting is dropped silently and consumes no draw/state), draws exactly one
+ *   weighted part with **the captured hub `random`** (F21; never a fresh `deps.random()`), and
+ *   calls `applyLootboxOpenV2`; every joined connection of the account receives the absolute
+ *   `customizationUpdate`, and exactly the opening connection receives `lootboxOpened`;
+ * - `equipPart`/`unequipPart` are server-validated against the v2 catalog and ownership (standard
+ *   parts are implicitly owned), and persist through the per-slot atomic `setSlotAppearance`;
+ * - the legacy ids `body-*`/`wings-*`/`engine-*` stay accepted: the server expands them to one
+ *   hull slot or both wing/ignition slots, and a multi-slot legacy id requires **both** target
+ *   parts owned; nose/cockpit ids are already v2 ids and equip directly (AC-28).
+ *
  * Time, randomness and timers are injected (`HubDeps`), so every boundary is deterministic in
  * tests: no wall-clock reads, no real sleeps.
  */
@@ -76,6 +88,7 @@ import {
   type UpgradeState,
   type CustomizationState,
   customizationUpdateMessage,
+  lootboxOpenedMessage,
 } from './protocol.js';
 import {
   createServerRegistry,
@@ -99,13 +112,73 @@ import {
   upgradeCost,
   UPGRADE_CATALOG,
 } from './upgrades.js';
-import { isValidPartId, partCategory, randomPartId } from './parts.js';
+import {
+  defaultPartForSlot,
+  isValidPartId,
+  isValidSlotId,
+  partDefinition,
+  selectLootPart,
+  type PartIdV2,
+  type SlotId,
+} from './parts-v2.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
 
 /** Max `rotate` messages per trailing second per member (AC-6). */
 const ROTATE_RATE_LIMIT = 20;
+
+/** One equip target: the v2 slot and the v2 part to place there. */
+interface EquipTarget {
+  slot: SlotId;
+  partId: PartIdV2;
+}
+
+/**
+ * Legacy catalog part ids expanded server-side to their v2 target(s) (AC-28):
+ * `body-*` → one hull slot, `wings-*` → both wing slots, `engine-*` → both ignition slots.
+ * Nose/cockpit ids are v2 ids already and resolve through `isValidPartId`.
+ */
+const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
+  'body-default': ['hull-default'],
+  'body-obsidian': ['hull-obsidian'],
+  'body-gold': ['hull-gold'],
+  'wings-default': ['wing-left-default', 'wing-right-default'],
+  'wings-silver': ['wing-left-silver', 'wing-right-silver'],
+  'engine-default': ['ignition-left-default', 'ignition-right-default'],
+  'engine-blue': ['ignition-left-blue', 'ignition-right-blue'],
+};
+
+/** Expands a client-supplied part id to its v2 target slot(s); `null` when unknown. */
+function resolveEquipTargets(partId: string): EquipTarget[] | null {
+  if (isValidPartId(partId)) {
+    return [{ slot: partDefinition(partId).slot, partId }];
+  }
+  const legacy = LEGACY_EQUIP_TARGETS[partId];
+  if (legacy === undefined) {
+    return null;
+  }
+  return legacy.map((id) => ({ slot: partDefinition(id).slot, partId: id }));
+}
+
+/** Standard parts are implicitly owned (AC-12); other parts need a positive count (AC-21). */
+function ownsPart(state: CustomizationState, partId: PartIdV2): boolean {
+  return partDefinition(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
+}
+
+/**
+ * Positive part counts for the `lootboxOpened` payload: the AC-24 codec requires positive
+ * integers, so zero-count entries (semantically absent) are not put on the wire.
+ */
+function positivePartCounts(parts: Record<string, number>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [id, count] of Object.entries(parts)) {
+    if (Number.isInteger(count) && count > 0) {
+      counts[id] = count;
+    }
+  }
+  return counts;
+}
 
 /**
  * The socket subset the hub drives.
@@ -232,6 +305,14 @@ export function createGameHub(deps: HubDeps): GameHub {
     graceMs: config.reconnectGraceMs,
     now: deps.now,
   });
+  /**
+   * The one captured RNG stream (F21/AC-18). Every server draw shares it, synchronously in
+   * message-arrival order: a join and each accepted cube completion draw one next-cube grid
+   * value (`createNextCube`), and every account `openLootbox` that passes the in-flight guard
+   * draws exactly one weighted loot value (`selectLootPart`) before its repository await. An
+   * in-flight guard drop therefore never consumes a loot draw, and no handler ever calls
+   * `deps.random()` again.
+   */
   const random = deps.random();
   const timers = deps.timers;
 
@@ -239,6 +320,8 @@ export function createGameHub(deps: HubDeps): GameHub {
   const members = new Map<string, Member>();
   const tokens = new Map<string, string>();
   const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Member ids with an `openLootbox` awaiting the repository (per-member in-flight guard). */
+  const openingMembers = new Set<string>();
   let playerCounter = 0;
   let movePlan = new Map<string, number>();
 
@@ -731,6 +814,15 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
+  /** Mirrors one account's customization onto every member (tab) of that account. */
+  function updateMembersCustomization(accountId: string, customization: CustomizationState): void {
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.customization = customization;
+      }
+    }
+  }
+
   function broadcastCustomizationUpdate(userId: string, customization: CustomizationState): void {
     for (const connection of connections) {
       if (connection.playerId === null) {
@@ -792,11 +884,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       void economyRepo
         .grantCustomization(accountId, { lootboxes: 1, keys: 1 })
         .then((result) => {
-          for (const m of members.values()) {
-            if (m.accountId === accountId) {
-              m.customization = result;
-            }
-          }
+          updateMembersCustomization(accountId, result);
           broadcastCustomizationUpdate(accountId, result);
         });
     }
@@ -864,53 +952,103 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   async function handleOpenLootbox(member: Member, connection: Connection): Promise<void> {
-    if (member.accountId === null) {
+    if (member.accountId === null || economyRepo === null) {
       return;
     }
-    const accountId = member.accountId;
-    if (economyRepo === null) {
+    // Per-member in-flight guard (AC-20): a second open from the same member/connection while
+    // the first awaits the repository is dropped silently — no draw, no decrement, no error.
+    if (openingMembers.has(member.playerId)) {
       return;
     }
-    const partId = randomPartId(deps.random());
-    const result = await economyRepo.applyLootboxOpen(accountId, partId);
-    if ('reason' in result) {
-      sendError(connection, result.reason === 'no_lootbox' ? 'no_lootbox' : 'no_key');
-      return;
-    }
-    const state = result.state;
-    for (const m of members.values()) {
-      if (m.accountId === accountId) {
-        m.customization = state;
+    openingMembers.add(member.playerId);
+    try {
+      const accountId = member.accountId;
+      // One weighted draw from the captured hub stream, before the repository await (AC-18).
+      const partId = selectLootPart(random);
+      const definition = partDefinition(partId);
+      if (definition.rarity === 'standard') {
+        // Unreachable: `selectLootPart` only returns lootable parts.
+        throw new Error(`selectLootPart returned a standard part: ${partId}`);
       }
+      const result = await economyRepo.applyLootboxOpenV2(accountId, partId);
+      if ('reason' in result) {
+        sendError(connection, result.reason);
+        return;
+      }
+      const state = result.state;
+      updateMembersCustomization(accountId, state);
+      broadcastCustomizationUpdate(accountId, state);
+      send(
+        connection,
+        lootboxOpenedMessage({
+          partId,
+          slot: definition.slot,
+          rarity: definition.rarity,
+          duplicate: result.duplicate,
+          lootboxes: state.lootboxes,
+          keys: state.keys,
+          parts: positivePartCounts(state.parts),
+          appearance: state.appearance,
+        }),
+      );
+    } catch {
+      // A repository/protocol failure releases the guard in `finally` and sends nothing:
+      // retrying is the client's decision (the transport performs no automatic retry, AC-20).
+    } finally {
+      openingMembers.delete(member.playerId);
     }
-    broadcastCustomizationUpdate(accountId, state);
   }
 
   async function handleEquipPart(member: Member, connection: Connection, partId: string): Promise<void> {
-    if (member.accountId === null) {
+    if (member.accountId === null || economyRepo === null) {
       return;
     }
-    const accountId = member.accountId;
-    if (economyRepo === null) {
-      return;
-    }
-    if (!isValidPartId(partId)) {
+    const targets = resolveEquipTargets(partId);
+    if (targets === null) {
       sendError(connection, 'unknown_part');
       return;
     }
+    const accountId = member.accountId;
     const current = await economyRepo.findCustomizationByUserId(accountId);
-    if ((current.parts[partId] ?? 0) <= 0) {
+    // All-or-nothing ownership (AC-28): a legacy multi-slot id needs both v2 parts owned.
+    if (!targets.every((target) => ownsPart(current, target.partId))) {
       sendError(connection, 'not_owned');
       return;
     }
-    const category = partCategory(partId);
-    const nextAppearance: Record<string, string> = { ...current.appearance, [category]: partId };
-    const state = await economyRepo.setAppearance(accountId, nextAppearance);
-    for (const m of members.values()) {
-      if (m.accountId === accountId) {
-        m.customization = state;
-      }
+    // Re-equipping every target slot with the same part is a no-op (AC-22).
+    const pending = targets.filter((target) => current.appearance[target.slot] !== target.partId);
+    if (pending.length === 0) {
+      return;
     }
+    let state = current;
+    for (const target of pending) {
+      state = await economyRepo.setSlotAppearance(accountId, target.slot, target.partId);
+    }
+    updateMembersCustomization(accountId, state);
+    broadcastCustomizationUpdate(accountId, state);
+  }
+
+  async function handleUnequipPart(
+    member: Member,
+    connection: Connection,
+    slotId: string,
+  ): Promise<void> {
+    if (member.accountId === null || economyRepo === null) {
+      return;
+    }
+    if (!isValidSlotId(slotId)) {
+      sendError(connection, 'unknown_slot');
+      return;
+    }
+    const accountId = member.accountId;
+    const current = await economyRepo.findCustomizationByUserId(accountId);
+    const equipped = current.appearance[slotId];
+    // A missing slot and a slot resolving to its standard part are already at the default.
+    if (equipped === undefined || equipped === defaultPartForSlot(slotId)) {
+      return;
+    }
+    const state = await economyRepo.setSlotAppearance(accountId, slotId, null);
+    updateMembersCustomization(accountId, state);
     broadcastCustomizationUpdate(accountId, state);
   }
 
@@ -983,6 +1121,10 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     if (message.type === 'equipPart') {
       void handleEquipPart(member, connection, message.partId);
+      return;
+    }
+    if (message.type === 'unequipPart') {
+      void handleUnequipPart(member, connection, message.slotId);
       return;
     }
   }

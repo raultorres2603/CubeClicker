@@ -4,7 +4,7 @@ import { allIds } from './cubes.js';
 import { createGameHub, type GameHub, type Peer } from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
-import type { PartId } from './parts.js';
+import type { CustomizationState, PartIdV2 } from './parts-v2.js';
 import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins, IDLE_CAP_MS, idleCoins } from './economy.js';
 
 /** A fake {@link Peer}: records sent frames and lets tests drive the transport events. */
@@ -1829,20 +1829,25 @@ describe('idle accrual (T4)', () => {
   });
 });
 
-describe('spaceship customization (T4)', () => {
+describe('granular spaceship customization (T5)', () => {
   function createCustomHarness(repo: InMemoryEconomyRepository, draw: () => number = () => 0) {
     const config = loadGameConfig({});
     let clock = 0;
+    let randomFactories = 0;
     const hub = createGameHub({
       config,
       now: () => clock,
-      random: () => draw,
+      random: () => {
+        randomFactories += 1;
+        return draw;
+      },
       timers: { setInterval, clearInterval, setTimeout, clearTimeout },
       economy: repo,
     });
     return {
       config,
       hub,
+      randomFactories: () => randomFactories,
       clock: () => clock,
       setNow: (ms: number) => {
         clock = ms;
@@ -1872,18 +1877,63 @@ describe('spaceship customization (T4)', () => {
     };
   }
 
-  it('account join loads persisted customization into welcome', async () => {
+  /** A repository that can hold open calls at a gate, or fail the next open. */
+  class GatedEconomyRepository extends InMemoryEconomyRepository {
+    gate: Promise<void> | null = null;
+    private releaseGate: (() => void) | null = null;
+    openCalls = 0;
+    failNextOpen = false;
+
+    hold(): void {
+      this.gate = new Promise<void>((resolve) => {
+        this.releaseGate = resolve;
+      });
+    }
+
+    release(): void {
+      this.releaseGate?.();
+      this.releaseGate = null;
+      this.gate = null;
+    }
+
+    override async applyLootboxOpenV2(
+      userId: string,
+      partId: PartIdV2,
+    ): Promise<
+      | { state: CustomizationState; duplicate: boolean }
+      | { reason: 'no_lootbox' }
+      | { reason: 'no_key' }
+    > {
+      this.openCalls += 1;
+      if (this.failNextOpen) {
+        this.failNextOpen = false;
+        throw new Error('repository unavailable');
+      }
+      if (this.gate !== null) {
+        await this.gate;
+      }
+      return super.applyLootboxOpenV2(userId, partId);
+    }
+  }
+
+  /** Seeds owned v2 parts by opening lootboxes (counts are consumed, parts accumulate). */
+  async function grantParts(repo: InMemoryEconomyRepository, parts: PartIdV2[]): Promise<void> {
+    await repo.grantCustomization('u1', { lootboxes: parts.length, keys: parts.length });
+    for (const part of parts) {
+      await repo.applyLootboxOpenV2('u1', part);
+    }
+  }
+
+  it('account join loads persisted v2 customization into welcome', async () => {
     const repo = new InMemoryEconomyRepository();
     await repo.grantCustomization('u1', { lootboxes: 2, keys: 3 });
-    await repo.setAppearance('u1', { nose: 'nose-crimson' });
-    // add a part
-    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    await repo.applyLootboxOpenV2('u1', 'nose-crimson');
+    await repo.setSlotAppearance('u1', 'nose', 'nose-crimson');
     const h = createCustomHarness(repo);
     const peer = h.connect();
     h.join(peer);
     await h.flush();
-    const welcome = welcomeOf(peer);
-    expect(welcome.customization).toEqual({
+    expect(welcomeOf(peer).customization).toEqual({
       lootboxes: 1,
       keys: 2,
       parts: { 'nose-crimson': 1 },
@@ -1902,7 +1952,6 @@ describe('spaceship customization (T4)', () => {
     first.clear();
     second.clear();
 
-    // complete a cube
     removeLevel(h, first, allIds(3));
     await h.flush();
     first.clear();
@@ -1963,7 +2012,7 @@ describe('spaceship customization (T4)', () => {
     expect(guestPeer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
   });
 
-  it('openLootbox success decrements counts and grants a part', async () => {
+  it('openLootbox consumes the weighted draw, updates state and sends the opener-only reveal', async () => {
     const repo = new InMemoryEconomyRepository();
     await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
     const h = createCustomHarness(repo);
@@ -1975,19 +2024,33 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'openLootbox' }));
     await h.flush();
 
-    const msg = peer.messages().find((m) => m.type === 'customizationUpdate');
-    expect(msg).toEqual({
+    expect(peer.messages()).toContainEqual({
       type: 'customizationUpdate',
       lootboxes: 0,
       keys: 0,
-      parts: { 'nose-default': 1 },
+      parts: { 'hull-obsidian': 1 },
       appearance: {},
     });
-    const stored = await repo.findCustomizationByUserId('u1');
-    expect(stored).toEqual({ lootboxes: 0, keys: 0, parts: { 'nose-default': 1 }, appearance: {} });
+    expect(onlyType(peer, 'lootboxOpened')).toEqual({
+      type: 'lootboxOpened',
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
   });
 
-  it('openLootbox broadcasts to all joined account connections', async () => {
+  it('openLootbox broadcasts state to every joined account connection but reveals only to the opener', async () => {
     const repo = new InMemoryEconomyRepository();
     await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
     const h = createCustomHarness(repo);
@@ -1995,9 +2058,12 @@ describe('spaceship customization (T4)', () => {
     h.join(first);
     const second = h.connect('u1', 'alice');
     h.join(second);
+    const guest = h.connectGuest();
+    h.join(guest, 'guest');
     await h.flush();
     first.clear();
     second.clear();
+    guest.clear();
 
     first.receive(JSON.stringify({ type: 'openLootbox' }));
     await h.flush();
@@ -2006,11 +2072,61 @@ describe('spaceship customization (T4)', () => {
       type: 'customizationUpdate',
       lootboxes: 0,
       keys: 0,
-      parts: { 'nose-default': 1 },
+      parts: { 'hull-obsidian': 1 },
       appearance: {},
     };
     expect(first.messages()).toContainEqual(expected);
     expect(second.messages()).toContainEqual(expected);
+    expect(onlyType(first, 'lootboxOpened').partId).toBe('hull-obsidian');
+    expect(second.messages().some((m) => m.type === 'lootboxOpened')).toBe(false);
+    expect(guest.messages()).toEqual([]);
+  });
+
+  it('seeded draws consume the captured hub RNG in order and grant different parts', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const draws = [0.25, 0, 0.999999];
+    let index = 0;
+    const draw = () => draws[index++] ?? 0;
+    const h = createCustomHarness(repo, draw);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    // The join consumed the first draw: N = 3 + floor(0.25 * 5) = 4.
+    expect(welcomeOf(peer).self.gridSize).toBe(4);
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages().filter((m) => m.type === 'lootboxOpened')).toEqual([
+      {
+        type: 'lootboxOpened',
+        partId: 'hull-obsidian',
+        slot: 'hull',
+        rarity: 'rare',
+        duplicate: false,
+        lootboxes: 1,
+        keys: 1,
+        parts: { 'hull-obsidian': 1 },
+        appearance: {},
+      },
+      {
+        type: 'lootboxOpened',
+        partId: 'tail-fin-comet',
+        slot: 'tail-fin',
+        rarity: 'epic',
+        duplicate: false,
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-obsidian': 1, 'tail-fin-comet': 1 },
+        appearance: {},
+      },
+    ]);
+    // One captured RNG, never a fresh deps.random() per open (F21).
+    expect(h.randomFactories()).toBe(1);
   });
 
   it('openLootbox with no lootbox sends no_lootbox and no state change', async () => {
@@ -2025,8 +2141,7 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'openLootbox' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_lootbox' });
-    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'no_lootbox' }]);
     const stored = await repo.findCustomizationByUserId('u1');
     expect(stored).toEqual({ lootboxes: 0, keys: 1, parts: {}, appearance: {} });
   });
@@ -2043,8 +2158,7 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'openLootbox' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_key' });
-    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'no_key' }]);
     const stored = await repo.findCustomizationByUserId('u1');
     expect(stored).toEqual({ lootboxes: 1, keys: 0, parts: {}, appearance: {} });
   });
@@ -2060,7 +2174,7 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'openLootbox' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'no_lootbox' });
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'no_lootbox' }]);
   });
 
   it('guest openLootbox is a no-op on server (no broadcast/error)', async () => {
@@ -2077,10 +2191,121 @@ describe('spaceship customization (T4)', () => {
     expect(peer.messages()).toHaveLength(0);
   });
 
-  it('equipPart success updates appearance and broadcasts', async () => {
+  it('drops a second open from the same member while the first awaits the repository', async () => {
+    const repo = new GatedEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    repo.hold();
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(repo.openCalls).toBe(1);
+
+    repo.release();
+    await h.flush();
+
+    expect(peer.messages().filter((m) => m.type === 'customizationUpdate')).toHaveLength(1);
+    expect(onlyType(peer, 'lootboxOpened').partId).toBe('hull-obsidian');
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+  });
+
+  it('releases the in-flight guard after a repository exception', async () => {
+    const repo = new GatedEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    repo.failNextOpen = true;
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(peer.messages()).toEqual([]);
+
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(onlyType(peer, 'lootboxOpened').partId).toBe('hull-obsidian');
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+  });
+
+  it('lets independent account connections open concurrently', async () => {
+    const repo = new GatedEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const h = createCustomHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await h.flush();
+    first.clear();
+    second.clear();
+
+    repo.hold();
+    first.receive(JSON.stringify({ type: 'openLootbox' }));
+    second.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(repo.openCalls).toBe(2);
+
+    repo.release();
+    await h.flush();
+
+    expect(first.messages().filter((m) => m.type === 'lootboxOpened')).toHaveLength(1);
+    expect(second.messages().filter((m) => m.type === 'lootboxOpened')).toHaveLength(1);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 2 },
+      appearance: {},
+    });
+  });
+
+  it('allows equipping a standard v2 part without it appearing in parts (AC-12)', async () => {
     const repo = new InMemoryEconomyRepository();
-    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
-    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'wing-left-default' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: {},
+        appearance: { 'wing-left': 'wing-left-default' },
+      },
+    ]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { 'wing-left': 'wing-left-default' },
+    });
+  });
+
+  it('equips an owned v2 part through setSlotAppearance and broadcasts one update', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['nose-crimson']);
     const h = createCustomHarness(repo);
     const peer = h.connect();
     h.join(peer);
@@ -2090,22 +2315,20 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
     await h.flush();
 
-    const msg = peer.messages().find((m) => m.type === 'customizationUpdate');
-    expect(msg).toEqual({
-      type: 'customizationUpdate',
-      lootboxes: 0,
-      keys: 0,
-      parts: { 'nose-crimson': 1 },
-      appearance: { nose: 'nose-crimson' },
-    });
-    const stored = await repo.findCustomizationByUserId('u1');
-    expect(stored?.appearance).toEqual({ nose: 'nose-crimson' });
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'nose-crimson': 1 },
+        appearance: { nose: 'nose-crimson' },
+      },
+    ]);
   });
 
   it('equipPart broadcasts to all joined account connections', async () => {
     const repo = new InMemoryEconomyRepository();
-    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
-    await repo.applyLootboxOpen('u1', 'nose-crimson' as PartId);
+    await grantParts(repo, ['nose-crimson']);
     const h = createCustomHarness(repo);
     const first = h.connect('u1', 'alice');
     h.join(first);
@@ -2125,8 +2348,8 @@ describe('spaceship customization (T4)', () => {
       parts: { 'nose-crimson': 1 },
       appearance: { nose: 'nose-crimson' },
     };
-    expect(first.messages()).toContainEqual(expected);
-    expect(second.messages()).toContainEqual(expected);
+    expect(first.messages()).toEqual([expected]);
+    expect(second.messages()).toEqual([expected]);
   });
 
   it('equipPart unknown part sends unknown_part', async () => {
@@ -2140,11 +2363,53 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nope' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'unknown_part' });
-    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'unknown_part' }]);
   });
 
-  it('equipPart unowned part sends not_owned', async () => {
+  it('equipPart unowned v2 part sends not_owned', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-emerald' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_owned' }]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('maps body-gold to hull-gold when the hull part is owned', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['hull-gold']);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'body-gold' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-gold': 1 },
+        appearance: { hull: 'hull-gold' },
+      },
+    ]);
+  });
+
+  it('rejects an unowned legacy body id with not_owned', async () => {
     const repo = new InMemoryEconomyRepository();
     const h = createCustomHarness(repo);
     const peer = h.connect();
@@ -2155,24 +2420,222 @@ describe('spaceship customization (T4)', () => {
     peer.receive(JSON.stringify({ type: 'equipPart', partId: 'body-gold' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'not_owned' });
-    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(false);
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_owned' }]);
   });
 
-  it('equipPart forged unowned part yields not_owned (authority)', async () => {
+  it('expands wings-silver to both wings when both v2 parts are owned', async () => {
     const repo = new InMemoryEconomyRepository();
-    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
-    // do not open; no parts owned
+    await grantParts(repo, ['wing-left-silver', 'wing-right-silver']);
     const h = createCustomHarness(repo);
     const peer = h.connect();
     h.join(peer);
     await h.flush();
     peer.clear();
 
-    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-default' }));
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'wings-silver' }));
     await h.flush();
 
-    expect(peer.messages()).toContainEqual({ type: 'error', code: 'not_owned' });
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'wing-left-silver': 1, 'wing-right-silver': 1 },
+        appearance: { 'wing-left': 'wing-left-silver', 'wing-right': 'wing-right-silver' },
+      },
+    ]);
+  });
+
+  it('rejects wings-silver when only one wing is owned (all-or-nothing)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['wing-left-silver']);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'wings-silver' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_owned' }]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'wing-left-silver': 1 },
+      appearance: {},
+    });
+  });
+
+  it('expands engine-blue to both ignitions when both v2 parts are owned', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['ignition-left-blue', 'ignition-right-blue']);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'engine-blue' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'ignition-left-blue': 1, 'ignition-right-blue': 1 },
+        appearance: {
+          'ignition-left': 'ignition-left-blue',
+          'ignition-right': 'ignition-right-blue',
+        },
+      },
+    ]);
+  });
+
+  it('rejects engine-blue when only one ignition is owned (all-or-nothing)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['ignition-right-blue']);
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'engine-blue' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_owned' }]);
+  });
+
+  it('expands a standard legacy pair id to both slots without ownership', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'engine-default' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([
+      {
+        type: 'customizationUpdate',
+        lootboxes: 0,
+        keys: 0,
+        parts: {},
+        appearance: {
+          'ignition-left': 'ignition-left-default',
+          'ignition-right': 'ignition-right-default',
+        },
+      },
+    ]);
+  });
+
+  it('re-equipping the already equipped part is a no-op (no write, no broadcast)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['nose-crimson']);
+    await repo.setSlotAppearance('u1', 'nose', 'nose-crimson');
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+    const write = vi.spyOn(repo, 'setSlotAppearance');
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([]);
+    expect(write).not.toHaveBeenCalled();
+    expect((await repo.findCustomizationByUserId('u1')).appearance).toEqual({
+      nose: 'nose-crimson',
+    });
+    write.mockRestore();
+  });
+
+  it('unequipPart deletes one slot and broadcasts to every account connection', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await grantParts(repo, ['nose-crimson', 'hull-obsidian']);
+    await repo.setSlotAppearance('u1', 'nose', 'nose-crimson');
+    await repo.setSlotAppearance('u1', 'hull', 'hull-obsidian');
+    const h = createCustomHarness(repo);
+    const first = h.connect('u1', 'alice');
+    h.join(first);
+    const second = h.connect('u1', 'alice');
+    h.join(second);
+    await h.flush();
+    first.clear();
+    second.clear();
+
+    first.receive(JSON.stringify({ type: 'unequipPart', slotId: 'nose' }));
+    await h.flush();
+
+    const expected = {
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-obsidian': 1 },
+      appearance: { hull: 'hull-obsidian' },
+    };
+    expect(first.messages()).toEqual([expected]);
+    expect(second.messages()).toEqual([expected]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-obsidian': 1 },
+      appearance: { hull: 'hull-obsidian' },
+    });
+  });
+
+  it('unequipPart unknown slot sends unknown_slot', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: 'wings' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'unknown_slot' }]);
+  });
+
+  it('unequip of an already-default slot is a no-op', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+    const write = vi.spyOn(repo, 'setSlotAppearance');
+
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: 'hull' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([]);
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
+  it('unequip of a slot explicitly set to its standard part is a no-op', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.setSlotAppearance('u1', 'hull', 'hull-default');
+    const h = createCustomHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: 'hull' }));
+    await h.flush();
+
+    expect(peer.messages()).toEqual([]);
+    expect((await repo.findCustomizationByUserId('u1')).appearance).toEqual({
+      hull: 'hull-default',
+    });
   });
 
   it('welcome carries customization for account (worldEntered inclusion via placement)', async () => {
@@ -2196,7 +2659,7 @@ describe('spaceship customization (T4)', () => {
     expect(welcome.customization).toBeUndefined();
   });
 
-  it('rejoin within grace returns updated customization after open', async () => {
+  it('rejoin within grace returns the persisted v2 customization and no reveal', async () => {
     const repo = new InMemoryEconomyRepository();
     await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
     const h = createCustomHarness(repo);
@@ -2208,34 +2671,19 @@ describe('spaceship customization (T4)', () => {
     await h.flush();
     peer.drop();
     await h.flush();
-    // account session required for resume
-    // attach with account session
-    // (recreate connection already attached above without session; need reattach)
-    // Instead use a fresh harness connection with session:
+
     const peer2 = new FakePeer();
     h.hub.attach(peer2, { userId: 'u1', username: 'alice', verified: true });
     peer2.receive(JSON.stringify({ type: 'rejoin', token }));
     await h.flush();
+
     const welcome = welcomeOf(peer2);
     expect(welcome.customization).toEqual({
       lootboxes: 0,
       keys: 0,
-      parts: { 'nose-default': 1 },
+      parts: { 'hull-obsidian': 1 },
       appearance: {},
     });
-  });
-
-  it('member customization updated before broadcast: rejoin sees opened state', async () => {
-    // covered by above; placeholder assertion
-    const repo = new InMemoryEconomyRepository();
-    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
-    const h = createCustomHarness(repo);
-    const peer = h.connect();
-    h.join(peer);
-    await h.flush();
-    peer.receive(JSON.stringify({ type: 'openLootbox' }));
-    await h.flush();
-    // rejoin not needed; ensure no error
-    expect(peer.messages().some((m) => m.type === 'customizationUpdate')).toBe(true);
+    expect(peer2.messages().some((m) => m.type === 'lootboxOpened')).toBe(false);
   });
 });
