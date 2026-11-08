@@ -85,7 +85,7 @@ import {
 } from '../multiplayer/server-state';
 import { createSpectateController, type SpectateStatus } from '../multiplayer/spectate';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
-import { pickMiniCube } from '../render/picking';
+import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import { createSceneView, type SceneView } from '../render/scene';
 import { browserEnvironment } from '../browser-env';
 import { PIXEL_RATIO_CAP } from './effects';
@@ -93,7 +93,7 @@ import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } fr
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
-import type { Board, CubeStyle, MiniCubeId } from './types';
+import type { Board, CubeStyle, LootboxGrant, MiniCubeId } from './types';
 
 /** The drawing surface the session listens on and sizes. */
 export interface CanvasLike {
@@ -187,6 +187,12 @@ export interface MultiplayerSnapshot {
   spectate: SpectateStatus;
   /** Session-owned mode from the last successful `join(mode)` (default `'guest'`). */
   mode?: 'guest' | 'account';
+  /**
+   * True while an account `openLootbox` is in flight (AC-29): set when the account message
+   * is sent and cleared by `lootboxOpened`, `customizationUpdate`, `error`, a transport
+   * status change or `welcome`. Guest opens are synchronous and never set it.
+   */
+  pendingLootboxOpen?: boolean;
 }
 
 /**
@@ -213,6 +219,20 @@ export interface OnlineGameSession extends GameSession {
   openLootbox(): void;
   /** Equips an owned part (account: sends a message; guest: local equip). */
   equipPart(partId: string): void;
+  /**
+   * Unequips one slot (account: sends a message; guest: local unequip).
+   *
+   * Optional in the shared UI contract for source compatibility with pre-v2 session fakes
+   * (owned by other tasks); {@link createGameSession} always implements it.
+   */
+  unequipPart?(slotId: string): void;
+  /**
+   * Clears the reveal metadata (AC-32); the panel's dismiss action.
+   *
+   * Optional in the shared UI contract for source compatibility with pre-v2 session fakes
+   * (owned by other tasks); {@link createGameSession} always implements it.
+   */
+  dismissLootboxReveal?(): void;
 }
 
 /** Construction options; the environment, the engine and the transport are all injectable. */
@@ -310,8 +330,19 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let multiplayerCache: MultiplayerSnapshot | null = null;
   /** Session-owned mode from the last successful `join(mode)` (default `'guest'`). */
   let joinedMode: 'guest' | 'account' = 'guest';
+  /** True while an account open is awaiting its server answer (AC-29). */
+  let pendingLootboxOpen = false;
+  /** The client-owned reveal sequence for account grants (the server never sends one). */
+  let lootboxSequence = 0;
   /** The multiplayer object the listeners were last told about. */
   let publishedMultiplayer: MultiplayerSnapshot;
+
+  /** The pointer NDC retained for the next hover pick (preallocated, AC-35). */
+  const hoverNdc = { x: 0, y: 0 };
+  /** True when a pointer move arrived since the last frame's hover pick. */
+  let hoverPickPending = false;
+  /** The currently displayed target-lock id, so an unchanged hover skips the scene call. */
+  let hoveredId: MiniCubeId | null = null;
 
   /** Notifies subscribers when the snapshot changed — the referential-stability contract. */
   function publish(snapshot: EngineSnapshot): void {
@@ -333,8 +364,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       cached.status !== status ||
       cached.world !== world ||
       cached.spectate !== currentSpectate ||
-      cached.mode !== joinedMode
-        ? { status, world, spectate: currentSpectate, mode: joinedMode }
+      cached.mode !== joinedMode ||
+      cached.pendingLootboxOpen !== pendingLootboxOpen
+        ? { status, world, spectate: currentSpectate, mode: joinedMode, pendingLootboxOpen }
         : cached;
     multiplayerCache = next;
     return next;
@@ -535,6 +567,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     welcomed = true;
     completionLevel = null;
+    pendingLootboxOpen = false;
     flushPendingRotate();
     pendingAutoReturn = false;
     activeScene?.enterWorld({
@@ -667,8 +700,39 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         appearance: message.appearance,
       });
     }
+    // Any authoritative customization answer ends an in-flight account open (AC-29).
+    pendingLootboxOpen = false;
     publish(engine.getSnapshot());
     publishMultiplayer();
+  }
+
+  /**
+   * `lootboxOpened`: adopt the opener-only grant and its absolute state (AC-24/AC-32).
+   * Only this connection receives the message, so only this tab plays the reveal; the
+   * account-wide `customizationUpdate` follows without replacing the grant.
+   */
+  function handleLootboxOpened(message: Extract<ServerMessage, { type: 'lootboxOpened' }>): void {
+    if (engine.adoptCustomization !== undefined) {
+      engine.adoptCustomization({
+        lootboxes: message.lootboxes,
+        keys: message.keys,
+        parts: message.parts,
+        appearance: message.appearance,
+      });
+    }
+    if (engine.adoptLootboxGrant !== undefined) {
+      lootboxSequence += 1;
+      const grant: LootboxGrant = {
+        partId: message.partId,
+        slot: message.slot,
+        rarity: message.rarity,
+        duplicate: message.duplicate,
+        sequence: lootboxSequence,
+      };
+      engine.adoptLootboxGrant(grant);
+    }
+    pendingLootboxOpen = false;
+    publish(engine.getSnapshot());
   }
 
   /** A member left: the spectated/travelled target triggers the flight home (AC-19 a/b). */
@@ -722,8 +786,15 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       case 'customizationUpdate':
         handleCustomizationUpdate(message);
         break;
+      case 'lootboxOpened':
+        handleLootboxOpened(message);
+        break;
+      case 'error':
+        // A rejected account open ends its in-flight state; the panel re-enables the button.
+        pendingLootboxOpen = false;
+        break;
       default:
-        // `hello` (transport handshake) and `error` carry no world/engine action here.
+        // `hello` (transport handshake) carries no world/engine action here.
         break;
     }
     activeScene?.applyWorldMessage(message);
@@ -736,6 +807,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (next !== 'connected') {
       welcomed = false;
     }
+    // A transport status change abandons any in-flight account open (AC-29).
+    pendingLootboxOpen = false;
     publishMultiplayer();
   }
 
@@ -899,8 +972,13 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     if (joinedMode === 'account') {
       transport.send({ type: 'openLootbox' });
+      // The account open is asynchronous: the button stays disabled until the server
+      // answers with `lootboxOpened`/`customizationUpdate`, an error or a status change.
+      pendingLootboxOpen = true;
+      publishMultiplayer();
       return;
     }
+    // Guest opens are synchronous and never pending (AC-27/AC-29).
     engine.openLootbox?.();
     publish(engine.getSnapshot());
   }
@@ -917,6 +995,23 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     publish(engine.getSnapshot());
   }
 
+  function unequipPart(slotId: string): void {
+    if (!online || transport === undefined) {
+      return;
+    }
+    if (joinedMode === 'account') {
+      transport.send({ type: 'unequipPart', slotId });
+      return;
+    }
+    engine.unequipPart?.(slotId);
+    publish(engine.getSnapshot());
+  }
+
+  function dismissLootboxReveal(): void {
+    engine.clearLootboxGrant?.();
+    publish(engine.getSnapshot());
+  }
+
   function setPointerTarget(ndcX: number, ndcY: number): void {
     activeScene?.setPointerTarget(ndcX, ndcY);
   }
@@ -930,11 +1025,16 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       if (online) {
         // A fresh attach cycle must not run on a previous connection's welcome.
         welcomed = false;
+        pendingLootboxOpen = false;
         clearRotateTimer();
         lastBroadcastOrientation = null;
         pendingOrientation = null;
         lastSendMs = 0;
       }
+      hoverPickPending = false;
+      hoveredId = null;
+      hoverNdc.x = 0;
+      hoverNdc.y = 0;
 
       const env = providedEnv ?? browserEnvironment(target);
       // The engine exists from session creation, so pre-attach snapshots run on its
@@ -1015,6 +1115,28 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         handleTravelArrival(before, after);
         view.applyIntents(engine.drainIntents(), nowMs);
         const snapshot = engine.getSnapshot();
+        // Target lock (AC-35): resolve the hovered front-face mini-cube at most once per
+        // animation frame; pointer moves only record the latest NDC.
+        if (snapshot.phase !== 'playing') {
+          hoverPickPending = false;
+          if (hoveredId !== null) {
+            hoveredId = null;
+            view.setHoverTarget(null);
+          }
+        } else if (hoverPickPending) {
+          hoverPickPending = false;
+          const pick = pickHoverTarget(
+            view.camera,
+            view.cubeView,
+            frontFace(snapshot.orientation),
+            hoverNdc.x,
+            hoverNdc.y,
+          );
+          hoveredId = pick.id;
+          // Always pushed: a level rebuild clears the scene's target lock, so an
+          // unchanged id string must still be re-applied on the next pointer frame.
+          view.setHoverTarget(pick.id);
+        }
         view.applySnapshot(snapshot, nowMs);
         view.update(dtMs);
         adapter.render(view.scene, view.camera);
@@ -1050,7 +1172,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         press = null;
       }
 
-      /** Tracks pointer movement for the spaceship cursor (AC-7). */
+      /**
+       * Tracks pointer movement for the spaceship cursor (AC-7) and records the NDC for
+       * the frame's hover pick (AC-35). The pointer event itself never raycasts.
+       */
       function onPointerMove(event: unknown): void {
         const { clientX, clientY } = event as { clientX: number; clientY: number };
         const rect = target.getBoundingClientRect();
@@ -1060,7 +1185,19 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         const rawX = (clientX - rect.left) / rect.width * 2 - 1;
         const rawY = 1 - (clientY - rect.top) / rect.height * 2;
         const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
-        activeScene?.setPointerTarget(clamp(rawX), clamp(rawY));
+        hoverNdc.x = clamp(rawX);
+        hoverNdc.y = clamp(rawY);
+        hoverPickPending = true;
+        activeScene?.setPointerTarget(hoverNdc.x, hoverNdc.y);
+      }
+
+      /** A pointer leaving the canvas hides the reticle immediately (a miss, AC-35). */
+      function onPointerLeave(): void {
+        hoverPickPending = false;
+        if (hoveredId !== null) {
+          hoveredId = null;
+          activeScene?.setHoverTarget(null);
+        }
       }
 
       /**
@@ -1163,6 +1300,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       target.addEventListener('pointerup', onPointerUp);
       target.addEventListener('pointercancel', onPointerCancel);
       target.addEventListener('pointermove', onPointerMove);
+      target.addEventListener('pointerleave', onPointerLeave);
       env.keyTarget.addEventListener('keydown', onKeyDown);
       unsubscribers.push(env.motion.subscribe(onMotionChange));
       unsubscribers.push(env.visibility.subscribe(onVisibilityChange));
@@ -1193,6 +1331,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         target.removeEventListener('pointerup', onPointerUp);
         target.removeEventListener('pointercancel', onPointerCancel);
         target.removeEventListener('pointermove', onPointerMove);
+        target.removeEventListener('pointerleave', onPointerLeave);
         env.keyTarget.removeEventListener('keydown', onKeyDown);
         for (const unsubscribe of unsubscribers.splice(0)) {
           unsubscribe();
@@ -1209,6 +1348,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         welcomed = false;
         completionLevel = null;
         pendingAutoReturn = false;
+        pendingLootboxOpen = false;
+        hoverPickPending = false;
+        hoveredId = null;
         clearRotateTimer();
         lastBroadcastOrientation = null;
         pendingOrientation = null;
@@ -1259,6 +1401,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     purchaseUpgrade,
     openLootbox,
     equipPart,
+    unequipPart,
+    dismissLootboxReveal,
     setPointerTarget,
   };
 }

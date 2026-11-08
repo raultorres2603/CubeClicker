@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   type CustomizationState,
+  type LootboxOpened,
   type MemberState,
   MAX_MESSAGE_BYTES,
   type Placement,
@@ -11,7 +12,9 @@ import {
   economyUpdateMessage,
   encodeClientMessage,
   encodeServerMessage,
+  lootboxOpenedMessage,
   parseClientMessage,
+  parseLootboxOpened,
   parseServerMessage,
   purchaseUpgradeMessage,
   upgradesUpdateMessage,
@@ -750,6 +753,67 @@ describe('parseClientMessage — equipPart', () => {
   });
 });
 
+describe('parseClientMessage — unequipPart', () => {
+  it('decodes unequipPart with a non-empty slotId', () => {
+    expect(parseClientMessage('{"type":"unequipPart","slotId":"wing-left"}')).toEqual({
+      ok: true,
+      message: { type: 'unequipPart', slotId: 'wing-left' },
+    });
+  });
+
+  it('accepts a legacy slot key as a non-empty string (the server resolves the slot)', () => {
+    expect(parseClientMessage('{"type":"unequipPart","slotId":"wings"}')).toEqual({
+      ok: true,
+      message: { type: 'unequipPart', slotId: 'wings' },
+    });
+  });
+
+  it('rejects unequipPart without slotId', () => {
+    expect(parseClientMessage('{"type":"unequipPart"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it.each([
+    '{"type":"unequipPart","slotId":""}',
+    '{"type":"unequipPart","slotId":7}',
+    '{"type":"unequipPart","slotId":null}',
+    '{"type":"unequipPart","slotId":["wing-left"]}',
+  ])('rejects %j with bad_message', (text) => {
+    expect(parseClientMessage(text)).toEqual({ ok: false, error: 'bad_message' });
+  });
+
+  it('drops unknown extra fields', () => {
+    expect(parseClientMessage('{"type":"unequipPart","slotId":"hull","level":3}')).toEqual({
+      ok: true,
+      message: { type: 'unequipPart', slotId: 'hull' },
+    });
+  });
+});
+
+describe('parseClientMessage — legacy equip ids', () => {
+  it.each([
+    ['body-gold', '{"type":"equipPart","partId":"body-gold"}'],
+    ['wings-silver', '{"type":"equipPart","partId":"wings-silver"}'],
+    ['engine-blue', '{"type":"equipPart","partId":"engine-blue"}'],
+  ])('accepts the legacy id %s as a non-empty string', (partId, text) => {
+    expect(parseClientMessage(text)).toEqual({
+      ok: true,
+      message: { type: 'equipPart', partId },
+    });
+  });
+});
+
+describe('ErrorCode lootbox slots', () => {
+  it('accepts the unknown_slot code used by unequipPart', () => {
+    expect(parseServerMessage('{"type":"error","code":"unknown_slot"}')).toEqual({
+      ok: true,
+      message: { type: 'error', code: 'unknown_slot' },
+    });
+  });
+});
+
 describe('parseServerMessage — customizationUpdate', () => {
   it('decodes customizationUpdate with counts', () => {
     expect(
@@ -920,5 +984,242 @@ describe('copyCustomizationState', () => {
     copy.appearance.nose = 'z';
     expect(state.parts).toStrictEqual({ a: 1 });
     expect(state.appearance).toStrictEqual({ nose: 'a' });
+  });
+});
+
+/** One valid AC-24 payload reused by the parser, the message decoder and the builder suites. */
+const LOOTBOX_OPENED: LootboxOpened = {
+  partId: 'wing-left-silver',
+  slot: 'wing-left',
+  rarity: 'rare',
+  duplicate: false,
+  lootboxes: 2,
+  keys: 1,
+  parts: { 'wing-left-silver': 2, 'hull-default': 1 },
+  appearance: { 'wing-left': 'wing-left-silver', hull: 'hull-default' },
+};
+
+describe('parseLootboxOpened — valid payloads', () => {
+  it('decodes the full payload to the pinned shape', () => {
+    expect(parseLootboxOpened(LOOTBOX_OPENED)).toStrictEqual(LOOTBOX_OPENED);
+  });
+
+  it('accepts an epic rarity, a duplicate grant and empty maps', () => {
+    expect(
+      parseLootboxOpened({
+        partId: 'hull-gold',
+        slot: 'hull',
+        rarity: 'epic',
+        duplicate: true,
+        lootboxes: 0,
+        keys: 0,
+        parts: {},
+        appearance: {},
+      }),
+    ).toStrictEqual({
+      partId: 'hull-gold',
+      slot: 'hull',
+      rarity: 'epic',
+      duplicate: true,
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: {},
+    });
+  });
+
+  it('accepts legacy ids and legacy appearance keys as non-empty strings', () => {
+    expect(
+      parseLootboxOpened({
+        partId: 'wings-silver',
+        slot: 'wing-left',
+        rarity: 'rare',
+        duplicate: false,
+        lootboxes: 1,
+        keys: 0,
+        parts: { 'wings-silver': 1 },
+        appearance: { wings: 'wings-silver' },
+      }),
+    ).toStrictEqual({
+      partId: 'wings-silver',
+      slot: 'wing-left',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 1,
+      keys: 0,
+      parts: { 'wings-silver': 1 },
+      appearance: { wings: 'wings-silver' },
+    });
+  });
+
+  it('drops unknown extra fields and the message type discriminator', () => {
+    expect(
+      parseLootboxOpened({
+        ...LOOTBOX_OPENED,
+        type: 'lootboxOpened',
+        playerId: 'p9',
+        nested: { a: [1, 2] },
+      }),
+    ).toStrictEqual(LOOTBOX_OPENED);
+  });
+
+  it('copies both maps so later mutations cannot leak in', () => {
+    const parts = { 'wing-left-silver': 2 };
+    const appearance = { 'wing-left': 'wing-left-silver' };
+    const parsed = parseLootboxOpened({ ...LOOTBOX_OPENED, parts, appearance });
+
+    expect(parsed).toStrictEqual({
+      ...LOOTBOX_OPENED,
+      parts: { 'wing-left-silver': 2 },
+      appearance: { 'wing-left': 'wing-left-silver' },
+    });
+    parts['wing-left-silver'] = 99;
+    appearance['wing-left'] = 'wing-left-gold';
+    expect(parsed).toStrictEqual({
+      ...LOOTBOX_OPENED,
+      parts: { 'wing-left-silver': 2 },
+      appearance: { 'wing-left': 'wing-left-silver' },
+    });
+    expect(parsed?.parts).not.toBe(parts);
+    expect(parsed?.appearance).not.toBe(appearance);
+  });
+});
+
+describe('parseLootboxOpened — invalid payloads', () => {
+  const base = (): Record<string, unknown> => ({
+    partId: 'wing-left-silver',
+    slot: 'wing-left',
+    rarity: 'rare',
+    duplicate: false,
+    lootboxes: 2,
+    keys: 1,
+    parts: { 'wing-left-silver': 2 },
+    appearance: { 'wing-left': 'wing-left-silver' },
+  });
+  const without = (key: string): Record<string, unknown> => {
+    const payload = base();
+    delete payload[key];
+    return payload;
+  };
+
+  it.each<[string, unknown]>([
+    ['a null payload', null],
+    ['an array payload', []],
+    ['a string payload', 'lootboxOpened'],
+    ['a missing partId', without('partId')],
+    ['an empty partId', { ...base(), partId: '' }],
+    ['a non-string partId', { ...base(), partId: 7 }],
+    ['a null partId', { ...base(), partId: null }],
+    ['a missing slot', without('slot')],
+    ['an empty slot', { ...base(), slot: '' }],
+    ['a non-string slot', { ...base(), slot: false }],
+    ['a missing rarity', without('rarity')],
+    ['a standard rarity', { ...base(), rarity: 'standard' }],
+    ['an unknown rarity', { ...base(), rarity: 'legendary' }],
+    ['a non-string rarity', { ...base(), rarity: 3 }],
+    ['a missing duplicate flag', without('duplicate')],
+    ['a numeric duplicate flag', { ...base(), duplicate: 0 }],
+    ['a string duplicate flag', { ...base(), duplicate: 'true' }],
+    ['a null duplicate flag', { ...base(), duplicate: null }],
+    ['missing lootboxes', without('lootboxes')],
+    ['negative lootboxes', { ...base(), lootboxes: -1 }],
+    ['float lootboxes', { ...base(), lootboxes: 1.5 }],
+    ['string lootboxes', { ...base(), lootboxes: '2' }],
+    ['missing keys', without('keys')],
+    ['negative keys', { ...base(), keys: -1 }],
+    ['float keys', { ...base(), keys: 0.5 }],
+    ['null keys', { ...base(), keys: null }],
+    ['missing parts', without('parts')],
+    ['null parts', { ...base(), parts: null }],
+    ['array parts', { ...base(), parts: [] }],
+    ['string parts', { ...base(), parts: '{"a":1}' }],
+    ['an empty parts key', { ...base(), parts: { '': 1 } }],
+    ['a zero part count', { ...base(), parts: { 'wing-left-silver': 0 } }],
+    ['a negative part count', { ...base(), parts: { 'wing-left-silver': -2 } }],
+    ['a float part count', { ...base(), parts: { 'wing-left-silver': 1.5 } }],
+    ['a string part count', { ...base(), parts: { 'wing-left-silver': '2' } }],
+    ['a boolean part count', { ...base(), parts: { 'wing-left-silver': true } }],
+    ['missing appearance', without('appearance')],
+    ['null appearance', { ...base(), appearance: null }],
+    ['array appearance', { ...base(), appearance: [] }],
+    ['an empty appearance key', { ...base(), appearance: { '': 'wing-left-silver' } }],
+    ['an empty appearance value', { ...base(), appearance: { 'wing-left': '' } }],
+    ['a non-string appearance value', { ...base(), appearance: { 'wing-left': 7 } }],
+    ['a null appearance value', { ...base(), appearance: { 'wing-left': null } }],
+  ])('rejects %s', (_label, payload) => {
+    expect(parseLootboxOpened(payload)).toBeNull();
+  });
+});
+
+describe('parseServerMessage — lootboxOpened', () => {
+  it('decodes the opener-only grant with both maps', () => {
+    expect(
+      parseServerMessage(
+        '{"type":"lootboxOpened","partId":"wing-left-silver","slot":"wing-left","rarity":"rare","duplicate":false,"lootboxes":2,"keys":1,"parts":{"wing-left-silver":2,"hull-default":1},"appearance":{"wing-left":"wing-left-silver","hull":"hull-default"}}',
+      ),
+    ).toStrictEqual({ ok: true, message: { type: 'lootboxOpened', ...LOOTBOX_OPENED } });
+  });
+
+  it('rejects a lootboxOpened frame that fails the payload codec', () => {
+    expect(
+      parseServerMessage(
+        '{"type":"lootboxOpened","partId":"wing-left-silver","slot":"wing-left","rarity":"standard","duplicate":false,"lootboxes":2,"keys":1,"parts":{},"appearance":{}}',
+      ),
+    ).toEqual({ ok: false, error: 'bad_message' });
+    expect(parseServerMessage('{"type":"lootboxOpened"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('lootboxOpenedMessage', () => {
+  it('builds the opener-only grant with copies of both maps', () => {
+    const parts = { 'wing-left-silver': 2, 'hull-default': 1 };
+    const appearance = { 'wing-left': 'wing-left-silver', hull: 'hull-default' };
+    const message = lootboxOpenedMessage({ ...LOOTBOX_OPENED, parts, appearance });
+
+    expect(message).toStrictEqual({
+      type: 'lootboxOpened',
+      partId: 'wing-left-silver',
+      slot: 'wing-left',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 2,
+      keys: 1,
+      parts: { 'wing-left-silver': 2, 'hull-default': 1 },
+      appearance: { 'wing-left': 'wing-left-silver', hull: 'hull-default' },
+    });
+    parts['wing-left-silver'] = 99;
+    appearance['wing-left'] = 'wing-left-gold';
+    expect(message).toStrictEqual({
+      type: 'lootboxOpened',
+      partId: 'wing-left-silver',
+      slot: 'wing-left',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 2,
+      keys: 1,
+      parts: { 'wing-left-silver': 2, 'hull-default': 1 },
+      appearance: { 'wing-left': 'wing-left-silver', hull: 'hull-default' },
+    });
+  });
+
+  it('rejects a payload that fails the AC-24 codec instead of encoding it', () => {
+    expect(() =>
+      lootboxOpenedMessage({
+        ...LOOTBOX_OPENED,
+        rarity: 'standard',
+      } as unknown as LootboxOpened),
+    ).toThrow(new TypeError('invalid lootboxOpened payload'));
+    expect(() => lootboxOpenedMessage({ ...LOOTBOX_OPENED, keys: -1 })).toThrow(
+      new TypeError('invalid lootboxOpened payload'),
+    );
+  });
+
+  it('encodes as one JSON frame', () => {
+    expect(encodeServerMessage(lootboxOpenedMessage(LOOTBOX_OPENED))).toBe(
+      '{"type":"lootboxOpened","partId":"wing-left-silver","slot":"wing-left","rarity":"rare","duplicate":false,"lootboxes":2,"keys":1,"parts":{"wing-left-silver":2,"hull-default":1},"appearance":{"wing-left":"wing-left-silver","hull":"hull-default"}}',
+    );
   });
 });

@@ -100,7 +100,16 @@ import {
   miniCubeMultiplier,
   speedWindowSeconds,
 } from './upgrades';
-import { isValidPartId, partCategory, randomPartId } from './parts';
+import {
+  defaultPartForSlot,
+  isValidPartId,
+  isValidSlotId,
+  normalizeCustomizationState,
+  partDefinition,
+  selectLootPart,
+  type PartIdV2,
+  type SlotId,
+} from './parts-v2';
 import {
   createOrientation,
   frontFace,
@@ -118,6 +127,7 @@ import {
   type EconomyState,
   type FaceId,
   type GameStats,
+  type LootboxGrant,
   type MiniCubeId,
   type Phase,
   type TravelDirection,
@@ -250,6 +260,12 @@ export interface EngineSnapshot {
    */
   upgrades?: UpgradeState;
   customization?: CustomizationState;
+  /**
+   * The reveal metadata of the most recent lootbox grant (AC-32); `null` before the first
+   * grant and after {@link GameEngine.clearLootboxGrant}. Optional on the base contract for
+   * source compatibility with pre-v2 snapshot fakes; `createEngine` always populates it.
+   */
+  lastLootboxGrant?: LootboxGrant | null;
 }
 
 /**
@@ -262,6 +278,7 @@ export interface OnlineEngineSnapshot extends EngineSnapshot {
   spectating: boolean;
   upgrades: UpgradeState;
   customization: CustomizationState;
+  lastLootboxGrant: LootboxGrant | null;
 }
 
 export interface GameEngine {
@@ -314,12 +331,26 @@ export interface GameEngine {
   adoptEconomy?(economy: EconomyState): void;
   /** Replaces the engine's upgrade levels with the carried absolute map. */
   adoptUpgrades?(upgrades: UpgradeState): void;
-  /** Replaces the engine's customization state with the carried absolute state. */
+  /**
+   * Replaces the engine's customization state with the carried absolute state. The state is
+   * normalized (legacy ids/appearance values map to the v2 catalog) because a restored or
+   * unmigrated row must render and equip correctly (AC-16/AC-28/AC-33).
+   */
   adoptCustomization?(state: CustomizationState): void;
-  /** Guest: opens a lootbox locally, granting a random part. */
-  openLootbox?(): void;
-  /** Guest: equips an owned part locally. */
+  /**
+   * Guest: opens a lootbox locally, granting exactly one lootable v2 part. Returns the
+   * reveal metadata (with the advanced `sequence`) or `null` when the guest lacks a
+   * lootbox/key. Never sends anything: guest state is ephemeral (AC-27/AC-32).
+   */
+  openLootbox?(): LootboxGrant | null;
+  /** Guest: equips an owned v2 (or legacy) part locally (AC-21/AC-22/AC-28). */
   equipPart?(partId: string): void;
+  /** Guest: unequips one v2 slot locally; an unknown slot or an already-default slot is a no-op. */
+  unequipPart?(slotId: string): void;
+  /** Adopts the server's opener-only grant and advances the client-owned grant sequence. */
+  adoptLootboxGrant?(grant: LootboxGrant): void;
+  /** Clears the reveal metadata (the panel's dismiss, AC-32); idempotent. */
+  clearLootboxGrant?(): void;
   /** View-only gate: while true every gameplay event is ignored (spectating mode). */
   setSpectating?(active: boolean): void;
 }
@@ -333,8 +364,11 @@ export interface OnlineGameEngine extends GameEngine {
   adoptEconomy(economy: EconomyState): void;
   adoptUpgrades(upgrades: UpgradeState): void;
   adoptCustomization(state: CustomizationState): void;
-  openLootbox(): void;
+  openLootbox(): LootboxGrant | null;
   equipPart(partId: string): void;
+  unequipPart(slotId: string): void;
+  adoptLootboxGrant(grant: LootboxGrant): void;
+  clearLootboxGrant(): void;
   setSpectating(active: boolean): void;
 }
 
@@ -378,6 +412,44 @@ function drawGridSize(random: () => number): number {
 /** One direction draw: `TRAVEL_DIRECTIONS[⌊draw · 4⌋]` (spec § 3). */
 function drawTravelDirection(random: () => number): TravelDirection {
   return TRAVEL_DIRECTIONS[Math.floor(random() * TRAVEL_DIRECTIONS.length)];
+}
+
+/** One resolved equip target: the v2 slot and the v2 part to place there. */
+interface EquipTarget {
+  slot: SlotId;
+  partId: PartIdV2;
+}
+
+/**
+ * Legacy part ids expanded client-side to their v2 target(s) (AC-28). The guest engine
+ * mirrors the hub's compatibility rule: `body-*` → one hull slot, `wings-*` → both wing
+ * slots, `engine-*` → both ignition slots; nose/cockpit ids are v2 ids already.
+ */
+const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
+  'body-default': ['hull-default'],
+  'body-obsidian': ['hull-obsidian'],
+  'body-gold': ['hull-gold'],
+  'wings-default': ['wing-left-default', 'wing-right-default'],
+  'wings-silver': ['wing-left-silver', 'wing-right-silver'],
+  'engine-default': ['ignition-left-default', 'ignition-right-default'],
+  'engine-blue': ['ignition-left-blue', 'ignition-right-blue'],
+};
+
+/** Expands a client-supplied part id to its v2 target slot(s); `null` when unknown. */
+function resolveEquipTargets(partId: string): EquipTarget[] | null {
+  if (isValidPartId(partId)) {
+    return [{ slot: partDefinition(partId).slot, partId }];
+  }
+  const legacy = LEGACY_EQUIP_TARGETS[partId];
+  if (legacy === undefined) {
+    return null;
+  }
+  return legacy.map((id) => ({ slot: partDefinition(id).slot, partId: id }));
+}
+
+/** Standard parts are implicitly owned (AC-12); other parts need a positive count (AC-21). */
+function ownsPart(state: CustomizationState, partId: PartIdV2): boolean {
+  return partDefinition(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
 }
 
 /** An exact half turn: both directions are shortest, so `+1` is preferred. */
@@ -499,6 +571,9 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
   let spectating = false;
   let upgrades: UpgradeState = {};
   let customization: CustomizationState = { lootboxes: 0, keys: 0, parts: {}, appearance: {} };
+  /** The latest reveal metadata and its client-owned monotonic sequence (AC-32). */
+  let lastLootboxGrant: LootboxGrant | null = null;
+  let lootboxSequence = 0;
   let orientation = createOrientation();
   let rotationFrom: Orientation | null = null;
   let rotationElapsedMs = 0;
@@ -557,6 +632,7 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       reducedMotion,
       upgrades,
       customization,
+      lastLootboxGrant,
     };
   }
 
@@ -1151,20 +1227,29 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     },
 
     adoptCustomization(state: CustomizationState): void {
+      // A restored/unmigrated row may still carry legacy ids and appearance values; the
+      // normalizer maps them to the v2 catalog before anything reads the state (AC-33).
+      const normalized = normalizeCustomizationState(state);
       customization = {
-        lootboxes: state.lootboxes,
-        keys: state.keys,
-        parts: { ...state.parts },
-        appearance: { ...state.appearance },
+        lootboxes: normalized.lootboxes,
+        keys: normalized.keys,
+        parts: { ...normalized.parts },
+        appearance: { ...normalized.appearance },
       };
       invalidate();
     },
 
-    openLootbox(): void {
+    openLootbox(): LootboxGrant | null {
       if (customization.lootboxes < 1 || customization.keys < 1) {
-        return;
+        return null;
       }
-      const granted = randomPartId(random);
+      // Exactly one weighted draw over the 20 lootable v2 parts (AC-13/AC-27).
+      const granted = selectLootPart(random);
+      const definition = partDefinition(granted);
+      if (definition.rarity === 'standard') {
+        return null;
+      }
+      const duplicate = (customization.parts[granted] ?? 0) > 0;
       const nextParts = { ...customization.parts };
       nextParts[granted] = (nextParts[granted] ?? 0) + 1;
       customization = {
@@ -1173,24 +1258,79 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
         parts: nextParts,
         appearance: customization.appearance,
       };
+      lootboxSequence += 1;
+      lastLootboxGrant = {
+        partId: granted,
+        slot: definition.slot,
+        rarity: definition.rarity,
+        duplicate,
+        sequence: lootboxSequence,
+      };
       invalidate();
+      return lastLootboxGrant;
     },
 
     equipPart(partId: string): void {
-      if (!isValidPartId(partId)) {
+      const targets = resolveEquipTargets(partId);
+      if (targets === null) {
         return;
       }
-      const owned = customization.parts[partId] ?? 0;
-      if (owned <= 0) {
+      // All-or-nothing ownership for a multi-slot legacy id (AC-28).
+      if (!targets.every((target) => ownsPart(customization, target.partId))) {
         return;
       }
-      const category = partCategory(partId);
+      const pending = targets.filter(
+        (target) => customization.appearance[target.slot] !== target.partId,
+      );
+      if (pending.length === 0) {
+        return;
+      }
+      const appearance = { ...customization.appearance };
+      for (const target of pending) {
+        appearance[target.slot] = target.partId;
+      }
       customization = {
         lootboxes: customization.lootboxes,
         keys: customization.keys,
         parts: customization.parts,
-        appearance: { ...customization.appearance, [category]: partId },
+        appearance,
       };
+      invalidate();
+    },
+
+    unequipPart(slotId: string): void {
+      if (!isValidSlotId(slotId)) {
+        return;
+      }
+      const equipped = customization.appearance[slotId];
+      // A missing slot and a slot resolving to its standard part are already at default.
+      if (equipped === undefined || equipped === defaultPartForSlot(slotId)) {
+        return;
+      }
+      const appearance = { ...customization.appearance };
+      delete appearance[slotId];
+      customization = {
+        lootboxes: customization.lootboxes,
+        keys: customization.keys,
+        parts: customization.parts,
+        appearance,
+      };
+      invalidate();
+    },
+
+    adoptLootboxGrant(grant: LootboxGrant): void {
+      lastLootboxGrant = { ...grant };
+      if (grant.sequence > lootboxSequence) {
+        lootboxSequence = grant.sequence;
+      }
+      invalidate();
+    },
+
+    clearLootboxGrant(): void {
+      if (lastLootboxGrant === null) {
+        return;
+      }
+      lastLootboxGrant = null;
       invalidate();
     },
 

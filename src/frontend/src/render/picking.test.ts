@@ -20,7 +20,7 @@ import { PerspectiveCamera } from 'three';
 
 import { CUBE_STYLES } from '../game/progression';
 import { createCubeView } from './cube-view';
-import { pickMiniCube } from './picking';
+import { pickHoverTarget, pickMiniCube } from './picking';
 
 const STYLE = CUBE_STYLES[0]!;
 
@@ -193,5 +193,60 @@ describe('pickMiniCube', () => {
     // The inset tile spans ±2.375 world units (±0.5433 NDC), so the (0.5, 0.5) fixture
     // stays inside it while the half-seam rim around the face is a miss.
     expect(pickMiniCube(camera, one, 'front', 0.5, 0.5)).toBe('front:0:0');
+  });
+});
+
+describe('pickHoverTarget', () => {
+  it('resolves the hovered front-face mini-cube into a reusable result object', () => {
+    const camera = createCamera();
+    const view = createCubeView(STYLE);
+
+    const first = pickHoverTarget(camera, view, 'front', 0, 0);
+    expect(first.id).toBe('front:2:2');
+
+    const second = pickHoverTarget(camera, view, 'front', 0.22875, 0.22875);
+    expect(second).toBe(first);
+    expect(second.id).toBe('front:1:3');
+  });
+
+  it('reuses the hit id string while the pointer stays inside one tile', () => {
+    const camera = createCamera();
+    const view = createCubeView(STYLE);
+
+    const first = pickHoverTarget(camera, view, 'front', 0, 0);
+    const firstId = first.id;
+    const second = pickHoverTarget(camera, view, 'front', 0.02, -0.02);
+
+    expect(second.id).toBe('front:2:2');
+    expect(second.id).toBe(firstId);
+  });
+
+  it('returns a null id for a miss, a hidden tile, a non-front face and a removed face', () => {
+    const camera = createCamera();
+    const view = createCubeView(STYLE);
+
+    expect(pickHoverTarget(camera, view, 'front', 0.9, 0.9).id).toBeNull();
+
+    view.hideMiniCube('front:2:2');
+    expect(pickHoverTarget(camera, view, 'front', 0, 0).id).toBeNull();
+    expect(pickHoverTarget(camera, view, 'front', 0.22875, 0).id).toBe('front:2:3');
+
+    // A yaw step of +90° shows the left face: the front-face gate is a miss, the left
+    // face resolves its own centre tile.
+    view.group.rotation.y = Math.PI / 2;
+    expect(pickHoverTarget(camera, view, 'front', 0, 0).id).toBeNull();
+    expect(pickHoverTarget(camera, view, 'left', 0, 0).id).toBe('left:2:2');
+
+    view.removeFace('left');
+    expect(pickHoverTarget(camera, view, 'left', 0, 0).id).toBeNull();
+  });
+
+  it('decodes a 3 × 3 grid from its own instance count', () => {
+    const camera = createCamera();
+    const three = createCubeView(STYLE, 3);
+
+    expect(pickHoverTarget(camera, three, 'front', 0, 0).id).toBe('front:1:1');
+    expect(pickHoverTarget(camera, three, 'front', -0.38125, 0.38125).id).toBe('front:0:0');
+    expect(pickHoverTarget(camera, three, 'front', 0.38125, -0.38125).id).toBe('front:2:2');
   });
 });

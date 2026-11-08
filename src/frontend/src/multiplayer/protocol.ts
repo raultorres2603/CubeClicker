@@ -13,6 +13,9 @@
  * - `parseServerMessage` decodes/validates what the transport receives — the frontend's
  *   real decode path — returning the pinned shape (extra fields dropped, defensive
  *   copies of every nested array/object) or `{ ok: false, error: 'bad_message' }`;
+ * - `parseLootboxOpened`/`lootboxOpenedMessage` mirror the backend's opener-only grant
+ *   codec (AC-24): the payload is the reveal's server authority, so both directions are
+ *   validated and copied here;
  * - `encodeClientMessage` serialises one client message into the single JSON text frame.
  *
  * Field validation is presence + type only, exactly like the backend: an unknown `type`,
@@ -73,6 +76,22 @@ export interface MemberState {
   pitchSteps: number;
 }
 
+/**
+ * The opener-only lootbox grant (AC-24): what the opening connection needs to play the
+ * reveal, plus the absolute customization state after the open. `parts`/`appearance` are
+ * plain maps on the wire; every decode copies them so no caller-owned object is aliased.
+ */
+export interface LootboxOpened {
+  partId: string;
+  slot: string;
+  rarity: 'rare' | 'epic';
+  duplicate: boolean;
+  lootboxes: number;
+  keys: number;
+  parts: Record<string, number>;
+  appearance: Record<string, string>;
+}
+
 /** The pinned error codes (spec § 8). */
 export type ErrorCode =
   | 'bad_message'
@@ -89,7 +108,8 @@ export type ErrorCode =
   | 'no_lootbox'
   | 'no_key'
   | 'unknown_part'
-  | 'not_owned';
+  | 'not_owned'
+  | 'unknown_slot';
 
 /** Client → server catalog (spec § 8). */
 export type ClientMessage =
@@ -100,7 +120,8 @@ export type ClientMessage =
   | { type: 'rotate'; yawSteps: number; pitchSteps: number }
   | { type: 'purchaseUpgrade'; upgradeId: string }
   | { type: 'openLootbox' }
-  | { type: 'equipPart'; partId: string };
+  | { type: 'equipPart'; partId: string }
+  | { type: 'unequipPart'; slotId: string };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -161,6 +182,7 @@ export type ServerMessage =
   | { type: 'economyUpdate'; coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number }
   | { type: 'upgradesUpdate'; upgrades: UpgradeState }
   | { type: 'customizationUpdate'; lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> }
+  | ({ type: 'lootboxOpened' } & LootboxOpened)
   | { type: 'error'; code: ErrorCode; detail?: string };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
@@ -252,6 +274,7 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'no_key',
   'unknown_part',
   'not_owned',
+  'unknown_slot',
 ];
 
 /** A pinned error code (the `error` frame's `code` is a closed set, never free text). */
@@ -344,6 +367,12 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         return badClientMessage();
       }
       return { ok: true, message: { type: 'equipPart', partId: frame.partId } };
+
+    case 'unequipPart':
+      if (!isNonEmptyString(frame.slotId)) {
+        return badClientMessage();
+      }
+      return { ok: true, message: { type: 'unequipPart', slotId: frame.slotId } };
 
     default:
       return badClientMessage();
@@ -525,6 +554,77 @@ function parseCustomizationState(value: unknown): CustomizationState | null {
   return {
     lootboxes: obj.lootboxes as number,
     keys: obj.keys as number,
+    parts,
+    appearance,
+  };
+}
+
+/**
+ * Decodes a `lootboxOpened` payload (AC-24).
+ *
+ * Returns the pinned shape with defensive copies of `parts`/`appearance`, or `null` when a
+ * field is missing, mistyped or out of range: `partId`/`slot` must be non-empty strings,
+ * `rarity` is exactly `rare` or `epic`, `duplicate` is a boolean, `lootboxes`/`keys` are
+ * non-negative integers, `parts` counts are positive integers and `appearance` keys/values
+ * are non-empty strings. Unknown extra fields are dropped, like every other codec here.
+ * The `type` discriminator belongs to the enclosing `ServerMessage` and is ignored.
+ */
+export function parseLootboxOpened(value: unknown): LootboxOpened | null {
+  const frame = asJsonObject(value);
+  if (frame === null) {
+    return null;
+  }
+  if (!isNonEmptyString(frame.partId) || !isNonEmptyString(frame.slot)) {
+    return null;
+  }
+  if (frame.rarity !== 'rare' && frame.rarity !== 'epic') {
+    return null;
+  }
+  if (typeof frame.duplicate !== 'boolean') {
+    return null;
+  }
+  if (!isInteger(frame.lootboxes) || (frame.lootboxes as number) < 0) {
+    return null;
+  }
+  if (!isInteger(frame.keys) || (frame.keys as number) < 0) {
+    return null;
+  }
+  const partsObj = asJsonObject(frame.parts);
+  if (partsObj === null) {
+    return null;
+  }
+  const appearanceObj = asJsonObject(frame.appearance);
+  if (appearanceObj === null) {
+    return null;
+  }
+  const parts: Record<string, number> = {};
+  for (const key of Object.keys(partsObj)) {
+    if (key.length === 0) {
+      return null;
+    }
+    const count = partsObj[key];
+    if (!isInteger(count) || (count as number) <= 0) {
+      return null;
+    }
+    parts[key] = count as number;
+  }
+  const appearance: Record<string, string> = {};
+  for (const key of Object.keys(appearanceObj)) {
+    if (key.length === 0) {
+      return null;
+    }
+    if (!isNonEmptyString(appearanceObj[key])) {
+      return null;
+    }
+    appearance[key] = appearanceObj[key] as string;
+  }
+  return {
+    partId: frame.partId,
+    slot: frame.slot,
+    rarity: frame.rarity,
+    duplicate: frame.duplicate,
+    lootboxes: frame.lootboxes as number,
+    keys: frame.keys as number,
     parts,
     appearance,
   };
@@ -783,6 +883,14 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       };
     }
 
+    case 'lootboxOpened': {
+      const parsed = parseLootboxOpened(frame);
+      if (parsed === null) {
+        return badServerMessage();
+      }
+      return { ok: true, message: { type: 'lootboxOpened', ...parsed } };
+    }
+
     case 'error': {
       if (!isErrorCode(frame.code)) {
         return badServerMessage();
@@ -860,6 +968,19 @@ export function copyCustomizationState(state: CustomizationState): Customization
     parts,
     appearance,
   };
+}
+
+/**
+ * Builds the opener-only `lootboxOpened` message (parity helper). The payload is
+ * re-validated through the AC-24 codec so a malformed server state can never be encoded;
+ * the maps are copied by the codec.
+ */
+export function lootboxOpenedMessage(payload: LootboxOpened): ServerMessage {
+  const parsed = parseLootboxOpened(payload);
+  if (parsed === null) {
+    throw new TypeError('invalid lootboxOpened payload');
+  }
+  return { type: 'lootboxOpened', ...parsed };
 }
 
 /** Builds a client `purchaseUpgrade` message. */

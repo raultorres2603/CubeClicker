@@ -2153,6 +2153,7 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
       parts: {},
       appearance: {},
     });
+    expect(engine.getSnapshot().lastLootboxGrant).toBeNull();
   });
 
   it('grants +1 lootbox and +1 key on cube completion', () => {
@@ -2178,8 +2179,8 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     engine.adoptCustomization({
       lootboxes: 0,
       keys: 0,
-      parts: { 'body-gold': 1 },
-      appearance: { body: 'body-gold' },
+      parts: { 'hull-gold': 1 },
+      appearance: { hull: 'hull-gold' },
     });
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
@@ -2197,23 +2198,73 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     after.customization.parts['extra'] = 99;
     after.customization.appearance['extra'] = 'x';
 
-    expect(before.customization.parts).toEqual({ 'body-gold': 1 });
-    expect(before.customization.appearance).toEqual({ body: 'body-gold' });
+    expect(before.customization.parts).toEqual({ 'hull-gold': 1 });
+    expect(before.customization.appearance).toEqual({ hull: 'hull-gold' });
     expect(beforeParts).not.toBe(after.customization.parts);
     expect(beforeAppearance).not.toBe(after.customization.appearance);
   });
 
-  it('openLootbox decrements counts and adds a random part (guest)', () => {
-    const engine = createEngine({ gridSize: 2, random: flatRandom });
+  it('openLootbox decrements counts and grants one lootable v2 part (guest)', () => {
+    // Draw 0 selects the first lootable catalog entry: hull-obsidian (AC-13).
+    const engine = createEngine({ gridSize: 2, random: () => 0 });
     engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
 
-    engine.openLootbox();
+    const grant = engine.openLootbox();
 
+    expect(grant).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
+    expect(engine.getSnapshot().lastLootboxGrant).toEqual(grant);
     const customization = engine.getSnapshot().customization;
     expect(customization.lootboxes).toBe(0);
     expect(customization.keys).toBe(0);
-    expect(customization.parts['wings-default']).toBe(1);
+    expect(customization.parts).toEqual({ 'hull-obsidian': 1 });
     expect(customization.appearance).toEqual({});
+  });
+
+  it('openLootbox flags a duplicate and advances the grant sequence', () => {
+    const engine = createEngine({ gridSize: 2, random: () => 0 });
+    engine.adoptCustomization({
+      lootboxes: 2,
+      keys: 2,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+
+    const first = engine.openLootbox();
+    const second = engine.openLootbox();
+
+    expect(first).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: true,
+      sequence: 1,
+    });
+    expect(second).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: true,
+      sequence: 2,
+    });
+    expect(engine.getSnapshot().customization.parts).toEqual({ 'hull-obsidian': 3 });
+    expect(engine.getSnapshot().lastLootboxGrant).toEqual(second);
+  });
+
+  it('openLootbox returns null and invalidates nothing without a lootbox or key', () => {
+    const engine = createEngine({ gridSize: 2, random: () => 0 });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+
+    expect(engine.openLootbox()).toBeNull();
+    const after = engine.getSnapshot();
+    expect(after).toBe(before);
+    expect(after.lastLootboxGrant).toBeNull();
   });
 
   it('openLootbox is a no-op when lootboxes === 0', () => {
@@ -2300,14 +2351,197 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     expect(after.customization.appearance).toEqual({});
   });
 
+  it('equips standard parts without ownership and isolates left/right slots', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'wing-left-silver': 1, 'wing-right-gold': 1 },
+      appearance: {},
+    });
+
+    engine.equipPart('wing-left-silver');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'wing-left': 'wing-left-silver',
+    });
+
+    engine.equipPart('wing-right-gold');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'wing-left': 'wing-left-silver',
+      'wing-right': 'wing-right-gold',
+    });
+
+    // Standard parts are implicitly owned (AC-12): the right wing can revert to standard.
+    engine.equipPart('wing-right-default');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'wing-left': 'wing-left-silver',
+      'wing-right': 'wing-right-default',
+    });
+  });
+
+  it('legacy body-* equips the hull slot only when the hull part is owned', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-gold': 1 },
+      appearance: {},
+    });
+
+    engine.equipPart('body-gold');
+    expect(engine.getSnapshot().customization.appearance).toEqual({ hull: 'hull-gold' });
+
+    engine.equipPart('body-obsidian');
+    expect(engine.getSnapshot().customization.appearance).toEqual({ hull: 'hull-gold' });
+  });
+
+  it('legacy wings-* requires both wing parts (all-or-nothing)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'wing-left-silver': 1 },
+      appearance: {},
+    });
+    const partial = engine.getSnapshot();
+
+    engine.equipPart('wings-silver');
+    expect(engine.getSnapshot()).toBe(partial);
+    expect(engine.getSnapshot().customization.appearance).toEqual({});
+
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'wing-left-silver': 1, 'wing-right-silver': 1 },
+      appearance: {},
+    });
+    engine.equipPart('wings-silver');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'wing-left': 'wing-left-silver',
+      'wing-right': 'wing-right-silver',
+    });
+  });
+
+  it('legacy engine-* requires both ignition parts and equips both slots', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'ignition-left-blue': 1, 'ignition-right-blue': 1 },
+      appearance: {},
+    });
+
+    engine.equipPart('engine-blue');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'ignition-left': 'ignition-left-blue',
+      'ignition-right': 'ignition-right-blue',
+    });
+  });
+
+  it('re-equipping the same part is a no-op (snapshot identity preserved)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1 },
+      appearance: { nose: 'nose-crimson' },
+    });
+    const before = engine.getSnapshot();
+
+    engine.equipPart('nose-crimson');
+    expect(engine.getSnapshot()).toBe(before);
+  });
+
+  it('unequipPart removes exactly one slot and leaves others untouched', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'tail-fin-split': 1 },
+      appearance: { nose: 'nose-crimson', 'tail-fin': 'tail-fin-split' },
+    });
+
+    engine.unequipPart('nose');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      'tail-fin': 'tail-fin-split',
+    });
+  });
+
+  it('unequipPart is a no-op for an unknown slot, a missing slot and a standard part', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: {},
+      appearance: { nose: 'nose-default' },
+    });
+    const before = engine.getSnapshot();
+
+    engine.unequipPart('wings');
+    engine.unequipPart('tail-fin');
+    engine.unequipPart('nose');
+    expect(engine.getSnapshot()).toBe(before);
+  });
+
+  it('adoptLootboxGrant stores a defensive copy and advances the sequence', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    const grant = {
+      partId: 'hull-gold',
+      slot: 'hull',
+      rarity: 'epic' as const,
+      duplicate: false,
+      sequence: 4,
+    };
+
+    engine.adoptLootboxGrant(grant);
+    grant.partId = 'hull-obsidian';
+
+    expect(engine.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'hull-gold',
+      slot: 'hull',
+      rarity: 'epic',
+      duplicate: false,
+      sequence: 4,
+    });
+
+    // A later guest open continues after the adopted sequence.
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    expect(engine.openLootbox()?.sequence).toBe(5);
+  });
+
+  it('clearLootboxGrant clears the reveal and is idempotent', () => {
+    const engine = createEngine({ gridSize: 2, random: () => 0 });
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+    engine.openLootbox();
+    expect(engine.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
+
+    engine.clearLootboxGrant();
+    expect(engine.getSnapshot().lastLootboxGrant).toBeNull();
+    const cleared = engine.getSnapshot();
+
+    engine.clearLootboxGrant();
+    expect(engine.getSnapshot()).toBe(cleared);
+  });
+
   it('adoptCustomization replaces the whole state', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
-    engine.adoptCustomization({ lootboxes: 1, keys: 2, parts: { 'body-gold': 3 }, appearance: { body: 'body-gold' } });
+    engine.adoptCustomization({
+      lootboxes: 1,
+      keys: 2,
+      parts: { 'hull-gold': 3 },
+      appearance: { hull: 'hull-gold' },
+    });
     expect(engine.getSnapshot().customization).toEqual({
       lootboxes: 1,
       keys: 2,
-      parts: { 'body-gold': 3 },
-      appearance: { body: 'body-gold' },
+      parts: { 'hull-gold': 3 },
+      appearance: { hull: 'hull-gold' },
     });
 
     engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
@@ -2316,6 +2550,35 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
       keys: 0,
       parts: {},
       appearance: {},
+    });
+  });
+
+  it('adoptCustomization normalizes a restored legacy state (AC-33)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'wings-silver': 2, 'engine-blue': 1, 'body-gold': 1 },
+      appearance: { wings: 'wings-silver', engine: 'engine-blue', body: 'body-gold' },
+    });
+
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: {
+        'hull-gold': 1,
+        'wing-left-silver': 2,
+        'wing-right-silver': 2,
+        'ignition-left-blue': 1,
+        'ignition-right-blue': 1,
+      },
+      appearance: {
+        hull: 'hull-gold',
+        'wing-left': 'wing-left-silver',
+        'wing-right': 'wing-right-silver',
+        'ignition-left': 'ignition-left-blue',
+        'ignition-right': 'ignition-right-blue',
+      },
     });
   });
 

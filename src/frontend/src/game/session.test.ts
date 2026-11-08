@@ -7,9 +7,10 @@ import {
   Vector3,
   type PerspectiveCamera,
 } from 'three';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
+import { pickHoverTarget } from '../render/picking';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
 import { createBoard, removeMiniCube } from './board';
 import {
@@ -36,6 +37,18 @@ import {
   type VisibilitySource,
 } from './session';
 import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type MiniCubeId, type UpgradeState } from './types';
+
+/**
+ * The hover pick is wrapped so the coalescing contract is observable from the session
+ * boundary: the real raycast still runs, and every call is recorded for the per-frame
+ * assertions below.
+ */
+vi.mock('../render/picking', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../render/picking')>();
+  return { ...actual, pickHoverTarget: vi.fn(actual.pickHoverTarget) };
+});
+
+const hoverPick = vi.mocked(pickHoverTarget);
 
 /**
  * Integration tier for the session: every test below runs the *real* engine and the
@@ -887,6 +900,10 @@ function createOnlineSession(
     ...(engine === undefined ? {} : { engine }),
   });
 }
+
+beforeEach(() => {
+  hoverPick.mockClear();
+});
 
 afterEach(() => {
   // The resize debounce is the only session behaviour that uses host timers; a test that
@@ -2981,6 +2998,45 @@ describe('multiplayer customization wiring (T11)', () => {
     });
   });
 
+  it('normalizes a legacy customization state carried by welcome (AC-33)', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        customization: {
+          lootboxes: 1,
+          keys: 1,
+          parts: { 'wings-silver': 2, 'engine-blue': 1, 'body-gold': 1 },
+          appearance: { wings: 'wings-silver', engine: 'engine-blue', body: 'body-gold' },
+        },
+        roster: [selfMember(), member()],
+      }),
+    );
+
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: {
+        'hull-gold': 1,
+        'wing-left-silver': 2,
+        'wing-right-silver': 2,
+        'ignition-left-blue': 1,
+        'ignition-right-blue': 1,
+      },
+      appearance: {
+        hull: 'hull-gold',
+        'wing-left': 'wing-left-silver',
+        'wing-right': 'wing-right-silver',
+        'ignition-left': 'ignition-left-blue',
+        'ignition-right': 'ignition-right-blue',
+      },
+    });
+  });
+
   it('adopts customization from worldEntered', () => {
     const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
     const fake = createFakeEnv();
@@ -3015,11 +3071,12 @@ describe('multiplayer customization wiring (T11)', () => {
     const listener = vi.fn();
     session.subscribe(listener);
     wire.emit({ type: 'customizationUpdate', lootboxes: 0, keys: 0, parts: { 'body-gold': 2 }, appearance: { body: 'body-gold' } });
+    // A restored/unmigrated server row is normalized on adoption (AC-16/AC-33).
     expect(session.getSnapshot().customization).toEqual({
       lootboxes: 0,
       keys: 0,
-      parts: { 'body-gold': 2 },
-      appearance: { body: 'body-gold' },
+      parts: { 'hull-gold': 2 },
+      appearance: { hull: 'hull-gold' },
     });
     expect(listener).toHaveBeenCalled();
   });
@@ -3034,10 +3091,14 @@ describe('multiplayer customization wiring (T11)', () => {
     wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
     session.join('account');
     const before = session.getSnapshot().customization;
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+
     session.openLootbox();
+
     expect(wire.sent).toContainEqual({ type: 'openLootbox' });
-    // no optimistic mutation
+    // No optimistic mutation; the account open is pending until the server answers.
     expect(session.getSnapshot().customization).toEqual(before);
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
   });
 
   it('sends equipPart for accounts', () => {
@@ -3051,6 +3112,21 @@ describe('multiplayer customization wiring (T11)', () => {
     session.join('account');
     session.equipPart('nose-crimson');
     expect(wire.sent).toContainEqual({ type: 'equipPart', partId: 'nose-crimson' });
+  });
+
+  it('sends unequipPart for accounts', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    session.unequipPart!('wing-left');
+
+    expect(wire.sent).toContainEqual({ type: 'unequipPart', slotId: 'wing-left' });
   });
 
   it('applies guest local open', () => {
@@ -3067,11 +3143,20 @@ describe('multiplayer customization wiring (T11)', () => {
     session.subscribe(listener);
     session.openLootbox();
     expect(wire.sent).toEqual([]);
+    // Guest opens are synchronous and never set the account pending flag (AC-29).
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
     const c = session.getSnapshot().customization!;
     expect(c.lootboxes).toBe(0);
     expect(c.keys).toBe(0);
     const totalCount = Object.values(c.parts).reduce((a, b) => a + b, 0);
     expect(totalCount).toBe(1);
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'engine-left-vector',
+      slot: 'engine-left',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
     expect(listener).toHaveBeenCalled();
   });
 
@@ -3086,6 +3171,29 @@ describe('multiplayer customization wiring (T11)', () => {
     wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
     session.equipPart('nose-crimson');
     expect(session.getSnapshot().customization!.appearance).toEqual({ nose: 'nose-crimson' });
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('applies guest local unequip', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'tail-fin-split': 1 },
+      appearance: { nose: 'nose-crimson', 'tail-fin': 'tail-fin-split' },
+    });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    session.unequipPart!('nose');
+
+    expect(session.getSnapshot().customization!.appearance).toEqual({
+      'tail-fin': 'tail-fin-split',
+    });
     expect(wire.sent).toEqual([]);
   });
 
@@ -3122,5 +3230,214 @@ describe('multiplayer customization wiring (T11)', () => {
     session.equipPart('totally-unknown');
     expect(session.getSnapshot().customization).toEqual(before);
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('adopts lootboxOpened, clears pending and advances the grant sequence', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    session.openLootbox();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    wire.emit({
+      type: 'lootboxOpened',
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
+
+    wire.emit({
+      type: 'lootboxOpened',
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: true,
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 2 },
+      appearance: {},
+    });
+
+    // Reopening the same part restarts the reveal with the next sequence (AC-32).
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: true,
+      sequence: 2,
+    });
+  });
+
+  it('customizationUpdate clears pending without clearing the reveal grant', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    wire.emit({
+      type: 'lootboxOpened',
+      partId: 'hull-gold',
+      slot: 'hull',
+      rarity: 'epic',
+      duplicate: false,
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'hull-gold': 1 },
+      appearance: {},
+    });
+    session.openLootbox();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    wire.emit({ type: 'customizationUpdate', lootboxes: 0, keys: 0, parts: { 'hull-gold': 1 }, appearance: {} });
+
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+    // The account-wide update never replaces the opener-only grant (AC-32).
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'hull-gold',
+      slot: 'hull',
+      rarity: 'epic',
+      duplicate: false,
+      sequence: 1,
+    });
+
+    session.dismissLootboxReveal!();
+    expect(session.getSnapshot().lastLootboxGrant).toBeNull();
+  });
+
+  it('clears pending on an error frame', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    session.openLootbox();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    wire.emit({ type: 'error', code: 'no_lootbox' });
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+  });
+
+  it('clears pending on a transport status change', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    session.openLootbox();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    wire.emitStatus('disconnected');
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+  });
+
+  it('clears pending on a resume welcome', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    session.openLootbox();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+  });
+});
+
+describe('hover target picking (AC-35)', () => {
+  it('coalesces pointer moves into at most one front-face pick per animation frame', () => {
+    const rect = { left: 0, top: 0, width: 800, height: 800 };
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv({ rect });
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    skipIntro(fake, session, rect);
+    hoverPick.mockClear();
+
+    fake.canvas.emit('pointermove', { clientX: 400, clientY: 400 });
+    fake.canvas.emit('pointermove', { clientX: 600, clientY: 400 });
+    // The pointer events only record the NDC; the raycast waits for the frame.
+    expect(hoverPick).not.toHaveBeenCalled();
+
+    fake.scheduler.tick(16);
+
+    expect(hoverPick).toHaveBeenCalledTimes(1);
+    const call = hoverPick.mock.calls[0]!;
+    expect(call[2]).toBe('front');
+    expect(call[3]).toBe(0.5);
+    expect(call[4]).toBe(0);
+
+    // A frame without a new pointer event never raycasts again.
+    fake.scheduler.tick(32);
+    expect(hoverPick).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pick during the intro and hides the target on pointer leave', () => {
+    const rect = { left: 0, top: 0, width: 800, height: 800 };
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv({ rect });
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    hoverPick.mockClear();
+
+    fake.canvas.emit('pointermove', { clientX: 400, clientY: 400 });
+    fake.scheduler.tick(0);
+    expect(hoverPick).not.toHaveBeenCalled();
+
+    skipIntro(fake, session, rect);
+    fake.canvas.emit('pointermove', { clientX: 400, clientY: 400 });
+    fake.canvas.emit('pointerleave', {});
+    fake.scheduler.tick(16);
+
+    // The leave cleared the pending pick: no raycast and no stale reticle.
+    expect(hoverPick).not.toHaveBeenCalled();
   });
 });

@@ -109,3 +109,18 @@ export interface CustomizationState {
   parts: Record<string, number>;
   appearance: Record<string, string>;
 }
+
+/**
+ * The client's reveal metadata for the most recent lootbox grant (AC-32).
+ *
+ * `partId`/`slot`/`rarity`/`duplicate` come from the server's `lootboxOpened` (or the
+ * guest engine's local draw); `sequence` is client-owned and advances by one on every
+ * grant so reopening the same part restarts the reveal. It is never sent on the wire.
+ */
+export interface LootboxGrant {
+  partId: string;
+  slot: string;
+  rarity: 'rare' | 'epic';
+  duplicate: boolean;
+  sequence: number;
+}
