@@ -255,6 +255,101 @@ describe('view-axis swirl (AC-1)', () => {
   });
 });
 
+describe('reduced-motion swirl freeze (AC-17)', () => {
+  it('starts frozen at the anchor orientation on a fresh reduced-motion update', () => {
+    const starfield = createStarfield(seededRandom(12));
+    const anchorQuaternion = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2);
+    const anchor = createAnchor([3, 4, 5], anchorQuaternion);
+    const position = starfield.points.geometry.getAttribute('position');
+    const starsBefore = Float32Array.from(position.array as Float32Array);
+
+    starfield.update(1000, 0.5, anchor, true);
+
+    expect(starfield.pulseTimeMs).toBe(1000);
+    expect(starfield.points.position.toArray()).toEqual([3, 4, 5]);
+    // Zero swirl: the anchored quaternion is exactly the anchor's Y rotation.
+    expect(starfield.points.quaternion.toArray()).toEqual([
+      0, 0.7071067811865475, 0, 0.7071067811865476,
+    ]);
+    expect(starfield.points.rotation.z).toBe(0);
+    // The travel scale is still applied under reduced motion.
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
+    expect(Array.from(position.array as Float32Array)).toEqual(Array.from(starsBefore));
+  });
+
+  it('leaves the swirled orientation and star positions unchanged under reduced motion', () => {
+    const starfield = createStarfield(seededRandom(13));
+    starfield.update(1000);
+    const quaternionBefore = starfield.points.quaternion.toArray();
+    const rotationBefore = starfield.points.rotation.z;
+    const position = starfield.points.geometry.getAttribute('position');
+    const starsBefore = Float32Array.from(position.array as Float32Array);
+
+    // The normal update advanced the swirl to the pinned orientation first.
+    expect(quaternionBefore).toEqual([0, 0, 0.007629320516597103, 0.9999708963107151]);
+    expect(rotationBefore).toBe(0.015258789062499998);
+
+    starfield.update(1000, 0.5, createAnchor([1, 2, 3], new Quaternion()), true);
+
+    expect(starfield.points.position.toArray()).toEqual([1, 2, 3]);
+    expect(starfield.points.quaternion.toArray()).toEqual(quaternionBefore);
+    expect(starfield.points.rotation.z).toBe(rotationBefore);
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
+    expect(starfield.pulseTimeMs).toBe(2000);
+    expect(Array.from(position.array as Float32Array)).toEqual(Array.from(starsBefore));
+  });
+
+  it('keeps advancing pulseTimeMs and base opacity while the swirl stays frozen', () => {
+    const starfield = createStarfield(seededRandom(14));
+
+    starfield.update(1000, undefined, undefined, true);
+    expect(starfield.pulseTimeMs).toBe(1000);
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
+    expect(starfield.points.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    const rotationAfterFirstUpdate = starfield.points.rotation.z;
+
+    starfield.update(1000, undefined, undefined, true);
+    expect(starfield.pulseTimeMs).toBe(2000);
+    // Without the freeze this would be 0.9 (the twinkle trough at the 2000 ms pulse).
+    expect(starfield.points.material.opacity).toBe(STARFIELD_OPACITY_BASE);
+    expect(starfield.points.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+    expect(starfield.points.rotation.z).toBe(rotationAfterFirstUpdate);
+  });
+
+  it('retains the normal swirl, twinkle, expansion and 1200-star layout', () => {
+    const starfield = createStarfield(seededRandom(7));
+
+    starfield.update(1000, 0.5);
+
+    expect(starfield.points.quaternion.toArray()).toEqual([
+      0, 0, 0.007629320516597103, 0.9999708963107151,
+    ]);
+    expect(starfield.points.rotation.z).toBe(0.015258789062499998);
+    expect(starfield.points.material.opacity).toBe(0.95);
+    expect(starfield.points.scale.toArray()).toEqual([8, 8, 1]);
+    const position = starfield.points.geometry.getAttribute('position');
+    expect(position.count).toBe(1200);
+    // Seed 7's first star still sits exactly where construction placed it.
+    expect([position.getX(0), position.getY(0), position.getZ(0)]).toEqual([
+      -69.12860107421875, 109.4261703491211, -105.74883270263672,
+    ]);
+  });
+
+  it('consumes no random draws during updates, reduced motion included', () => {
+    const seeded = countingRandom(seededRandom(16));
+    const starfield = createStarfield(seeded.random);
+    expect(seeded.calls()).toBe(4 * STAR_COUNT);
+
+    starfield.update(1000);
+    starfield.update(1000, 0.5, undefined, true);
+    starfield.update(0, 1, createAnchor([1, 2, 3], new Quaternion()), true);
+
+    expect(seeded.calls()).toBe(4 * STAR_COUNT);
+  });
+});
+
 describe('travel expansion (AC-3)', () => {
   it('follows the symmetric expand → contract scale table, leaving z at 1', () => {
     const starfield = createStarfield(seededRandom(6));

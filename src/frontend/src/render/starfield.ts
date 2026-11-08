@@ -20,9 +20,12 @@
  *
  * **Anchor and swirl (spec AC-1).** `update` re-anchors the `Points` to the caller's camera
  * pose: `position = anchor.position`, `quaternion = anchor.quaternion × RotZ(swirlAngle)`
- * with `swirlAngle += max(0, dtMs) · DRIFT_RADIANS_PER_MS`. The swirl is about the **view
- * axis**, under which the square is rotation-invariant in the coverage sense (every
- * direction within its inradius is inside), so coverage can never degrade over time (the
+ * with `swirlAngle += max(0, dtMs) · DRIFT_RADIANS_PER_MS`. Under reduced motion
+ * (`reducedMotion === true`, spec AC-17) the swirl angle is frozen and the starfield keeps
+ * its current orientation; `pulseTimeMs`, the snapped anchor and the base opacity still
+ * apply. The swirl is about the **view axis**, under which the square is rotation-invariant
+ * in the coverage sense (every direction within its inradius is inside), so coverage can never
+ * degrade over time (the
  * predecessor's world-y drift rotated a bounded disk until one side of the frame went
  * starless — the reported defect; r1's rectangular cone failed the same way at 45° and was
  * corrected to the square in r2). With no anchor the starfield anchors to the
@@ -128,7 +131,9 @@ export interface Starfield {
    * travel scale.
    *
    * - Swirl: `swirlAngle += max(0, dtMs) · DRIFT_RADIANS_PER_MS`; the anchored quaternion is
-   *   `anchor.quaternion × RotZ(swirlAngle)` (no anchor → the world-identity pose).
+   *   `anchor.quaternion × RotZ(swirlAngle)` (no anchor → the world-identity pose). With
+   *   `reducedMotion === true` the swirl angle does not advance: the current orientation is
+   *   kept, while `pulseTimeMs`, the anchor position and the base opacity still apply.
    * - Anchor: `points.position` copies `anchor.position` (no anchor → the origin).
    * - Scale: `travelProgress` (0..1, clamped) drives the uniform in-plane scale
    *   `(S, S, 1)` with `S = 1 + (TRAVEL_STARFIELD_SCALE − 1) · travelSwing(progress)`; `z`
@@ -209,8 +214,13 @@ export function createStarfield(random: () => number): Starfield {
       return averageBrightness;
     },
     update(dtMs: number, travelProgress?: number, anchor?: StarfieldAnchor, reducedMotion?: boolean): void {
+      const motion = reducedMotion === true;
       pulseTimeMsValue += Math.max(0, dtMs);
-      swirlAngle += Math.max(0, dtMs) * DRIFT_RADIANS_PER_MS;
+      // Reduced motion freezes the decorative swirl only: the anchor, pulse and opacity
+      // paths below keep their existing semantics (spec AC-17).
+      if (!motion) {
+        swirlAngle += Math.max(0, dtMs) * DRIFT_RADIANS_PER_MS;
+      }
 
       const anchorPosition = anchor?.position ?? WORLD_IDENTITY_POSITION;
       const anchorQuaternion = anchor?.quaternion ?? WORLD_IDENTITY_QUATERNION;
@@ -226,7 +236,6 @@ export function createStarfield(random: () => number): Starfield {
         points.scale.set(expansion, expansion, 1);
       }
 
-      const motion = reducedMotion === true;
       if (motion) {
         points.material.opacity = STARFIELD_OPACITY_BASE;
       } else {

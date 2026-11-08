@@ -715,7 +715,7 @@ describe('intro dolly through the scene (AC-2)', () => {
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
   });
 
-  it('keeps the view-axis swirl turning under reduced motion (AC-1)', () => {
+  it('freezes the view-axis swirl under reduced motion (AC-17)', () => {
     const view = createView();
     applySnapshot(view, snapshot({ phase: 'travel', phaseProgress: 0.5, reducedMotion: true }));
 
@@ -723,11 +723,9 @@ describe('intro dolly through the scene (AC-2)', () => {
 
     expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
     expect(starfieldPoints(view).scale.toArray()).toEqual([1, 1, 1]);
-    // RotZ(0.0152587890625): the exact composed doubles; the euler round-trip is one ulp
-    // below the ideal angle (see `starfield.test.ts`).
-    expect(starfieldPoints(view).quaternion.toArray()).toEqual([
-      0, 0, 0.007629320516597103, 0.9999708963107151,
-    ]);
+    // The swirl is frozen under reduced motion: the identity camera anchor composes with
+    // RotZ(0), so the starfield keeps the identity orientation while pulse/anchor still update.
+    expect(starfieldPoints(view).quaternion.toArray()).toEqual([0, 0, 0, 1]);
   });
 });
 
