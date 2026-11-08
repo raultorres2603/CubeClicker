@@ -43,6 +43,18 @@ describe('loadMigrations', () => {
     expect(init!.sql).toContain('lower(username)');
     expect(init!.sql).toContain('lower(email)');
   });
+
+  it('loads 006_granular_spaceship_parts.sql after 005', () => {
+    const migrations = loadMigrations();
+    const names = migrations.map((m) => m.name);
+    const index005 = names.indexOf('005_spaceship_customization.sql');
+    const index006 = names.indexOf('006_granular_spaceship_parts.sql');
+    expect(index005).toBeGreaterThan(-1);
+    expect(index006).toBeGreaterThan(index005);
+    expect(migrations.find((m) => m.name === '006_granular_spaceship_parts.sql')?.sql).toContain(
+      'ADD COLUMN IF NOT EXISTS customization_version INT NOT NULL DEFAULT 1',
+    );
+  });
 });
 
 describe('runMigrations', () => {
@@ -121,6 +133,8 @@ describe('runMigrations', () => {
     const { db } = makeDb();
     const result = await runMigrations(db);
     expect(result).toContain('001_init.sql');
+    expect(result).toContain('005_spaceship_customization.sql');
+    expect(result).toContain('006_granular_spaceship_parts.sql');
   });
 
   it('rethrows the original error even if rollback fails', async () => {

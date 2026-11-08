@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS user_economy (
   keys INT NOT NULL DEFAULT 0,
   parts JSONB NOT NULL DEFAULT '{}'::jsonb,
   appearance JSONB NOT NULL DEFAULT '{}'::jsonb,
+  customization_version INT NOT NULL DEFAULT 2,
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
