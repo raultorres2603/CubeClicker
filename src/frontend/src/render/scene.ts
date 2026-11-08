@@ -10,19 +10,20 @@
  * the single place that turns engine output into three.js state:
  *
  * - {@link SceneView.applyIntents} consumes the engine's one-shot `EffectIntent`s:
- *   an `explosion` reads the tile's world origin and outward face normal, starts the
- *   pop-then-shrink removal and spawns the burst `BURST_ORIGIN_OFFSET` in front of that
- *   surface (AC-3, AC-4); `faceCleared` starts the face-removal countdown (there is no
- *   plate to fade — spec AC-2); `levelChanged` only marks the rebuild *pending* (the next
- *   snapshot carries the new style, grid size and travel direction); and `travelStarted`
- *   needs nothing of its own — the travel transition is driven by the snapshot.
+ *   an `explosion` reads the tile's world origin and outward face normal, conceals the
+ *   tile and spawns the spark burst + impact pools in front of that surface (AC-36,
+ *   AC-37); `faceCleared` starts the face-removal countdown (there is no plate to fade —
+ *   spec AC-2); `levelChanged` only marks the rebuild *pending* (the next snapshot carries
+ *   the new style, grid size and travel direction); and `travelStarted` needs nothing of
+ *   its own — the travel transition is driven by the snapshot.
  * - {@link SceneView.applySnapshot} is the per-frame pull, in the pinned order: motion
  *   setting → rebuild step → camera (intro dolly, directional travel flight or the rest
- *   pose over the current cube) → cube orientation → reduced-motion pop settle.
- * - {@link SceneView.update} advances the frame-driven parts: the camera-anchored starfield
- *   swirl and scale, particle aging, the face-removal countdowns, the background life, the
- *   camera-anchored cosmic backdrop's slow drift and the running mini-cube pops (AC-4,
- *   AC-12).
+ *   pose over the current cube) → cube orientation → reduced-motion settle and quality
+ *   matrix application.
+ * - {@link SceneView.update} advances the frame-driven parts: the adaptive quality
+ *   policy, the cursor/trail and target lock, particle and impact aging, the face-removal
+ *   countdowns, the background life, the camera-anchored cosmic backdrop's slow drift and
+ *   the remote world (AC-4, AC-12, AC-52).
  *
  * World model (spec § 3): cubes live on a flat plane and the camera is always axis-aligned
  * with the identity quaternion, so screen-right is world +x and screen-up is world +y. A
@@ -60,8 +61,6 @@ import {
   DirectionalLight,
   InstancedMesh,
   Matrix4,
-  Mesh,
-  MeshPhysicalMaterial,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -86,12 +85,19 @@ import {
   type TravelDirection,
 } from '../game/types';
 import type { MemberState, Position, ServerMessage } from '../multiplayer/protocol';
-import { appearanceToSpaceshipParams } from '../game/parts';
 import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
+import { createImpactEffects, type ImpactEffects } from './impact-effects';
 import { createParticleSystem, type ParticleSystem } from './particles';
+import {
+  createQualityPolicy,
+  qualityFeatures,
+  type QualityPolicy,
+  type QualityTier,
+} from './quality';
 import { travelCameraPose as spectateTravelPose } from './spectate-travel';
 import { createStarfield, type Starfield, type StarfieldAnchor } from './starfield';
 import { createSpaceship, type Shot, type Spaceship } from './spaceship';
+import { createTargeting, type Targeting } from './targeting';
 import { createBackgroundLife, type BackgroundLife } from './background-life';
 import { createCosmicBackdrop, type CosmicBackdrop } from './cosmic-backdrop';
 import { createWorldView, type WorldView } from './world';
@@ -351,6 +357,18 @@ export interface SceneView {
    */
   setPointerTarget(ndcX: number, ndcY: number): void;
   /**
+   * Shows the target lock (tile outline + reticle) on the hovered mini-cube, or hides it
+   * for `null` (AC-35). The session resolves the hovered id at most once per frame (T10).
+   */
+  setHoverTarget(id: MiniCubeId | null): void;
+  /** The current adaptive quality tier (AC-52). */
+  getQualityTier(): QualityTier;
+  /**
+   * Test hook: forces a quality tier and applies its feature matrix immediately. T14 uses
+   * it for the high/medium/low traces; the normal policy can still recover afterwards.
+   */
+  setQualityTierForTesting(tier: QualityTier): void;
+  /**
    * In-flight shots (delegated from the spaceship). Emptied by `dispose()`.
    */
   readonly shots: readonly Shot[];
@@ -379,8 +397,8 @@ export interface SceneView {
    * Applies one engine snapshot in the pinned order: motion setting, rebuild step (exactly
    * one rebuild when a level change is pending or the style/grid size changed), camera
    * (intro dolly, the destination-driven online flight or the drawn-directional offline
-   * flight, a spectate/return flight, or the rest pose over the current cube) and, under
-   * reduced motion, the instant settle of any running pop.
+   * flight, a spectate/return flight, or the rest pose over the current cube), the
+   * reduced-motion settle and the adaptive quality matrix.
    *
    * `nowMs` is the frame time the plan's contract carries (the loop passes it); the
    * snapshot application itself is a pure function of the snapshot values — the flights
@@ -444,7 +462,13 @@ export function createSceneView(options: {
   let cube: CubeView = createCubeView(options.style, gridSize);
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
+  // Impact and targeting are children of the existing particle group, so the scene child
+  // list stays 9 (10 with a remote world) while countObjects grows by +8 (AC-47/F2).
+  const impact: ImpactEffects = createImpactEffects(random);
+  const targeting: Targeting = createTargeting();
+  particles.group.add(impact.group, targeting.group);
   const spaceship: Spaceship = createSpaceship(options.appearance);
+  const qualityPolicy: QualityPolicy = createQualityPolicy();
   const backgroundLife: BackgroundLife = createBackgroundLife(random);
   // Created after the starfield, the particle pool and the background life so their seeded
   // draw sequences stay unchanged (AC-16). The backdrop owns the nebula `DataTexture` the
@@ -505,6 +529,11 @@ export function createSceneView(options: {
   const faceRemovals = new Map<FaceId, FaceRemoval>();
   let pointerNdc = { x: 0, y: 0 };
   let hasPointer = false;
+  /** Hovered mini-cube id (null = miss); T10 resolves it once per frame. */
+  let hoverTarget: MiniCubeId | null = null;
+  /** Last applied quality matrix inputs (tier + reduced motion). */
+  let appliedQualityTier: QualityTier | null = null;
+  let appliedQualityReduced: boolean | null = null;
   interface PendingExplosion {
     intent: Extract<EffectIntent, { kind: 'explosion' }>;
     origin: Vector3;
@@ -563,11 +592,15 @@ export function createSceneView(options: {
       // the cube centre (no normal, no offset) rather than producing a NaN position.
       cube.hideMiniCube(intent.id, reducedMotion);
       particles.spawn(intent.burst, new Vector3(), nowMs);
+      impact.spawnPop(new Vector3(), new Vector3(0, 0, 1), nowMs);
       return;
     }
     const origin = instanceOrigin(mesh, intent.id);
     const normal = worldFaceNormal(intent.faceId);
     cube.hideMiniCube(intent.id, reducedMotion);
+    // The impact pool starts at the tile surface (origin + normal · 0.02); the spark burst
+    // keeps the accepted 0.5 outward offset.
+    impact.spawnPop(origin, normal, nowMs);
     origin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
     particles.spawn(intent.burst, origin, nowMs);
   }
@@ -581,10 +614,12 @@ export function createSceneView(options: {
     if (mesh === undefined) {
       cube.hideMiniCube(intent.id, reducedMotion);
       particles.spawn(intent.burst, new Vector3(), retainedFrameTime);
+      impact.spawnPop(new Vector3(), new Vector3(0, 0, 1), retainedFrameTime);
       return;
     }
     const burstOrigin = origin.clone();
     cube.hideMiniCube(intent.id, reducedMotion);
+    impact.spawnPop(origin, normal, retainedFrameTime);
     burstOrigin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
     particles.spawn(intent.burst, burstOrigin, retainedFrameTime);
   }
@@ -722,6 +757,9 @@ export function createSceneView(options: {
     const previous = cube;
     // A pending removal belongs to the cube that is leaving; the new cube is untouched.
     faceRemovals.clear();
+    // The hovered tile belonged to the old cube: a miss until the next pick.
+    hoverTarget = null;
+    targeting.setHoverTarget(null, null);
     cube = createCubeView(snapshot.style, snapshot.gridSize);
     cube.group.position.copy(cubePosition);
     currentStyle = snapshot.style;
@@ -870,29 +908,32 @@ export function createSceneView(options: {
     }
   }
 
-  function applyAppearanceToSpaceship(appearance: Record<string, string>): void {
-    const params = appearanceToSpaceshipParams(appearance);
-    spaceship.group.traverse((object) => {
-      if (!(object instanceof Mesh)) {
-        return;
-      }
-      const material = object.material as MeshPhysicalMaterial;
-      if (object.name === 'ignition') {
-        material.color.set(params.engineColor);
-        if (material.emissive !== undefined) {
-          material.emissive.set(params.engineColor);
-        }
-      } else if (object.geometry.type === 'ConeGeometry') {
-        material.color.set(params.noseColor);
-      } else if (object.geometry.type === 'CylinderGeometry') {
-        material.color.set(params.bodyColor);
-      } else if (object.geometry.type === 'SphereGeometry') {
-        material.color.set(params.cockpitColor);
-      } else if (object.name === 'wing') {
-        material.color.set(params.wingColor);
-      }
+  /**
+   * Applies the adaptive feature matrix to every consumer when the tier or the motion
+   * setting changed (AC-52). Reduced motion is authoritative: it turns off every motion
+   * layer regardless of tier while the tier may still hide static detail.
+   */
+  function applyQuality(): void {
+    const tier = qualityPolicy.getTier();
+    if (appliedQualityTier === tier && appliedQualityReduced === reducedMotion) {
+      return;
+    }
+    appliedQualityTier = tier;
+    appliedQualityReduced = reducedMotion;
+    const features = qualityFeatures(tier, reducedMotion);
+    spaceship.setTrailEnabled(features.trail);
+    spaceship.setCursorMotionEnabled(features.cursorMotion);
+    spaceship.setHiddenMeshes(features.hiddenCursorMeshes);
+    targeting.setReticleEnabled(features.reticle);
+    impact.setFeatures({
+      rays: features.impactRays,
+      shards: features.impactShards,
+      coins: features.impactCoins,
+      shockwaveExpand: features.shockwaveExpand,
     });
+    particles.setSparkLimit(features.sparks);
   }
+  applyQuality();
 
   const view: SceneView = {
     scene,
@@ -917,6 +958,26 @@ export function createSceneView(options: {
       const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
       pointerNdc = { x: clamp(ndcX), y: clamp(ndcY) };
       hasPointer = true;
+    },
+
+    setHoverTarget(id: MiniCubeId | null): void {
+      if (disposed) {
+        return;
+      }
+      hoverTarget = id;
+      targeting.setHoverTarget(id, cube);
+    },
+
+    getQualityTier(): QualityTier {
+      return qualityPolicy.getTier();
+    },
+
+    setQualityTierForTesting(tier: QualityTier): void {
+      if (disposed) {
+        return;
+      }
+      qualityPolicy.setTier(tier);
+      applyQuality();
     },
 
     get shots(): readonly Shot[] {
@@ -1017,7 +1078,7 @@ export function createSceneView(options: {
           (key) => nextRecord[key] !== lastAppliedAppearance[key],
         );
       if (appearanceChanged) {
-        applyAppearanceToSpaceship(nextRecord);
+        spaceship.applyAppearance(nextRecord);
         lastAppliedAppearance = nextRecord;
       }
       rebuildCubeIfNeeded(snapshot);
@@ -1029,20 +1090,33 @@ export function createSceneView(options: {
       // three.js 'XYZ' order puts `frontFace(orientation)` at the camera.
       cube.group.rotation.set(rotation.pitch, rotation.yaw, 0);
       if (snapshot.reducedMotion) {
-        // A live switch to reduced motion settles any running pop on the spot (AC-4).
+        // A live switch to reduced motion settles any remaining conceal state and
+        // re-applies the authoritative motion matrix (AC-48/AC-52).
         cube.settlePops();
       }
+      applyQuality();
       lastPhase = snapshot.phase;
     },
 
     update(dtMs: number): void {
+      // The adaptive policy consumes exactly one frame delta per rendered frame (AC-52).
+      qualityPolicy.pushFrameTime(dtMs);
+      applyQuality();
       // The travel input persists between snapshots: a frame that only advances time
       // keeps the current expansion and the swirl (see `starfield.update`). The anchor is
       // the live camera pose, so the backdrop stays camera-centred in every phase.
       spaceship.update(camera, pointerNdc.x, pointerNdc.y, hasPointer, dtMs, reducedMotion);
+      // Refresh the lock transform each frame so a rotating cube keeps the outline on its
+      // tile; the target itself is resolved by the session at most once per frame.
+      targeting.setHoverTarget(hoverTarget, cube);
+      targeting.update(dtMs, reducedMotion);
       const advanceMs = Math.max(0, dtMs);
       const completedShots = spaceship.updateShots(dtMs);
       void completedShots;
+      // Age the live pools before spawning this frame's deferred explosions, so a burst
+      // that starts now begins its timeline at elapsed 0 (no double-aged first frame).
+      particles.update(dtMs);
+      impact.update(dtMs);
       for (let index = pendingExplosions.length - 1; index >= 0; index -= 1) {
         const pending = pendingExplosions[index]!;
         pending.remainingMs = Math.max(0, pending.remainingMs - advanceMs);
@@ -1062,7 +1136,6 @@ export function createSceneView(options: {
       );
       cosmicBackdrop.update(dtMs, reducedMotion);
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
-      particles.update(dtMs);
       advanceFaceRemovals(dtMs);
       // Remote cubes and their pops advance on the same clock, after the own removals.
       world?.update(dtMs);
@@ -1082,6 +1155,10 @@ export function createSceneView(options: {
       cosmicBackdrop.dispose();
       starfield.dispose();
       cube.dispose();
+      // Impact/targeting are children of the particle group; release them before the
+      // particle system clears that group.
+      impact.dispose();
+      targeting.dispose();
       particles.dispose();
       disposeWorld();
       spaceship.dispose();

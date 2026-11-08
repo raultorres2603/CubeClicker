@@ -8,9 +8,10 @@
  * the non-grid pinned constants: {@link STAR_COUNT}, {@link EXPLOSION_PARTICLE_COUNT},
  * {@link PARTICLE_POOL_CAP}, {@link TAP_DRAG_THRESHOLD_PX}, {@link PIXEL_RATIO_CAP},
  * {@link TRAVEL_STARFIELD_SCALE}, {@link TRAVEL_LEVEL_ADVANCE_P}, {@link BURST_ORIGIN_OFFSET}
- * and the mini-cube pop
- * constants ({@link MINI_CUBE_POP_MS}, {@link MINI_CUBE_POP_EXPAND_MS},
- * {@link MINI_CUBE_POP_PEAK_SCALE}, {@link MINI_CUBE_POP_COLOR_STRENGTH}).
+ * and {@link MINI_CUBE_POP_MS} (the observed one-frame conceal, `0`).
+ *
+ * {@link easeOutCubic} lives only in `game/motion.ts` (F14); this module re-exports it so
+ * the existing `scene.ts` import stays valid and no second implementation exists.
  * Consumers (`render/starfield.ts`, `render/particles.ts`, `render/scene.ts`,
  * `render/cube-view.ts`, `input/**`, the engine and the session) import them from here
  * and never redefine them locally. `GRID_SIZE` is the only constant that lives in
@@ -64,11 +65,13 @@ export function timingsFor(reducedMotion: boolean): Timings {
   return reducedMotion ? REDUCED_TIMINGS : DEFAULT_TIMINGS;
 }
 
-/** Intro camera flight easing: `1 - (1 - t)³` (pinned by AC-22). */
-export function easeOutCubic(t: number): number {
-  const inverted = 1 - t;
-  return 1 - inverted * inverted * inverted;
-}
+/**
+ * Intro camera flight easing: `1 - (1 - t)³` (pinned by AC-22).
+ *
+ * Re-exported from `game/motion.ts` (F14): the easing has exactly one implementation and
+ * the two imports are the same function identity.
+ */
+export { easeOutCubic } from './motion';
 
 /** Travel camera-pull easing: quadratic in/out (pinned by AC-22). */
 export function easeInOutQuad(t: number): number {
@@ -148,17 +151,12 @@ export const TRAVEL_LEVEL_ADVANCE_P = 0.5;
 /** World units the burst origin moves out along the face normal (spec AC-3). */
 export const BURST_ORIGIN_OFFSET = 0.5;
 
-/** Total duration of the pop-then-shrink disappearance (spec AC-4). */
-export const MINI_CUBE_POP_MS = 160;
-
-/** Grow phase of the pop: `1 → MINI_CUBE_POP_PEAK_SCALE` over the first 100 ms (spec AC-4). */
-export const MINI_CUBE_POP_EXPAND_MS = 100;
-
-/** Peak scale factor of the pop (spec AC-4). */
-export const MINI_CUBE_POP_PEAK_SCALE = 1.1;
-
-/** Peak `instanceColor` multiplier delta of the pop's brightness flash (spec AC-4). */
-export const MINI_CUBE_POP_COLOR_STRENGTH = 0.3;
+/**
+ * Total duration of the mini-cube conceal (AC-36): exactly `0`, the observed one-frame
+ * disappearance. A clicked mini-cube is zero-scaled on the same frame; the visible
+ * shatter is carried by the impact effects, not by a shrinking tile.
+ */
+export const MINI_CUBE_POP_MS = 0;
 
 /** Shot travel time in ms (spaceship-cursor spec AC-5). */
 export const SHOT_TRAVEL_MS = 180;
@@ -176,6 +174,16 @@ export const SPACESHIP_CURSOR_NDC_OFFSET_Y = -0.12;
 
 /** Scale applied to the whole spaceship group (spaceship-cursor-polish spec AC-1). */
 export const SPACESHIP_SCALE = 1.2;
+
+/**
+ * World units per screen pixel at the cursor-ship plane for a 1280×720 reference frame:
+ * `2 · tan(FOV/2) · planeDistance / 720`. The impact rays (90–160 px) and the targeting
+ * reticle (20 px radius, 14 px ticks) use this single presentation conversion.
+ */
+export const REFERENCE_PIXEL_WORLD = (() => {
+  const fovRad = (50 * Math.PI) / 180;
+  return (2 * Math.tan(fovRad / 2) * SPACESHIP_PLANE_DISTANCE) / 720;
+})();
 /** Number of ignition flames at the ship's rear (spaceship-cursor-polish spec AC-1). */
 export const SPACESHIP_IGNITION_COUNT = 2;
 
@@ -184,49 +192,6 @@ export const SPACESHIP_IGNITION_MOVEMENT_THRESHOLD = 0.01;
 
 /** Flicker period of the ignition flames in ms (spaceship-cursor-polish spec AC-1). */
 export const SPACESHIP_IGNITION_FLICKER_PERIOD_MS = 100;
-
-/** Duration of the shrink phase: the remainder of the pop after the expand phase (60 ms). */
-const MINI_CUBE_POP_SHRINK_MS = MINI_CUBE_POP_MS - MINI_CUBE_POP_EXPAND_MS;
-
-/**
- * Tile scale factor of the mini-cube pop at `elapsedMs` (spec AC-4).
- *
- * Linear expand `1 → MINI_CUBE_POP_PEAK_SCALE` over `[0, MINI_CUBE_POP_EXPAND_MS]`, then a
- * linear shrink `MINI_CUBE_POP_PEAK_SCALE → 0` over the remaining 60 ms. Total function of
- * `elapsedMs` alone: non-positive elapsed time is clamped to the start pose (1) and every
- * time at or after {@link MINI_CUBE_POP_MS} yields 0 (the hidden end state).
- */
-export function popScaleAt(elapsedMs: number): number {
-  if (elapsedMs >= MINI_CUBE_POP_MS) {
-    return 0;
-  }
-  if (elapsedMs <= 0) {
-    return 1;
-  }
-  if (elapsedMs <= MINI_CUBE_POP_EXPAND_MS) {
-    return 1 + (MINI_CUBE_POP_PEAK_SCALE - 1) * (elapsedMs / MINI_CUBE_POP_EXPAND_MS);
-  }
-  const shrinkProgress = (elapsedMs - MINI_CUBE_POP_EXPAND_MS) / MINI_CUBE_POP_SHRINK_MS;
-  return MINI_CUBE_POP_PEAK_SCALE * (1 - shrinkProgress);
-}
-
-/**
- * Per-instance colour multiplier of the mini-cube pop at `elapsedMs` (spec AC-4).
- *
- * Runs `1 → 1 + MINI_CUBE_POP_COLOR_STRENGTH` over the expand phase and back to 1 over the
- * shrink phase, i.e. a bounded brightness flash toward white (hue unchanged). Total function
- * of `elapsedMs` alone: 1 outside the envelope `(0, MINI_CUBE_POP_MS)`.
- */
-export function popColorMultiplierAt(elapsedMs: number): number {
-  if (elapsedMs <= 0 || elapsedMs >= MINI_CUBE_POP_MS) {
-    return 1;
-  }
-  if (elapsedMs <= MINI_CUBE_POP_EXPAND_MS) {
-    return 1 + MINI_CUBE_POP_COLOR_STRENGTH * (elapsedMs / MINI_CUBE_POP_EXPAND_MS);
-  }
-  const shrinkProgress = (elapsedMs - MINI_CUBE_POP_EXPAND_MS) / MINI_CUBE_POP_SHRINK_MS;
-  return 1 + MINI_CUBE_POP_COLOR_STRENGTH * (1 - shrinkProgress);
-}
 
 /** Speed range of a fragment: `[BURST_SPEED_MIN, BURST_SPEED_MIN + BURST_SPEED_RANGE)`. */
 const BURST_SPEED_MIN = 1;

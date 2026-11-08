@@ -11,7 +11,6 @@ import {
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
-import { MINI_CUBE_POP_PEAK_SCALE } from '../game/effects';
 import { CUBE_STYLES } from '../game/progression';
 import { FACE_IDS, GRID_SIZE, type FaceId, type MiniCubeId } from '../game/types';
 import {
@@ -509,142 +508,75 @@ describe('seamed tiling (AC-1)', () => {
 });
 
 describe('hideMiniCube', () => {
-  it('hides instantly for reduced motion: zero scale, no colour write', () => {
+  it('conceals on the same frame: zero scale, position preserved, no colour write (AC-36)', () => {
     const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+
+    // No `instant` flag: the accepted 160 ms pop is superseded by the one-frame conceal.
+    view.hideMiniCube('front:0:0');
+
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 0, 1)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(mesh.count).toBe(25);
+
+    // There is no pop record: update cannot resurrect an intermediate state.
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
+    view.update(50);
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+  });
+
+  it('treats the legacy instant flag as equivalent to the default conceal', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
 
     view.hideMiniCube('front:0:0', true);
 
-    expect(instancePosition(faceMesh(view, 'front'), 0)).toEqual([-2, 2, TILE_DISTANCE]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 1)).toEqual([0, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 2)).toEqual([0, 0, 0]);
-    expect(instanceColor(faceMesh(view, 'front'), 0)).toEqual([1, 1, 1]);
-    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(faceMesh(view, 'front').count).toBe(25);
-
-    // No record exists, so time cannot resurrect the flashed intermediate state.
-    view.update(50);
-    expect(instanceAxis(faceMesh(view, 'front'), 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(faceMesh(view, 'front'), 0)).toEqual([1, 1, 1]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
-  it('plays the pinned pop timeline on the inset tile (N = 5)', () => {
+  it('never writes again when the same id is hidden twice', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
-
     view.hideMiniCube('front:0:0');
-
-    // t = 0: the pop starts at the tile's own (inset) size — nothing has changed yet.
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
-    expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, Math.fround(MINI_CUBE_THICKNESS)]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
-    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
-
-    // t = 50: expand, factor 1.05, colour 1.15.
-    view.update(50);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
-    expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, Math.fround(MINI_CUBE_THICKNESS * 1.05)]);
-    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.15), Math.fround(1.15), Math.fround(1.15)]);
-    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
-
-    // t = 100: the peak — factor 1.1, colour 1.3.
-    view.update(50);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.1), 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
-
-    // t = 130: shrink, factor 0.55, colour 1.15.
-    view.update(30);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 0.55), 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.15), Math.fround(1.15), Math.fround(1.15)]);
-
-    // t = 160: the hidden end state — zero scale, colour back to 1.
-    view.update(30);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
-    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
-
-    // Settled: the record is gone, so later frames keep the end state.
-    view.update(30);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
-    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
-  });
-
-  it('scales the pop from the inset cell of a larger grid (N = 7)', () => {
-    const view = createCubeView(STYLE, 7);
-    const mesh = faceMesh(view, 'front');
-    const cell = (CUBE_SIZE / 7) * MINI_CUBE_TILE_RATIO;
-
-    view.hideMiniCube('front:3:3');
-    view.update(100);
-
-    // Peak: every face-axis extent is exactly `Math.fround(0.95 × cell × factor)`.
-    expect(instanceAxis(mesh, 24, 0)).toEqual([Math.fround(cell * MINI_CUBE_POP_PEAK_SCALE), 0, 0]);
-    expect(instanceAxis(mesh, 24, 1)).toEqual([0, Math.fround(cell * MINI_CUBE_POP_PEAK_SCALE), 0]);
-    expect(instanceAxis(mesh, 24, 2)).toEqual([
-      0,
-      0,
-      Math.fround(MINI_CUBE_THICKNESS * MINI_CUBE_POP_PEAK_SCALE),
-    ]);
-    // The centre is unchanged by the pop.
-    expect(instancePosition(mesh, 24)).toEqual([0, 0, TILE_DISTANCE]);
-  });
-
-  it('never restarts a running pop when the same id is hidden again', () => {
-    const view = createCubeView(STYLE);
-    const mesh = faceMesh(view, 'front');
-
-    view.hideMiniCube('front:0:0');
-    view.update(50);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
 
     view.hideMiniCube('front:0:0');
     view.update(0);
 
-    // Still at t = 50: a restart would have brought the factor back to 1.
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
-    expect(instanceColor(mesh, 0)[0]).toBe(Math.fround(1.15));
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
     expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
   });
 
-  it('runs independent records 60 ms apart, side by side', () => {
-    const view = createCubeView(STYLE);
+  it('scales the conceal from the inset cell of a larger grid (N = 7)', () => {
+    const view = createCubeView(STYLE, 7);
     const mesh = faceMesh(view, 'front');
 
-    view.hideMiniCube('front:0:0');
-    view.update(60);
-    view.hideMiniCube('front:0:1');
-    view.update(40);
+    view.hideMiniCube('front:3:3');
 
-    // The first record is at t = 100 (peak); the second trails it by exactly 60 ms.
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.1), 0, 0]);
-    expect(instanceColor(mesh, 0)[0]).toBe(Math.fround(1.3));
-
-    view.update(60);
-
-    // First record settled at t = 160 while the second reaches the pinned t = 100 peak.
-    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
-    expect(instanceAxis(mesh, 1, 0)).toEqual([
-      Math.fround(TILE_SIZE * MINI_CUBE_POP_PEAK_SCALE),
-      0,
-      0,
-    ]);
-    expect(instanceColor(mesh, 1)[0]).toBe(Math.fround(1.3));
+    expect(instanceAxis(mesh, 24, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 24, 1)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 24, 2)).toEqual([0, 0, 0]);
+    // The centre is unchanged by the conceal.
+    expect(instancePosition(mesh, 24)).toEqual([0, 0, TILE_DISTANCE]);
   });
 
   it('leaves every other instance and face untouched', () => {
     const view = createCubeView(STYLE);
 
     view.hideMiniCube('top:1:1');
-    view.update(100);
 
     // top index 6 = row 1, col 1 → (0, 2.625, 0) + right * -1 + down * -1.
     expect(instancePosition(faceMesh(view, 'top'), 6)).toEqual([-1, TILE_DISTANCE, -1]);
-    expect(instanceAxis(faceMesh(view, 'top'), 6, 0)).toEqual([
-      Math.fround(TILE_SIZE * 1.1),
-      0,
-      0,
-    ]);
+    expect(instanceAxis(faceMesh(view, 'top'), 6, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(faceMesh(view, 'top'), 7, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
     expect(instanceColor(faceMesh(view, 'top'), 7)).toEqual([1, 1, 1]);
     expect(instanceAxis(faceMesh(view, 'front'), 6, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
@@ -718,35 +650,29 @@ describe('hideMiniCube', () => {
 });
 
 describe('settlePops', () => {
-  it('zero-scales every running pop at once and clears the records', () => {
+  it('is a compatibility no-op: the conceal already happened on the hide frame', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const back = faceMesh(view, 'back');
 
     view.hideMiniCube('front:0:0');
     view.hideMiniCube('back:4:4');
-    view.update(50);
-    expect(instanceAxis(front, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
-    expect(instanceAxis(back, 24, 0)).toEqual([-Math.fround(TILE_SIZE * 1.05), 0, 0]);
-
-    view.settlePops();
-
     expect(instanceAxis(front, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(back, 24, 0)).toEqual([0, 0, 0]);
+
+    const frontWrites = vi.spyOn(front, 'setMatrixAt');
+    const backWrites = vi.spyOn(back, 'setMatrixAt');
+    view.settlePops();
+    view.update(50);
+
+    expect(frontWrites).toHaveBeenCalledTimes(0);
+    expect(backWrites).toHaveBeenCalledTimes(0);
     expect(instanceColor(front, 0)).toEqual([1, 1, 1]);
     expect(instanceColor(back, 24)).toEqual([1, 1, 1]);
     expect(instancePosition(front, 0)).toEqual([-2, 2, TILE_DISTANCE]);
-
-    // The records are empty: no further writes can happen.
-    const frontWrites = vi.spyOn(front, 'setMatrixAt');
-    const backWrites = vi.spyOn(back, 'setMatrixAt');
-    view.update(50);
-    expect(frontWrites).toHaveBeenCalledTimes(0);
-    expect(backWrites).toHaveBeenCalledTimes(0);
-    expect(instanceAxis(front, 0, 0)).toEqual([0, 0, 0]);
   });
 
-  it('is a no-op when no pop is running', () => {
+  it('is a no-op when nothing was hidden', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const writes = vi.spyOn(front, 'setMatrixAt');
@@ -799,24 +725,23 @@ describe('removeFace', () => {
     expect(view.group.children).toHaveLength(6);
   });
 
-  it('cancels that face’s pop records and keeps the others running', () => {
+  it('detaches a face whose hidden tiles were already concealed and keeps the others', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const back = faceMesh(view, 'back');
 
     view.hideMiniCube('front:0:0');
     view.hideMiniCube('back:0:0');
-    view.update(50);
-    expect(instanceAxis(front, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
+    expect(instanceAxis(front, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(back, 0, 0)).toEqual([0, 0, 0]);
 
     view.removeFace('front');
     const frontWrites = vi.spyOn(front, 'setMatrixAt');
     view.update(50);
 
     expect(frontWrites).toHaveBeenCalledTimes(0);
-    // The back face's pop continues: it reaches the pinned t = 100 peak.
-    expect(instanceAxis(back, 0, 0)).toEqual([-Math.fround(TILE_SIZE * 1.1), 0, 0]);
-    expect(instanceColor(back, 0)[0]).toBe(Math.fround(1.3));
+    expect(instanceAxis(back, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(back, 0)).toEqual([1, 1, 1]);
   });
 
   it('leaves the remaining faces operable', () => {
@@ -838,8 +763,7 @@ describe('applyStyle', () => {
     const body = view.body.material as MeshPhysicalMaterial;
 
     view.hideMiniCube('front:0:0');
-    view.update(100);
-    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
 
     view.applyStyle(CUBE_STYLES[3]!);
 
@@ -851,9 +775,11 @@ describe('applyStyle', () => {
     expect(tileMaterial(view, 'front').metalness).toBe(0.9);
     expect(tileMaterial(view, 'front').roughness).toBe(0.25);
     expect(tileMaterial(view, 'top').color.getHexString()).toBe('ffcc66');
-    // The per-instance buffers are untouched: the running flash survives, idle slots stay 1.
-    expect(instanceColor(mesh, 0)).toEqual([Math.fround(1.3), Math.fround(1.3), Math.fround(1.3)]);
+    // The per-instance buffers are untouched: the concealed tile stays zero-scaled and
+    // every colour slot remains at the idle multiplier.
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
     expect(instanceColor(mesh, 1)).toEqual([1, 1, 1]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
     // In place: same mesh, same instance count, nothing rebuilt.
     expect(faceMesh(view, 'front')).toBe(mesh);
     expect(mesh.count).toBe(25);
@@ -906,11 +832,10 @@ describe('dispose', () => {
     expect(view.faces.size).toBe(0);
   });
 
-  it('clears running pop records', () => {
+  it('leaves the already-concealed instance zero-scaled after disposal', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
     view.hideMiniCube('front:0:0');
-    view.update(50);
 
     view.dispose();
     const writes = vi.spyOn(mesh, 'setMatrixAt');
@@ -918,7 +843,7 @@ describe('dispose', () => {
     view.update(50);
 
     expect(writes).toHaveBeenCalledTimes(0);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([Math.fround(TILE_SIZE * 1.05), 0, 0]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
   });
 
   it('does not dispose a removed face twice', () => {

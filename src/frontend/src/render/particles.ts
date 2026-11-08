@@ -97,6 +97,14 @@ export interface ParticleSystem {
    * releases the bursts that reached their lifetime and rewrites the fragment buffer.
    */
   update(dtMs: number): void;
+  /**
+   * Caps the number of spark fragments played per subsequent spawn (the adaptive quality
+   * matrix uses 24/12/0). A limit of `0` suppresses sparks entirely; the pool still plays
+   * nothing and consumes no random draws. The value is clamped into `[0, cap]`.
+   */
+  setSparkLimit(limit: number): void;
+  /** Current per-spawn spark limit (defaults to the pool cap). */
+  getSparkLimit(): number;
   /** Total number of fragments currently played by the pool (never above `cap`). */
   activeCount(): number;
   /** Releases the burst state, the geometry and the material exactly once; idempotent. */
@@ -168,6 +176,7 @@ export function createParticleSystem(
   group.add(points);
 
   const bursts: ActiveBurst[] = [];
+  let sparkLimit = cap;
   let disposed = false;
 
   /** Rewrites the fragment buffer: active fragments first, the rest of the slots zeroed. */
@@ -228,6 +237,14 @@ export function createParticleSystem(
     return total;
   }
 
+  function setSparkLimit(limit: number): void {
+    if (!Number.isFinite(limit)) {
+      sparkLimit = cap;
+      return;
+    }
+    sparkLimit = Math.min(cap, Math.max(0, Math.floor(limit)));
+  }
+
   function spawn(burst: Burst, origin: Vector3, nowMs: number): void {
     if (disposed) {
       return;
@@ -240,7 +257,12 @@ export function createParticleSystem(
       return;
     }
 
-    const count = Math.min(burst.particles.length, cap);
+    const count = Math.min(burst.particles.length, cap, sparkLimit);
+    if (count === 0) {
+      // Quality tier / reduced motion suppressed the spark layer (AC-52): no burst record
+      // and no random draw is consumed.
+      return;
+    }
     while (activeCount() + count > cap) {
       recycleOldest();
     }
@@ -287,5 +309,13 @@ export function createParticleSystem(
     material.dispose();
   }
 
-  return { group, spawn, update, activeCount, dispose };
+  return {
+    group,
+    spawn,
+    update,
+    setSparkLimit,
+    getSparkLimit: () => sparkLimit,
+    activeCount,
+    dispose,
+  };
 }

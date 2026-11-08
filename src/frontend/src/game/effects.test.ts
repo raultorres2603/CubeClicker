@@ -7,15 +7,11 @@ import {
   easeInOutQuad,
   easeOutCubic,
   EXPLOSION_PARTICLE_COUNT,
-  MINI_CUBE_POP_COLOR_STRENGTH,
-  MINI_CUBE_POP_EXPAND_MS,
   MINI_CUBE_POP_MS,
-  MINI_CUBE_POP_PEAK_SCALE,
   PARTICLE_POOL_CAP,
   PIXEL_RATIO_CAP,
-  popColorMultiplierAt,
-  popScaleAt,
   REDUCED_TIMINGS,
+  REFERENCE_PIXEL_WORLD,
   STAR_COUNT,
   TAP_DRAG_THRESHOLD_PX,
   timingsFor,
@@ -23,6 +19,7 @@ import {
   TRAVEL_STARFIELD_SCALE,
   travelSwing,
 } from './effects';
+import { easeOutCubic as motionEaseOutCubic } from './motion';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
 function sequenceRandom(draws: readonly number[]): () => number {
@@ -91,13 +88,12 @@ describe('non-grid pinned constants', () => {
     expect(PARTICLE_POOL_CAP / EXPLOSION_PARTICLE_COUNT).toBe(3);
   });
 
-  it('pins the visual-polish constants (AC-1, AC-3, AC-4)', () => {
+  it('pins the observed instant conceal and the pixel-equivalent world scale (AC-36)', () => {
     expect(TRAVEL_STARFIELD_SCALE).toBe(8);
     expect(BURST_ORIGIN_OFFSET).toBe(0.5);
-    expect(MINI_CUBE_POP_MS).toBe(160);
-    expect(MINI_CUBE_POP_EXPAND_MS).toBe(100);
-    expect(MINI_CUBE_POP_PEAK_SCALE).toBe(1.1);
-    expect(MINI_CUBE_POP_COLOR_STRENGTH).toBe(0.3);
+    expect(MINI_CUBE_POP_MS).toBe(0);
+    // 2 · tan(25°) · 6 / 720 — the shared 1280×720 cursor-plane conversion.
+    expect(REFERENCE_PIXEL_WORLD).toBeCloseTo(0.00777179430258331, 12);
   });
 
   it('pins the travel level-advance fraction to the midpoint (AC-3)', () => {
@@ -106,6 +102,10 @@ describe('non-grid pinned constants', () => {
 });
 
 describe('easeOutCubic', () => {
+  it('re-exports the single motion implementation by identity (F14)', () => {
+    expect(easeOutCubic).toBe(motionEaseOutCubic);
+  });
+
   it('returns the exact values at t = 0, 0.25, 0.5, 0.75 and 1', () => {
     expect([0, 0.25, 0.5, 0.75, 1].map(easeOutCubic)).toEqual([
       0, 0.578125, 0.875, 0.984375, 1,
@@ -162,32 +162,6 @@ describe('travelSwing', () => {
     expect(PINNED_PROGRESS.map((progress) => 1 + 7 * travelSwing(progress))).toEqual([
       1, 1.875, 4.5, 7.125, 8, 7.125, 4.5, 1.875, 1,
     ]);
-  });
-});
-
-describe('popScaleAt', () => {
-  it('follows the pinned pop timeline at t = 0 / 50 / 100 / 130 / 160 / 161 ms', () => {
-    // Expand 1 → 1.1 over 100 ms, shrink 1.1 → 0 over the remaining 60 ms (AC-4).
-    expect([0, 50, 100, 130, 160, 161].map(popScaleAt)).toEqual([1, 1.05, 1.1, 0.55, 0, 0]);
-  });
-
-  it('settles to the hidden zero-scale at and after the total duration, clamping earlier time to the start', () => {
-    expect([-10, 0].map(popScaleAt)).toEqual([1, 1]);
-    expect([200, 1000].map(popScaleAt)).toEqual([0, 0]);
-  });
-});
-
-describe('popColorMultiplierAt', () => {
-  it('follows the pinned colour-flash timeline at t = 0 / 50 / 100 / 130 / 160 / 161 ms', () => {
-    // 1 → 1.3 over the expand phase, back to 1 over the shrink phase (AC-4, bounded flash).
-    expect([0, 50, 100, 130, 160, 161].map(popColorMultiplierAt)).toEqual([
-      1, 1.15, 1.3, 1.15, 1, 1,
-    ]);
-  });
-
-  it('returns to exactly 1 outside the envelope and peaks at the bounded flash strength', () => {
-    expect([-10, 200, 1000].map(popColorMultiplierAt)).toEqual([1, 1, 1]);
-    expect(popColorMultiplierAt(100)).toBe(1 + MINI_CUBE_POP_COLOR_STRENGTH);
   });
 });
 

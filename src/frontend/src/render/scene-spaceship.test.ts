@@ -1,4 +1,4 @@
-import { Group, Mesh, MeshStandardMaterial } from 'three';
+import { Group, Mesh, MeshStandardMaterial, Points } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
@@ -31,13 +31,13 @@ function applyIntents(view: SceneView, intents: EffectIntent[], nowMs = 0): void
   view.applyIntents(intents, nowMs);
 }
 
-function explosionIntent(id: MiniCubeId, faceId: FaceId): EffectIntent {
+function explosionIntent(id: MiniCubeId, faceId: FaceId, count = 3): EffectIntent {
   return {
     kind: 'explosion',
     id,
     faceId,
     burst: {
-      particles: Array.from({ length: 3 }, () => ({ dx: 0, dy: 1, dz: 0, speed: 0, size: 0.02 })),
+      particles: Array.from({ length: count }, () => ({ dx: 0, dy: 1, dz: 0, speed: 0, size: 0.02 })),
       lifetimeMs: 350,
     },
   };
@@ -63,11 +63,16 @@ function particlePoints(view: SceneView) {
 }
 
 describe('scene spaceship integration', () => {
-  it('adds a spaceship group named spaceship containing a Mesh (AC-1)', () => {
+  it('adds a spaceship group named spaceship containing the 21-mesh model (AC-1)', () => {
     const view = createView();
     const group = spaceshipGroup(view);
     expect(group.name).toBe('spaceship');
-    expect(group.children.some((c) => c instanceof Mesh)).toBe(true);
+    expect(group.children[0]!.name).toBe('cursor-ship-model');
+    let meshCount = 0;
+    group.traverse((object) => {
+      if (object instanceof Mesh) meshCount += 1;
+    });
+    expect(meshCount).toBe(21);
     expect(view.scene.children).toContain(group);
   });
 
@@ -174,15 +179,16 @@ describe('scene spaceship integration', () => {
     expect(view.lastFrameTime).toBe(0);
   });
 
-  it('reduced motion: instant, no shot (AC-6)', () => {
+  it('reduced motion: instant conceal, no shot and no spark particles (AC-6, AC-48)', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
     expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(particlePoints(view).geometry.drawRange.count).toBeGreaterThanOrEqual(3);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
     expect(view.shots).toHaveLength(0);
     view.update(180);
     expect(view.shots).toHaveLength(0);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
   });
 
   it('dispose empties shots and removes spaceship (AC-8)', () => {
@@ -196,6 +202,209 @@ describe('scene spaceship integration', () => {
       (c) => c instanceof Group && c.name === 'spaceship',
     );
     expect(groups).toHaveLength(0);
+  });
+});
+
+/** The single group in the scene carrying `name` (impact-effects / targeting / model). */
+function namedGroup(view: SceneView, name: string): Group {
+  let found: Group | undefined;
+  view.scene.traverse((object) => {
+    if (found === undefined && object instanceof Group && object.name === name) {
+      found = object;
+    }
+  });
+  if (found === undefined) {
+    throw new Error(`no ${name} group`);
+  }
+  return found;
+}
+
+function modelMesh(view: SceneView, name: string): Mesh {
+  let found: Mesh | undefined;
+  namedGroup(view, 'cursor-ship-model').traverse((object) => {
+    if (found === undefined && object instanceof Mesh && object.name === name) {
+      found = object;
+    }
+  });
+  if (found === undefined) {
+    throw new Error(`no ${name} mesh`);
+  }
+  return found;
+}
+
+function impactMeshCount(view: SceneView, name: string): number {
+  const mesh = namedGroup(view, 'impact-effects').children.find((child) => child.name === name);
+  if (mesh === undefined) {
+    throw new Error(`no ${name} impact pool`);
+  }
+  return (mesh as { count: number }).count;
+}
+
+describe('scene impact and targeting integration (AC-35, AC-37, AC-38)', () => {
+  it('nests impact and targeting under the particle group, keeping 9 scene children', () => {
+    const view = createView();
+
+    expect(view.scene.children).toHaveLength(9);
+    const particles = view.scene.children.find(
+      (child): child is Group =>
+        child instanceof Group && child.children.some((candidate) => candidate instanceof Points),
+    )!;
+    expect(particles.children.map((child) => child.name)).toContain('impact-effects');
+    expect(particles.children.map((child) => child.name)).toContain('targeting');
+    expect(namedGroup(view, 'impact-effects').children).toHaveLength(4);
+    expect(namedGroup(view, 'targeting').children).toHaveLength(2);
+  });
+
+  it('spawns the four impact pools at the deferred explosion', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+
+    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+
+    view.update(180);
+    expect(impactMeshCount(view, 'impact-rays')).toBe(12);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(14);
+    expect(impactMeshCount(view, 'impact-coins')).toBe(6);
+    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+  });
+
+  it('reduced motion spawns only the static ring flash', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+
+    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(0);
+    expect(impactMeshCount(view, 'impact-coins')).toBe(0);
+    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+
+    view.update(120);
+    expect(impactMeshCount(view, 'impact-ring')).toBe(0);
+  });
+
+  it('locks the hovered tile and clears on a miss', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const targeting = namedGroup(view, 'targeting');
+    expect(targeting.visible).toBe(false);
+
+    view.setHoverTarget('front:0:0');
+    expect(targeting.visible).toBe(true);
+    const outline = targeting.children.find((child) => child.name === 'targeting-outline')!;
+    expect(outline.position.toArray()).toEqual([-2, 2, 2.625]);
+
+    view.update(120);
+    const reticle = targeting.children.find((child) => child.name === 'targeting-reticle')!;
+    expect(reticle.visible).toBe(true);
+    expect((outline as unknown as { material: { opacity: number } }).material.opacity).toBe(1);
+
+    view.setHoverTarget(null);
+    expect(targeting.visible).toBe(false);
+  });
+
+  it('keeps the camera and HUD transforms identical across a pop and ring (AC-44)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const position = view.camera.position.clone();
+    const quaternion = view.camera.quaternion.clone();
+
+    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+    view.update(180);
+    view.update(180);
+
+    expect(view.camera.position.toArray()).toEqual(position.toArray());
+    expect(view.camera.quaternion.toArray()).toEqual(quaternion.toArray());
+  });
+});
+
+describe('scene adaptive quality wiring (AC-52)', () => {
+  it('starts at high with the trail and full detail', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+
+    expect(view.getQualityTier()).toBe('high');
+    expect(modelMesh(view, 'cursor-hull-seam-1').visible).toBe(true);
+    expect(modelMesh(view, 'cursor-wing-left-tip').visible).toBe(true);
+    view.setPointerTarget(0.2, 0.1);
+    view.update(16);
+    const trail = spaceshipGroup(view).children.find(
+      (child): child is Points => child instanceof Points,
+    )!;
+    expect(trail.visible).toBe(true);
+    expect(trail.geometry.drawRange.count).toBe(1);
+  });
+
+  it('forces medium: four detail meshes hidden, no trail, 12 sparks', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    view.setQualityTierForTesting('medium');
+
+    expect(view.getQualityTier()).toBe('medium');
+    for (const name of [
+      'cursor-hull-seam-1',
+      'cursor-hull-seam-2',
+      'cursor-vent-left',
+      'cursor-vent-right',
+    ]) {
+      expect(modelMesh(view, name).visible).toBe(false);
+    }
+    expect(modelMesh(view, 'cursor-wing-left-tip').visible).toBe(true);
+    const trail = spaceshipGroup(view).children.find(
+      (child): child is Points => child instanceof Points,
+    )!;
+    expect(trail.geometry.drawRange.count).toBe(0);
+
+    applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
+    view.update(180);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(12);
+  });
+
+  it('forces low: six detail meshes hidden, no sparks, ring only', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    view.setQualityTierForTesting('low');
+
+    expect(view.getQualityTier()).toBe('low');
+    expect(modelMesh(view, 'cursor-wing-left-tip').visible).toBe(false);
+    expect(modelMesh(view, 'cursor-wing-right-tip').visible).toBe(false);
+
+    applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
+    view.update(180);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
+    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+  });
+
+  it('medium: the reticle ticks stay off while the outline locks the tile', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    view.setQualityTierForTesting('medium');
+    view.setHoverTarget('front:0:0');
+
+    const targeting = namedGroup(view, 'targeting');
+    const reticle = targeting.children.find((child) => child.name === 'targeting-reticle')!;
+    const outline = targeting.children.find((child) => child.name === 'targeting-outline')!;
+    expect(reticle.visible).toBe(false);
+    expect(outline.visible).toBe(true);
+    expect(targeting.visible).toBe(true);
+  });
+
+  it('reduced motion overrides the tier: no trail, no reticle, no sparks, static ring', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+    view.setHoverTarget('front:0:0');
+
+    const targeting = namedGroup(view, 'targeting');
+    const reticle = targeting.children.find((child) => child.name === 'targeting-reticle')!;
+    view.update(60);
+    expect(reticle.visible).toBe(false);
+
+    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
+    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
   });
 });
 

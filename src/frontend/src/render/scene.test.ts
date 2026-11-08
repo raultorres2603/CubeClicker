@@ -16,7 +16,12 @@ import {
 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
-import { BURST_ORIGIN_OFFSET, EXPLOSION_PARTICLE_COUNT, type Burst } from '../game/effects';
+import {
+  BURST_ORIGIN_OFFSET,
+  EXPLOSION_PARTICLE_COUNT,
+  SHOT_TRAVEL_MS,
+  type Burst,
+} from '../game/effects';
 import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
 import { CUBE_STYLES } from '../game/progression';
 import {
@@ -1389,7 +1394,7 @@ describe('snapshot application', () => {
 });
 
 describe('intent application', () => {
-  it('pops the exploding tile and fronts its burst at the clicked surface (AC-3, AC-4)', () => {
+  it('conceals the exploding tile on the same frame and fronts its burst (AC-36)', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
     const mesh = faceMesh(view, 'front');
@@ -1401,30 +1406,21 @@ describe('intent application', () => {
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
 
-    // Under reduced motion the explosion applies instantly: hidden + burst, no pop.
+    // Reduced motion applies the explosion instantly: conceal + ring, no spark burst.
     expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
     expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
 
     view.update(50);
     expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
-
-    // t = 160: the hidden end state, position preserved.
-    view.update(110);
-    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
     expect(new Vector3().setFromMatrixPosition(instanceMatrix(mesh, 0)).toArray()).toEqual([
       ...FRONT_FIRST_TILE,
     ]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
 
     // Every other tile is untouched (its idle extent is the inset 0.95 of the cell).
     expect(instanceScale(mesh, 1)[0]).toBe(Math.fround(0.95));
-
-    // The burst plays in front of the tile: origin (−2, 2, 2.625) + 0.5 · (0, 0, 1).
-    const positions = particlePositions(view);
-    expect(particlePoints(view).geometry.drawRange.count).toBe(3);
-    expect([positions[0], positions[1], positions[2]]).toEqual([-2, 2, 3.125]);
-    expect([positions[3], positions[4], positions[5]]).toEqual([-2, 2, 3.125]);
     expect(BURST_ORIGIN_OFFSET).toBe(0.5);
   });
 
@@ -1441,20 +1437,23 @@ describe('intent application', () => {
         levelIndex: 1,
       }),
     );
-    applySnapshot(view, snapshot({ phase: 'playing', style: NEXT_STYLE, levelIndex: 1, reducedMotion: true }));
+    applySnapshot(view, snapshot({ phase: 'playing', style: NEXT_STYLE, levelIndex: 1 }));
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    view.update(180);
 
-    // The tile's origin is offset by the new cube's world position (24, 0, 0).
+    // The tile's origin is offset by the new cube's world position (24, 0, 0), and the
+    // spark burst plays 0.5 in front of the surface.
     const positions = particlePositions(view);
     expect([positions[0], positions[1], positions[2]]).toEqual([22, 2, 3.125]);
   });
 
   it('follows the cube rotation when placing an explosion origin and normal', () => {
     const view = createView();
-    applySnapshot(view, snapshot({ orientation: { yawSteps: 1, pitchSteps: 0 }, reducedMotion: true }));
+    applySnapshot(view, snapshot({ orientation: { yawSteps: 1, pitchSteps: 0 } }));
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    view.update(180);
 
     // +1 yaw is +90° about +Y: the tile at (−2, 2, 2.625) lands at (2.625, 2, 2) and the
     // front normal turns into +X; the quarter-turn trig residue is snapped away.
@@ -1464,13 +1463,14 @@ describe('intent application', () => {
 
   it('falls back to the cube centre when the exploding face is already gone', () => {
     const view = createView();
-    applySnapshot(view, snapshot({ reducedMotion: true }));
+    applySnapshot(view, snapshot());
 
     applyIntents(view, [{ kind: 'faceCleared', faceId: 'back' }]);
     view.update(400);
     expect(faceMeshes(view)).toHaveLength(5);
 
     applyIntents(view, [explosionIntent('back:0:0', 'back', 2)]);
+    view.update(180);
 
     // No instance left to read an origin (or a normal) from: the burst plays at the centre.
     const positions = particlePositions(view);
@@ -1478,7 +1478,7 @@ describe('intent application', () => {
     expect([positions[0], positions[1], positions[2]]).toEqual([0, 0, 0]);
   });
 
-  it('hides instantly with no flash under reduced motion', () => {
+  it('conceals instantly with no flash and no spark layer under reduced motion (AC-48)', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
     const mesh = faceMesh(view, 'front');
@@ -1495,23 +1495,26 @@ describe('intent application', () => {
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
-  it('settles a running pop when the snapshot switches to reduced motion (AC-4)', () => {
+  it('conceals in one frame when the deferred explosion fires (AC-36)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     const mesh = faceMesh(view, 'front');
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    // The shot is still travelling: the tile keeps its idle extent until arrival.
+    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.95));
+    expect(view.shots).toHaveLength(1);
+
     view.update(180);
-    view.update(50);
-    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
-
-    applySnapshot(view, snapshot({ reducedMotion: true }));
-
+    // Arrival applies the conceal on that frame — no intermediate pop/fade state.
     expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(3);
 
+    applySnapshot(view, snapshot({ reducedMotion: true }));
     view.update(50);
     expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
   it('removes a cleared face after the pinned 400 ms countdown, with no opacity write (AC-2)', () => {
@@ -1638,9 +1641,11 @@ describe('intent application', () => {
 describe('frame updates and lifecycle', () => {
   it('ages a burst and releases it after its lifetime', () => {
     const view = createView();
-    applySnapshot(view, snapshot({ reducedMotion: true }));
+    applySnapshot(view, snapshot());
 
     applyIntents(view, [explosionIntent('front:0:0', 'front', EXPLOSION_PARTICLE_COUNT)]);
+    // The shot travels first; the burst spawns when the deferred explosion fires.
+    view.update(SHOT_TRAVEL_MS);
     expect(particlePoints(view).geometry.drawRange.count).toBe(24);
 
     view.update(349);
@@ -1652,22 +1657,24 @@ describe('frame updates and lifecycle', () => {
 
   it('returns to the plate-free baseline object counts after 10 explosion cycles (AC-16)', () => {
     const view = createView();
-    applySnapshot(view, snapshot({ reducedMotion: true }));
+    applySnapshot(view, snapshot());
     const baselineChildren = view.scene.children.length;
     const baselineObjects = countObjects(view.scene);
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
-    // The 32 pre-backdrop objects plus the cosmic backdrop's 70
-    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 102 (AC-10, AC-11).
-    expect(baselineObjects).toBe(32 + COSMIC_BACKDROP_OBJECT_COUNT);
-    expect(baselineObjects).toBe(102);
+    // 66 pre-backdrop objects plus the cosmic backdrop's 70
+    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 136 (AC-47/F2: old cursor 8 → 34, impact +5,
+    // targeting +3; the detailed-hero 102 baseline is superseded).
+    expect(baselineObjects).toBe(66 + COSMIC_BACKDROP_OBJECT_COUNT);
+    expect(baselineObjects).toBe(136);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
       const row = cycle % GRID_SIZE;
       const id = miniCubeId('front', row, row);
       applyIntents(view, [explosionIntent(id, 'front', EXPLOSION_PARTICLE_COUNT)]);
+      view.update(SHOT_TRAVEL_MS);
       expect(particlePoints(view).geometry.drawRange.count).toBe(24);
       view.update(350);
       expect(particlePoints(view).geometry.drawRange.count).toBe(0);
@@ -1819,7 +1826,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(cubeGroup(view).position.toArray()).toEqual([0, 0, 0]);
   });
 
-  it('applies remote-cube broadcasts and advances their pops through update', () => {
+  it('conceals remote-cube broadcasts on the same frame (AC-36)', () => {
     const view = createView();
     view.enterWorld(
       serverWorld({ roster: [member('p2', 'Player 2', 0, 24)] }),
@@ -1834,11 +1841,8 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
       id: 'front:0:0',
     });
     expect(remote.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(instanceScale(front, 0)).toEqual([
-      Math.fround(0.95),
-      Math.fround(0.95),
-      0.25,
-    ]);
+    // Remote cubes conceal identically: zero scale in the same frame, no pop.
+    expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
 
     view.update(160);
     expect(instanceScale(front, 0)).toEqual([0, 0, 0]);

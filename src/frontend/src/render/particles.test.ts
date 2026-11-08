@@ -244,6 +244,51 @@ describe('spawn', () => {
   });
 });
 
+describe('setSparkLimit (adaptive quality)', () => {
+  it('defaults to the pool cap', () => {
+    const system = createParticleSystem(noJitter);
+    expect(system.getSparkLimit()).toBe(PARTICLE_POOL_CAP);
+    expect(system.getSparkLimit()).toBe(72);
+  });
+
+  it('caps each spawn at the medium 12-point budget', () => {
+    const source = countingRandom(noJitter);
+    const system = createParticleSystem(source.random);
+    system.setSparkLimit(12);
+
+    system.spawn(makeBurst(24, 350), new Vector3(1, 0, 0), 0);
+
+    expect(system.activeCount()).toBe(12);
+    expect(pointsOf(system).geometry.drawRange).toEqual({ start: 0, count: 12 });
+    expect(source.calls()).toBe(12 * 3);
+  });
+
+  it('suppresses the spark layer at 0 with no burst record or random draw', () => {
+    const source = countingRandom(noJitter);
+    const system = createParticleSystem(source.random);
+    system.setSparkLimit(0);
+
+    system.spawn(makeBurst(24, 350), new Vector3(1, 0, 0), 0);
+
+    expect(system.activeCount()).toBe(0);
+    expect(pointsOf(system).geometry.drawRange).toEqual({ start: 0, count: 0 });
+    expect(source.calls()).toBe(0);
+  });
+
+  it('clamps the limit into [0, cap] and floors fractional values', () => {
+    const system = createParticleSystem(noJitter);
+
+    system.setSparkLimit(-4);
+    expect(system.getSparkLimit()).toBe(0);
+    system.setSparkLimit(2.9);
+    expect(system.getSparkLimit()).toBe(2);
+    system.setSparkLimit(1000);
+    expect(system.getSparkLimit()).toBe(72);
+    system.setSparkLimit(Number.NaN);
+    expect(system.getSparkLimit()).toBe(72);
+  });
+});
+
 describe('recycling at the cap', () => {
   it('recycles the oldest burst when a 4th 24-particle burst is spawned', () => {
     const system = createParticleSystem(noJitter);

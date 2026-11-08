@@ -20,14 +20,12 @@
  * the single home for the cube-view geometry numbers (the plan's non-grid effect constants
  * live in `game/effects.ts` and are imported, never redefined).
  *
- * Pop-then-shrink removal (spec AC-4). `hideMiniCube` marks the id hidden (unpickable)
- * immediately and, unless the caller asks for `instant` (reduced motion), starts one plain
- * record `{ faceId, index, elapsedMs }`. Each `update(dtMs)` rewrites that instance's matrix
- * — the face basis scaled by `tileScale * popScaleAt(elapsed)`, position preserved — and its
- * `instanceColor` slot (the brightness multiplier `popColorMultiplierAt(elapsed)` on all
- * three channels), then drops the record once the timeline ended. Every face carries one
- * static `instanceColor` buffer initialised to `(1, 1, 1)`, so idle tiles render exactly as
- * before and the pop needs no new three.js object (AC-16's drawable ceilings hold).
+ * Instant conceal (AC-36). `hideMiniCube` marks the id hidden (unpickable) and zero-scales
+ * its instance matrix on the same frame, with no pop record and no per-frame write; a
+ * clicked mini-cube disappears in one frame and the visible shatter is carried by the
+ * impact effects. Every face keeps one static `instanceColor` buffer initialised to
+ * `(1, 1, 1)`, so idle tiles render exactly as before and the conceal needs no new
+ * three.js object (AC-16's drawable ceilings hold).
  */
 
 import {
@@ -44,11 +42,6 @@ import {
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
-import {
-  MINI_CUBE_POP_MS,
-  popColorMultiplierAt,
-  popScaleAt,
-} from '../game/effects';
 import { FACE_IDS, GRID_SIZE, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
 
 /** Cube body edge length in world units; the body is centred on the group origin. */
@@ -93,26 +86,27 @@ export interface CubeView {
   /** One `InstancedMesh` (`gridSize²` instances) per live face, in `FACE_IDS` order. */
   readonly faces: ReadonlyMap<FaceId, InstancedMesh>;
   /**
-   * Marks one mini-cube hidden (unpickable) and starts its pop animation.
-   *
-   * `instant` (reduced motion) zero-scales the matrix at once, with no record and no colour
-   * write. Idempotent: an id already animating or hidden is never restarted, and a face
-   * whose meshes are gone only records the id (no matrix write).
+   * Marks one mini-cube hidden (unpickable) and zero-scales its instance matrix on the
+   * same frame (AC-36: `MINI_CUBE_POP_MS === 0`). The optional `instant` flag is retained
+   * for call-site compatibility (reduced motion / roster snapshots) and is equivalent:
+   * every conceal is instant, with no record and no colour write. Idempotent: an id
+   * already hidden is never restarted, and a face whose meshes are gone only records the
+   * id (no matrix write).
    */
   hideMiniCube(id: MiniCubeId, instant?: boolean): void;
   /** Whether {@link CubeView.hideMiniCube} already hid that id (used by picking). */
   isMiniCubeHidden(id: MiniCubeId): boolean;
   /**
-   * Advances every running pop by `dtMs` (negative advances age nothing): rewrites the
-   * instance matrix and its `instanceColor` slot, and removes the settled records.
+   * Kept for the scene's per-frame call: the conceal is instantaneous, so there is no pop
+   * timeline to advance. The method is a no-op (no matrix writes, no allocations).
    */
   update(dtMs: number): void;
-  /** Instantly zero-scales every running pop and clears the records (live reduced-motion switch). */
+  /** No-op compatibility shim: there are no running pop records to settle (AC-36). */
   settlePops(): void;
   /**
-   * Removes one face (spec AC-2): the face's running pops are cancelled, its `InstancedMesh`
-   * leaves the group, and its geometry and material are disposed exactly once. There is no
-   * plate and no opacity write anywhere on the cube.
+   * Removes one face (spec AC-2): its `InstancedMesh` leaves the group, and its geometry
+   * and material are disposed exactly once. There is no plate and no opacity write anywhere
+   * on the cube.
    */
   removeFace(faceId: FaceId): void;
   /** Re-colours the body and the live faces' tile materials in place; nothing is rebuilt. */
@@ -172,13 +166,6 @@ interface FaceRecord {
   readonly positions: Vector3[];
   readonly mesh: InstancedMesh;
   readonly tileMaterial: MeshPhysicalMaterial;
-}
-
-/** One running pop: which instance of which face, and how far along the timeline it is. */
-interface PopRecord {
-  readonly faceId: FaceId;
-  readonly index: number;
-  elapsedMs: number;
 }
 
 /** `row * gridSize + col`, rejecting anything off the grid with a concrete message. */
@@ -256,7 +243,6 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
   const hiddenIndices = new Map<FaceId, Set<number>>();
   const removedFaces = new Set<FaceId>();
   const disposedResources = new Set<BufferGeometry | Material>();
-  const pops: PopRecord[] = [];
   const scratch = new Matrix4();
   const popScale = new Vector3();
   let disposed = false;
@@ -332,18 +318,13 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     record.mesh.instanceMatrix.needsUpdate = true;
   }
 
-  /** Writes the instance's brightness multiplier on all three channels. */
-  function writePopColor(record: FaceRecord, index: number, multiplier: number): void {
-    const instanceColor = record.mesh.instanceColor!;
-    instanceColor.setXYZ(index, multiplier, multiplier, multiplier);
-    instanceColor.needsUpdate = true;
-  }
-
   function hideMiniCube(id: MiniCubeId, instant = false): void {
+    // `instant` is the retained reduced-motion/roster flag; every conceal is instant now.
+    void instant;
     const { faceId, index } = parseMiniCubeId(id, gridSize);
     const hidden = hiddenIndices.get(faceId)!;
     if (hidden.has(index)) {
-      // Already hidden or animating: a repeated intent never restarts the pop.
+      // Already hidden: a repeated intent never writes again.
       return;
     }
     hidden.add(index);
@@ -352,13 +333,9 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       // The face's mesh is already detached; the id is only recorded as hidden.
       return;
     }
-    if (instant) {
-      // Reduced motion: the predecessor's instantaneous hidden end state, no flash.
-      writePopMatrix(record, index, 0);
-      return;
-    }
-    // The pop starts at factor 1 (the tile's own size), so the matrix needs no write now.
-    pops.push({ faceId, index, elapsedMs: 0 });
+    // AC-36: one-frame conceal — zero-scale the instance now, with no pop record and no
+    // colour write. The visible shatter is carried by the impact effects.
+    writePopMatrix(record, index, 0);
   }
 
   function isMiniCubeHidden(id: MiniCubeId): boolean {
@@ -367,30 +344,12 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
   }
 
   function update(dtMs: number): void {
-    if (pops.length === 0) {
-      return;
-    }
-    const advanceMs = Math.max(0, dtMs);
-    for (let popIndex = pops.length - 1; popIndex >= 0; popIndex -= 1) {
-      const pop = pops[popIndex]!;
-      pop.elapsedMs += advanceMs;
-      const record = records.get(pop.faceId)!;
-      writePopMatrix(record, pop.index, popScaleAt(pop.elapsedMs));
-      writePopColor(record, pop.index, popColorMultiplierAt(pop.elapsedMs));
-      if (pop.elapsedMs >= MINI_CUBE_POP_MS) {
-        pops.splice(popIndex, 1);
-      }
-    }
+    // Instant conceal: there is no pop timeline to advance (AC-36).
+    void dtMs;
   }
 
   function settlePops(): void {
-    for (const pop of pops) {
-      const record = records.get(pop.faceId)!;
-      // The timeline's exact end state: zero scale, colour back to the idle multiplier.
-      writePopMatrix(record, pop.index, 0);
-      writePopColor(record, pop.index, 1);
-    }
-    pops.length = 0;
+    // No running pop records exist after an instant conceal (AC-36 compatibility shim).
   }
 
   function removeFace(faceId: FaceId): void {
@@ -398,12 +357,6 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       return;
     }
     removedFaces.add(faceId);
-    // The face is leaving: its running pops can never be written again.
-    for (let popIndex = pops.length - 1; popIndex >= 0; popIndex -= 1) {
-      if (pops[popIndex]!.faceId === faceId) {
-        pops.splice(popIndex, 1);
-      }
-    }
     const record = records.get(faceId)!;
     // The mesh leaves the group and its resources are released exactly once. There is no
     // plate and no opacity write: the body behind the removed tiles is the dark interior.
@@ -433,7 +386,6 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
       return;
     }
     disposed = true;
-    pops.length = 0;
     disposeResource(body.geometry);
     disposeResource(bodyMaterial);
     for (const record of records.values()) {

@@ -311,16 +311,20 @@ describe('applyRoster', () => {
 });
 
 describe('applyMessage', () => {
-  it('hides the exact tile, starts its pop and spawns the burst at the tile origin', () => {
+  it('conceals the exact tile on the same frame and spawns the burst at the tile origin', () => {
     const world = createWorld();
     const p2 = member('p2', SLOT_2, { gridSize: 5, styleId: OBSIDIAN.id });
     world.applyRoster([p2]);
     const view = world.views().get('p2')!;
+    const front = view.faces.get('front')!;
 
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:1:2' });
 
     expect(view.isMiniCubeHidden('front:1:2')).toBe(true);
     expect(view.isMiniCubeHidden('front:1:3')).toBe(false);
+    // AC-36: remote cubes conceal identically — zero scale on the same frame, no pop.
+    expect(instanceScale(front, 7)).toEqual([0, 0, 0]);
+    expect(instanceScale(front, 8)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
     expect(world.particles.activeCount()).toBe(24);
     // `random = 0.5` gives zero jitter and the zero-length fallback direction, so every
     // fragment starts exactly on the burst origin: the `front:1:2` tile centre plus the
@@ -332,19 +336,14 @@ describe('applyMessage', () => {
       3.125,
     ]);
 
-    // Repeated/foreign broadcasts never restart the pop or spawn another burst.
+    // Repeated/foreign broadcasts never restart the conceal or spawn another burst.
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:1:2' });
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p9', id: 'front:0:0' });
     expect(world.particles.activeCount()).toBe(24);
 
     world.update(160);
-    expect(instanceScale(view.faces.get('front')!, 7)).toEqual([0, 0, 0]);
-    expect(instanceScale(view.faces.get('front')!, 8)).toEqual([
-      Math.fround(0.95),
-      Math.fround(0.95),
-      0.25,
-    ]);
+    expect(instanceScale(front, 7)).toEqual([0, 0, 0]);
     expect(world.particles.activeCount()).toBe(24);
 
     world.update(190);
