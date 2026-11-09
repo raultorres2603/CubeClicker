@@ -1,21 +1,24 @@
 # Build log — T14 — Verify & integrate
 
-Task: T14 (2026-11-09; re-run 2026-11-09 after T15 fix `0bfc524`)
+Task: T14 (2026-11-09; final re-run after T15 `0bfc524` and T16 `ba77801`)
 Feature: `spaceship-cursor-loot-animations` (spec r4, plan r4, tasks r4)
 Files changed:
 - `docs/features/spaceship-cursor-loot-animations/build-log-T14.md` (this file)
-- `docs/features/spaceship-cursor-loot-animations/evidence/t14-*.png` (57 screenshots; 43 MB)
+- `docs/features/spaceship-cursor-loot-animations/evidence/t14-*.png` (96 screenshots; 75 MB)
 
-What changed & why: T14 is verification-only. No source, test, CSS, config, container, backend or dependency edit was made. This log records the full gate, the final manual matrix, reduced-motion A/B, high/medium/low frame traces with forced recovery, the reference gate, documentation/container evidence, and the AC-41 reveal-layout verification. The first run found the reveal card clipped (blocking); T15 `0bfc524` fixed it, and this re-run records the before/after values and the final green gate.
+What changed & why: T14 is verification-only. No source, test, CSS, config, container, backend or dependency edit was made. This log records the full gate, the final manual matrix, reduced-motion A/B, high/medium/low frame traces with forced recovery, the reference gate, documentation/container evidence, and the AC-41 reveal-layout verification. The first run found the reveal card clipped (blocking); T15 `0bfc524` fixed it. The first run's AC-40 fly-by frame was harness-driven; T16 `ba77801` wired the fly-by to the production level-completion signal, and this final re-run records the production roll/trail/return measurements and the final green gate.
 
 ## BASE and HEAD
 
 ```text
-$ git rev-parse HEAD                     # this evidence commit
-8d4c6334c8e4a0201d334072f7258ecb3bd42ec7
+$ git rev-parse HEAD                     # verified tree: T16 fix
+ba77801216aeedd9903d6e7f5222d1b7d9780b36
 
-$ git rev-parse 0bfc524                  # T15 fix: the tree the gates ran against
+$ git rev-parse 0bfc524                  # T15 fix: reveal layout
 0bfc524beab8f6eb618958a93c9cd19b23778f56
+
+$ git rev-parse 8d4c633                  # prior T14 evidence commit
+8d4c6334c8e4a0201d334072f7258ecb3bd42ec7
 
 $ git rev-parse 2c2efcb^                 # pre-feature fork point, parent of T1 commit 2c2efcb
 f07d06717b174dc189838d62990a52c925763772
@@ -25,10 +28,9 @@ $ git log --oneline -1 2c2efcb
 ```
 
 - Feature `BASE = f07d06717b174dc189838d62990a52c925763772` (`features & specs`, parent of T1 `2c2efcb`); the container/diff gates compare against it.
-- Verification `BASE = 0bfc524beab8f6eb618958a93c9cd19b23778f56` (`fix: keep lootbox reveal fully visible`): the T15 fix this re-run measured. Every gate command recorded below ran on this tree.
-- `HEAD = 8d4c6334c8e4a0201d334072f7258ecb3bd42ec7` (`docs: record T14 verification evidence (post-T15 fix)`): the commit that records this re-run.
-- The first T14 run ran on `512c01b55b13b2c8dcd54b8da37cf940bfae9f6c` (before T15).
-- Fixes recorded since the first run: **T15 `0bfc524`** fixed AC-41 (reveal layout); **T16** (`fix: trigger ship fly-by on level completion`) wired the AC-40 cursor-ship fly-by to the production level-completion signal and added the `scene-spaceship.test.ts` integration proof, so the AC-40 fly-by claim below is now reproducible through the shipped app (`build-log-T16.md`).
+- Verification tree `HEAD = ba77801216aeedd9903d6e7f5222d1b7d9780b36` (`fix: trigger ship fly-by on level completion`): every gate command recorded below ran on this tree. This docs-only T14 evidence commit follows the verified tree; it changes no source.
+- `T15 = 0bfc524beab8f6eb618958a93c9cd19b23778f56` fixed AC-41 (reveal layout); `T16 = ba77801216aeedd9903d6e7f5222d1b7d9780b36` fixed AC-40 by starting the fly-by on the production `levelIndex` rise (see `build-log-T16.md`).
+- The first T14 run ran on `512c01b55b13b2c8dcd54b8da37cf940bfae9f6c` (before T15/T16); its reveal clipping is retained as historical before/after evidence.
 - Branch: `main`. The working tree contains pre-existing orchestrator/planner modifications to `spec.md`, `plan.md`, `tasks.md`, `status.md`, `video-analysis.md` and the untracked `reviews/` directory; they are not staged and are not part of this commit.
 
 Environment: Node v24.22.0 / npm 11.19.1; Podman 5.8.9 with docker-compose 5.6.0; `podman compose up -d` stack (frontend `localhost:5173`, backend `localhost:8080`, Postgres, Mailpit, Adminer); headless Google Chrome 157.0.8103.38 over CDP with hardware ANGLE (`ANGLE (NVIDIA, Vulkan 1.4.351, NVIDIA GeForce RTX 5070 Laptop GPU)`). The browser harness lives in `/tmp/opencode/t14/` and injects a **test-only** `window.__t14Scene` reference by patching the dev-server `src/render/scene.ts` response (it inserts `window.__t14Scene = view;` before `return view;`). No repository file was changed by the harness.
@@ -39,9 +41,9 @@ Environment: Node v24.22.0 / npm 11.19.1; Podman 5.8.9 with docker-compose 5.6.0
 | --- | --- | --- |
 | `npm run lint` | **PASS** exit 0 | raw log below |
 | `npm run typecheck` | **PASS** exit 0 (both workspaces) | raw log below |
-| `npm test` | **PASS** backend 868 / frontend 1697 tests | raw log below |
-| `npm run coverage` | **PASS** backend 95.43/87.71/99.7/95.43; frontend 96.28/95.26/97.42/96.28 | raw log below |
-| `npm run build` | **PASS** exit 0; initial JS **273.16 KB gzip** (≤ 350); CSS 5.24 KB gzip | raw log below |
+| `npm test` | **PASS** backend 868 / frontend 1,700 tests | raw log below |
+| `npm run coverage` | **PASS** backend 95.43/87.71/99.7/95.43; frontend 96.34/95.3/97.43/96.34 | raw log below |
+| `npm run build` | **PASS** exit 0; initial JS **273.23 KB gzip** (≤ 350); CSS 5.24 KB gzip | raw log below |
 | `npm run smoke` | **PASS 12/12** container checks | raw log below |
 | Container diff gate | **PASS** empty | compose/Dockerfiles/server/manifests/lockfile unchanged vs `BASE` |
 | Protected paths | **PASS** no working-tree change | `git status` guarded paths empty |
@@ -50,10 +52,11 @@ Environment: Node v24.22.0 / npm 11.19.1; Podman 5.8.9 with docker-compose 5.6.0
 | Forced recovery | **PASS** low→medium→high at both sizes | recovery tables below |
 | Reference gate AC-46 | **PASS** 40 frames + 3 contact sheets + observed/extrapolated mapping | reference table below |
 | **Manual reveal layout (AC-41)** | **PASS after T15 `0bfc524`** (was FAIL in the first run) | before/after values below |
+| **Production AC-40 fly-by** | **PASS after T16 `ba77801`** | one 700 ms roll, 16-point trail at high, return to follow, no reduced roll — production evidence below |
 
 ## AC-41 before/after — fixed by T15 `0bfc524`
 
-The first T14 run (at `512c01b`) found the reveal card **visually clipped** and reported AC-41 blocked. T15 commit `0bfc524` (`fix: keep lootbox reveal fully visible`) changed the T12-owned CSS: `.lootbox-reveal` now has `flex: 0 0 auto`, `min-height: 18rem`, `overflow: visible`; `.lootbox-orb` and `.lootbox-reveal-card` are `flex: none`/`flex: 0 0 auto` with a 5rem minimum orb; `SpaceshipCustomizationPanel.test.tsx` gained layout regression tests (`game-view.css.test.ts` too), and the full frontend suite is now 1,697 tests.
+The first T14 run (at `512c01b`) found the reveal card **visually clipped** and reported AC-41 blocked. T15 commit `0bfc524` (`fix: keep lootbox reveal fully visible`) changed the T12-owned CSS: `.lootbox-reveal` now has `flex: 0 0 auto`, `min-height: 18rem`, `overflow: visible`; `.lootbox-orb` and `.lootbox-reveal-card` are `flex: none`/`flex: 0 0 auto` with a 5rem minimum orb; `SpaceshipCustomizationPanel.test.tsx` gained layout regression tests (`game-view.css.test.ts` too), and the full frontend suite is now 1,700 tests.
 
 **Before (`512c01b`, first T14 run):**
 
@@ -92,10 +95,11 @@ AC-41 is **MET** after T15. The reveal timing is unchanged (1290 ms pinned; meas
 
 ## What was verified
 
-- Full lint/typecheck/test/coverage/build/smoke gate re-run after T15; both workspaces green; coverage ≥80 on all four metrics; bundle 273.16 KB gzip (CSS 5.24 KB gzip).
+- Full lint/typecheck/test/coverage/build/smoke gate re-run after T15/T16; both workspaces green; coverage ≥80 on all four metrics; bundle 273.23 KB gzip (CSS 5.24 KB gzip).
 - Container assets untouched (compose, smoke override, both Dockerfiles, `src/backend/src/server.ts`, root/workspace manifests and lockfile; diff empty vs `BASE`; protected working-tree status empty).
 - Feature imports: no `GLTFLoader`/`FileLoader`/`TextureLoader`/`fetch(`/`http(s)://` in production `src/frontend/src/render/**` or `src/frontend/src/game/**`; all `three` imports are named (no wildcard/default).
-- Manual matrix at 1280×720, 1920×1080, 2560×1280 and 2560×1080: base game view, target lock/reticle; effect timeline at 1280/1920 (conceal, shot, impact, ring, coin popup, post); level burst/banner/ship-roll frames at 1280; panel/preview/reveal/equip at 1280/1920; reduced-motion A/B.
+- Manual matrix at 1280×720, 1920×1080, 2560×1280 and 2560×1080: base game view, target lock/reticle; effect timeline at 1280/1920 (conceal, shot, impact, ring, coin popup, post); level burst/banner frames at 1280; production fly-by frames at 1280/1920; panel/preview/reveal/equip at 1280/1920; reduced-motion A/B.
+- Production AC-40 fly-by (T16): real level completion through the shipped app (no `triggerFlyBy` call), measured one production roll interval, max |rotation.z| = 2π, max trail = 16 at high, return to follow (`rotation.z = 0`, normal trail 8); reduced-motion completion: max |rotation.z| = 0, trail 0, no roll interval. Quality tier was forced high only for the 16-point trail detail, never for the fly-by trigger.
 - High-tier frame traces: 10 s idle and 10 clicks/s at both sizes, three clean runs each; all six high-tier runs pass (avg 16.666 ms, p95 16.7–16.8 ms, tier start/end high).
 - Medium and low traces: forced via the real scene test hook (`setQualityTierForTesting`) plus an injected 19 ms / 21 ms frame-time stream; three runs each at both sizes/workloads; tier start/end stable; lower cursor detail sets.
 - Forced recovery at both sizes: forced high→low, then a 10 ms frame stream; the real policy recovers low→medium at ~289–290 frames and medium→high at ~589–590 frames (≈4.82 s / 9.82 s wall), final tier high.
@@ -106,7 +110,7 @@ AC-41 is **MET** after T15. The reveal timing is unchanged (1290 ms pinned; meas
 - Migration evidence: T2's pre-006 `pg_dump` / restore / re-apply outputs are re-cited below (dump sha256, restore, idempotent re-run).
 
 
-## Raw verification commands (current tree, after T15 `0bfc524`)
+## Raw verification commands (verified tree `ba77801`, after T15/T16)
 
 ### `npm run lint`
 
@@ -150,36 +154,36 @@ TYPECHECK_EXIT=0
 
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/backend
 
- ✓ src/game/config.test.ts (13 tests) 5ms
- ✓ src/db/pool.test.ts (10 tests) 5ms
- ✓ src/auth/session-repository.test.ts (35 tests) 10ms
- ✓ src/auth/user-repository.test.ts (40 tests) 11ms
- ✓ src/game/upgrades.test.ts (20 tests) 7ms
- ✓ src/game/parts.test.ts (19 tests) 8ms
- ✓ src/game/cubes.test.ts (24 tests) 11ms
- ✓ src/db/migrate.test.ts (11 tests) 11ms
- ✓ src/game/economy.test.ts (20 tests) 9ms
+ ✓ src/auth/rate-limit.test.ts (16 tests) 5ms
+ ✓ src/game/upgrades.test.ts (20 tests) 9ms
+ ✓ src/auth/config.test.ts (25 tests) 10ms
+ ✓ src/game/config.test.ts (13 tests) 9ms
+ ✓ src/auth/session-repository.test.ts (35 tests) 18ms
+ ✓ src/db/migrate.test.ts (11 tests) 14ms
+ ✓ src/auth/user-repository.test.ts (40 tests) 21ms
+ ✓ src/game/economy.test.ts (20 tests) 8ms
+ ✓ src/game/cubes.test.ts (24 tests) 12ms
+ ✓ src/auth/verification-token-repository.test.ts (44 tests) 23ms
+ ✓ src/game/parts-v2.test.ts (40 tests) 20ms
+ ✓ src/game/parts.test.ts (19 tests) 6ms
+ ✓ src/db/pool.test.ts (10 tests) 8ms
+ ✓ src/auth/email.test.ts (12 tests) 8ms
  ✓ src/game/servers.test.ts (38 tests) 15ms
- ✓ src/auth/config.test.ts (25 tests) 14ms
- ✓ src/auth/rate-limit.test.ts (16 tests) 7ms
- ✓ src/game/players.test.ts (13 tests) 15ms
- ✓ src/auth/verification-token-repository.test.ts (44 tests) 21ms
- ✓ src/auth/email.test.ts (12 tests) 9ms
- ✓ src/game/parts-v2.test.ts (40 tests) 17ms
- ✓ src/game/protocol.test.ts (166 tests) 19ms
- ✓ src/game/hub.test.ts (93 tests) 117ms
- ✓ src/auth/password.test.ts (17 tests) 498ms
- ✓ src/auth/auth-routes.test.ts (25 tests) 777ms
- ✓ src/auth/auth-service.test.ts (50 tests) 1095ms
- ✓ src/app.test.ts (22 tests) 1776ms
-   ✓ GET /ws > packs three servers after each completion over live sockets (X = 2, AC-10, F3)  1032ms
- ✓ src/auth/economy-repository.test.ts (102 tests) 2116ms
- ✓ src/db/migration-006.test.ts (13 tests) 2181ms
+ ✓ src/game/players.test.ts (13 tests) 14ms
+ ✓ src/game/hub.test.ts (93 tests) 88ms
+ ✓ src/game/protocol.test.ts (166 tests) 20ms
+ ✓ src/auth/password.test.ts (17 tests) 278ms
+ ✓ src/auth/auth-routes.test.ts (25 tests) 651ms
+ ✓ src/auth/auth-service.test.ts (50 tests) 891ms
+ ✓ src/app.test.ts (22 tests) 1761ms
+   ✓ GET /ws > packs three servers after each completion over live sockets (X = 2, AC-10, F3)  1023ms
+ ✓ src/db/migration-006.test.ts (13 tests) 2496ms
+ ✓ src/auth/economy-repository.test.ts (102 tests) 2438ms
 
  Test Files  24 passed (24)
       Tests  868 passed (868)
-   Start at  18:47:25
-   Duration  2.82s (transform 2.01s, setup 0ms, collect 5.79s, tests 8.75s, environment 4ms, prepare 2.25s)
+   Start at  19:05:39
+   Duration  3.11s (transform 1.91s, setup 0ms, collect 5.47s, tests 8.82s, environment 4ms, prepare 1.95s)
 
 
 > test
@@ -188,58 +192,60 @@ TYPECHECK_EXIT=0
 
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
 
- ✓ src/ui/app.css.test.ts (87 tests) 14ms
- ✓ src/multiplayer/server-state.test.ts (46 tests) 11ms
+ ✓ src/ui/app.css.test.ts (87 tests) 26ms
+ ✓ src/game/progression.test.ts (21 tests) 11ms
+ ✓ src/ui/game-view.css.test.ts (42 tests) 16ms
  ✓ src/ws/connection.test.ts (10 tests) 16ms
- ✓ src/multiplayer/protocol.test.ts (236 tests) 17ms
- ✓ src/render/quality.test.ts (23 tests) 39ms
- ✓ src/browser-env.test.ts (6 tests) 7ms
- ✓ src/multiplayer/transport.test.ts (14 tests) 13ms
- ✓ src/ui/game-view.css.test.ts (42 tests) 20ms
- ✓ src/auth/store.test.ts (31 tests) 18ms
- ✓ src/render/background-life.test.ts (14 tests) 10ms
- ✓ src/render/spaceship-model.test.ts (33 tests) 100ms
- ✓ src/ui/icons.test.tsx (16 tests) 29ms
- ✓ src/render/particles.test.ts (24 tests) 31ms
- ✓ src/render/preview.test.ts (7 tests) 34ms
- ✓ src/ui/UserPanel.test.tsx (8 tests) 22ms
- ✓ src/render/impact-effects.test.ts (15 tests) 39ms
- ✓ src/render/targeting.test.ts (11 tests) 65ms
- ✓ src/render/picking.test.ts (16 tests) 95ms
- ✓ src/render/starfield.test.ts (28 tests) 125ms
- ✓ src/render/cursor-ship.test.ts (34 tests) 138ms
- ✓ src/render/cube-view.test.ts (32 tests) 140ms
- ✓ src/input/gestures.test.ts (27 tests) 49ms
- ✓ src/game/board.test.ts (18 tests) 21ms
- ✓ src/render/spaceship.test.ts (31 tests) 81ms
- ✓ src/game/engine.test.ts (113 tests) 107ms
- ✓ src/render/cosmic-backdrop.test.ts (14 tests) 195ms
- ✓ src/render/world.test.ts (27 tests) 170ms
- ✓ src/game/effects.test.ts (25 tests) 11ms
- ✓ src/render/webgl.test.ts (17 tests) 13ms
- ✓ src/game/parts-v2.test.ts (50 tests) 19ms
- ✓ src/game/rotation.test.ts (15 tests) 9ms
- ✓ src/render/postprocessing.test.ts (10 tests) 12ms
- ✓ src/game/progression.test.ts (21 tests) 17ms
- ✓ src/input/keyboard.test.ts (13 tests) 10ms
- ✓ src/ui/GameCanvas.test.tsx (2 tests) 11ms
- ✓ src/ui/theme.test.ts (11 tests) 15ms
- ✓ src/multiplayer/spectate.test.ts (23 tests) 12ms
- ✓ src/auth/api.test.ts (28 tests) 22ms
- ✓ src/ui/VerificationPending.test.tsx (2 tests) 15ms
- ✓ src/render/spectate-travel.test.ts (7 tests) 9ms
- ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 14ms
- ✓ src/game/parts.test.ts (23 tests) 17ms
- ✓ src/docs/links.test.ts (1 test) 4ms
- ✓ src/render/nebula.test.ts (11 tests) 467ms
-   ✓ createNebulaTexture (AC-9) > produces identical bytes for the same random sequence  392ms
+ ✓ src/game/effects.test.ts (25 tests) 9ms
+ ✓ src/game/parts.test.ts (23 tests) 7ms
+ ✓ src/render/quality.test.ts (23 tests) 57ms
+ ✓ src/multiplayer/protocol.test.ts (236 tests) 33ms
+ ✓ src/game/board.test.ts (18 tests) 15ms
+ ✓ src/auth/store.test.ts (31 tests) 17ms
+ ✓ src/render/particles.test.ts (24 tests) 23ms
+ ✓ src/render/spaceship-model.test.ts (33 tests) 107ms
+ ✓ src/render/impact-effects.test.ts (15 tests) 29ms
+ ✓ src/render/preview.test.ts (7 tests) 32ms
+ ✓ src/ui/icons.test.tsx (16 tests) 24ms
+ ✓ src/ui/UserPanel.test.tsx (8 tests) 21ms
+ ✓ src/render/picking.test.ts (16 tests) 92ms
+ ✓ src/render/starfield.test.ts (28 tests) 120ms
+ ✓ src/render/targeting.test.ts (11 tests) 59ms
+ ✓ src/render/cube-view.test.ts (32 tests) 146ms
+ ✓ src/input/gestures.test.ts (27 tests) 50ms
+ ✓ src/render/cursor-ship.test.ts (34 tests) 174ms
+ ✓ src/render/spaceship.test.ts (31 tests) 106ms
+ ✓ src/game/engine.test.ts (113 tests) 105ms
+ ✓ src/render/cosmic-backdrop.test.ts (14 tests) 224ms
+ ✓ src/multiplayer/transport.test.ts (14 tests) 19ms
+ ✓ src/render/world.test.ts (27 tests) 161ms
+ ✓ src/auth/api.test.ts (28 tests) 13ms
+ ✓ src/multiplayer/server-state.test.ts (46 tests) 8ms
+ ✓ src/game/parts-v2.test.ts (50 tests) 26ms
+ ✓ src/game/upgrades.test.ts (20 tests) 8ms
+ ✓ src/render/background-life.test.ts (14 tests) 18ms
+ ✓ src/render/ship-motion.test.ts (24 tests) 6ms
+ ✓ src/docs/links.test.ts (1 test) 3ms
+ ✓ src/ui/VerificationPending.test.tsx (2 tests) 12ms
+ ✓ src/browser-env.test.ts (6 tests) 12ms
+ ✓ src/input/keyboard.test.ts (13 tests) 16ms
+ ✓ src/render/webgl.test.ts (17 tests) 16ms
+ ✓ src/multiplayer/spectate.test.ts (23 tests) 6ms
+ ✓ src/game/motion.test.ts (11 tests) 8ms
+ ✓ src/game/rotation.test.ts (15 tests) 8ms
+ ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 12ms
+ ✓ src/ui/theme.test.ts (11 tests) 12ms
+ ✓ src/render/postprocessing.test.ts (10 tests) 27ms
+ ✓ src/render/nebula.test.ts (11 tests) 520ms
+   ✓ createNebulaTexture (AC-9) > produces identical bytes for the same random sequence  430ms
+ ✓ src/ui/GameCanvas.test.tsx (2 tests) 25ms
+ ✓ src/game/economy.test.ts (7 tests) 11ms
  ✓ src/game/effects-spaceship.test.ts (5 tests) 4ms
- ✓ src/game/motion.test.ts (11 tests) 10ms
- ✓ src/game/upgrades.test.ts (20 tests) 20ms
- ✓ src/render/ship-motion.test.ts (24 tests) 10ms
- ✓ src/game/economy.test.ts (7 tests) 8ms
- ✓ src/game/session-spaceship.test.ts (6 tests) 202ms
- ✓ src/render/scene-spaceship.test.ts (24 tests) 474ms
+ ✓ src/render/spectate-travel.test.ts (7 tests) 9ms
+ ✓ src/game/session-spaceship.test.ts (6 tests) 169ms
+ ✓ src/render/scene-spaceship.test.ts (27 tests) 518ms
+ ✓ src/ui/Hud.test.tsx (20 tests) 141ms
+ ✓ src/ui/LevelCompleteBanner.test.tsx (6 tests) 109ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > renders exactly ten slot rows in SLOT_CATALOG order with the section contract
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -250,12 +256,14 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/render/scene.test.ts (85 tests) 1096ms
+ ✓ src/ui/SpaceshipPreview.test.tsx (12 tests) 61ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > shows the slot display name and the equipped part name for every slot
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/SpaceshipPreview.test.tsx (12 tests) 67ms
+ ✓ src/ui/UpgradesPanel.test.tsx (12 tests) 201ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > marks owned parts and exposes equipped/label states on the equip controls
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -266,6 +274,9 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/ui/AuthMenu.test.tsx (19 tests) 370ms
+ ✓ src/ui/VerifyEmail.test.tsx (22 tests) 251ms
+ ✓ src/ui/CustomizationToggle.test.tsx (6 tests) 155ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > calls onUnequip with the slot id only for an enabled control
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -276,14 +287,12 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/LevelCompleteBanner.test.tsx (6 tests) 110ms
- ✓ src/ui/CustomizationToggle.test.tsx (6 tests) 180ms
+ ✓ src/game/session.test.ts (81 tests) 1142ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel lootbox controls (AC-29) > calls onOpenLootbox once when the enabled control is clicked
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/render/scene.test.ts (85 tests) 1071ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel lootbox controls (AC-29) > keeps the pre-v2 onOpen alias working
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -294,7 +303,6 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/VerifyEmail.test.tsx (22 tests) 262ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > renders the epic/duplicate copy and the wireframe orb with an orange core
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -305,8 +313,6 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/UpgradesPanel.test.tsx (12 tests) 258ms
- ✓ src/ui/Hud.test.tsx (20 tests) 159ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > keeps the reveal, orb and card non-shrinking and fully visible at the reveal phase
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -332,6 +338,11 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+stderr | src/App.test.tsx > App > drives data-customization-open from the customization toggle (AC-7, AC-18)
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
+
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel equip-row flash (AC-43) > sets data-equipping on the equipped slot for exactly 260 ms
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -342,14 +353,8 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/SpaceshipCustomizationPanel.test.tsx (28 tests) 558ms
-stderr | src/App.test.tsx > App > drives data-customization-open from the customization toggle (AC-7, AC-18)
-Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
-Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
-THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
-
- ✓ src/ui/AuthMenu.test.tsx (19 tests) 420ms
- ✓ src/game/session.test.ts (81 tests) 1411ms
+ ✓ src/ui/SpaceshipCustomizationPanel.test.tsx (28 tests) 610ms
+ ✓ src/ui/AuthForms.test.tsx (44 tests) 788ms
 stderr | src/App.test.tsx > App — customization panel integration (AC-29, AC-32, AC-43) > passes pendingLootboxOpen to the panel and disables Open lootbox while pending
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -370,13 +375,12 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/AuthForms.test.tsx (44 tests) 827ms
- ✓ src/App.test.tsx (38 tests) 712ms
+ ✓ src/App.test.tsx (38 tests) 706ms
 
  Test Files  63 passed (63)
-      Tests  1697 passed (1697)
-   Start at  18:47:28
-   Duration  2.94s (transform 6.73s, setup 0ms, collect 19.37s, tests 9.05s, environment 5.35s, prepare 4.82s)
+      Tests  1700 passed (1700)
+   Start at  19:05:43
+   Duration  3.16s (transform 6.69s, setup 0ms, collect 19.70s, tests 8.79s, environment 5.56s, prepare 6.38s)
 
 TEST_EXIT=0
 ```
@@ -396,36 +400,36 @@ TEST_EXIT=0
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/backend
       Coverage enabled with v8
 
- ✓ src/game/config.test.ts (13 tests) 8ms
- ✓ src/game/upgrades.test.ts (20 tests) 13ms
- ✓ src/game/parts.test.ts (19 tests) 13ms
- ✓ src/game/cubes.test.ts (24 tests) 13ms
- ✓ src/auth/rate-limit.test.ts (16 tests) 7ms
- ✓ src/db/migrate.test.ts (11 tests) 12ms
+ ✓ src/db/pool.test.ts (10 tests) 6ms
+ ✓ src/game/config.test.ts (13 tests) 10ms
+ ✓ src/auth/verification-token-repository.test.ts (44 tests) 13ms
  ✓ src/auth/user-repository.test.ts (40 tests) 19ms
- ✓ src/auth/verification-token-repository.test.ts (44 tests) 20ms
- ✓ src/db/pool.test.ts (10 tests) 9ms
- ✓ src/game/economy.test.ts (20 tests) 7ms
- ✓ src/game/parts-v2.test.ts (40 tests) 21ms
- ✓ src/game/servers.test.ts (38 tests) 9ms
- ✓ src/auth/config.test.ts (25 tests) 15ms
- ✓ src/auth/session-repository.test.ts (35 tests) 21ms
- ✓ src/game/players.test.ts (13 tests) 12ms
+ ✓ src/auth/rate-limit.test.ts (16 tests) 7ms
+ ✓ src/game/upgrades.test.ts (20 tests) 11ms
+ ✓ src/game/economy.test.ts (20 tests) 6ms
+ ✓ src/game/parts.test.ts (19 tests) 12ms
+ ✓ src/db/migrate.test.ts (11 tests) 12ms
+ ✓ src/game/cubes.test.ts (24 tests) 14ms
+ ✓ src/auth/config.test.ts (25 tests) 13ms
+ ✓ src/auth/session-repository.test.ts (35 tests) 15ms
+ ✓ src/game/servers.test.ts (38 tests) 16ms
+ ✓ src/game/players.test.ts (13 tests) 14ms
+ ✓ src/game/parts-v2.test.ts (40 tests) 17ms
  ✓ src/auth/email.test.ts (12 tests) 11ms
- ✓ src/game/hub.test.ts (93 tests) 130ms
- ✓ src/game/protocol.test.ts (166 tests) 38ms
- ✓ src/auth/password.test.ts (17 tests) 402ms
- ✓ src/auth/auth-routes.test.ts (25 tests) 865ms
- ✓ src/auth/auth-service.test.ts (50 tests) 1071ms
- ✓ src/app.test.ts (22 tests) 1753ms
-   ✓ GET /ws > packs three servers after each completion over live sockets (X = 2, AC-10, F3)  1024ms
- ✓ src/db/migration-006.test.ts (13 tests) 2150ms
- ✓ src/auth/economy-repository.test.ts (102 tests) 2077ms
+ ✓ src/game/protocol.test.ts (166 tests) 21ms
+ ✓ src/game/hub.test.ts (93 tests) 108ms
+ ✓ src/auth/password.test.ts (17 tests) 361ms
+ ✓ src/auth/auth-routes.test.ts (25 tests) 720ms
+ ✓ src/auth/auth-service.test.ts (50 tests) 957ms
+ ✓ src/app.test.ts (22 tests) 1754ms
+   ✓ GET /ws > packs three servers after each completion over live sockets (X = 2, AC-10, F3)  1023ms
+ ✓ src/auth/economy-repository.test.ts (102 tests) 2412ms
+ ✓ src/db/migration-006.test.ts (13 tests) 2438ms
 
  Test Files  24 passed (24)
       Tests  868 passed (868)
-   Start at  18:47:37
-   Duration  3.04s (transform 1.80s, setup 0ms, collect 6.26s, tests 8.70s, environment 6ms, prepare 2.46s)
+   Start at  19:05:52
+   Duration  3.31s (transform 1.93s, setup 0ms, collect 6.43s, tests 8.97s, environment 5ms, prepare 2.45s)
 
  % Coverage report from v8
 -------------------|---------|----------|---------|---------|-------------------
@@ -468,58 +472,58 @@ All files          |   95.43 |    87.71 |    99.7 |   95.43 |
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
       Coverage enabled with v8
 
- ✓ src/game/parts.test.ts (23 tests) 7ms
- ✓ src/game/upgrades.test.ts (20 tests) 7ms
- ✓ src/game/progression.test.ts (21 tests) 8ms
- ✓ src/ui/game-view.css.test.ts (42 tests) 23ms
- ✓ src/game/parts-v2.test.ts (50 tests) 17ms
- ✓ src/auth/api.test.ts (28 tests) 18ms
- ✓ src/multiplayer/protocol.test.ts (236 tests) 19ms
- ✓ src/render/quality.test.ts (23 tests) 58ms
- ✓ src/auth/store.test.ts (31 tests) 21ms
- ✓ src/game/board.test.ts (18 tests) 27ms
- ✓ src/ui/icons.test.tsx (16 tests) 27ms
- ✓ src/render/preview.test.ts (7 tests) 28ms
- ✓ src/ui/UserPanel.test.tsx (8 tests) 18ms
- ✓ src/render/particles.test.ts (24 tests) 26ms
- ✓ src/render/impact-effects.test.ts (15 tests) 48ms
- ✓ src/render/starfield.test.ts (28 tests) 111ms
- ✓ src/render/spaceship-model.test.ts (33 tests) 153ms
- ✓ src/render/targeting.test.ts (11 tests) 89ms
- ✓ src/render/cursor-ship.test.ts (34 tests) 181ms
- ✓ src/render/picking.test.ts (16 tests) 157ms
- ✓ src/input/gestures.test.ts (27 tests) 51ms
- ✓ src/game/engine.test.ts (113 tests) 123ms
- ✓ src/render/spaceship.test.ts (31 tests) 127ms
- ✓ src/ui/app.css.test.ts (87 tests) 25ms
- ✓ src/ws/connection.test.ts (10 tests) 16ms
- ✓ src/ui/theme.test.ts (11 tests) 6ms
- ✓ src/render/cube-view.test.ts (32 tests) 317ms
- ✓ src/multiplayer/spectate.test.ts (23 tests) 6ms
- ✓ src/render/webgl.test.ts (17 tests) 11ms
- ✓ src/ui/VerificationPending.test.tsx (2 tests) 14ms
- ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 15ms
- ✓ src/multiplayer/transport.test.ts (14 tests) 22ms
- ✓ src/render/postprocessing.test.ts (10 tests) 14ms
- ✓ src/game/effects.test.ts (25 tests) 15ms
- ✓ src/multiplayer/server-state.test.ts (46 tests) 23ms
- ✓ src/game/motion.test.ts (11 tests) 8ms
- ✓ src/ui/GameCanvas.test.tsx (2 tests) 12ms
- ✓ src/render/cosmic-backdrop.test.ts (14 tests) 472ms
- ✓ src/render/ship-motion.test.ts (24 tests) 12ms
- ✓ src/render/world.test.ts (27 tests) 382ms
- ✓ src/input/keyboard.test.ts (13 tests) 12ms
+ ✓ src/ui/app.css.test.ts (87 tests) 17ms
+ ✓ src/game/parts-v2.test.ts (50 tests) 29ms
+ ✓ src/multiplayer/protocol.test.ts (236 tests) 30ms
+ ✓ src/multiplayer/transport.test.ts (14 tests) 13ms
+ ✓ src/render/postprocessing.test.ts (10 tests) 9ms
+ ✓ src/render/quality.test.ts (23 tests) 65ms
+ ✓ src/ws/connection.test.ts (10 tests) 10ms
+ ✓ src/auth/store.test.ts (31 tests) 13ms
+ ✓ src/render/preview.test.ts (7 tests) 35ms
+ ✓ src/ui/icons.test.tsx (16 tests) 26ms
+ ✓ src/ui/GameCanvas.test.tsx (2 tests) 14ms
+ ✓ src/ui/UserPanel.test.tsx (8 tests) 22ms
  ✓ src/render/background-life.test.ts (14 tests) 19ms
+ ✓ src/render/particles.test.ts (24 tests) 23ms
+ ✓ src/render/impact-effects.test.ts (15 tests) 38ms
+ ✓ src/render/cursor-ship.test.ts (34 tests) 123ms
+ ✓ src/render/targeting.test.ts (11 tests) 99ms
+ ✓ src/render/spaceship-model.test.ts (33 tests) 149ms
+ ✓ src/input/gestures.test.ts (27 tests) 36ms
+ ✓ src/render/starfield.test.ts (28 tests) 136ms
+ ✓ src/render/spaceship.test.ts (31 tests) 112ms
+ ✓ src/render/cube-view.test.ts (32 tests) 245ms
+ ✓ src/render/picking.test.ts (16 tests) 185ms
+ ✓ src/game/engine.test.ts (113 tests) 124ms
+ ✓ src/ui/game-view.css.test.ts (42 tests) 34ms
+ ✓ src/auth/api.test.ts (28 tests) 24ms
+ ✓ src/game/board.test.ts (18 tests) 27ms
+ ✓ src/render/webgl.test.ts (17 tests) 16ms
+ ✓ src/ui/theme.test.ts (11 tests) 10ms
+ ✓ src/game/economy.test.ts (7 tests) 5ms
+ ✓ src/input/keyboard.test.ts (13 tests) 14ms
+ ✓ src/browser-env.test.ts (6 tests) 18ms
+ ✓ src/render/cosmic-backdrop.test.ts (14 tests) 450ms
+ ✓ src/game/upgrades.test.ts (20 tests) 9ms
+ ✓ src/game/progression.test.ts (21 tests) 10ms
+ ✓ src/game/effects.test.ts (25 tests) 14ms
+ ✓ src/ui/ConnectionBanner.test.tsx (5 tests) 17ms
  ✓ src/render/spectate-travel.test.ts (7 tests) 10ms
- ✓ src/browser-env.test.ts (6 tests) 17ms
- ✓ src/game/rotation.test.ts (15 tests) 11ms
- ✓ src/game/effects-spaceship.test.ts (5 tests) 5ms
- ✓ src/game/economy.test.ts (7 tests) 11ms
- ✓ src/docs/links.test.ts (1 test) 6ms
- ✓ src/game/session-spaceship.test.ts (6 tests) 285ms
- ✓ src/render/nebula.test.ts (11 tests) 838ms
-   ✓ createNebulaTexture (AC-9) > produces identical bytes for the same random sequence  667ms
- ✓ src/render/scene-spaceship.test.ts (24 tests) 894ms
+ ✓ src/render/world.test.ts (27 tests) 350ms
+ ✓ src/game/motion.test.ts (11 tests) 8ms
+ ✓ src/ui/VerificationPending.test.tsx (2 tests) 14ms
+ ✓ src/game/rotation.test.ts (15 tests) 9ms
+ ✓ src/render/ship-motion.test.ts (24 tests) 9ms
+ ✓ src/multiplayer/spectate.test.ts (23 tests) 9ms
+ ✓ src/multiplayer/server-state.test.ts (46 tests) 34ms
+ ✓ src/docs/links.test.ts (1 test) 5ms
+ ✓ src/game/parts.test.ts (23 tests) 11ms
+ ✓ src/game/effects-spaceship.test.ts (5 tests) 8ms
+ ✓ src/game/session-spaceship.test.ts (6 tests) 303ms
+ ✓ src/render/nebula.test.ts (11 tests) 859ms
+   ✓ createNebulaTexture (AC-9) > produces identical bytes for the same random sequence  701ms
+ ✓ src/render/scene-spaceship.test.ts (27 tests) 949ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > renders exactly ten slot rows in SLOT_CATALOG order with the section contract
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -535,7 +539,6 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/VerifyEmail.test.tsx (22 tests) 233ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > marks owned parts and exposes equipped/label states on the equip controls
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -546,7 +549,7 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/SpaceshipPreview.test.tsx (12 tests) 109ms
+ ✓ src/ui/SpaceshipPreview.test.tsx (12 tests) 84ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel slots (AC-29) > calls onUnequip with the slot id only for an enabled control
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -557,20 +560,18 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/LevelCompleteBanner.test.tsx (6 tests) 104ms
- ✓ src/ui/CustomizationToggle.test.tsx (6 tests) 267ms
- ✓ src/ui/Hud.test.tsx (20 tests) 233ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel lootbox controls (AC-29) > calls onOpenLootbox once when the enabled control is clicked
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/ui/LevelCompleteBanner.test.tsx (6 tests) 145ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel lootbox controls (AC-29) > keeps the pre-v2 onOpen alias working
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/UpgradesPanel.test.tsx (12 tests) 198ms
+ ✓ src/ui/VerifyEmail.test.tsx (22 tests) 221ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > renders the rare/new grant region with the pinned data attributes and copy
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -581,28 +582,31 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/ui/CustomizationToggle.test.tsx (6 tests) 260ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > advances through the exact 420 + 250 + 120 + 360 + 140 ms timeline
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/AuthMenu.test.tsx (19 tests) 547ms
-stderr | src/App.test.tsx > App > drives data-customization-open from the customization toggle (AC-7, AC-18)
-Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
-Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
-THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
-
+ ✓ src/ui/Hud.test.tsx (20 tests) 179ms
+ ✓ src/ui/UpgradesPanel.test.tsx (12 tests) 319ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > keeps the reveal, orb and card non-shrinking and fully visible at the reveal phase
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/ui/AuthMenu.test.tsx (19 tests) 619ms
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > restarts the timeline when the same part is reopened with a new sequence
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
 stderr | src/ui/SpaceshipCustomizationPanel.test.tsx > SpaceshipCustomizationPanel reveal (AC-32, AC-41) > renders the settled reveal instantly under reduced motion
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
+
+stderr | src/App.test.tsx > App > drives data-customization-open from the customization toggle (AC-7, AC-18)
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
@@ -627,12 +631,14 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/ui/SpaceshipCustomizationPanel.test.tsx (28 tests) 960ms
+ ✓ src/ui/SpaceshipCustomizationPanel.test.tsx (28 tests) 783ms
 stderr | src/App.test.tsx > App — customization panel integration (AC-29, AC-32, AC-43) > passes pendingLootboxOpen to the panel and disables Open lootbox while pending
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
+ ✓ src/ui/AuthForms.test.tsx (44 tests) 1039ms
+   ✓ AuthForms — interaction > submits the rendered login form and calls onLogin with the entered values  310ms
 stderr | src/App.test.tsx > App — customization panel integration (AC-29, AC-32, AC-43) > enables Open lootbox when the open is not pending
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -643,27 +649,25 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/render/scene.test.ts (85 tests) 2257ms
- ✓ src/ui/AuthForms.test.tsx (44 tests) 1003ms
-   ✓ AuthForms — interaction > submits the rendered login form and calls onLogin with the entered values  320ms
 stderr | src/App.test.tsx > App — customization panel integration (AC-29, AC-32, AC-43) > routes panel equip and unequip controls to the session commands
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
 THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.
 
- ✓ src/App.test.tsx (38 tests) 1014ms
- ✓ src/game/session.test.ts (81 tests) 2668ms
+ ✓ src/App.test.tsx (38 tests) 1109ms
+ ✓ src/render/scene.test.ts (85 tests) 2574ms
+ ✓ src/game/session.test.ts (81 tests) 2673ms
 
  Test Files  63 passed (63)
-      Tests  1697 passed (1697)
-   Start at  18:47:40
-   Duration  4.37s (transform 6.98s, setup 0ms, collect 20.46s, tests 14.41s, environment 6.18s, prepare 6.30s)
+      Tests  1700 passed (1700)
+   Start at  19:05:56
+   Duration  4.23s (transform 6.47s, setup 0ms, collect 19.38s, tests 14.80s, environment 5.97s, prepare 6.54s)
 
  % Coverage report from v8
 -------------------|---------|----------|---------|---------|-------------------
 File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
 -------------------|---------|----------|---------|---------|-------------------
-All files          |   96.28 |    95.26 |   97.42 |   96.28 |                   
+All files          |   96.34 |     95.3 |   97.43 |   96.34 |                   
  src               |    86.5 |    82.91 |    92.5 |    86.5 |                   
   App.tsx          |   86.03 |    81.52 |   92.85 |   86.03 | ...33,455-456,619 
   browser-env.ts   |   91.66 |      100 |   91.66 |   91.66 | 69-72             
@@ -691,7 +695,7 @@ All files          |   96.28 |    95.26 |   97.42 |   96.28 |
   server-state.ts  |   98.15 |    95.04 |     100 |   98.15 | ...16,318-319,377 
   spectate.ts      |     100 |      100 |     100 |     100 |                   
   transport.ts     |   97.95 |      100 |     100 |   97.95 | 176-178,196       
- src/render        |    98.3 |    96.02 |   98.71 |    98.3 |                   
+ src/render        |   98.45 |    96.16 |   98.72 |   98.45 |                   
   ...round-life.ts |     100 |      100 |     100 |     100 |                   
   ...c-backdrop.ts |      99 |       96 |     100 |      99 | 299-300           
   cube-view.ts     |     100 |      100 |     100 |     100 |                   
@@ -703,10 +707,10 @@ All files          |   96.28 |    95.26 |   97.42 |   96.28 |
   ...processing.ts |     100 |      100 |     100 |     100 |                   
   preview.ts       |     100 |      100 |     100 |     100 |                   
   quality.ts       |   97.68 |    97.05 |     100 |   97.68 | 220-221,301-302   
-  scene.ts         |   97.16 |    95.48 |   95.12 |   97.16 | ...1001,1009-1010 
+  scene.ts         |   97.23 |    95.67 |   95.34 |   97.23 | ...1029,1037-1038 
   ship-motion.ts   |     100 |      100 |     100 |     100 |                   
   ...ship-model.ts |     100 |      100 |     100 |     100 |                   
-  spaceship.ts     |    94.6 |    95.41 |   96.42 |    94.6 | ...07-516,534-535 
+  spaceship.ts     |   96.07 |    96.33 |   96.42 |   96.07 | ...07-516,534-535 
   ...ate-travel.ts |     100 |      100 |     100 |     100 |                   
   starfield.ts     |     100 |      100 |     100 |     100 |                   
   targeting.ts     |   95.78 |     92.5 |     100 |   95.78 | ...64-166,178-179 
@@ -754,15 +758,15 @@ transforming...
 ✓ 103 modules transformed.
 rendering chunks...
 computing gzip size...
-dist/index.html                   0.42 kB │ gzip:   0.27 kB
+dist/index.html                   0.42 kB │ gzip:   0.28 kB
 dist/assets/index-BjbbTImZ.css   25.61 kB │ gzip:   5.24 kB
-dist/assets/index-Do-phks9.js   985.05 kB │ gzip: 273.16 kB
+dist/assets/index-DG73kq1J.js   985.27 kB │ gzip: 273.23 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.58s
+✓ built in 1.48s
 BUILD_EXIT=0
 ```
 
@@ -781,17 +785,17 @@ BUILD_EXIT=0
  Container cubeclicker-mailpit-1 Running 
  Container cubeclicker-db-1 Waiting 
  Container cubeclicker-db-1 Healthy 
- Container cubeclicker-smoke-run-0c87befb61ed Creating 
- Container cubeclicker-smoke-run-0c87befb61ed Created 
+ Container cubeclicker-smoke-run-2acdb2c84341 Creating 
+ Container cubeclicker-smoke-run-2acdb2c84341 Created 
 smoke: backend=http://backend:8080 frontend=http://frontend:5173 ws=ws://backend:8080/ws readyTimeoutMs=30000
 PASS backend http://backend:8080/healthz responds 200 with {"status":"ok"}
 PASS frontend http://frontend:5173/ responds 200 with text/html
 PASS websocket client 1 received hello from ws://backend:8080/ws
 PASS websocket client 2 received hello from ws://backend:8080/ws
-PASS multiplayer join: two clients land on the same server (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined — server 31
-PASS multiplayer overflow: the third client lands on the next server id (X = 2) — server 32
+PASS multiplayer join: two clients land on the same server (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined — server 41
+PASS multiplayer overflow: the third client lands on the next server id (X = 2) — server 42
 PASS multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)
-PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1001ms
+PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1002ms
 PASS auth register: POST /auth/register returns 202
 PASS auth verify: Mailpit delivers a verification email and POST /auth/verify activates the account
 PASS auth login: POST /auth/login returns 200 with a session cookie
@@ -799,7 +803,6 @@ PASS auth guest: WebSocket join with mode "guest" yields a guest welcome
 SMOKE PASS (12/12 checks)
 SMOKE_EXIT=0
 ```
-
 ## Container, protected-path and bundle gates
 
 ### Container diff vs `BASE`
@@ -844,7 +847,7 @@ src/frontend/src/render/preview.ts:15:import { AmbientLight, DirectionalLight, P
 src/frontend/src/render/picking.ts:38:} from 'three';
 ```
 
-All imports are named; no wildcard or default `three` import. `npm run build` initial JS is **985.05 kB / 273.16 kB gzip** (≤ 350 kB); CSS 25.61 kB / 5.24 kB gzip.
+All imports are named; no wildcard or default `three` import. `npm run build` initial JS is **985.27 kB / 273.23 kB gzip** (≤ 350 kB); CSS 25.61 kB / 5.24 kB gzip.
 
 ### Pre-006 `pg_dump` / restore evidence (T2, re-cited)
 
@@ -944,9 +947,35 @@ Banner DOM query 1.9 s later: present=false (banner had already expired after th
 ```
 
 - The 102/185/235/302 ms frames show the full-screen burst (16 gold + 8 cyan rays, 3 rings, 12 stars, 20 coins) and the `LEVEL COMPLETE` banner entering/overshooting; the 402/702/1003/1403 ms frames show the banner hold and decay.
-- The 302 ms frame shows the cursor ship mid-360° roll (nose pointing left, belly visible). In this run that pose was driven by the browser harness through the injected `window.__t14Scene` reference: at `0bfc524` no production code path called `Spaceship.startFlyBy()` (code review r1 F1). T16 added the production `levelIndex`-rise trigger and the `scene-spaceship.test.ts` integration test (exactly one 700 ms roll on the 1.2-world orbit, 16-point fire trail, reduced-motion cancellation), so the fly-by is now reproducible through the shipped app; `build-log-T16.md` records that evidence. `spaceship.test.ts` and `scene-spaceship.test.ts` pin the animation and its trigger.
+- The 302 ms frame shows the cursor ship mid-360° roll (nose pointing left, belly visible). That earlier frame was harness-driven at `0bfc524`; T16 `ba77801` added the production `levelIndex`-rise trigger and the integration test. The final production re-capture is in the next subsection.
 - Banner timing: CSS/tests pin entry 0.2/−8°, 1.0 at ≈170 ms, 1.08 peak at `bannerPeakMs = 250`, settle by 450 ms with ±2° wobble, halo 250 ms, hold 1600 ms. The screencast captured the peak frames; the DOM query after 1.9 s correctly found it gone. Unit tests in `LevelCompleteBanner.test.tsx`/`game-view.css.test.ts` assert the exact keyframes/counts.
 - No camera/HUD shake: computed styles on `main`/`.hud-panel`/`.upgrades-panel` are `none`; `scene.test.ts`/`scene-spaceship.test.ts` pin camera equality.
+
+### Production AC-40 fly-by (T16, shipped level-completion path)
+
+Method: the real app was played as a guest; a level was completed by clicking mini-cubes (no `triggerFlyBy`/`startFlyBy` call). The scene was observed read-only through the harness's `window.__t14Scene` reference (10 ms sampler on the `spaceship` group and its `spaceship-trail` `Points`). The quality tier was forced high at the final face **only** so the 16-point trail is rendered; the fly-by trigger itself was the production `levelIndex` rise. Screenshots are `t14-flyby-production-*.png`.
+
+```text
+1280x720 high-tier production run:
+  tier at roll: high (tiers=["high"])
+  one contiguous roll interval; max |rotation.z| = 6.2832 rad (2π)
+  detected interval above 0.05 rad = 606.4 ms; pinned shipRollMs = 700 ms (threshold/sampling excludes the ramp ends)
+  max trail drawRange = 16 (MOTION.fireTrailCount) at high
+  post-roll: rotation.z = 0, position z 6.93 → 6.68 (following the camera/pointer), normal trail 8
+  frames: t14-flyby-production-0007ms / 0107ms / 0174ms / 0241ms / 0341ms / 0491ms / 0707ms / 0907ms-1280x720.png
+1280x720 medium-tier production run (no quality force):
+  one roll interval; max |rotation.z| = 6.2828; max trail = 0 (medium tier intentionally disables the trail)
+1920x1080 high-tier production run:
+  one roll interval; max |rotation.z| = 6.2828 rad; max trail = 16; detected interval 592.1 ms
+  the 0305 ms frame shows the ship large and mid-roll in front of the banner:
+  t14-flyby-production-0305ms-1920x1080.png (also 0022/0105/0189/0239/0522/0689/0905)
+Reduced-motion production run (1280x720):
+  matchMedia(...) = true; max |rotation.z| = 0; max trail = 0; rollIntervals = []
+  screenshot: t14-flyby-production-reduced-1280x720.png; no roll, banner remains
+```
+
+The 1920×1080 305 ms frame is the clearest production visual: the ship is mid-roll at the left of the banner. At 1280×720 the roll is partly occluded by the banner/travel plane in the screencast frames; the sampler still proves the same one-roll/2π/16-point/return sequence. No second roll was observed after the 700 ms window.
+
 
 ### Panel / preview / reveal / equip
 
@@ -1020,7 +1049,7 @@ Pinned thresholds/cooldowns: 120-frame rolling window (clamp 250 ms, non-finite/
 
 Method: high runs use real `requestAnimationFrame` timestamps; high tier is forced with `SceneView.setQualityTierForTesting('high')` immediately before the trace, then `tierStart`/`tierEnd` are read from the live scene. Medium/low runs force the tier with the same hook and feed the policy a controlled 19 ms / 21 ms frame delta stream (`window.requestAnimationFrame` wrapper; no source edit). The high budget applies to high; medium/low frame columns record the injected profile and are not a budget claim. Click runs dispatch pointer events at 10/s; hit counts are the HUD clicks delta (75/75/50 at 1280 and 75/89/64 at 1920 for high; lower on smaller grids/rotation phases).
 
-T15 `0bfc524` is CSS/UI-only (`.lootbox-reveal`/`.lootbox-orb` flex layout + tests); it does not touch the render loop, quality policy, scene, cursor, impact, targeting or bundle code. The high/medium/low and recovery traces below are therefore reused from the first T14 run; the post-T15 build is 273.16 KB JS gzip (unchanged) and 5.24 KB CSS gzip (+0.03 KB).
+T15 `0bfc524` is CSS/UI-only; T16 `ba77801` adds the production `levelIndex`-rise trigger in `scene.ts` plus tests. Neither touches the render loop timing, quality policy, cursor/impact/targeting code or bundle dependencies, so the high/medium/low and recovery traces below are reused from the first T14 run. The verified build is 273.23 KB JS gzip (T16 +0.07 KB) and 5.24 KB CSS gzip.
 
 | tier | workload | size | run 1 avg/p95 | run 2 avg/p95 | run 3 avg/p95 | median avg/p95 | tier end |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1066,7 +1095,7 @@ TRAIL high while moving: visible=true, 16 point buffer, drawRange=8; medium: vis
 - **Net high-tier growth is +21 draws**: old cursor 7 → new cursor 22 (+15; 21 meshes + trail), impact +4 pools, targeting +2 lines; 19 materials (+12). This is pinned by T9's scene/quality tests and the spec/plan; the old-cursor 7-draw baseline is not buildable in this tree, so T14 records the new-side counts and the net accounting rather than re-running a pre-feature build.
 - **GL prepass caveat:** measured total GL calls when hiding/showing the whole `spaceship` group with the pointer moving are **41.61 / 34.00 / 29.99** at high/medium/low. These are larger than 22/17/15 because the post-processing chain runs a RenderPass plus an SSAO normal/depth prepass; opaque meshes are drawn twice, while the transparent ignitions/trail contribute once. The tier deltas confirm the hidden sets: high→medium ≈7 GL calls (4 hidden opaque meshes across two passes + trail), medium→low ≈4 GL calls (2 hidden wing-tip meshes ×2 passes). The contract draw counts remain 22/17/15, and no regression is introduced.
 - No per-frame allocation was added to the follow/shot/ignition/pick paths: T9's tests pin preallocated NDC/result storage (`picking.ts`), pooled impact drawables (no per-spawn geometry/material), and the one-raycast-per-frame hover path. T14 did not observe page exceptions or allocation errors in any trace run (`errors: []`).
-- `npm run build` initial JS gzip **273.16 KB** (≤350 KB); no loader/URL/fetch import in `render/**`/`game/**`; all `three` imports named.
+- `npm run build` initial JS gzip **273.23 KB** (≤350 KB); no loader/URL/fetch import in `render/**`/`game/**`; all `three` imports named.
 
 ## Reference gate AC-46 and audio AC-45
 
@@ -1127,7 +1156,7 @@ README also states the view is generated procedurally with no external models/te
 | AC-5 | met | `spaceship.test.ts`/`scene-spaceship.test.ts` follow factor/target/rest; reduced snap |
 | AC-6 | met | `spaceship.test.ts`/`scene-spaceship.test.ts` shot travel 180 ms/ignitions/flicker/reduced |
 | AC-7 | met | `spaceship.test.ts`/`scene-spaceship.test.ts` per-slot apply, left/right isolation, no-op re-apply, outer identity |
-| AC-8 | met | T14 high traces: 3/3 runs at 1280/1920 idle+clicks, avg 16.666/p95 ≤16.8; model 32/21/19; scene 136 own; bundle 273.16 KB gzip; no loader/URL |
+| AC-8 | met | T14 high traces: 3/3 runs at 1280/1920 idle+clicks, avg 16.666/p95 ≤16.8; model 32/21/19; scene 136 own; bundle 273.23 KB gzip; no loader/URL |
 | AC-9 | met | reduced A/B pixel-identical AE 0; hover static; no trail/ignitions/pulse; `spaceship.test.ts` |
 | AC-10 | met | `parts-v2.test.ts` both workspaces (10 slots/order/names/rejections) |
 | AC-11 | met | `parts-v2.test.ts` both workspaces (30 rows, 10/10/10, identical tables, `PART_CATALOG_VERSION=2`) |
@@ -1159,23 +1188,23 @@ README also states the view is generated procedurally with no external models/te
 | AC-37 | met | `impact-effects.test.ts` 12/14/6/3 pools, lifetimes, recycling, orientation, reduced; manual burst |
 | AC-38 | met | `impact-effects.test.ts` 330/150/480, 1→5, prebuilt ring, 3 pool; manual ring frames |
 | AC-39 | met | `Hud.test.tsx`/`App.test.tsx` max 3/1100 ms/45 px/600 ms reduced/no HUD pulse; measured popup lifetime |
-| AC-40 | met (fly-by evidence corrected by T16) | `LevelCompleteBanner.test.tsx` counts/CSS; `spaceship.test.ts` roll/trail; T16 `scene-spaceship.test.ts` production `levelIndex`-rise trigger — exactly one 700 ms roll, 16-point fire trail, reduced-motion cancel; level frames; no shake |
+| AC-40 | met (production-reproduced after T16 `ba77801`) | `LevelCompleteBanner.test.tsx` counts/CSS; `spaceship.test.ts` roll/trail; T16 `scene-spaceship.test.ts` production `levelIndex`-rise trigger; T14 production run: one roll, max abs(rotation.z) 2π, max trail 16 at high, return to follow, reduced max abs(rotation.z) 0/trail 0; `t14-flyby-production-*.png`; no shake |
 | AC-41 | met | T15 `0bfc524` fix verified: reveal 306 px, orb 80 px (100 px overshoot), card 198/183 px, fully visible at 1280/1920; timing 1290 pinned (1300–1310 measured with 5 ms poll + screenshot latency); copy/ARIA and reduced instant rest unchanged. Before-fix clipped values retained as historical evidence |
 | AC-42 | met | `ship-motion.test.ts`/`spaceship.test.ts` bank/pitch/trail/idle/pulse/no recoil; moving trail high true/8 points; reduced zeros |
 | AC-43 | met | panel `data-equipping` 9–263 ms (~254 ms vs 260 pinned); `UpgradesPanel.test.tsx` 260 ms; no coin HUD pulse; reduced skip |
 | AC-44 | met | `scene.test.ts`/`App.test.tsx`/`game-view.css.test.ts`; live computed styles none for main/HUD/upgrades/customization |
 | AC-45 | met | `video-analysis.md` §4.11 exact alignments/true peak −1.6 dBFS; no audio asset/code |
 | AC-46 | met | 40 frames + 3 contact sheets (43 files, 15 MB), metadata, `[O]`/`[E]` mapping table; table above |
-| AC-47 | met | high 3/3 at both sizes/workloads; medium/low forced traces stable and lower draw loads; recovery 289/290 + 589/590 frames; draw accounting; bundle 273.16; no per-frame allocation tests |
+| AC-47 | met | high 3/3 at both sizes/workloads; medium/low forced traces stable and lower draw loads; recovery 289/290 + 589/590 frames; draw accounting; bundle 273.23; no per-frame allocation tests |
 | AC-48 | met | reduced A/B AE 0; no rays/shards/coins; numeric coin; static preview; all reduced variants test-pinned; tier cannot re-enable |
-| AC-49 | met | `npm run coverage` exit 0; backend 95.43/87.71/99.7/95.43; frontend 96.28/95.26/97.42/96.28 |
+| AC-49 | met | `npm run coverage` exit 0; backend 95.43/87.71/99.7/95.43; frontend 96.34/95.3/97.43/96.34 |
 | AC-50 | met | README exact phrases/procedural statement; glossary `part slot`/`lootbox reveal`/`motion token`; `docs/features/README.md` unchanged vs `BASE`; proposed row above |
 | AC-51 | met | container diff empty; protected paths clean; migration 006 only artifact; real `npm run smoke` 12/12 (not skipped) |
 | AC-52 | met | `quality.test.ts` exact policy/matrix; scene hook start/end tiers; forced traces; recovery; reduced authority |
 
 ## Deviations and limitations
 
-- **No source/test/CSS/config/container/backend edit was made by T14.** The AC-41 layout defect was found by the first T14 run and fixed by T15 `0bfc524`; this re-run verifies the fixed tree and records the before/after values. The T15 change is CSS/UI-only (panel layout + two test files + its build log); the high/medium/low and recovery traces from the first run are reused, and the high-tier results are unaffected (no render/scene logic changed).
+- **No source/test/CSS/config/container/backend edit was made by T14.** The AC-41 layout defect was found by the first T14 run and fixed by T15 `0bfc524`; this re-run verifies the fixed tree and records the before/after values. T15 is CSS/UI-only; T16 adds the levelIndex-rise trigger in `scene.ts` plus tests. Neither changes the render loop, quality policy, cursor/impact/targeting/bundle code, so the high/medium/low and recovery traces from the first run are reused; the build is 273.23 KB JS gzip (T16 +0.07 KB) and 5.24 KB CSS gzip.
 - The medium/low frame columns use an injected 19 ms/21 ms frame-time stream (documented above) so the shipped policy stays in the intended tier; they are not wall-clock performance claims. High-tier columns are real `requestAnimationFrame` traces.
 - The high-tier traces force high with the scene's test hook immediately before the trace; the policy is then allowed to run normally. All high runs report `tierStart=tierEnd=high` and no miss.
 - The level banner DOM was queried after its 1600 ms hold (present=false, correctly); the visible banner/burst is captured in the screencast frames. Exact counts/timings are test-pinned.
@@ -1185,7 +1214,7 @@ README also states the view is generated procedurally with no external models/te
 
 ## Final status
 
-**READY — all gates green.** T14's first run found AC-41 blocked (reveal card clipped to 18 px/orb 0 px); T15 `0bfc524` fixed the panel layout and the re-run verifies: `.lootbox-reveal` 306 px, orb 80 px (100 px overshoot), card 198/183 px, fully visible at 1280×720 and 1920×1080; the 1290 ms timeline, copy/ARIA and reduced-motion instant result are unchanged. The full gate is green (lint, typecheck, backend 868 + frontend 1,697 tests, coverage, build 273.16 KB JS gzip / 5.24 KB CSS gzip, smoke 12/12, bundle/import, container diff, high-tier traces, forced recovery, docs, reference). No source/test/CSS/config/container/backend edits were made by this T14 re-run; only this build log and the fresh `t14-*.png` evidence are committed.
+**READY — all gates green.** The first T14 run found AC-41 blocked (reveal card clipped); T15 `0bfc524` fixed the panel layout. T16 `ba77801` fixed AC-40 (production fly-by trigger), and this final re-run verifies both: `.lootbox-reveal` 306 px, orb 80 px (100 px overshoot), card 198/183 px, fully visible at 1280×720 and 1920×1080; the 1290 ms timeline, copy/ARIA and reduced-motion instant result are unchanged. The full gate is green (lint, typecheck, backend 868 + frontend 1,700 tests, coverage, build 273.23 KB JS gzip / 5.24 KB CSS gzip, smoke 12/12, bundle/import, container diff, high-tier traces, forced recovery, docs, reference). No source/test/CSS/config/container/backend edits were made by this T14 re-run; only this build log and the fresh `t14-*.png` evidence are committed. Verified tree: `ba77801`; this docs-only evidence commit follows it.
 
 ## Proposed `docs/features/README.md` row (orchestrator applies on acceptance)
 
