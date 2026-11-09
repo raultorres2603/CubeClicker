@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,6 +19,23 @@ afterEach(() => {
 });
 
 const EMPTY: CustomizationState = { lootboxes: 0, keys: 0, parts: {}, appearance: {} };
+
+// jsdom rewrites `import.meta.url` to an http URL, so read from the workspace cwd
+// (the frontend package root) like App.test.tsx does.
+const APP_CSS = readFileSync('src/ui/app.css', 'utf8');
+const GAME_VIEW_CSS = readFileSync('src/ui/game-view.css', 'utf8');
+
+/** Injects the real panel stylesheets so computed styles verify the shipped cascade. */
+function withPanelStyles(run: () => void): void {
+  const style = document.createElement('style');
+  style.textContent = `${APP_CSS}\n${GAME_VIEW_CSS}`;
+  document.head.append(style);
+  try {
+    run();
+  } finally {
+    style.remove();
+  }
+}
 
 const HANDLERS = {
   onOpenLootbox: () => undefined,
@@ -458,6 +477,71 @@ describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
       vi.advanceTimersByTime(1);
     });
     expect(region()?.getAttribute('data-reveal-phase')).toBe('rest');
+  });
+
+  it('keeps the reveal, orb and card non-shrinking and fully visible at the reveal phase', () => {
+    vi.useFakeTimers();
+    withPanelStyles(() => {
+      const { container } = renderPanel({ lastLootboxGrant: grant({ sequence: 21 }) });
+      act(() => {
+        vi.advanceTimersByTime(
+          MOTION.lootboxChargeMs + MOTION.orbOvershootMs + MOTION.lootboxFlashMs,
+        );
+      });
+
+      const panel = container.querySelector<HTMLElement>('section.customization-panel');
+      const region = container.querySelector<HTMLElement>('[data-reveal-active="true"]');
+      const orb = region?.querySelector<SVGSVGElement>('svg[data-reveal-orb="true"]');
+      const card = region?.querySelector<HTMLElement>('[data-reveal-card="true"]');
+
+      expect(region?.getAttribute('data-reveal-phase')).toBe('reveal');
+      expect(region?.getAttribute('role')).toBe('status');
+      expect(panel).not.toBeNull();
+      expect(region).not.toBeNull();
+      expect(orb).not.toBeNull();
+      expect(card).not.toBeNull();
+      if (panel === null || !region || !orb || !card) {
+        throw new Error('reveal layout elements missing');
+      }
+
+      // The panel remains the scroll container; its 60vh cap resolves to 460.8px in
+      // jsdom's 1024x768 viewport (432px at the failed 1280x720 capture).
+      const panelStyle = window.getComputedStyle(panel);
+      expect(panelStyle.display).toBe('flex');
+      expect(panelStyle.flexDirection).toBe('column');
+      expect(panelStyle.overflowY).toBe('auto');
+      expect(panelStyle.maxHeight).toBe('460.8px');
+
+      const revealStyle = window.getComputedStyle(region);
+      expect(revealStyle.display).toBe('flex');
+      expect(revealStyle.flexDirection).toBe('column');
+      expect(revealStyle.flexShrink).toBe('0');
+      expect(revealStyle.flexBasis).toBe('auto');
+      expect(revealStyle.overflow).toBe('visible');
+      expect(revealStyle.minHeight).toBe('288px');
+      expect(revealStyle.paddingTop).toBe('8px');
+      expect(revealStyle.paddingBottom).toBe('8px');
+
+      const orbStyle = window.getComputedStyle(orb);
+      expect(orbStyle.flexShrink).toBe('0');
+      expect(orbStyle.width).toBe('80px');
+      expect(orbStyle.height).toBe('80px');
+      expect(orbStyle.minWidth).toBe('80px');
+      expect(orbStyle.minHeight).toBe('80px');
+
+      const cardStyle = window.getComputedStyle(card);
+      expect(cardStyle.flexShrink).toBe('0');
+      expect(cardStyle.overflow).toBe('visible');
+      expect(card.querySelector('.lootbox-reveal-part')?.textContent).toBe('Port Silver Wing');
+      expect(card.querySelector('.lootbox-reveal-slot')?.textContent).toBe('Port Wing');
+
+      const revealMinBox =
+        Number.parseFloat(revealStyle.minHeight) +
+        Number.parseFloat(revealStyle.paddingTop) +
+        Number.parseFloat(revealStyle.paddingBottom);
+      expect(revealMinBox).toBe(304);
+      expect(revealMinBox).toBeLessThanOrEqual(Number.parseFloat(panelStyle.maxHeight));
+    });
   });
 
   it('restarts the timeline when the same part is reopened with a new sequence', () => {

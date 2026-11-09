@@ -501,6 +501,35 @@ describe('motion tokens v2 (AC-34, T12)', () => {
 });
 
 describe('lootbox reveal (AC-41)', () => {
+  it('keeps the reveal, orb and card non-shrinking and unclipped (T15 layout guard)', () => {
+    const reveal = declarations(ruleBody(cssSource, /^\.lootbox-reveal\s*\{([\s\S]*?)\}/m));
+    expect(reveal).toContain('flex: 0 0 auto');
+    expect(reveal).toContain('min-height: 18rem');
+    expect(reveal).toContain('overflow: visible');
+    expect(reveal).not.toContain('overflow: hidden');
+
+    const orb = declarations(ruleBody(cssSource, /^\.lootbox-orb\s*\{([\s\S]*?)\}/m));
+    expect(orb).toContain('flex: none');
+    expect(orb).toContain('width: 5rem');
+    expect(orb).toContain('height: 5rem');
+    expect(orb).toContain('min-width: 5rem');
+    expect(orb).toContain('min-height: 5rem');
+
+    const card = declarations(
+      ruleBody(cssSource, /^\.lootbox-reveal-card\s*\{([\s\S]*?)\}/m),
+    );
+    expect(card).toContain('flex: 0 0 auto');
+    expect(card).not.toContain('overflow: hidden');
+
+    for (const match of cssSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = (match[1] ?? '').trim();
+      if (!/\.lootbox-(?:reveal|reveal-card|orb)\b/.test(selector)) {
+        continue;
+      }
+      expect(declarations(match[2] ?? '')).not.toContain('overflow: hidden');
+    }
+  });
+
   it('uses the 1290 ms envelope and the five pinned phase tokens', () => {
     expect(
       MOTION.lootboxChargeMs +

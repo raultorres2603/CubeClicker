@@ -306,6 +306,12 @@ main {
  * Lootbox reveal (AC-41 `[E]`): wireframe charge orb with an orange core, 420 ms charge,
  * 250 ms 25 % overshoot, 120 ms flash, 360 ms card reveal with an 8 % overshoot and a
  * 140 ms settle. The root `lootbox-reveal` keyframe is the full 1290 ms envelope.
+ *
+ * Layout guard (T15): the reveal is a non-shrinking flex child of the scrollable panel.
+ * Its 18rem floor is the orb (5rem), one 0.4rem gap and the ~12rem card at rest; without
+ * it the earlier `overflow: hidden` let the panel's flex sizing collapse the whole
+ * region to its 18px padding+border box, clipping the card. The panel now scrolls the
+ * full-height reveal instead of shrinking it; nothing clips the orb or card.
  */
 .lootbox-reveal {
   --loot-card-delay: calc(
@@ -313,11 +319,13 @@ main {
   );
   position: relative;
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
   gap: 0.4rem;
+  min-height: 18rem;
   padding: 0.5rem;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-radius);
   background: rgba(0, 0, 0, 0.35);
@@ -340,8 +348,11 @@ main {
 }
 
 .lootbox-orb {
+  flex: none;
   width: 5rem;
   height: 5rem;
+  min-width: 5rem;
+  min-height: 5rem;
   color: var(--accent);
   fill: none;
   stroke: currentColor;
@@ -413,6 +424,7 @@ main {
 
 .lootbox-reveal-card {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
   gap: 0.2rem;
