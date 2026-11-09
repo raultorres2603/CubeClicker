@@ -361,6 +361,14 @@ export interface SceneView {
    * for `null` (AC-35). The session resolves the hovered id at most once per frame (T10).
    */
   setHoverTarget(id: MiniCubeId | null): void;
+  /**
+   * Starts the one 700 ms level-complete fly-by (AC-40). Production calls it from the
+   * `levelIndex` rise in {@link SceneView.applySnapshot} — the same snapshot transition
+   * that mounts the App's `LevelCompleteBanner` — so the roll rides every completion.
+   * Exposed for integration tests. No-op under reduced motion, after disposal, or while a
+   * fly-by is already running.
+   */
+  triggerFlyBy(): void;
   /** The current adaptive quality tier (AC-52). */
   getQualityTier(): QualityTier;
   /**
@@ -531,6 +539,8 @@ export function createSceneView(options: {
   let hasPointer = false;
   /** Hovered mini-cube id (null = miss); T10 resolves it once per frame. */
   let hoverTarget: MiniCubeId | null = null;
+  /** Previous snapshot's level index: a rise starts exactly one fly-by (AC-40). */
+  let lastLevelIndex: number | null = null;
   /** Last applied quality matrix inputs (tier + reduced motion). */
   let appliedQualityTier: QualityTier | null = null;
   let appliedQualityReduced: boolean | null = null;
@@ -935,6 +945,20 @@ export function createSceneView(options: {
   }
   applyQuality();
 
+  /**
+   * Starts the level-complete fly-by exactly once per completion (AC-40). Production
+   * detects the completion here, on the `levelIndex` rise carried by the same
+   * `EngineSnapshot` that mounts the App's `LevelCompleteBanner`; this hook is also the
+   * integration-test seam. Reduced motion never rolls the ship, and a running roll is
+   * never restarted by a repeated trigger.
+   */
+  function triggerLevelFlyBy(): void {
+    if (disposed || reducedMotion || spaceship.isFlyingBy()) {
+      return;
+    }
+    spaceship.startFlyBy();
+  }
+
   const view: SceneView = {
     scene,
     camera,
@@ -966,6 +990,10 @@ export function createSceneView(options: {
       }
       hoverTarget = id;
       targeting.setHoverTarget(id, cube);
+    },
+
+    triggerFlyBy(): void {
+      triggerLevelFlyBy();
     },
 
     getQualityTier(): QualityTier {
@@ -1069,6 +1097,13 @@ export function createSceneView(options: {
       // Pinned order: motion setting → rebuild → camera → orientation → reduced settle.
       reducedMotion = snapshot.reducedMotion;
       spectating = snapshot.spectating ?? false;
+      // The level-complete signal (AC-40): the same `levelIndex` rise that mounts the
+      // App's banner starts exactly one fly-by here, before the rebuild/camera step.
+      const levelIndex = snapshot.levelIndex;
+      if (lastLevelIndex !== null && levelIndex > lastLevelIndex) {
+        triggerLevelFlyBy();
+      }
+      lastLevelIndex = levelIndex;
       const nextAppearance = snapshot.customization?.appearance;
       const nextRecord: Record<string, string> =
         nextAppearance === undefined ? {} : { ...nextAppearance };

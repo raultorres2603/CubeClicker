@@ -1,11 +1,37 @@
-import { Group, Mesh, MeshStandardMaterial, Points } from 'three';
-import { describe, expect, it } from 'vitest';
+import { Group, Mesh, MeshStandardMaterial, Points, Vector3 } from 'three';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
+import { MOTION } from '../game/motion';
 import { CUBE_STYLES } from '../game/progression';
 import { type FaceId, type MiniCubeId } from '../game/types';
 import { createSceneView, type SceneView } from './scene';
 import { spaceshipFollowFactor, spaceshipTargetPosition } from './spaceship';
+
+/**
+ * The level-complete fly-by seam (AC-40): `createSpaceship` is wrapped so every scene's
+ * handle records its `startFlyBy` calls. The real factory and methods still run, so the
+ * tests below read the live three.js ship while proving how many rolls production starts.
+ */
+const flyBySeam = vi.hoisted(() => ({
+  starts: [] as Array<ReturnType<typeof vi.fn>>,
+  ships: [] as Array<{ isFlyingBy: () => boolean }>,
+}));
+
+vi.mock('./spaceship', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./spaceship')>();
+  return {
+    ...actual,
+    createSpaceship: (appearance?: Record<string, string>) => {
+      const ship = actual.createSpaceship(appearance);
+      const startFlyBy = vi.fn(ship.startFlyBy);
+      ship.startFlyBy = startFlyBy;
+      flyBySeam.starts.push(startFlyBy);
+      flyBySeam.ships.push(ship);
+      return ship;
+    },
+  };
+});
 
 const STYLE = CUBE_STYLES[0]!;
 const fixedRandom = (): number => 0.5;
@@ -51,6 +77,17 @@ function spaceshipGroup(view: SceneView): Group {
     throw new Error('no spaceship group');
   }
   return group;
+}
+
+/** The fly-by fire trail `Points` (capacity 16) inside the spaceship group. */
+function spaceshipTrail(view: SceneView): Points {
+  const trail = spaceshipGroup(view).children.find(
+    (child): child is Points => child instanceof Points && child.name === 'spaceship-trail',
+  );
+  if (trail === undefined) {
+    throw new Error('no spaceship trail');
+  }
+  return trail;
 }
 
 function particlePoints(view: SceneView) {
@@ -463,6 +500,105 @@ describe('scene spaceship appearance', () => {
     const before = view.lastAppearance;
     applySnapshot(view, snapshot());
     expect(view.lastAppearance).toEqual(before);
+    view.dispose();
+  });
+});
+
+describe('scene level-complete fly-by (AC-40)', () => {
+  beforeEach(() => {
+    flyBySeam.starts.length = 0;
+    flyBySeam.ships.length = 0;
+  });
+
+  it('starts exactly one 700 ms roll on the production levelIndex rise and returns to pointer-follow', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ levelIndex: 0 }));
+    view.setPointerTarget(0, 0);
+    expect(flyBySeam.starts).toHaveLength(1);
+    const startFlyBy = flyBySeam.starts[0]!;
+    expect(startFlyBy).toHaveBeenCalledTimes(0);
+
+    // The same transition that mounts LevelCompleteBanner: one level increase.
+    applySnapshot(view, snapshot({ levelIndex: 1, style: CUBE_STYLES[1]! }));
+    expect(startFlyBy).toHaveBeenCalledTimes(1);
+
+    const group = spaceshipGroup(view);
+    // 350 ms: the half-turn point of the 1.2-world-unit orbit (x = -2.4) at roll angle π.
+    for (let step = 0; step < 20; step += 1) {
+      view.update(17.5);
+    }
+    expect(group.position.x).toBeCloseTo(-2.4, 6);
+    expect(group.position.y).toBeCloseTo(0, 12);
+    expect(group.position.z).toBeCloseTo(6, 12);
+    expect(group.rotation.z).toBeCloseTo(Math.PI, 12);
+    expect(spaceshipTrail(view).geometry.drawRange.count).toBe(MOTION.fireTrailCount);
+
+    // Re-applying the same level mid-roll starts nothing more.
+    applySnapshot(view, snapshot({ levelIndex: 1, style: CUBE_STYLES[1]! }));
+    expect(startFlyBy).toHaveBeenCalledTimes(1);
+
+    // The remaining 350 ms complete the full turn at the orbit start.
+    for (let step = 0; step < 20; step += 1) {
+      view.update(17.5);
+    }
+    expect(group.position.x).toBeCloseTo(0, 6);
+    expect(group.position.y).toBeCloseTo(0, 12);
+    expect(group.position.z).toBeCloseTo(6, 12);
+    expect(group.rotation.z).toBe(0);
+
+    // The next frame is pointer-follow again, starting from the fly-by end pose.
+    view.update(16);
+    const target = spaceshipTargetPosition(view.camera, 0, 0);
+    const expected = new Vector3(0, 0, 6).lerp(target, spaceshipFollowFactor(16, false));
+    expect(group.position.x).toBeCloseTo(expected.x, 6);
+    expect(group.position.y).toBeCloseTo(expected.y, 6);
+    expect(group.position.z).toBeCloseTo(expected.z, 6);
+    expect(group.rotation.z).toBe(0);
+    view.dispose();
+  });
+
+  it('does not start under reduced motion and cancels a running roll on a live switch', () => {
+    const reduced = createView();
+    applySnapshot(reduced, snapshot({ levelIndex: 0, reducedMotion: true }));
+    reduced.setPointerTarget(0, 0);
+    applySnapshot(reduced, snapshot({ levelIndex: 1, reducedMotion: true }));
+    expect(flyBySeam.starts).toHaveLength(1);
+    expect(flyBySeam.starts[0]!).toHaveBeenCalledTimes(0);
+    reduced.dispose();
+
+    const view = createView();
+    applySnapshot(view, snapshot({ levelIndex: 0 }));
+    view.setPointerTarget(0, 0);
+    applySnapshot(view, snapshot({ levelIndex: 1 }));
+    expect(flyBySeam.starts).toHaveLength(2);
+    const startFlyBy = flyBySeam.starts[1]!;
+    expect(startFlyBy).toHaveBeenCalledTimes(1);
+
+    view.update(350);
+    const group = spaceshipGroup(view);
+    expect(group.rotation.z).toBeCloseTo(Math.PI, 12);
+    expect(spaceshipTrail(view).geometry.drawRange.count).toBe(1);
+
+    // A live reduced-motion switch cancels the roll and its trail (AC-40/AC-48).
+    applySnapshot(view, snapshot({ levelIndex: 1, reducedMotion: true }));
+    view.update(16);
+    expect(flyBySeam.ships[1]!.isFlyingBy()).toBe(false);
+    expect(group.rotation.z).toBe(0);
+    expect(spaceshipTrail(view).geometry.drawRange.count).toBe(0);
+    view.dispose();
+  });
+
+  it('ignores a direct trigger while a roll is already running', () => {
+    const view = createView();
+    applySnapshot(view, snapshot({ levelIndex: 0 }));
+
+    view.triggerFlyBy();
+    expect(flyBySeam.starts).toHaveLength(1);
+    const startFlyBy = flyBySeam.starts[0]!;
+    expect(startFlyBy).toHaveBeenCalledTimes(1);
+
+    view.triggerFlyBy();
+    expect(startFlyBy).toHaveBeenCalledTimes(1);
     view.dispose();
   });
 });

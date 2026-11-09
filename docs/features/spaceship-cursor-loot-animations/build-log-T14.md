@@ -11,18 +11,24 @@ What changed & why: T14 is verification-only. No source, test, CSS, config, cont
 ## BASE and HEAD
 
 ```text
-$ git rev-parse HEAD
-512c01b55b13b2c8dcd54b8da37cf940bfae9f6c
+$ git rev-parse HEAD                     # this evidence commit
+8d4c6334c8e4a0201d334072f7258ecb3bd42ec7
 
-$ git rev-parse 2c2efcb^        # pre-feature fork point, parent of T1 commit 2c2efcb
+$ git rev-parse 0bfc524                  # T15 fix: the tree the gates ran against
+0bfc524beab8f6eb618958a93c9cd19b23778f56
+
+$ git rev-parse 2c2efcb^                 # pre-feature fork point, parent of T1 commit 2c2efcb
 f07d06717b174dc189838d62990a52c925763772
 
 $ git log --oneline -1 2c2efcb
 2c2efcb feat: add granular spaceship catalog v2
 ```
 
-- `BASE = f07d06717b174dc189838d62990a52c925763772` (`features & specs`, parent of T1 `2c2efcb`).
-- `HEAD = 512c01b55b13b2c8dcd54b8da37cf940bfae9f6c` (`docs: document granular parts and motion`).
+- Feature `BASE = f07d06717b174dc189838d62990a52c925763772` (`features & specs`, parent of T1 `2c2efcb`); the container/diff gates compare against it.
+- Verification `BASE = 0bfc524beab8f6eb618958a93c9cd19b23778f56` (`fix: keep lootbox reveal fully visible`): the T15 fix this re-run measured. Every gate command recorded below ran on this tree.
+- `HEAD = 8d4c6334c8e4a0201d334072f7258ecb3bd42ec7` (`docs: record T14 verification evidence (post-T15 fix)`): the commit that records this re-run.
+- The first T14 run ran on `512c01b55b13b2c8dcd54b8da37cf940bfae9f6c` (before T15).
+- Fixes recorded since the first run: **T15 `0bfc524`** fixed AC-41 (reveal layout); **T16** (`fix: trigger ship fly-by on level completion`) wired the AC-40 cursor-ship fly-by to the production level-completion signal and added the `scene-spaceship.test.ts` integration proof, so the AC-40 fly-by claim below is now reproducible through the shipped app (`build-log-T16.md`).
 - Branch: `main`. The working tree contains pre-existing orchestrator/planner modifications to `spec.md`, `plan.md`, `tasks.md`, `status.md`, `video-analysis.md` and the untracked `reviews/` directory; they are not staged and are not part of this commit.
 
 Environment: Node v24.22.0 / npm 11.19.1; Podman 5.8.9 with docker-compose 5.6.0; `podman compose up -d` stack (frontend `localhost:5173`, backend `localhost:8080`, Postgres, Mailpit, Adminer); headless Google Chrome 157.0.8103.38 over CDP with hardware ANGLE (`ANGLE (NVIDIA, Vulkan 1.4.351, NVIDIA GeForce RTX 5070 Laptop GPU)`). The browser harness lives in `/tmp/opencode/t14/` and injects a **test-only** `window.__t14Scene` reference by patching the dev-server `src/render/scene.ts` response (it inserts `window.__t14Scene = view;` before `return view;`). No repository file was changed by the harness.
@@ -938,7 +944,7 @@ Banner DOM query 1.9 s later: present=false (banner had already expired after th
 ```
 
 - The 102/185/235/302 ms frames show the full-screen burst (16 gold + 8 cyan rays, 3 rings, 12 stars, 20 coins) and the `LEVEL COMPLETE` banner entering/overshooting; the 402/702/1003/1403 ms frames show the banner hold and decay.
-- The 302 ms frame shows the cursor ship mid-360° roll (nose pointing left, belly visible); the 700 ms fly-by and 16-point fire trail are pinned by `spaceship.test.ts` and `scene-spaceship.test.ts`.
+- The 302 ms frame shows the cursor ship mid-360° roll (nose pointing left, belly visible). In this run that pose was driven by the browser harness through the injected `window.__t14Scene` reference: at `0bfc524` no production code path called `Spaceship.startFlyBy()` (code review r1 F1). T16 added the production `levelIndex`-rise trigger and the `scene-spaceship.test.ts` integration test (exactly one 700 ms roll on the 1.2-world orbit, 16-point fire trail, reduced-motion cancellation), so the fly-by is now reproducible through the shipped app; `build-log-T16.md` records that evidence. `spaceship.test.ts` and `scene-spaceship.test.ts` pin the animation and its trigger.
 - Banner timing: CSS/tests pin entry 0.2/−8°, 1.0 at ≈170 ms, 1.08 peak at `bannerPeakMs = 250`, settle by 450 ms with ±2° wobble, halo 250 ms, hold 1600 ms. The screencast captured the peak frames; the DOM query after 1.9 s correctly found it gone. Unit tests in `LevelCompleteBanner.test.tsx`/`game-view.css.test.ts` assert the exact keyframes/counts.
 - No camera/HUD shake: computed styles on `main`/`.hud-panel`/`.upgrades-panel` are `none`; `scene.test.ts`/`scene-spaceship.test.ts` pin camera equality.
 
@@ -1153,7 +1159,7 @@ README also states the view is generated procedurally with no external models/te
 | AC-37 | met | `impact-effects.test.ts` 12/14/6/3 pools, lifetimes, recycling, orientation, reduced; manual burst |
 | AC-38 | met | `impact-effects.test.ts` 330/150/480, 1→5, prebuilt ring, 3 pool; manual ring frames |
 | AC-39 | met | `Hud.test.tsx`/`App.test.tsx` max 3/1100 ms/45 px/600 ms reduced/no HUD pulse; measured popup lifetime |
-| AC-40 | met | `LevelCompleteBanner.test.tsx` counts/CSS; `spaceship.test.ts`/`scene.test.ts` fly-by; level frames; no shake |
+| AC-40 | met (fly-by evidence corrected by T16) | `LevelCompleteBanner.test.tsx` counts/CSS; `spaceship.test.ts` roll/trail; T16 `scene-spaceship.test.ts` production `levelIndex`-rise trigger — exactly one 700 ms roll, 16-point fire trail, reduced-motion cancel; level frames; no shake |
 | AC-41 | met | T15 `0bfc524` fix verified: reveal 306 px, orb 80 px (100 px overshoot), card 198/183 px, fully visible at 1280/1920; timing 1290 pinned (1300–1310 measured with 5 ms poll + screenshot latency); copy/ARIA and reduced instant rest unchanged. Before-fix clipped values retained as historical evidence |
 | AC-42 | met | `ship-motion.test.ts`/`spaceship.test.ts` bank/pitch/trail/idle/pulse/no recoil; moving trail high true/8 points; reduced zeros |
 | AC-43 | met | panel `data-equipping` 9–263 ms (~254 ms vs 260 pinned); `UpgradesPanel.test.tsx` 260 ms; no coin HUD pulse; reduced skip |

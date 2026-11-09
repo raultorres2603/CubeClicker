@@ -383,7 +383,9 @@ describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
     expect(region?.textContent).toContain('Port Silver Wing');
     expect(region?.textContent).toContain('Port Wing');
     expect(region?.textContent).toContain('New');
-    expect(screen.getByRole('button', { name: 'Equip Port Silver Wing' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Equip Port Silver Wing' }).className).toBe(
+      'customization-reveal-equip',
+    );
   });
 
   it('renders the epic/duplicate copy and the wireframe orb with an orange core', () => {
