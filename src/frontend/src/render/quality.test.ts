@@ -6,12 +6,16 @@ import {
   QUALITY_CURSOR_MESH_COUNTS,
   QUALITY_DOWNGRADE_COOLDOWN_MS,
   QUALITY_DOWNGRADE_STABLE_FRAMES,
+  QUALITY_EXPLOSION_EMBER_COUNTS,
+  QUALITY_EXPLOSION_FLASH_COUNTS,
+  QUALITY_EXPLOSION_SMOKE_COUNTS,
   QUALITY_LOW_HIDDEN_MESHES,
   QUALITY_LOW_UPGRADE_STABLE_FRAMES,
   QUALITY_MAX_FRAME_MS,
   QUALITY_MEDIUM_HIDDEN_MESHES,
   QUALITY_MIN_SAMPLES,
   QUALITY_SHARD_COUNTS,
+  QUALITY_SHOT_FX,
   QUALITY_SPARK_COUNTS,
   QUALITY_UPGRADE_COOLDOWN_MS,
   QUALITY_UPGRADE_STABLE_FRAMES,
@@ -38,10 +42,14 @@ describe('quality constants (AC-52)', () => {
     expect(QUALITY_UPGRADE_COOLDOWN_MS).toBe(3000);
   });
 
-  it('pins the per-tier mesh, shard and spark counts', () => {
+  it('pins the per-tier mesh, shard, spark, explosion and shot values', () => {
     expect(QUALITY_CURSOR_MESH_COUNTS).toEqual({ high: 21, medium: 17, low: 15 });
     expect(QUALITY_SHARD_COUNTS).toEqual({ high: 14, medium: 7, low: 0 });
     expect(QUALITY_SPARK_COUNTS).toEqual({ high: 24, medium: 12, low: 0 });
+    expect(QUALITY_EXPLOSION_FLASH_COUNTS).toEqual({ high: 1, medium: 1, low: 0 });
+    expect(QUALITY_EXPLOSION_EMBER_COUNTS).toEqual({ high: 8, medium: 4, low: 0 });
+    expect(QUALITY_EXPLOSION_SMOKE_COUNTS).toEqual({ high: 4, medium: 2, low: 0 });
+    expect(QUALITY_SHOT_FX).toEqual({ high: true, medium: true, low: false });
     expect(QUALITY_MEDIUM_HIDDEN_MESHES).toEqual([
       'cursor-hull-seam-1',
       'cursor-hull-seam-2',
@@ -60,16 +68,20 @@ describe('quality constants (AC-52)', () => {
 });
 
 describe('qualityFeatures matrix (AC-52)', () => {
-  it('drops the retired impact fields and constant', () => {
+  it('pins the feature key set and drops the retired impact constant', () => {
     expect(Object.keys(qualityModule)).not.toContain('QUALITY_IMPACT_COUNTS');
     expect(Object.keys(qualityFeatures('high', false)).sort()).toEqual([
       'bannerMotion',
       'coinPopup',
       'cursorMeshCount',
       'cursorMotion',
+      'explosionEmbers',
+      'explosionFlash',
+      'explosionSmoke',
       'hiddenCursorMeshes',
       'impactShards',
       'reticle',
+      'shotFx',
       'sparks',
       'tier',
       'trail',
@@ -86,6 +98,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 21,
       impactShards: 14,
       sparks: 24,
+      explosionFlash: 1,
+      explosionEmbers: 8,
+      explosionSmoke: 4,
+      shotFx: true,
       coinPopup: true,
       bannerMotion: true,
     });
@@ -101,6 +117,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 17,
       impactShards: 7,
       sparks: 12,
+      explosionFlash: 1,
+      explosionEmbers: 4,
+      explosionSmoke: 2,
+      shotFx: true,
       coinPopup: true,
       bannerMotion: true,
     });
@@ -116,6 +136,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 15,
       impactShards: 0,
       sparks: 0,
+      explosionFlash: 0,
+      explosionEmbers: 0,
+      explosionSmoke: 0,
+      shotFx: false,
       coinPopup: true,
       bannerMotion: true,
     });
@@ -131,6 +155,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 21,
       impactShards: 0,
       sparks: 0,
+      explosionFlash: 0,
+      explosionEmbers: 0,
+      explosionSmoke: 0,
+      shotFx: false,
       coinPopup: true,
       bannerMotion: false,
     });
@@ -143,6 +171,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 17,
       impactShards: 0,
       sparks: 0,
+      explosionFlash: 0,
+      explosionEmbers: 0,
+      explosionSmoke: 0,
+      shotFx: false,
       coinPopup: true,
       bannerMotion: false,
     });
@@ -155,6 +187,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMeshCount: 15,
       impactShards: 0,
       sparks: 0,
+      explosionFlash: 0,
+      explosionEmbers: 0,
+      explosionSmoke: 0,
+      shotFx: false,
       coinPopup: true,
       bannerMotion: false,
     });

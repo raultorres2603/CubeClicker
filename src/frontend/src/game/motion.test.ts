@@ -81,7 +81,34 @@ describe('MOTION tokens (AC-34)', () => {
       shipPitchGain: 1.6,
       shipIdleAmplitude: 0.015,
       shipIdlePeriodMs: 2600,
+      // Small destruction and realistic shot FX.
+      miniCubeDestroyMs: 140,
+      miniCubeDestroyGrowMs: 30,
+      miniCubeDestroyPeakScale: 1.08,
+      miniCubeDestroyFlashMs: 90,
+      miniCubeDestroyFlashGain: 3,
+      impactFlashMs: 140,
+      impactFlashGrowMs: 60,
+      impactEmberCount: 8,
+      impactEmberLifetimeMs: 380,
+      impactSmokeCount: 4,
+      impactSmokeLifetimeMs: 480,
+      shotMuzzleFlashMs: 80,
+      shotRecoilMs: 120,
+      shotRecoilDistance: 0.12,
     });
+  });
+
+  it('pins the destruction and shot headline sums', () => {
+    expect(MOTION.impactFlashGrowMs).toBe(60);
+    expect(MOTION.impactFlashMs).toBe(140);
+    expect(MOTION.impactFlashGrowMs).toBeLessThan(MOTION.impactFlashMs);
+    expect(MOTION.miniCubeDestroyGrowMs).toBe(30);
+    expect(MOTION.miniCubeDestroyMs).toBe(140);
+    expect(MOTION.miniCubeDestroyGrowMs).toBeLessThan(MOTION.miniCubeDestroyMs);
+    expect(MOTION.shotMuzzleFlashMs).toBe(80);
+    expect(MOTION.shotRecoilMs).toBe(120);
+    expect(MOTION.shotRecoilMs).toBeGreaterThan(MOTION.shotMuzzleFlashMs);
   });
 
   it('pins the observed animation headline values from the brief', () => {

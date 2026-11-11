@@ -89,6 +89,34 @@ export const QUALITY_SPARK_COUNTS: Readonly<Record<QualityTier, number>> = {
   low: 0,
 };
 
+/** Impact flash instances per pop per tier (AC-2). */
+export const QUALITY_EXPLOSION_FLASH_COUNTS: Readonly<Record<QualityTier, number>> = {
+  high: 1,
+  medium: 1,
+  low: 0,
+};
+
+/** Impact ember points per pop per tier (AC-2). */
+export const QUALITY_EXPLOSION_EMBER_COUNTS: Readonly<Record<QualityTier, number>> = {
+  high: 8,
+  medium: 4,
+  low: 0,
+};
+
+/** Impact smoke points per pop per tier (AC-2). */
+export const QUALITY_EXPLOSION_SMOKE_COUNTS: Readonly<Record<QualityTier, number>> = {
+  high: 4,
+  medium: 2,
+  low: 0,
+};
+
+/** Shot muzzle flash and recoil presentation per tier (AC-2). */
+export const QUALITY_SHOT_FX: Readonly<Record<QualityTier, boolean>> = {
+  high: true,
+  medium: true,
+  low: false,
+};
+
 /** The exact per-tier visual feature matrix, reduced-motion aware (AC-52). */
 export interface QualityFeatures {
   /** The tier the matrix was computed for. */
@@ -107,6 +135,14 @@ export interface QualityFeatures {
   readonly impactShards: number;
   /** Spark fragments per explosion (24/12/0; 0 under reduced motion). */
   readonly sparks: number;
+  /** Impact flash instances per pop (1/1/0; 0 under reduced motion). */
+  readonly explosionFlash: number;
+  /** Impact ember points per pop (8/4/0; 0 under reduced motion). */
+  readonly explosionEmbers: number;
+  /** Impact smoke points per pop (4/2/0; 0 under reduced motion). */
+  readonly explosionSmoke: number;
+  /** Shot muzzle flash and recoil presentation (true/true/false; false reduced). */
+  readonly shotFx: boolean;
   /** Coin popup stays core at every tier. */
   readonly coinPopup: boolean;
   /** Banner stays core; this flag disables its motion only under reduced motion. */
@@ -132,6 +168,10 @@ export function qualityFeatures(
     cursorMeshCount: QUALITY_CURSOR_MESH_COUNTS[tier],
     impactShards: reducedMotion ? 0 : QUALITY_SHARD_COUNTS[tier],
     sparks: reducedMotion ? 0 : QUALITY_SPARK_COUNTS[tier],
+    explosionFlash: reducedMotion ? 0 : QUALITY_EXPLOSION_FLASH_COUNTS[tier],
+    explosionEmbers: reducedMotion ? 0 : QUALITY_EXPLOSION_EMBER_COUNTS[tier],
+    explosionSmoke: reducedMotion ? 0 : QUALITY_EXPLOSION_SMOKE_COUNTS[tier],
+    shotFx: !reducedMotion && QUALITY_SHOT_FX[tier],
     coinPopup: true,
     bannerMotion: !reducedMotion,
   };

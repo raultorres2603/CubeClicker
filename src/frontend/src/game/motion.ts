@@ -84,6 +84,21 @@ export const MOTION = {
   shipPitchGain: 1.6,
   shipIdleAmplitude: 0.015,
   shipIdlePeriodMs: 2600,
+  // Small destruction and realistic shot FX (spec AC-1).
+  miniCubeDestroyMs: 140,
+  miniCubeDestroyGrowMs: 30,
+  miniCubeDestroyPeakScale: 1.08,
+  miniCubeDestroyFlashMs: 90,
+  miniCubeDestroyFlashGain: 3,
+  impactFlashMs: 140,
+  impactFlashGrowMs: 60,
+  impactEmberCount: 8,
+  impactEmberLifetimeMs: 380,
+  impactSmokeCount: 4,
+  impactSmokeLifetimeMs: 480,
+  shotMuzzleFlashMs: 80,
+  shotRecoilMs: 120,
+  shotRecoilDistance: 0.12,
 } as const;
 
 /** Standard cubic ease-out: `1 − (1 − t)³` (AC-34; the app's only implementation). */
