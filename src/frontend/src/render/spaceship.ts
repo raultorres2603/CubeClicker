@@ -16,9 +16,12 @@
  *   equip pulse and the observed 100 ms plume flicker;
  * - the 700 ms/360° fly-by roll on a 1.2-world-unit orbit with a 16-point/700 ms fire
  *   trail;
- * - the unchanged shot list and travel time.
+ * - the unchanged shot list and 180 ms travel, now presented as a glowing tapered bolt
+ *   (`shot-bolt`) with an 80 ms additive muzzle flash (`shot-muzzle-flash`) and a 120 ms
+ *   model-local recoil (0.12 local units): `Shot.start` stays the ship anchor, `Shot.muzzle`
+ *   is the bolt's visual origin, and only `model.group.position.z` moves — the outer group,
+ *   camera and HUD never shake. Low tier / reduced motion suppress the flash and recoil.
  *
- * There is no muzzle/recoil/press response: the reference ship does not react to pops.
  * Reduced motion snaps to the pointer, hides the ignitions, clears the trail and yields
  * exact zero bank/pitch, pulse scale 1 and no fly-by.
  */
@@ -28,13 +31,14 @@ import {
   BufferAttribute,
   BufferGeometry,
   Camera,
+  ConeGeometry,
   DynamicDrawUsage,
   Group,
   Mesh,
   MeshBasicMaterial,
+  OctahedronGeometry,
   Points,
   PointsMaterial,
-  SphereGeometry,
   Vector3,
 } from 'three';
 
@@ -48,7 +52,7 @@ import {
   SPACESHIP_PLANE_DISTANCE,
   SPACESHIP_SCALE,
 } from '../game/effects';
-import { MOTION, easeInOutCubic } from '../game/motion';
+import { MOTION, easeInOutCubic, easeOutCubic } from '../game/motion';
 import { type SlotId } from '../game/parts-v2';
 import {
   createCursorShipModel,
@@ -73,16 +77,50 @@ const TRAIL_POINT_SIZE = 0.12;
 /** Warm exhaust colour of the trail. */
 export const SPACESHIP_TRAIL_COLOR = 0xff8844;
 
-/** One in-flight shot: a small sphere travelling linearly from `start` to `target`. */
+/** Forward offset (local, unrotated group units) of the shot's visual origin. */
+export const SHOT_MUZZLE_OFFSET = 0.78;
+
+/** Lifetime of the additive muzzle flash in ms (`MOTION.shotMuzzleFlashMs`, 80). */
+export const SHOT_MUZZLE_FLASH_MS = MOTION.shotMuzzleFlashMs;
+
+/** Bolt colour: a warm white-hot tracer. */
+export const SHOT_BOLT_COLOR = 0xfff1c8;
+
+/** Muzzle-flash colour: a warmer amber than the bolt. */
+export const SHOT_MUZZLE_FLASH_COLOR = 0xffd27a;
+
+/** One in-flight shot: a glowing bolt travelling linearly from `muzzle` to `target`. */
 export interface Shot {
-  /** The shot's mesh (a small sphere). */
+  /** The bolt mesh (a 0.55 × 0.07 cone, `name === 'shot-bolt'`). */
   readonly mesh: Mesh;
-  /** Start position, captured at fire time. */
-  start: Vector3;
+  /** The ship anchor captured at fire time (`spawnShot`'s `start`). */
+  readonly start: Vector3;
+  /** The bolt's visual origin: `start + rotate(group.quaternion, (0, 0, 0.78))`. */
+  readonly muzzle: Vector3;
   /** Target position (the mini-cube's world origin), captured at fire time. */
-  target: Vector3;
-  /** Milliseconds remaining until arrival. */
+  readonly target: Vector3;
+  /** The muzzle-flash mesh (`name === 'shot-muzzle-flash'`); detached when suppressed. */
+  readonly muzzleFlash: Mesh;
+  /** Milliseconds remaining of the 80 ms muzzle flash (0 when suppressed/expired). */
+  muzzleRemainingMs: number;
+  /** Milliseconds remaining until arrival (180 ms). */
   remainingMs: number;
+}
+
+/**
+ * Model-local recoil offset at `elapsedMs` after the shot (spec AC-6).
+ *
+ * `-0.12 · (1 − easeOutCubic(clamp01(elapsedMs / 120)))` for `0 ≤ elapsedMs < 120`, and
+ * `0` otherwise (including a negative elapsed): `0 → -0.12`, `60 → -0.015`, `120 → 0`.
+ */
+export function shotRecoilOffsetAt(elapsedMs: number): number {
+  if (elapsedMs < 0 || elapsedMs >= MOTION.shotRecoilMs) {
+    return 0;
+  }
+  return (
+    -MOTION.shotRecoilDistance *
+    (1 - easeOutCubic(elapsedMs / MOTION.shotRecoilMs))
+  );
 }
 
 /** The spaceship handle handed to the scene. */
@@ -140,6 +178,12 @@ export interface Spaceship {
   setCursorMotionEnabled(enabled: boolean): void;
   /** Adaptive quality: hides the named model meshes (empty restores all). */
   setHiddenMeshes(names: readonly string[]): void;
+  /** Adaptive quality: enables the muzzle flash and recoil; the bolt always travels. */
+  setShotFxEnabled(enabled: boolean): void;
+  /** Live muzzle-flash meshes (1 per allowed shot for 80 ms; 0 when suppressed). */
+  getMuzzleFlashCount(): number;
+  /** The recoil offset currently applied to `model.group.position.z` (0 at rest). */
+  getRecoilOffset(): number;
   /** Releases every geometry/material the spaceship and its shots own; idempotent. */
   dispose(): void;
 }
@@ -245,8 +289,30 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
   const deltaScratch = new Vector3();
   const targetScratch = new Vector3();
   const previousPositionScratch = new Vector3();
-  const shotGeometry = new SphereGeometry(0.08, 8, 8);
-  const shotMaterial = new MeshBasicMaterial({ color: 0xffff66 });
+  // Shot presentation (spec AC-6): one shared bolt geometry (tip at local +z), one shared
+  // muzzle geometry and their additive materials. One mesh per shot — no new geometry or
+  // material after construction.
+  const boltGeometry = new ConeGeometry(0.07, 0.55, 6);
+  boltGeometry.rotateX(Math.PI / 2);
+  const boltMaterial = new MeshBasicMaterial({
+    color: SHOT_BOLT_COLOR,
+    transparent: true,
+    opacity: 0.95,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const muzzleGeometry = new OctahedronGeometry(0.22, 0);
+  const muzzleMaterial = new MeshBasicMaterial({
+    color: SHOT_MUZZLE_FLASH_COLOR,
+    transparent: true,
+    opacity: 0.9,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const shotForward = new Vector3(0, 0, 1);
+  const shotDirection = new Vector3();
 
   let disposed = false;
   let timeMs = 0;
@@ -258,6 +324,10 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
   let reduced = false;
   let cursorMotionEnabled = true;
   let trailEnabled = true;
+  let shotFxEnabled = true;
+  let liveMuzzleFlashCount = 0;
+  let recoilStartMs = Number.NEGATIVE_INFINITY;
+  let recoilOffset = 0;
   let pulseStartMs = Number.NEGATIVE_INFINITY;
   let pulseScale = 1;
 
@@ -351,6 +421,27 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     }
   }
 
+  /** Detaches every live muzzle flash (quality disable / reduced motion / teardown). */
+  function clearMuzzleFlashes(): void {
+    if (liveMuzzleFlashCount === 0) {
+      return;
+    }
+    for (const shot of shots) {
+      if (shot.muzzleRemainingMs > 0) {
+        shot.muzzleRemainingMs = 0;
+        shotsGroup.remove(shot.muzzleFlash);
+      }
+    }
+    liveMuzzleFlashCount = 0;
+  }
+
+  /** Cancels the recoil and restores the model subgroup to its neutral z. */
+  function resetRecoil(): void {
+    recoilStartMs = Number.NEGATIVE_INFINITY;
+    recoilOffset = 0;
+    model.group.position.z = 0;
+  }
+
   function updateIgnitions(dtMs: number, delta: number): void {
     if (reduced || dtMs <= 0 || delta < SPACESHIP_IGNITION_MOVEMENT_THRESHOLD) {
       resetIgnitions();
@@ -419,6 +510,9 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
       }
       trailStore.count = 0;
       writeTrailBuffer();
+      // Reduced motion is authoritative for the shot reaction: no flash, no recoil.
+      clearMuzzleFlashes();
+      resetRecoil();
     }
 
     if (!hasPointer) {
@@ -426,6 +520,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
       group.rotation.set(0, 0, 0);
       model.group.rotation.set(0, 0, 0);
       model.group.position.set(0, 0, 0);
+      resetRecoil();
       applyPulse();
       hasPreviousNdc = false;
       writeTrailBuffer();
@@ -452,6 +547,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
       group.rotation.set(0, 0, shipRollRad(flyByElapsedMs, reducedMotion));
       model.group.position.set(0, 0, 0);
       model.group.rotation.set(0, 0, 0);
+      resetRecoil();
       pushTrail(group.position.x, group.position.y, group.position.z, timeMs);
       writeTrailBuffer();
       if (progress >= 1) {
@@ -485,6 +581,10 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     } else {
       model.group.position.y = 0;
     }
+    // The recoil is a model-local z offset (never the camera/HUD/outer group): 0.12 local
+    // units over 120 ms, applied only when the shot layer is enabled and motion is allowed.
+    recoilOffset = shotFxEnabled && !reduced ? shotRecoilOffsetAt(timeMs - recoilStartMs) : 0;
+    model.group.position.z = recoilOffset;
 
     applyPulse();
     updateIgnitions(dtMs, delta);
@@ -516,12 +616,41 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
   }
 
   function spawnShot(start: Vector3, target: Vector3): Shot {
-    const mesh = new Mesh(shotGeometry, shotMaterial);
-    mesh.position.copy(start);
+    // `Shot.muzzle` is the bolt's real origin: the anchor plus the local forward offset
+    // rotated by the ship's current bank/pitch (scale is deliberately not applied).
+    const muzzle = new Vector3(0, 0, SHOT_MUZZLE_OFFSET)
+      .applyQuaternion(group.quaternion)
+      .add(start);
+    const mesh = new Mesh(boltGeometry, boltMaterial);
+    mesh.name = 'shot-bolt';
+    mesh.position.copy(muzzle);
+    shotDirection.copy(target).sub(muzzle);
+    if (shotDirection.lengthSq() > 1e-12) {
+      shotDirection.normalize();
+      mesh.quaternion.setFromUnitVectors(shotForward, shotDirection);
+    }
+
+    const muzzleFlash = new Mesh(muzzleGeometry, muzzleMaterial);
+    muzzleFlash.name = 'shot-muzzle-flash';
+    muzzleFlash.position.copy(muzzle);
+    muzzleFlash.quaternion.copy(mesh.quaternion);
+
+    const flashEnabled = shotFxEnabled && !reduced;
+    if (flashEnabled) {
+      muzzleFlash.scale.setScalar(1);
+      muzzleMaterial.opacity = 0.9;
+      shotsGroup.add(muzzleFlash);
+      liveMuzzleFlashCount += 1;
+      recoilStartMs = timeMs;
+    }
+
     const shot: Shot = {
       mesh,
       start: start.clone(),
+      muzzle,
       target: target.clone(),
+      muzzleFlash,
+      muzzleRemainingMs: flashEnabled ? SHOT_MUZZLE_FLASH_MS : 0,
       remainingMs: SHOT_TRAVEL_MS,
     };
     shots.push(shot);
@@ -540,9 +669,28 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
       shot.remainingMs = Math.max(0, shot.remainingMs - advance);
       const elapsed = SHOT_TRAVEL_MS - shot.remainingMs;
       const t = SHOT_TRAVEL_MS > 0 ? elapsed / SHOT_TRAVEL_MS : 1;
-      shot.mesh.position.copy(shot.start).lerp(shot.target, t);
+      shot.mesh.position.copy(shot.muzzle).lerp(shot.target, t);
+      if (shot.muzzleRemainingMs > 0) {
+        shot.muzzleRemainingMs = Math.max(0, shot.muzzleRemainingMs - advance);
+        const flashElapsed = SHOT_MUZZLE_FLASH_MS - shot.muzzleRemainingMs;
+        const flashProgress =
+          SHOT_MUZZLE_FLASH_MS > 0 ? flashElapsed / SHOT_MUZZLE_FLASH_MS : 1;
+        shot.muzzleFlash.scale.setScalar(1 + 0.4 * easeOutCubic(flashProgress));
+        (shot.muzzleFlash.material as MeshBasicMaterial).opacity = 0.9 * (1 - flashProgress);
+        if (shot.muzzleRemainingMs <= 0) {
+          shotsGroup.remove(shot.muzzleFlash);
+          liveMuzzleFlashCount -= 1;
+        }
+      }
       if (shot.remainingMs <= 0) {
         shot.mesh.position.copy(shot.target);
+        if (shot.muzzleRemainingMs > 0) {
+          // Defensive: an arrival can never precede the 80 ms flash at the pinned 180 ms
+          // travel, but a future shortened travel must not leak a live flash.
+          shot.muzzleRemainingMs = 0;
+          shotsGroup.remove(shot.muzzleFlash);
+          liveMuzzleFlashCount -= 1;
+        }
         shots.splice(index, 1);
         shotsGroup.remove(shot.mesh);
         completed.push(shot);
@@ -577,20 +725,32 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     }
   }
 
+  function setShotFxEnabled(enabled: boolean): void {
+    shotFxEnabled = enabled;
+    if (!enabled) {
+      clearMuzzleFlashes();
+      resetRecoil();
+    }
+  }
+
   function dispose(): void {
     if (disposed) {
       return;
     }
     disposed = true;
     shots.length = 0;
+    liveMuzzleFlashCount = 0;
     shotsGroup.clear();
+    resetRecoil();
     trailStore.count = 0;
     group.clear();
     model.dispose();
     trailGeometry.dispose();
     trailMaterial.dispose();
-    shotGeometry.dispose();
-    shotMaterial.dispose();
+    boltGeometry.dispose();
+    boltMaterial.dispose();
+    muzzleGeometry.dispose();
+    muzzleMaterial.dispose();
   }
 
   const handle: Spaceship = {
@@ -616,6 +776,9 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     setTrailEnabled,
     setCursorMotionEnabled,
     setHiddenMeshes,
+    setShotFxEnabled,
+    getMuzzleFlashCount: () => liveMuzzleFlashCount,
+    getRecoilOffset: () => recoilOffset,
     dispose,
   };
 

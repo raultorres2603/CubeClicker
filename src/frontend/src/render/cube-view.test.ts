@@ -508,80 +508,176 @@ describe('seamed tiling (AC-1)', () => {
 });
 
 describe('hideMiniCube', () => {
-  it('conceals on the same frame: zero scale, position preserved, no colour write (AC-36)', () => {
+  it('hides immediately and starts the destroy at brightness 3 on the hide frame (AC-4)', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
 
-    // No `instant` flag: the accepted 160 ms pop is superseded by the one-frame conceal.
     view.hideMiniCube('front:0:0');
 
+    // Hidden/unpickable on the same frame, but the tile is still full size and hot.
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
     expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
+    expect(instanceAxis(mesh, 0, 1)).toEqual([0, TILE_SIZE_F32, 0]);
+    expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, Math.fround(MINI_CUBE_THICKNESS)]);
+    expect(instanceColor(mesh, 0)).toEqual([3, 3, 3]);
+    expect(mesh.count).toBe(25);
+  });
+
+  it('advances the 140 ms destroy timeline through the pinned curves', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+    view.hideMiniCube('front:0:0');
+
+    // t = 15: 1.07 scale, 2.6667 brightness (the instance buffers are float32).
+    view.update(15);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([1.0164999961853027, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([2.6666667461395264, 2.6666667461395264, 2.6666667461395264]);
+
+    // t = 30: the 1.08 peak, brightness 2.3333.
+    view.update(15);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([1.0260000228881836, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([2.3333332538604736, 2.3333332538604736, 2.3333332538604736]);
+
+    // t = 70: mid-collapse, still bright.
+    view.update(40);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0.4154876172542572, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1.4444444179534912, 1.4444444179534912, 1.4444444179534912]);
+
+    // t = 139: a tiny non-zero remnant before the pinned end.
+    view.update(69);
+    expect(instanceAxis(mesh, 0, 0)[0]).toBe(0.00008479339157929644);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+
+    // t = 140: zero-scaled, colour restored, record released.
+    view.update(1);
     expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(mesh, 0, 1)).toEqual([0, 0, 0]);
     expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, 0]);
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
-    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
-    expect(mesh.count).toBe(25);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
 
-    // There is no pop record: update cannot resurrect an intermediate state.
+    // The released record never writes again.
     const writes = vi.spyOn(mesh, 'setMatrixAt');
-    view.update(50);
+    view.update(140);
     expect(writes).toHaveBeenCalledTimes(0);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
-  it('treats the legacy instant flag as equivalent to the default conceal', () => {
+  it('does not advance the destroy on a zero or negative frame', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+    view.hideMiniCube('front:0:0');
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
+
+    view.update(0);
+    view.update(-16);
+    view.update(-0.001);
+
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([3, 3, 3]);
+  });
+
+  it('takes the instant path for reduced motion and roster hydration (AC-4)', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
 
     view.hideMiniCube('front:0:0', true);
 
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
+    expect(instancePosition(mesh, 0)).toEqual([-2, 2, TILE_DISTANCE]);
     expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 0, 1)).toEqual([0, 0, 0]);
     expect(instanceAxis(mesh, 0, 2)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+
+    // No record exists: later frames cannot resurrect a flash or a collapse state.
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
+    view.update(15);
+    view.update(140);
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
-  it('never writes again when the same id is hidden twice', () => {
+  it('never restarts a running destroy when the same id is hidden twice', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
     view.hideMiniCube('front:0:0');
+    view.update(70);
+
     const writes = vi.spyOn(mesh, 'setMatrixAt');
-
     view.hideMiniCube('front:0:0');
-    view.update(0);
-
     expect(writes).toHaveBeenCalledTimes(0);
+    // The record kept its 70 ms: the next 70 ms completes the collapse.
+    view.update(70);
     expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
     expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
   });
 
-  it('scales the conceal from the inset cell of a larger grid (N = 7)', () => {
+  it('scales the destroy from the inset cell of a larger grid (N = 7)', () => {
     const view = createCubeView(STYLE, 7);
     const mesh = faceMesh(view, 'front');
 
     view.hideMiniCube('front:3:3');
+    view.update(140);
 
     expect(instanceAxis(mesh, 24, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(mesh, 24, 1)).toEqual([0, 0, 0]);
     expect(instanceAxis(mesh, 24, 2)).toEqual([0, 0, 0]);
-    // The centre is unchanged by the conceal.
+    // The centre is unchanged by the destroy.
     expect(instancePosition(mesh, 24)).toEqual([0, 0, TILE_DISTANCE]);
   });
 
-  it('leaves every other instance and face untouched', () => {
+  it('animates exactly one instance and leaves every neighbour untouched', () => {
     const view = createCubeView(STYLE);
 
     view.hideMiniCube('top:1:1');
+    view.update(15);
 
+    const top = faceMesh(view, 'top');
     // top index 6 = row 1, col 1 → (0, 2.625, 0) + right * -1 + down * -1.
-    expect(instancePosition(faceMesh(view, 'top'), 6)).toEqual([-1, TILE_DISTANCE, -1]);
-    expect(instanceAxis(faceMesh(view, 'top'), 6, 0)).toEqual([0, 0, 0]);
-    expect(instanceAxis(faceMesh(view, 'top'), 7, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
-    expect(instanceColor(faceMesh(view, 'top'), 7)).toEqual([1, 1, 1]);
-    expect(instanceAxis(faceMesh(view, 'front'), 6, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
+    expect(instancePosition(top, 6)).toEqual([-1, TILE_DISTANCE, -1]);
+    expect(instanceAxis(top, 6, 0)).toEqual([1.0164999961853027, 0, 0]);
+    expect(instanceColor(top, 6)).toEqual([2.6666667461395264, 2.6666667461395264, 2.6666667461395264]);
+    expect(instanceAxis(top, 7, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
+    expect(instanceColor(top, 7)).toEqual([1, 1, 1]);
+    expect(instanceAxis(faceMesh(view, 'front'), 6, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
     expect(view.isMiniCubeHidden('top:1:2')).toBe(false);
     expect(view.isMiniCubeHidden('front:0:1')).toBe(false);
+  });
+
+  it('keeps at most gridSize² × 6 destroy records (150 at 5 × 5)', () => {
+    const view = createCubeView(STYLE);
+    const ids: MiniCubeId[] = FACE_ORDER.flatMap((faceId) =>
+      Array.from({ length: 25 }, (_, index) =>
+        `${faceId}:${Math.floor(index / 5)}:${index % 5}` as MiniCubeId,
+      ),
+    );
+
+    for (const id of ids) {
+      view.hideMiniCube(id);
+    }
+    expect(ids).toHaveLength(150);
+    for (const id of ids) {
+      expect(view.isMiniCubeHidden(id)).toBe(true);
+    }
+    const writes = FACE_ORDER.map((faceId) => vi.spyOn(faceMesh(view, faceId), 'setMatrixAt'));
+
+    view.update(140);
+
+    // Exactly one final zero-scale write per recorded instance (25 per face).
+    for (const spy of writes) {
+      expect(spy).toHaveBeenCalledTimes(25);
+    }
+    for (const faceId of FACE_ORDER) {
+      const mesh = faceMesh(view, faceId);
+      for (let index = 0; index < 25; index += 1) {
+        expect(instanceAxis(mesh, index, 0)).toEqual([0, 0, 0]);
+        expect(instanceColor(mesh, index)).toEqual([1, 1, 1]);
+      }
+    }
   });
 
   it('rejects malformed and off-grid ids', () => {
@@ -650,29 +746,34 @@ describe('hideMiniCube', () => {
 });
 
 describe('settlePops', () => {
-  it('is a compatibility no-op: the conceal already happened on the hide frame', () => {
+  it('zero-scales every live destroy record and restores colour immediately', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const back = faceMesh(view, 'back');
 
     view.hideMiniCube('front:0:0');
     view.hideMiniCube('back:4:4');
+    view.update(70);
+    expect(instanceAxis(front, 0, 0)[0]).toBe(0.4154876172542572);
+    expect(instanceAxis(back, 24, 0)[0]).toBe(-0.4154876172542572);
+
+    view.settlePops();
+
     expect(instanceAxis(front, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(back, 24, 0)).toEqual([0, 0, 0]);
-
-    const frontWrites = vi.spyOn(front, 'setMatrixAt');
-    const backWrites = vi.spyOn(back, 'setMatrixAt');
-    view.settlePops();
-    view.update(50);
-
-    expect(frontWrites).toHaveBeenCalledTimes(0);
-    expect(backWrites).toHaveBeenCalledTimes(0);
     expect(instanceColor(front, 0)).toEqual([1, 1, 1]);
     expect(instanceColor(back, 24)).toEqual([1, 1, 1]);
     expect(instancePosition(front, 0)).toEqual([-2, 2, TILE_DISTANCE]);
+
+    // The records are gone: no later frame writes them again.
+    const frontWrites = vi.spyOn(front, 'setMatrixAt');
+    const backWrites = vi.spyOn(back, 'setMatrixAt');
+    view.update(50);
+    expect(frontWrites).toHaveBeenCalledTimes(0);
+    expect(backWrites).toHaveBeenCalledTimes(0);
   });
 
-  it('is a no-op when nothing was hidden', () => {
+  it('is a no-op when nothing is collapsing', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const writes = vi.spyOn(front, 'setMatrixAt');
@@ -680,7 +781,7 @@ describe('settlePops', () => {
     view.settlePops();
 
     expect(writes).toHaveBeenCalledTimes(0);
-    expect(instanceAxis(front, 0, 0)).toEqual([Math.fround(TILE_SIZE), 0, 0]);
+    expect(instanceAxis(front, 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
   });
 });
 
@@ -725,13 +826,14 @@ describe('removeFace', () => {
     expect(view.group.children).toHaveLength(6);
   });
 
-  it('detaches a face whose hidden tiles were already concealed and keeps the others', () => {
+  it('detaches a face whose hidden tiles were already destroyed and keeps the others', () => {
     const view = createCubeView(STYLE);
     const front = faceMesh(view, 'front');
     const back = faceMesh(view, 'back');
 
     view.hideMiniCube('front:0:0');
     view.hideMiniCube('back:0:0');
+    view.update(140);
     expect(instanceAxis(front, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceAxis(back, 0, 0)).toEqual([0, 0, 0]);
 
@@ -742,6 +844,22 @@ describe('removeFace', () => {
     expect(frontWrites).toHaveBeenCalledTimes(0);
     expect(instanceAxis(back, 0, 0)).toEqual([0, 0, 0]);
     expect(instanceColor(back, 0)).toEqual([1, 1, 1]);
+  });
+
+  it('drops a removed face’s live destroy records without writing them again', () => {
+    const view = createCubeView(STYLE);
+    const front = faceMesh(view, 'front');
+
+    view.hideMiniCube('front:0:0');
+    view.update(70);
+    view.removeFace('front');
+    const writes = vi.spyOn(front, 'setMatrixAt');
+
+    view.update(70);
+
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(view.faces.has('front')).toBe(false);
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(true);
   });
 
   it('leaves the remaining faces operable', () => {
@@ -763,7 +881,7 @@ describe('applyStyle', () => {
     const body = view.body.material as MeshPhysicalMaterial;
 
     view.hideMiniCube('front:0:0');
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    expect(instanceColor(mesh, 0)).toEqual([3, 3, 3]);
 
     view.applyStyle(CUBE_STYLES[3]!);
 
@@ -775,11 +893,11 @@ describe('applyStyle', () => {
     expect(tileMaterial(view, 'front').metalness).toBe(0.9);
     expect(tileMaterial(view, 'front').roughness).toBe(0.25);
     expect(tileMaterial(view, 'top').color.getHexString()).toBe('ffcc66');
-    // The per-instance buffers are untouched: the concealed tile stays zero-scaled and
-    // every colour slot remains at the idle multiplier.
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    // The per-instance buffers are untouched: the collapsing tile keeps its flash colour
+    // and every other colour slot remains at the idle multiplier.
+    expect(instanceColor(mesh, 0)).toEqual([3, 3, 3]);
     expect(instanceColor(mesh, 1)).toEqual([1, 1, 1]);
-    expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
     // In place: same mesh, same instance count, nothing rebuilt.
     expect(faceMesh(view, 'front')).toBe(mesh);
     expect(mesh.count).toBe(25);
@@ -832,10 +950,10 @@ describe('dispose', () => {
     expect(view.faces.size).toBe(0);
   });
 
-  it('leaves the already-concealed instance zero-scaled after disposal', () => {
+  it('leaves an instant-concealed instance zero-scaled after disposal', () => {
     const view = createCubeView(STYLE);
     const mesh = faceMesh(view, 'front');
-    view.hideMiniCube('front:0:0');
+    view.hideMiniCube('front:0:0', true);
 
     view.dispose();
     const writes = vi.spyOn(mesh, 'setMatrixAt');
@@ -844,6 +962,21 @@ describe('dispose', () => {
 
     expect(writes).toHaveBeenCalledTimes(0);
     expect(instanceAxis(mesh, 0, 0)).toEqual([0, 0, 0]);
+  });
+
+  it('clears live destroy records on disposal (no writes after teardown)', () => {
+    const view = createCubeView(STYLE);
+    const mesh = faceMesh(view, 'front');
+    view.hideMiniCube('front:0:0');
+
+    view.dispose();
+    const writes = vi.spyOn(mesh, 'setMatrixAt');
+
+    view.update(140);
+
+    expect(writes).toHaveBeenCalledTimes(0);
+    expect(instanceAxis(mesh, 0, 0)).toEqual([TILE_SIZE_F32, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([3, 3, 3]);
   });
 
   it('does not dispose a removed face twice', () => {

@@ -112,6 +112,15 @@ function instanceScale(mesh: InstancedMesh, index: number): number[] {
   return [0, 1, 2].map((axis) => new Vector3().setFromMatrixColumn(matrix, axis).length());
 }
 
+/** The per-instance colour multiplier stored for one instance. */
+function instanceColor(mesh: InstancedMesh, index: number): number[] {
+  const color = mesh.instanceColor;
+  if (color === null) {
+    throw new Error('the face mesh has no instanceColor buffer');
+  }
+  return [color.getX(index), color.getY(index), color.getZ(index)];
+}
+
 /** The world's pooled particle `Points` (its only `Points` drawable). */
 function particlePositions(world: WorldView): Float32Array {
   const points = world.particles.group.children.find(
@@ -188,7 +197,11 @@ describe('applyRoster', () => {
     expect(view.isMiniCubeHidden('front:2:2')).toBe(true);
     expect(view.isMiniCubeHidden('back:0:0')).toBe(true);
     expect(view.isMiniCubeHidden('back:0:1')).toBe(false);
-    // A snapshot is state, not an event: no pop and no burst is replayed.
+    // A snapshot is state, not an event: the per-instance path is the instant one (zero
+    // scale, idle colour), no destroy record and no burst is replayed.
+    const back = view.faces.get('back')!;
+    expect(instanceScale(back, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(back, 0)).toEqual([1, 1, 1]);
     expect(world.particles.activeCount()).toBe(0);
   });
 
@@ -311,7 +324,7 @@ describe('applyRoster', () => {
 });
 
 describe('applyMessage', () => {
-  it('conceals the exact tile on the same frame and spawns the burst at the tile origin', () => {
+  it('animates a broadcast over 140 ms and spawns the burst at the tile origin', () => {
     const world = createWorld();
     const p2 = member('p2', SLOT_2, { gridSize: 5, styleId: OBSIDIAN.id });
     world.applyRoster([p2]);
@@ -322,9 +335,12 @@ describe('applyMessage', () => {
 
     expect(view.isMiniCubeHidden('front:1:2')).toBe(true);
     expect(view.isMiniCubeHidden('front:1:3')).toBe(false);
-    // AC-36: remote cubes conceal identically — zero scale on the same frame, no pop.
-    expect(instanceScale(front, 7)).toEqual([0, 0, 0]);
+    // AC-5: remote cubes animate identically — full scale and brightness 3 on the impact
+    // frame, then the 140 ms collapse. The neighbour keeps its idle extent and colour.
+    expect(instanceScale(front, 7)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
+    expect(instanceColor(front, 7)).toEqual([3, 3, 3]);
     expect(instanceScale(front, 8)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
+    expect(instanceColor(front, 8)).toEqual([1, 1, 1]);
     expect(world.particles.activeCount()).toBe(24);
     // `random = 0.5` gives zero jitter and the zero-length fallback direction, so every
     // fragment starts exactly on the burst origin: the `front:1:2` tile centre plus the
@@ -336,17 +352,37 @@ describe('applyMessage', () => {
       3.125,
     ]);
 
-    // Repeated/foreign broadcasts never restart the conceal or spawn another burst.
+    // 70 ms: mid-collapse, still bright.
+    world.update(70);
+    expect(instanceScale(front, 7)).toEqual([
+      0.4154876172542572,
+      0.4154876172542572,
+      0.10933884233236313,
+    ]);
+    expect(instanceColor(front, 7)).toEqual([
+      1.4444444179534912,
+      1.4444444179534912,
+      1.4444444179534912,
+    ]);
+
+    // Repeated/foreign broadcasts never restart the destroy or spawn another burst.
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:1:2' });
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' });
     world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p9', id: 'front:0:0' });
+    expect(instanceScale(front, 7)).toEqual([
+      0.4154876172542572,
+      0.4154876172542572,
+      0.10933884233236313,
+    ]);
     expect(world.particles.activeCount()).toBe(24);
 
-    world.update(160);
+    // 140 ms: zero-scaled and colour restored; the burst keeps its accepted 1200 ms life.
+    world.update(70);
     expect(instanceScale(front, 7)).toEqual([0, 0, 0]);
+    expect(instanceColor(front, 7)).toEqual([1, 1, 1]);
     expect(world.particles.activeCount()).toBe(24);
 
-    world.update(190);
+    world.update(260);
     expect(world.particles.activeCount()).toBe(0);
   });
 

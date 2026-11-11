@@ -19,13 +19,14 @@
  * Broadcast application (`applyMessage`). The world view applies the remote-cube subset of
  * the server catalog:
  *
- * - `miniCubeRemoved` hides exactly that tile instance, plays the accepted pop-then-shrink
+ * - `miniCubeRemoved` hides exactly that tile instance, starts its 140 ms destroy
  *   animation and spawns the existing particle burst `BURST_ORIGIN_OFFSET` in front of the
  *   tile (the same effect the local cube plays). Duplicate ids are no-ops, so the origin's
- *   ack can never restart a pop or double-spawn a burst.
+ *   ack can never restart a destroy or double-spawn a burst.
  * - Face clears are derived: when the last tile of a face is removed, the face is scheduled
- *   for removal with the accepted `faceFadeMs` (400 ms) countdown, so the last tile's pop
- *   and burst are visible, and `removeFace` then releases the face's geometry/material.
+ *   for removal with the accepted `faceFadeMs` (400 ms) countdown, so the last tile's
+ *   destroy and burst are visible, and `removeFace` then releases the face's
+ *   geometry/material.
  * - `levelAdvanced` disposes the member's previous view exactly once and rebuilds it at the
  *   reported grid size/style/position (remote advances are instant in-place rebuilds, as
  *   spec § 5 requires — no remote travel animation).
@@ -54,7 +55,7 @@ import { createParticleSystem, type ParticleSystem } from './particles';
 
 /**
  * Cleared-face countdown: the accepted default profile's face fade (400 ms), long enough
- * for the last tile's 160 ms pop. The world view has no reduced-motion input of its own
+ * for the last tile's 140 ms destroy. The world view has no reduced-motion input of its own
  * (the spec keeps remote-cube rendering independent of a spectator's motion preference).
  */
 const FACE_REMOVAL_MS = timingsFor(false).faceFadeMs;
@@ -186,7 +187,7 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
     memberCube.view.dispose();
   }
 
-  /** Hides one tile from a roster snapshot: instant, no pop and no burst. */
+  /** Hides one tile from a roster snapshot: zero-scaled instantly, no destroy replay and no burst. */
   function hideInitialTile(memberCube: MemberCube, id: string): void {
     if (memberCube.hidden.has(id)) {
       return;
@@ -310,11 +311,11 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
     return new Vector3().setFromMatrixPosition(scratch);
   }
 
-  /** One remote tile removal: hide the exact instance, play its pop and burst, derive clears. */
+  /** One remote tile removal: start the 140 ms destroy, spawn its burst, derive clears. */
   function applyRemoval(memberCube: MemberCube, id: MiniCubeId): void {
     if (memberCube.hidden.has(id)) {
       // The origin's ack can repeat an id the local broadcast path already applied; never
-      // restart the pop or spawn a second burst.
+      // restart the destroy or spawn a second burst.
       return;
     }
     const faceId = id.split(':')[0] as FaceId;
@@ -330,7 +331,7 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
       const total = memberCube.member.gridSize * memberCube.member.gridSize;
       if (count === total) {
         // The face's 0-remaining transition: keep it for the accepted fade, which lets the
-        // last tile's pop and burst finish, then detach it in `update`.
+        // last tile's destroy and burst finish, then detach it in `update`.
         memberCube.faceRemovalElapsed.set(faceId, 0);
       }
     }

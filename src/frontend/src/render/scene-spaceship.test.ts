@@ -169,7 +169,7 @@ describe('scene spaceship integration', () => {
     expect(group.position.toArray()).toEqual([0, 0, 6]);
   });
 
-  it('defers explosion on non-reduced motion (AC-4)', () => {
+  it('defers explosion on non-reduced motion (AC-4, AC-6)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     const beforeHidden = view.cubeView.isMiniCubeHidden('front:0:0');
@@ -180,31 +180,65 @@ describe('scene spaceship integration', () => {
     expect(view.shots).toHaveLength(1);
     const shot = view.shots[0]!;
     const group = spaceshipGroup(view);
+    // `start` stays the ship anchor; the bolt's visual origin is the muzzle 0.78 forward.
     expect(shot.start.toArray()).toEqual(group.position.toArray());
+    expect(shot.muzzle.toArray()).toEqual([0, 0, 6.78]);
+    expect(shot.mesh.position.toArray()).toEqual([0, 0, 6.78]);
+    expect(shot.mesh.name).toBe('shot-bolt');
+    expect(shot.muzzleFlash.name).toBe('shot-muzzle-flash');
+    expect(shot.muzzleFlash.position.toArray()).toEqual([0, 0, 6.78]);
+    expect(shot.muzzleRemainingMs).toBe(80);
+    expect(shotsGroup(view).children.map((child) => child.name).sort()).toEqual([
+      'shot-bolt',
+      'shot-muzzle-flash',
+    ]);
     // target is mini-cube origin
     expect(shot.target.toArray()).toEqual([-2, 2, 2.625]);
   });
 
-  it('travels and triggers explosion on arrival (AC-5)', () => {
+  it('travels from the muzzle and triggers explosion on arrival (AC-5, AC-6)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     applyIntents(view, [explosionIntent('front:0:0', 'front')], 42);
-    const shot = view.shots[0]!;
-    const start = shot.start.clone();
-    const target = shot.target.clone();
     // midpoint
     view.update(90);
     expect(view.shots).toHaveLength(1);
     const midShot = view.shots[0]!;
-    expect(midShot.mesh.position.x).toBeCloseTo((start.x + target.x) / 2, 6);
-    expect(midShot.mesh.position.y).toBeCloseTo((start.y + target.y) / 2, 6);
-    expect(midShot.mesh.position.z).toBeCloseTo((start.z + target.z) / 2, 6);
+    // muzzle (0, 0, 6.78) → target (−2, 2, 2.625): the exact 50 % lerp.
+    expect(midShot.mesh.position.toArray()).toEqual([-1, 1, 4.702500000000001]);
     // arrival
     view.update(90);
     expect(view.shots).toHaveLength(0);
     expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
     expect(particlePoints(view).geometry.drawRange.count).toBeGreaterThanOrEqual(3);
     expect(view.lastFrameTime).toBe(42);
+  });
+
+  it('removes the muzzle flash by 80 ms and settles the recoil by 120 ms (AC-6)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    view.setPointerTarget(0, 0);
+    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+    const shot = view.shots[0]!;
+    const model = namedGroup(view, 'cursor-ship-model');
+
+    expect(shot.muzzleRemainingMs).toBe(80);
+    view.update(79);
+    expect(shot.muzzleRemainingMs).toBe(1);
+    expect(shot.muzzleFlash.parent).toBe(shotsGroup(view));
+    expect(model.position.z).toBe(-0.004786180555555552);
+
+    view.update(1);
+    expect(shot.muzzleRemainingMs).toBe(0);
+    expect(shot.muzzleFlash.parent).toBeNull();
+    expect(shotsGroup(view).children.map((child) => child.name)).toEqual(['shot-bolt']);
+    expect(view.shots).toHaveLength(1);
+    expect(model.position.z).toBe(-0.0044444444444444505);
+
+    view.update(40);
+    expect(model.position.z).toBe(0);
+    // The bolt is still in flight after the flash/recoil have finished.
+    expect(view.shots).toHaveLength(1);
   });
 
   it('uses default frame time 0 when no prior frame (AC-5)', () => {
@@ -277,6 +311,16 @@ function impactMeshCount(view: SceneView, name: string): number {
   return (mesh as { count: number }).count;
 }
 
+function shotsGroup(view: SceneView): Group {
+  const group = view.scene.children.find(
+    (child): child is Group => child instanceof Group && child.name === 'spaceship-shots',
+  );
+  if (group === undefined) {
+    throw new Error('no spaceship shots group');
+  }
+  return group;
+}
+
 describe('scene impact and targeting integration (AC-35, AC-37)', () => {
   it('nests impact and targeting under the particle group, keeping 9 scene children', () => {
     const view = createView();
@@ -289,8 +333,12 @@ describe('scene impact and targeting integration (AC-35, AC-37)', () => {
     expect(particles.children.map((child) => child.name)).toContain('impact-effects');
     expect(particles.children.map((child) => child.name)).toContain('targeting');
     const impact = namedGroup(view, 'impact-effects');
-    expect(impact.children).toHaveLength(1);
-    expect(impact.children.map((child) => child.name)).toEqual(['impact-shards']);
+    expect(impact.children).toHaveLength(3);
+    expect(impact.children.map((child) => child.name)).toEqual([
+      'impact-shards',
+      'impact-flash',
+      'impact-burst',
+    ]);
     expect(namedGroup(view, 'targeting').children).toHaveLength(2);
 
     const names: string[] = [];

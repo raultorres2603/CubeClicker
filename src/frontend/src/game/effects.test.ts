@@ -8,6 +8,8 @@ import {
   easeOutCubic,
   EXPLOSION_PARTICLE_COUNT,
   MINI_CUBE_POP_MS,
+  miniCubeDestroyBrightnessAt,
+  miniCubeDestroyScaleAt,
   PARTICLE_POOL_CAP,
   PIXEL_RATIO_CAP,
   REDUCED_TIMINGS,
@@ -19,7 +21,7 @@ import {
   TRAVEL_STARFIELD_SCALE,
   travelSwing,
 } from './effects';
-import { easeOutCubic as motionEaseOutCubic } from './motion';
+import { easeOutCubic as motionEaseOutCubic, MOTION } from './motion';
 
 /** Random source replaying the given draws in order (cycling) — fully reproducible. */
 function sequenceRandom(draws: readonly number[]): () => number {
@@ -88,16 +90,61 @@ describe('non-grid pinned constants', () => {
     expect(PARTICLE_POOL_CAP / EXPLOSION_PARTICLE_COUNT).toBe(3);
   });
 
-  it('pins the observed instant conceal and the pixel-equivalent world scale (AC-36)', () => {
+  it('pins the 140 ms destroy and the pixel-equivalent world scale (AC-4)', () => {
     expect(TRAVEL_STARFIELD_SCALE).toBe(8);
     expect(BURST_ORIGIN_OFFSET).toBe(0.5);
-    expect(MINI_CUBE_POP_MS).toBe(0);
+    expect(MINI_CUBE_POP_MS).toBe(140);
+    expect(MINI_CUBE_POP_MS).toBe(MOTION.miniCubeDestroyMs);
     // 2 · tan(25°) · 6 / 720 — the shared 1280×720 cursor-plane conversion.
     expect(REFERENCE_PIXEL_WORLD).toBeCloseTo(0.00777179430258331, 12);
   });
 
   it('pins the travel level-advance fraction to the midpoint (AC-3)', () => {
     expect(TRAVEL_LEVEL_ADVANCE_P).toBe(0.5);
+  });
+});
+
+describe('mini-cube destroy curves (AC-4)', () => {
+  it('pins the scale samples 0/15/30/85/140', () => {
+    expect(miniCubeDestroyScaleAt(0)).toBe(1);
+    expect(miniCubeDestroyScaleAt(15)).toBe(1.07);
+    expect(miniCubeDestroyScaleAt(30)).toBe(1.08);
+    expect(miniCubeDestroyScaleAt(85)).toBe(0.27);
+    expect(miniCubeDestroyScaleAt(140)).toBe(0);
+  });
+
+  it('returns 1 before the hide frame and 0 from 140 ms on', () => {
+    expect([-100, -1, -0.001].map(miniCubeDestroyScaleAt)).toEqual([1, 1, 1]);
+    expect([140, 140.001, 200, 1000].map(miniCubeDestroyScaleAt)).toEqual([0, 0, 0, 0]);
+    // The curve is still live one tick before the pinned end.
+    expect(miniCubeDestroyScaleAt(139.999)).toBeGreaterThan(0);
+  });
+
+  it('rises to the 1.08 peak and collapses monotonically to zero', () => {
+    const values = [0, 10, 15, 20, 30, 45, 60, 85, 110, 139].map(miniCubeDestroyScaleAt);
+
+    expect(values[0]).toBe(1);
+    for (let index = 1; index <= 4; index += 1) {
+      expect(values[index]).toBeGreaterThan(values[index - 1]!);
+    }
+    for (let index = 5; index < values.length; index += 1) {
+      expect(values[index]).toBeLessThan(values[index - 1]!);
+    }
+    expect(values[4]).toBe(1.08);
+  });
+
+  it('pins the brightness samples 0/45/90/140', () => {
+    expect(miniCubeDestroyBrightnessAt(0)).toBe(3);
+    expect(miniCubeDestroyBrightnessAt(45)).toBe(2);
+    expect(miniCubeDestroyBrightnessAt(90)).toBe(1);
+    expect(miniCubeDestroyBrightnessAt(140)).toBe(1);
+  });
+
+  it('leaves an idle tile unflashed and fades linearly to 1', () => {
+    expect([-100, -1, -0.001].map(miniCubeDestroyBrightnessAt)).toEqual([1, 1, 1]);
+    expect(miniCubeDestroyBrightnessAt(15)).toBe(2.666666666666667);
+    expect(miniCubeDestroyBrightnessAt(30)).toBe(2.3333333333333335);
+    expect([90, 90.001, 140, 1000].map(miniCubeDestroyBrightnessAt)).toEqual([1, 1, 1, 1]);
   });
 });
 

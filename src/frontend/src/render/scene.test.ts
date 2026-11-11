@@ -1394,7 +1394,7 @@ describe('snapshot application', () => {
 });
 
 describe('intent application', () => {
-  it('conceals the exploding tile on the same frame and fronts its burst (AC-36)', () => {
+  it('zero-scales instantly under reduced motion and fronts its burst (AC-4, AC-48)', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
     const mesh = faceMesh(view, 'front');
@@ -1495,22 +1495,30 @@ describe('intent application', () => {
     expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
   });
 
-  it('conceals in one frame when the deferred explosion fires (AC-36)', () => {
+  it('hides the tile on impact and completes the 140 ms destroy (AC-4)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     const mesh = faceMesh(view, 'front');
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')]);
     // The shot is still travelling: the tile keeps its idle extent until arrival.
-    expect(instanceScale(mesh, 0)[0]).toBe(Math.fround(0.95));
+    expect(instanceScale(mesh, 0)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
     expect(view.shots).toHaveLength(1);
 
     view.update(180);
-    // Arrival applies the conceal on that frame — no intermediate pop/fade state.
-    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
-    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+    // Impact frame: hidden/unpickable immediately and the burst starts (the exact
+    // hide-frame matrix writes are pinned in `cube-view.test.ts`; the scene's per-frame
+    // destroy ordering is wired by T3).
+    expect(view.cubeView.isMiniCubeHidden('front:0:0')).toBe(true);
     expect(particlePoints(view).geometry.drawRange.count).toBe(3);
 
+    // The destroy has completed 140 ms after arrival at the latest: zero-scaled, colour 1.
+    view.update(140);
+    expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(mesh, 0)).toEqual([1, 1, 1]);
+
+    // A reduced switch after completion settles an already-gone tile (no reset).
     applySnapshot(view, snapshot({ reducedMotion: true }));
     view.update(50);
     expect(instanceScale(mesh, 0)).toEqual([0, 0, 0]);
@@ -1663,11 +1671,12 @@ describe('frame updates and lifecycle', () => {
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
-    // 63 pre-backdrop objects (including the two-object impact group) plus the cosmic
-    // backdrop's 70 (`COSMIC_BACKDROP_OBJECT_COUNT`) = 133 (AC-47/F2: old cursor 8 → 34,
-    // impact +2, targeting +3; the detailed-hero 102 baseline is superseded).
-    expect(baselineObjects).toBe(63 + COSMIC_BACKDROP_OBJECT_COUNT);
-    expect(baselineObjects).toBe(133);
+    // 65 pre-backdrop objects (including the four-object impact group: group +
+    // impact-shards + impact-flash + impact-burst) plus the cosmic backdrop's 70
+    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 135 (AC-8: old cursor 8 → 34, impact +4,
+    // targeting +3; the detailed-hero 102 baseline is superseded).
+    expect(baselineObjects).toBe(65 + COSMIC_BACKDROP_OBJECT_COUNT);
+    expect(baselineObjects).toBe(135);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
@@ -1826,7 +1835,7 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
     expect(cubeGroup(view).position.toArray()).toEqual([0, 0, 0]);
   });
 
-  it('conceals remote-cube broadcasts on the same frame (AC-36)', () => {
+  it('animates remote-cube broadcasts over 140 ms (AC-5)', () => {
     const view = createView();
     view.enterWorld(
       serverWorld({ roster: [member('p2', 'Player 2', 0, 24)] }),
@@ -1841,11 +1850,19 @@ describe('own position and server world (AC-12, AC-23, AC-24)', () => {
       id: 'front:0:0',
     });
     expect(remote.isMiniCubeHidden('front:0:0')).toBe(true);
-    // Remote cubes conceal identically: zero scale in the same frame, no pop.
-    expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
+    // Remote cubes animate identically: full scale and brightness 3 on the impact frame.
+    expect(instanceScale(front, 0)).toEqual([Math.fround(0.95), Math.fround(0.95), 0.25]);
+    expect(instanceColor(front, 0)).toEqual([3, 3, 3]);
 
-    view.update(160);
+    view.update(70);
+    expect(instanceScale(front, 0)).toEqual([
+      0.4154876172542572,
+      0.4154876172542572,
+      0.10933884233236313,
+    ]);
+    view.update(70);
     expect(instanceScale(front, 0)).toEqual([0, 0, 0]);
+    expect(instanceColor(front, 0)).toEqual([1, 1, 1]);
 
     view.applyWorldMessage({
       type: 'memberJoined',

@@ -8,7 +8,7 @@
  * the non-grid pinned constants: {@link STAR_COUNT}, {@link EXPLOSION_PARTICLE_COUNT},
  * {@link PARTICLE_POOL_CAP}, {@link TAP_DRAG_THRESHOLD_PX}, {@link PIXEL_RATIO_CAP},
  * {@link TRAVEL_STARFIELD_SCALE}, {@link TRAVEL_LEVEL_ADVANCE_P}, {@link BURST_ORIGIN_OFFSET}
- * and {@link MINI_CUBE_POP_MS} (the observed one-frame conceal, `0`).
+ * and {@link MINI_CUBE_POP_MS} (the 140 ms per-instance destroy).
  *
  * {@link easeOutCubic} lives only in `game/motion.ts` (F14); this module re-exports it so
  * the existing `scene.ts` import stays valid and no second implementation exists.
@@ -16,7 +16,13 @@
  * `render/cube-view.ts`, `input/**`, the engine and the session) import them from here
  * and never redefine them locally. `GRID_SIZE` is the only constant that lives in
  * `types.ts`; style values live in `progression.ts` and HUD colours in `ui/theme.ts`.
+ *
+ * The mini-cube destroy curve ({@link miniCubeDestroyScaleAt} /
+ * {@link miniCubeDestroyBrightnessAt}) is the pure part of the 140 ms destroy: the cube view
+ * owns the records and writes each frame's matrix/colour from these two functions.
  */
+
+import { MOTION, easeOutCubic as motionEaseOutCubic, easeOutQuad } from './motion';
 
 /** Duration profile for the animated phases and effects (spec § Pinned constants). */
 export interface Timings {
@@ -152,11 +158,56 @@ export const TRAVEL_LEVEL_ADVANCE_P = 0.5;
 export const BURST_ORIGIN_OFFSET = 0.5;
 
 /**
- * Total duration of the mini-cube conceal (AC-36): exactly `0`, the observed one-frame
- * disappearance. A clicked mini-cube is zero-scaled on the same frame; the visible
- * shatter is carried by the impact effects, not by a shrinking tile.
+ * Total duration of the mini-cube destroy: exactly 140 ms (spec AC-4). The impacted tile is
+ * hidden/unpickable on the impact frame, then brightens and collapses to zero scale over
+ * {@link MOTION.miniCubeDestroyMs}; the visible shatter is carried by the tile itself.
  */
-export const MINI_CUBE_POP_MS = 0;
+export const MINI_CUBE_POP_MS = MOTION.miniCubeDestroyMs;
+
+/**
+ * Mini-cube destroy scale at `elapsedMs` after the hide frame (spec AC-4).
+ *
+ * `t < 0 → 1`; `0 ≤ t < 30 → 1 + 0.08 · easeOutCubic(t / 30)`; `30 ≤ t < 140 →
+ * 1.08 · (1 − easeOutQuad((t − 30) / 110))`; `t ≥ 140 → 0`. Pinned samples: `0 → 1`,
+ * `15 → 1.07`, `30 → 1.08`, `85 → 0.27`, `140 → 0`.
+ */
+export function miniCubeDestroyScaleAt(elapsedMs: number): number {
+  if (elapsedMs < 0) {
+    return 1;
+  }
+  if (elapsedMs >= MOTION.miniCubeDestroyMs) {
+    return 0;
+  }
+  if (elapsedMs < MOTION.miniCubeDestroyGrowMs) {
+    return (
+      1 +
+      (MOTION.miniCubeDestroyPeakScale - 1) *
+        motionEaseOutCubic(elapsedMs / MOTION.miniCubeDestroyGrowMs)
+    );
+  }
+  const collapseProgress =
+    (elapsedMs - MOTION.miniCubeDestroyGrowMs) /
+    (MOTION.miniCubeDestroyMs - MOTION.miniCubeDestroyGrowMs);
+  return MOTION.miniCubeDestroyPeakScale * (1 - easeOutQuad(collapseProgress));
+}
+
+/**
+ * Mini-cube destroy brightness at `elapsedMs` after the hide frame (spec AC-4).
+ *
+ * `t < 0 → 1` (an idle tile is unflashed); `0 ≤ t < 90 → 1 + 2 · (1 − t / 90)`; `t ≥ 90 → 1`.
+ * Pinned samples: `0 → 3`, `45 → 2`, `90 → 1`, `140 → 1`. The value is written to all three
+ * `instanceColor` channels (a scalar brightness multiplier).
+ */
+export function miniCubeDestroyBrightnessAt(elapsedMs: number): number {
+  if (elapsedMs < 0 || elapsedMs >= MOTION.miniCubeDestroyFlashMs) {
+    return 1;
+  }
+  return (
+    1 +
+    (MOTION.miniCubeDestroyFlashGain - 1) *
+      (1 - elapsedMs / MOTION.miniCubeDestroyFlashMs)
+  );
+}
 
 /** Shot travel time in ms (spaceship-cursor spec AC-5). */
 export const SHOT_TRAVEL_MS = 180;
