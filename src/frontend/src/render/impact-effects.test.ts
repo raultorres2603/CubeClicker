@@ -179,7 +179,7 @@ describe('impact module contract (AC-3)', () => {
     expect(material.roughness).toBe(0.5);
   });
 
-  it('pins the 6-instance white-hot octahedron flash pool with a scalar instance colour', () => {
+  it('pins the 6-instance white-hot 0.5-radius octahedron flash pool with a scalar instance colour', () => {
     const mesh = flashMesh(createEffects());
     const geometry = mesh.geometry as OctahedronGeometry;
 
@@ -188,8 +188,12 @@ describe('impact module contract (AC-3)', () => {
     expect(mesh.frustumCulled).toBe(false);
     expect(mesh.renderOrder).toBe(10);
     expect(geometry).toBeInstanceOf(OctahedronGeometry);
-    expect(geometry.parameters.radius).toBe(1);
+    // Review B1: `OctahedronGeometry` takes a radius. The 0.5 radius × the 0.55 peak scale
+    // renders the spec's 0.55 world-unit-diameter core (≈45 px at 1280×720), not 1.1.
+    expect(geometry.parameters.radius).toBe(0.5);
     expect(geometry.parameters.detail).toBe(0);
+    expect(IMPACT_FLASH_PEAK_SCALE).toBe(0.55);
+    expect(geometry.parameters.radius * 2 * IMPACT_FLASH_PEAK_SCALE).toBe(0.55);
     expect(geometry.getAttribute('position').count).toBe(24);
     expect(geometry.index).toBeNull();
     expect(geometry.getAttribute('position').count / 3).toBe(8);

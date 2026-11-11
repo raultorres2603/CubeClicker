@@ -8,7 +8,7 @@
  *   1.8–3.6, drag 2 s⁻¹, gravity 6, angular 3–8 rad/s, lifetime 1200 ms — unchanged from
  *   the accepted particle-only module.
  * - `impact-flash` (`IMPACT_FLASH_POOL_CAP = 6`): one additive white-hot
- *   `OctahedronGeometry(1, 0)` instance per pop, growing
+ *   `OctahedronGeometry(0.5, 0)` instance per pop, growing
  *   {@link IMPACT_FLASH_START_SCALE} → {@link IMPACT_FLASH_PEAK_SCALE} over 60 ms, holding
  *   from 60–80 ms at brightness 1 and fading its per-instance scalar brightness to 0 over
  *   80–140 ms. The material is warm white ({@link IMPACT_FLASH_COLOR}); the amber/orange
@@ -64,6 +64,13 @@ export const IMPACT_FLASH_START_SCALE = 0.18;
 
 /** Core world scale at the 60 ms peak (spec AC-3). */
 export const IMPACT_FLASH_PEAK_SCALE = 0.55;
+
+/**
+ * Radius of the prebuilt flash octahedron. `OctahedronGeometry` takes a radius, so the
+ * 0.5-radius geometry scaled by {@link IMPACT_FLASH_PEAK_SCALE} renders the spec's
+ * 0.55 world-unit-diameter core (review B1 geometry-radius fix).
+ */
+const IMPACT_FLASH_GEOMETRY_RADIUS = 0.5;
 
 /** Active ember + smoke points: 72 (oldest-first recycle). */
 export const IMPACT_BURST_POOL_CAP = 72;
@@ -193,7 +200,7 @@ export function createImpactEffects(random: () => number): ImpactEffects {
   shardMesh.frustumCulled = false;
 
   // --- Flash: one instanced white-hot octahedron pool. ----------------------------------
-  const flashGeometry = new OctahedronGeometry(1, 0);
+  const flashGeometry = new OctahedronGeometry(IMPACT_FLASH_GEOMETRY_RADIUS, 0);
   const flashMaterial = new MeshBasicMaterial({
     color: IMPACT_FLASH_COLOR,
     transparent: true,

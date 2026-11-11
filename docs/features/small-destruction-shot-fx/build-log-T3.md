@@ -7,6 +7,14 @@ Fork point (recorded in `build-log-T1.md`): `BASE_SHA=92fcf84999cde086dbc2d6acc8
 HEAD before this commit: `9d46ffcf62f8fd942f2a6468e84bfe309ce4b499` (T2).
 T3 feature commit: `09c5f2523adb44ca841b04d9e736496e8f0591f1` (`feat: wire the destruction and shot effects`).
 
+> **Post-review correction (T4, review B1/M2, 2026-11-11).** The original core-size claim in this
+> log (“core ≈ 45 px at 1280×720”) was **false**. `OctahedronGeometry(1, 0)` has radius 1, so the
+> 0.55 peak scale rendered a **1.1 world-unit-diameter** core: measured **90 × 90 px** at 1280×720
+> and **136 × 136 px** at 1920×1080 in the T3 frames. T4 changes the prebuilt geometry to
+> `OctahedronGeometry(0.5, 0)` at the unchanged 0.55 peak scale (0.55 world-unit diameter) and
+> re-captures the core peaks; see `build-log-T4.md` for the before/after measurements. The rows
+> below are annotated where this correction supersedes the T3 numbers.
+
 Files changed:
 - `src/frontend/src/render/scene.ts` — wires the quality matrix, moves `cube.update` before the
   pending-explosion loop, updates the impact comments.
@@ -152,14 +160,14 @@ measured offset). The 4 ms in-page state sampler independently records the pool/
 | 1280×720 | muzzle 20–60 ms | **52 ms** | `t3-click-muzzle-0052ms-1280x720.png` | muzzle flash at the nose, bolt leaves |
 | 1280×720 | bolt 90–150 ms | **118 ms** | `t3-click-bolt-0118ms-1280x720.png` | glowing tapered bolt in flight |
 | 1280×720 | impact 180–220 ms | **202 ms** | `t3-click-impact-0202ms-1280x720.png` | tile brightened/swollen, white core |
-| 1280×720 | core peak 240–280 ms | **252 ms** | `t3-click-core-0252ms-1280x720.png` | core ≈45 px at 1280×720 |
+| 1280×720 | core peak 240–280 ms | **252 ms** | `t3-click-core-0252ms-1280x720.png` | core — **T3 frame measured 90 × 90 px**; the original “≈ 45 px” claim here was false (review B1/M2). The geometry-radius fix in T4 (`OctahedronGeometry(0.5,0)`, peak scale 0.55 → 0.55 world-unit diameter) supersedes this frame; corrected measurement in `t4-core-peak-0245ms-1280x720.png` is **42–44 px** (projected 45.25 px). |
 | 1280×720 | tile gone 320–340 ms | **333 ms** | `t3-click-tile-gone-0333ms-1280x720.png` | zero tile, green shards + embers, no core |
 | 1280×720 | smoke 420–480 ms | **456 ms** | `t3-click-smoke-0456ms-1280x720.png` | ember/smoke tail over the hole |
 | 1280×720 | smoke gone by 660 ms | **661 ms** (state 656.3 ms) | `t3-click-smoke-gone-0661ms-1280x720.png`, screencast `t3-click-smoke-gone-0668ms-1280x720.png` | burst 0; only shards remain |
 | 1920×1080 | muzzle 20–60 ms | **25 ms** | `t3-click-muzzle-0025ms-1920x1080.png` | muzzle flash at the nose, bolt leaves |
 | 1920×1080 | bolt 90–150 ms | **109 ms** | `t3-click-bolt-0109ms-1920x1080.png` | glowing tapered bolt in flight |
 | 1920×1080 | impact 180–220 ms | **192 ms** | `t3-click-impact-0192ms-1920x1080.png` | tile brightened/swollen, white core |
-| 1920×1080 | core peak 240–280 ms | **275 ms** | `t3-click-core-0275ms-1920x1080.png` | core peak |
+| 1920×1080 | core peak 240–280 ms | **275 ms** | `t3-click-core-0275ms-1920x1080.png` | core peak — **T3 frame measured 136 × 136 px** (1.1 world-unit diameter; review B1). Superseded by the T4 fix; corrected measurement in `t4-core-peak-0254ms-1920x1080.png` is **61–69 px** (projected 68.08 px, proportional to 45.39 px × 1.5). |
 | 1920×1080 | tile gone 320–340 ms | **335 ms** | `t3-click-tile-gone-0335ms-1920x1080.png` | zero tile, shards + embers, no core |
 | 1920×1080 | smoke 420–480 ms | **456 ms** | `t3-click-smoke-0456ms-1920x1080.png` | ember/smoke tail over the hole |
 | 1920×1080 | smoke gone by 660 ms | **663 ms** (state 657.4 ms) | `t3-click-smoke-gone-0663ms-1920x1080.png`, screencast `t3-click-smoke-gone-0692ms-1920x1080.png` | burst 0; only shards remain |
@@ -262,8 +270,9 @@ Bars and result:
   `caps-1280x720.json` / `caps-1920x1080.json` → live shards **42**, flash **6**, burst points
   **72**, sparks **72**; capacities are 42 / 6 / 72 / 72. Worst-case in-flight shots 2, muzzle
   flashes 2 (80 ms each), destroy records ≤ 150 (unit test).
-- Triangle deltas (three.js geometry counts): `OctahedronGeometry(1,0)` = 8 triangles → static flash
-  pool `6 × 8 = +48`; `OctahedronGeometry(0.22,0)` = 8 triangles → `+8` per live muzzle flash; the
+- Triangle deltas (three.js geometry counts): `OctahedronGeometry(0.5,0)` = 8 triangles → static
+  flash pool `6 × 8 = +48` (T4 only halves the radius; the triangle count and draw are unchanged);
+  `OctahedronGeometry(0.22,0)` = 8 triangles → `+8` per live muzzle flash; the
   `ConeGeometry(0.07,0.55,6)` bolt = 12 triangles replaces the old `SphereGeometry(0.06,8,8)` = 112
   triangles → `−100` per in-flight shot.
 - Bundle: initial JS gzip **272.73 kB** (Vite), `982.58 kB` raw; ≤ 279 kB.
@@ -290,8 +299,8 @@ Bars and result:
 | AC-5 | met | T2 `world.test.ts` (broadcast animates, roster instant, duplicate no-restart); `scene.test.ts` 140 ms remote timeline passes unchanged. |
 | AC-6 | met | T2 `spaceship.test.ts`/`scene-spaceship.test.ts`; T3 `scene-effects.test.ts` pins `muzzle.z = 6.78`, muzzle flash 1→0 by 80 ms, recoil negative→0 by 120 ms and arrival at 180 ms. |
 | AC-7 | met | `scene.ts` wiring + new `scene-effects.test.ts` (9 tests) + camera equality; no gold names; HUD no-shake owned by the unchanged React/CSS suites. |
-| AC-8 | met | 135 = 65 + 70; caps 42/6/72/72; triangle +48/+8/−100; 36-run draw table above within every bar; recovery both sizes; JS gzip 272.73 kB. |
-| AC-9 | met | Evidence map above: all seven windows at 1280/1920, reduced frames at 120/360 and 120/365 ms, preserved coin/reticle/cursor/banner/fly-by/no-shake, no click gold fan/coins/ring. |
+| AC-8 | met | 135 = 65 + 70; caps 42/6/72/72; triangle +48/+8/−100 (T4 radius fix keeps the 8-triangle flash geometry); 36-run draw table above within every bar; recovery both sizes; JS gzip 272.73 kB. |
+| AC-9 | met after T4 correction | The T3 audit row originally claimed “met” with a false 45 px core (measured 90/136 px; review B1). T4 re-captures the corrected core peaks: `t4-core-peak-0245ms-1280x720.png` **42–44 px** (projected 45.25 px) and `t4-core-peak-0254ms-1920x1080.png` **61–69 px** (projected 68.08 px); all seven windows at 1280/1920, reduced frames at 120/360 and 120/365 ms, preserved coin/reticle/cursor/banner/fly-by/no-shake, no click gold fan/coins/ring. |
 | AC-10 | met | README phrase checks above; index guard exit 0; proposed row recorded; no `docs/architecture/**` or `docs/product/glossary.md` change needed (no stack, container, term or meaning change). |
 | AC-11 | met | Fork-point diff gate exit 0; import/URL/loader grep clean; asset diff empty; audio grep clean; no dependency/backend/protocol/container change. |
 | AC-12 | met | `npm run lint`, `npm run typecheck`, `npm test` (868 + 1738), `npm run coverage` (both workspaces ≥80×4), `npm run build` all exit 0. |
