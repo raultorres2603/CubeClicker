@@ -1097,10 +1097,33 @@ describe('pointer wiring', () => {
 
     fake.scheduler.tick(400);
 
-    // When the shot lands the deferred explosion applies and the instance is hidden (AC-4).
+    // When the shot lands the deferred explosion starts the 140 ms destroy: the tile is
+    // already unclickable (the snapshot dropped it) but flashes at full extent, brightness
+    // 3, on the arrival frame (AC-7).
+    const flashing = instanceMatrix(mesh, 12);
+    expect([flashing.elements[0], flashing.elements[5], flashing.elements[10]]).toEqual([
+      Math.fround(0.95),
+      Math.fround(0.95),
+      0.25,
+    ]);
+    expect(new Vector3().setFromMatrixPosition(flashing).toArray()).toEqual([0, 0, 2.625]);
+    expect(mesh.instanceColor?.getX(12)).toBe(3);
+
+    // +70 ms: the pinned mid-collapse extent.
+    fake.scheduler.tick(470);
+    const collapsing = instanceMatrix(mesh, 12);
+    expect([collapsing.elements[0], collapsing.elements[5], collapsing.elements[10]]).toEqual([
+      0.4154876172542572,
+      0.4154876172542572,
+      0.10933884233236313,
+    ]);
+
+    // +140 ms: fully zero-scaled, colour back to the idle multiplier (AC-4/AC-7).
+    fake.scheduler.tick(540);
     const hidden = instanceMatrix(mesh, 12);
     expect([hidden.elements[0], hidden.elements[5], hidden.elements[10]]).toEqual([0, 0, 0]);
     expect(new Vector3().setFromMatrixPosition(hidden).toArray()).toEqual([0, 0, 2.625]);
+    expect(mesh.instanceColor?.getX(12)).toBe(1);
   });
 
   it('ignores a playing tap that misses the cube', () => {

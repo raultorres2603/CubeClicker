@@ -10,9 +10,10 @@
  * the single place that turns engine output into three.js state:
  *
  * - {@link SceneView.applyIntents} consumes the engine's one-shot `EffectIntent`s:
- *   an `explosion` reads the tile's world origin and outward face normal, conceals the
- *   tile and spawns the spark burst + green shard debris in front of that surface (AC-36,
- *   AC-37); `faceCleared` starts the face-removal countdown (there is no plate to fade —
+ *   an `explosion` reads the tile's world origin and outward face normal, starts the
+ *   tile's 140 ms destroy and spawns the spark burst, green shard debris and the little
+ *   explosion (white core, embers, smoke) in front of that surface (AC-7); `faceCleared`
+ *   starts the face-removal countdown (there is no plate to fade —
  *   spec AC-2); `levelChanged` only marks the rebuild *pending* (the next snapshot carries
  *   the new style, grid size and travel direction); and `travelStarted` needs nothing of
  *   its own — the travel transition is driven by the snapshot.
@@ -21,9 +22,9 @@
  *   pose over the current cube) → cube orientation → reduced-motion settle and quality
  *   matrix application.
  * - {@link SceneView.update} advances the frame-driven parts: the adaptive quality
- *   policy, the cursor/trail and target lock, particle and shard aging, the face-removal
- *   countdowns, the background life, the camera-anchored cosmic backdrop's slow drift and
- *   the remote world (AC-4, AC-12, AC-52).
+ *   policy, the cursor/trail and target lock, the particle, impact and destroy aging, the
+ *   face-removal countdowns, the background life, the camera-anchored cosmic backdrop's
+ *   slow drift and the remote world (AC-4, AC-7, AC-12, AC-52).
  *
  * World model (spec § 3): cubes live on a flat plane and the camera is always axis-aligned
  * with the identity quaternion, so screen-right is world +x and screen-up is world +y. A
@@ -609,8 +610,9 @@ export function createSceneView(options: {
     const origin = instanceOrigin(mesh, intent.id);
     const normal = worldFaceNormal(intent.faceId);
     cube.hideMiniCube(intent.id, reducedMotion);
-    // The shard pool starts at the tile surface (origin + normal · 0.02); the spark burst
-    // keeps the accepted 0.5 outward offset.
+    // The three impact pools start on the tile surface: the shards and the white core at
+    // origin + normal · 0.02, the embers/smoke 0.05 in front; the spark burst keeps the
+    // accepted 0.5 outward offset.
     impact.spawnPop(origin, normal, nowMs);
     origin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
     particles.spawn(intent.burst, origin, nowMs);
@@ -935,8 +937,17 @@ export function createSceneView(options: {
     spaceship.setTrailEnabled(features.trail);
     spaceship.setCursorMotionEnabled(features.cursorMotion);
     spaceship.setHiddenMeshes(features.hiddenCursorMeshes);
+    spaceship.setShotFxEnabled(features.shotFx);
     targeting.setReticleEnabled(features.reticle);
-    impact.setFeatures({ shards: features.impactShards });
+    // The impact module owns the three per-pop pools: green shards, the white-hot core and
+    // the ember/smoke burst (AC-7). The default matrix is inert for the explosion until a
+    // tier is applied here.
+    impact.setFeatures({
+      shards: features.impactShards,
+      flash: features.explosionFlash,
+      embers: features.explosionEmbers,
+      smoke: features.explosionSmoke,
+    });
     particles.setSparkLimit(features.sparks);
   }
   applyQuality();
@@ -1148,6 +1159,10 @@ export function createSceneView(options: {
       // that starts now begins its timeline at elapsed 0 (no double-aged first frame).
       particles.update(dtMs);
       impact.update(dtMs);
+      // Advance the live destroy records *before* this frame's deferred explosions spawn:
+      // a pop that starts now writes its hide frame (scale 1, brightness 3) and receives
+      // its first +dt on the next frame, so the arrival frame shows the flash (AC-7).
+      cube.update(dtMs);
       for (let index = pendingExplosions.length - 1; index >= 0; index -= 1) {
         const pending = pendingExplosions[index]!;
         pending.remainingMs = Math.max(0, pending.remainingMs - advanceMs);
@@ -1169,9 +1184,9 @@ export function createSceneView(options: {
       starfield.update(dtMs, travelProgress, starfieldAnchor, reducedMotion);
       advanceFaceRemovals(dtMs);
       // Remote cubes and their pops advance on the same clock, after the own removals.
+      // A face whose removal completes this frame drops its destroy records with the
+      // detached mesh, so no write ever follows its disposal.
       world?.update(dtMs);
-      // Pops advance after the removals, so a face removed this frame never receives a write.
-      cube.update(dtMs);
     },
 
     dispose(): void {
