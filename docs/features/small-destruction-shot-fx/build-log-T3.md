@@ -5,6 +5,7 @@ Feature: small-destruction-shot-fx
 Branch: main (no branch switch)
 Fork point (recorded in `build-log-T1.md`): `BASE_SHA=92fcf84999cde086dbc2d6acc89629f73a2fe6d6`.
 HEAD before this commit: `9d46ffcf62f8fd942f2a6468e84bfe309ce4b499` (T2).
+T3 feature commit: `09c5f2523adb44ca841b04d9e736496e8f0591f1` (`feat: wire the destruction and shot effects`).
 
 Files changed:
 - `src/frontend/src/render/scene.ts` — wires the quality matrix, moves `cube.update` before the
@@ -120,6 +121,21 @@ count recorded per run.
   PRESENT: glowing tracer bolt with a muzzle flash
   ABSENT: vanishes on the same frame
   ```
+- **Post-commit exact gate output** (`BASE_SHA...HEAD` at T3 feature commit `09c5f25`):
+  ```
+  # POST-COMMIT diff gate BASE_SHA...HEAD
+  DIFF_EXIT=0
+  # POST-COMMIT import/URL/loader grep
+  IMPORT_GREP_EXIT=0
+  # POST-COMMIT asset diff
+  ASSET_DIFF_EXIT=0
+  # POST-COMMIT audio grep
+  AUDIO_GREP_EXIT=0
+  # POST-COMMIT index guard
+  INDEX_EXIT=0
+  ```
+  Re-run after the docs-only follow-up commit (which only updates this log and the reduced-frame
+  evidence): the same five gates exit 0; final HEAD differs from `09c5f25` only in those docs files.
 
 ### Manual visual evidence (AC-9)
 
@@ -152,6 +168,13 @@ measured offset). The 4 ms in-page state sampler independently records the pool/
   reaching 0 at **656.3 / 657.4 ms**; the targeted/screencast frame times above are the first captured
   frames after those state transitions (screencast cadence is ~16.7 ms). The tile is zero-scaled
   140 ms after the actual impact frame; the 333/335 ms frames show the hole with no core.
+- **Browser destroy sampler (1280×720, 4 ms interval; rest tile edge 0.7917).** Impact frame
+  `scale 1 / brightness 3`; +16 ms `1.073 / 2.629`; +26 ms `1.014 / 2.258`; +43 ms `0.723 / 1.889`;
+  +63 ms `0.480 / 1.518`; +83 ms `0.287 / 1.149`; +99 ms `0.143 / 1`; +115 ms `0.049 / 1`;
+  +132 ms `0.004 / 1`; +148 ms `0 / 1`. This is the pinned
+  `miniCubeDestroyScaleAt`/`miniCubeDestroyBrightnessAt` curve in the browser (the exact 0/15/30/85/140
+  and 0/45/90/140 values are pinned in `effects.test.ts` and re-pinned through `SceneView` in
+  `scene-effects.test.ts`); the 1920 sampler shows the same sequence.
 - No click frame shows a gold ray fan, gold coin glyph, ring or satellite ring. The only gold
   geometry on screen is the preserved level-complete banner (below); the click impact uses the
   white-hot core, amber/white embers and warm-grey smoke, plus the retained green shards and gold
@@ -162,13 +185,17 @@ measured offset). The 4 ms in-page state sampler independently records the pool/
   none` for `main`, `.hud-panel` and `.upgrades-panel`, and the camera position/quaternion is
   identical before/after (`cameraEq=true` in `visual-*.json`).
 - Reduced-motion pass (`prefers-reduced-motion: reduce` emulated):
-  - 1280×720: frame `t3-reduced-click-0110ms-1280x720.png`, state at 148 ms and 414.7 ms:
-    exactly one zero-scaled tile (`index 2`, scale `[0,0,0]`, colour `[1,1,1]`), 0 shards, 0 flash,
-    0 burst points, 0 sparks, 0 shot children, recoil 0, coin `+0.10`, no shake.
+  - 1280×720: click frame `t3-reduced-click-0120ms-1280x720.png` at **120 ms**; state at 120 ms
+    and 360 ms: exactly one zero-scaled tile (`index 2`, scale `[0,0,0]`, colour `[1,1,1]`),
+    0 shards, 0 flash, 0 burst points, 0 sparks, 0 shot children, recoil 0.
     Settled frame `t3-reduced-settled-0360ms-1280x720.png` at **360 ms**.
-  - 1920×1080: frame `t3-reduced-click-0111ms-1920x1080.png`, state at 150.9 ms and 462.2 ms:
-    the same zero state; settled frame `t3-reduced-settled-0345ms-1920x1080.png` at **345 ms**.
-  - `matchMedia('(prefers-reduced-motion: reduce)').matches === true` in both runs.
+  - 1920×1080: click frame `t3-reduced-click-0120ms-1920x1080.png` at **120 ms**; the same zero
+    state at 120 ms and 365 ms; settled frame
+    `t3-reduced-settled-0365ms-1920x1080.png` at **365 ms**.
+  - The separate live-DOM pass recorded coin `+0.10`, no-shake styles for `main`/`.hud-panel`/
+    `.upgrades-panel`, and `matchMedia('(prefers-reduced-motion: reduce)').matches === true` in both
+    sizes (frames at 110/148 ms before the targeted pass; retained reticle frames
+    `t3-reduced-reticle-1280x720.png` / `-1920x1080.png`).
 - Preserved level-complete banner/fly-by (production `levelIndex` rise, no harness trigger):
   - 1280×720: banner present, 24 rays (16 gold + 8 cyan), 3 rings, 12 stars, 20 coin elements,
     title `LEVEL COMPLETE`, CSS animation `none`; roll `maxAbs 6.2828`, 560 ms, 1 interval; HUD
@@ -264,7 +291,7 @@ Bars and result:
 | AC-6 | met | T2 `spaceship.test.ts`/`scene-spaceship.test.ts`; T3 `scene-effects.test.ts` pins `muzzle.z = 6.78`, muzzle flash 1→0 by 80 ms, recoil negative→0 by 120 ms and arrival at 180 ms. |
 | AC-7 | met | `scene.ts` wiring + new `scene-effects.test.ts` (9 tests) + camera equality; no gold names; HUD no-shake owned by the unchanged React/CSS suites. |
 | AC-8 | met | 135 = 65 + 70; caps 42/6/72/72; triangle +48/+8/−100; 36-run draw table above within every bar; recovery both sizes; JS gzip 272.73 kB. |
-| AC-9 | met | Evidence map above: all seven windows at 1280/1920, reduced frames at 110/360 and 111/345 ms, preserved coin/reticle/cursor/banner/fly-by/no-shake, no click gold fan/coins/ring. |
+| AC-9 | met | Evidence map above: all seven windows at 1280/1920, reduced frames at 120/360 and 120/365 ms, preserved coin/reticle/cursor/banner/fly-by/no-shake, no click gold fan/coins/ring. |
 | AC-10 | met | README phrase checks above; index guard exit 0; proposed row recorded; no `docs/architecture/**` or `docs/product/glossary.md` change needed (no stack, container, term or meaning change). |
 | AC-11 | met | Fork-point diff gate exit 0; import/URL/loader grep clean; asset diff empty; audio grep clean; no dependency/backend/protocol/container change. |
 | AC-12 | met | `npm run lint`, `npm run typecheck`, `npm test` (868 + 1738), `npm run coverage` (both workspaces ≥80×4), `npm run build` all exit 0. |
