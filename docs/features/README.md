@@ -44,5 +44,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | reference-image-game-view | Reference-Image Game View (procedural nebula/comet/ship, emerald beveled cube, rounded cyan HUD) | accepted | 2026-11-07 |
 | detailed-hero-spaceship | Detailed Hero Spaceship (layered blue/orange procedural hero craft) | accepted | 2026-11-08 |
 | spaceship-cursor-loot-animations | Spaceship Cursor, Granular Loot Parts & Motion (realistic pointer ship, 30-part slots, video-matched animations, adaptive quality) | accepted | 2026-11-09 |
+| particle-only-click-effects | Particle-Only Click Effects (remove gold click explosion; keep green shard debris and spark particles) | accepted | 2026-11-11 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

@@ -1,6 +1,6 @@
 ---
 feature: spaceship-cursor-loot-animations
-revision: 2
+revision: 4
 status: draft
 created: 2026-11-08
 updated: 2026-11-08
@@ -23,6 +23,21 @@ inventory, opening and equip server-authoritative for accounts, persist them in 
 ephemeral. Add a coherent motion system for the click-to-shot-to-pop loop, the cursor ship, the HUD
 and a lootbox reveal, with pinned durations/easings, reduced-motion variants and frame/bundle
 budgets.
+
+**User-approved adaptive quality tier (r4).** The user approved an automatic high/medium/low
+quality tier (resolves spec-review r2 F12). The tier is not a user-facing setting; a pure
+`render/quality.ts` policy observes a rolling frame-time window and applies downgrade/upgrade
+thresholds with hysteresis and cooldowns. High is the default; reduced motion remains
+authoritative and no tier can re-enable reduced-motion-suppressed motion. AC-52 pins the policy;
+AC-47 requires measuring all three tiers and proving recovery.
+
+**Revision 3 — spec-r1 disposition.** The build package was restructured so every task ends with a
+green full workspace (additive `parts-v2.ts`, additive protocol/repository methods, and
+consumer/test consolidation in the task that changes a contract). The scene baseline is corrected
+to **136**, migration 006 rewrites legacy appearance **values**, the detailed-hero scene counts
+are explicitly superseded, and the compatibility, pending-open, reveal-timeline, observed-value,
+legacy-ownership, row-flash, performance, picking, easing and read-normalization findings are
+resolved. See § Review r1 disposition (F1–F27) and the r3 revision-history entry.
 
 The third pillar is derived from the user's reference video
 `/home/raultorraco/Downloads/gemini_generated_video_6c10d7c9.mp4`, which was inspected read-only on
@@ -106,7 +121,9 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   `spaceship.test.ts`.
 - **AC-4 — Realistic materials and composition.** The hull/underside/nose/wings/tail-fin use
   `MeshPhysicalMaterial` with the pinned metal values (hull `metalness 0.55`, `roughness 0.38`,
-  `clearcoat 0.4`, `clearcoatRoughness 0.2`); the canopy uses `metalness 0.2`, `roughness 0.08`,
+  `clearcoat 0.4`, `clearcoatRoughness 0.2`); **rarity changes colour/accent/shape only, never
+  the finish** — all standard/rare/epic structural parts use these AC-4 values (F9); the canopy
+  uses `metalness 0.2`, `roughness 0.08`,
   `clearcoat 1`, `clearcoatRoughness 0.08`; the canopy highlight is a `MeshBasicMaterial`; the two
   ignitions use an emissive transparent material with `emissive` equal to the ignition part colour
   and `opacity 0.55`. The model contains exactly two hull seam strips, two side vents and two
@@ -143,8 +160,10 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   measurement, fresh page load) report average ≤ 16.7 ms and p95 ≤ 33 ms for the median and at
   least two of three runs at both sizes. The `cursor-ship-model` subtree stays at 32 objects (model
   root + 10 slot groups + 21 meshes); the outer `spaceship` group additionally holds the trail
-  `Points` (one draw), so the cursor draws at most 22 draw calls and the model stays ≤ 2500
-  triangles. No per-frame `new` allocation is added to the follow/shot/ignition path.
+  `Points` (one draw), so the cursor draws at most 22 draw calls at **high** tier and the model
+  stays ≤ 2500 triangles; the adaptive tier may reduce this (AC-52). The full scene baseline after
+  the model replacement, impact and targeting is **136** objects (AC-47; detailed-hero's 102 is
+  superseded). No per-frame `new` allocation is added to the follow/shot/ignition path.
   `npm run build` exits 0 and initial JS gzip is ≤ 350 KB. A reproducible miss blocks; no AC
   relaxation and no quality tier in v1 (Q-13). Evidence: final build log.
 - **AC-9 — Cursor reduced motion.** Under `prefers-reduced-motion: reduce`, the ship snaps to the
@@ -155,32 +174,37 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
 
 ### Pillar B — granular loot parts
 
-- **AC-10 — Slot model.** Both `src/backend/src/game/parts.ts` and
-  `src/frontend/src/game/parts.ts` export the same `SlotId` union and `SLOT_CATALOG` with exactly
-  10 slots in this order: `hull`, `nose`, `cockpit`, `wing-left`, `wing-right`, `engine-left`,
-  `engine-right`, `ignition-left`, `ignition-right`, `tail-fin`; each has a non-empty display name
-  (`Hull`, `Nose`, `Cockpit`, `Port Wing`, `Starboard Wing`, `Port Engine`, `Starboard Engine`,
-  `Port Ignition`, `Starboard Ignition`, `Tail Fin`). `isValidSlotId` accepts all ten and rejects
-  `wings`, `engine`, `body`, ``, and `Hull`. Evidence: `parts.test.ts` (both workspaces).
-- **AC-11 — Part catalog.** Both catalogs contain exactly 30 parts (3 per slot: standard, rare,
-  epic) with the exact ids, names, rarities, colours, accents and shapes in § Part catalog. The
-  standard part of every slot is `rarity: 'standard'` and is not lootable; the other 20 are
-  lootable. `isValidPartId` accepts exactly the 30 ids; `partDefinition`/`partSlot` throw
-  `unknown part: <id>` for unknown ids; `partsForSlot(slot)` returns exactly 3 entries in
-  standard→rare→epic order; `defaultPartForSlot(slot)` returns the standard id.
-  `PART_CATALOG_VERSION === 2`. The backend and frontend literal tables are identical (the two
-  tests assert the same 30-row table). Evidence: `parts.test.ts` (both workspaces).
+- **AC-10 — Slot model (v2 module, additive).** `src/backend/src/game/parts-v2.ts` and
+  `src/frontend/src/game/parts-v2.ts` export the same `SlotId` union and `SLOT_CATALOG` with
+  exactly 10 slots in this order: `hull`, `nose`, `cockpit`, `wing-left`, `wing-right`,
+  `engine-left`, `engine-right`, `ignition-left`, `ignition-right`, `tail-fin`; each has a
+  non-empty display name (`Hull`, `Nose`, `Cockpit`, `Port Wing`, `Starboard Wing`, `Port Engine`,
+  `Starboard Engine`, `Port Ignition`, `Starboard Ignition`, `Tail Fin`). `isValidSlotId` accepts
+  all ten and rejects `wings`, `engine`, `body`, ``, and `Hull`. The legacy `parts.ts` module and
+  its `partCategory`/`randomPartId`/`appearanceToSpaceshipParams`/`SpaceshipVisualParams` exports
+  remain untouched until their consumers migrate (compatibility policy, F5); the v2 module is the
+  canonical catalog. Evidence: `parts-v2.test.ts` (both workspaces), plus the untouched legacy
+  catalog tests staying green.
+- **AC-11 — Part catalog v2.** Both `parts-v2` catalogs contain exactly 30 parts (3 per slot:
+  standard, rare, epic) with the exact ids, names, rarities, colours, accents and shapes in
+  § Part catalog. The standard part of every slot is `rarity: 'standard'` and is not lootable; the
+  other 20 are lootable. `isValidPartId` accepts exactly the 30 v2 ids;
+  `partDefinition`/`partSlot` throw `unknown part: <id>` for unknown ids; `partsForSlot(slot)`
+  returns exactly 3 entries in standard→rare→epic order; `defaultPartForSlot(slot)` returns the
+  standard id. `PART_CATALOG_VERSION === 2`. The backend and frontend literal tables are identical
+  (the two `parts-v2.test.ts` files assert the same 30-row table). Evidence: `parts-v2.test.ts`
+  (both workspaces).
 - **AC-12 — Defaults are implicitly owned.** Every standard part is equippable without appearing
   in `parts`; the server and guest engine accept an equip request for a standard part even when
   `parts[partId]` is absent. Standard parts never appear in the loot table and are never granted
   by a lootbox. A missing `appearance[slot]` resolves to the slot's standard part. Evidence:
-  `parts.test.ts`, `hub.test.ts`, `engine.test.ts`.
+  `parts-v2.test.ts`, `hub.test.ts`, `engine.test.ts`.
 - **AC-13 — Loot odds.** `selectLootPart(rng)` performs exactly one weighted draw over the 20
   lootable parts: rare weight `3`, epic weight `1`, total weight `40`; aggregate odds are 75% rare
   and 25% epic; each rare part is 7.5% and each epic part is 2.5%. With `rng() === 0` the first
   lootable part (`hull-obsidian`) is selected; with `rng() === 0.999999` the last
   (`tail-fin-comet`) is selected; a draw of `1` is clamped to the last part. The function never
-  returns a standard part and consumes exactly one `rng` draw. Evidence: `parts.test.ts` (both
+  returns a standard part and consumes exactly one `rng` draw. Evidence: `parts-v2.test.ts` (both
   workspaces), `hub.test.ts`.
 - **AC-14 — Schema and version column.** Migration `006_granular_spaceship_parts.sql` adds
   `user_economy.customization_version INT NOT NULL DEFAULT 1`, backfills it to `2`, then sets the
@@ -193,19 +217,24 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   `body-default|obsidian|gold` → `hull-default|obsidian|gold`; `wings-default|silver` →
   `wing-left-default|silver` **and** `wing-right-default|silver` with the same count on each;
   `engine-default|blue` → `ignition-left-default|blue` **and** `ignition-right-default|blue` with
-  the same count on each; `nose-*` and `cockpit-*` are retained. Legacy appearance keys map
-  `body`→`hull`, `wings`→both `wing-left` and `wing-right`, `engine`→both `ignition-left` and
-  `ignition-right`; `nose`/`cockpit` are retained. Non-numeric part counts are skipped, duplicate
-  keys are summed, and `customization_version` becomes `2`. Re-running the rewrite changes nothing.
-  Evidence: `migration-006.test.ts`, `economy-repository.test.ts`.
+  the same count on each; `nose-*` and `cockpit-*` are retained. **Legacy appearance values are
+  rewritten, not just keys (F3):** `body`=`body-gold` → `hull`=`hull-gold`;
+  `wings`=`wings-silver` → `wing-left`=`wing-left-silver` and `wing-right`=`wing-right-silver`;
+  `engine`=`engine-blue` → `ignition-left`=`ignition-left-blue` and
+  `ignition-right`=`ignition-right-blue`; `nose`/`cockpit` values are retained. Non-numeric counts
+  and counts above `2147483647` are skipped; duplicate keys are summed; every row gets
+  `customization_version = 2`. Re-running the rewrite changes nothing. Evidence:
+  `migration-006.test.ts`, `economy-repository.test.ts`.
 - **AC-16 — Repository load/normalization.** `EconomyRepository.findCustomizationByUserId` returns
   a defensive copy of `{ lootboxes, keys, parts, appearance }`; a missing row returns the zero
-  state; a row with `customization_version < 2` is normalized through the pure
-  `normalizeCustomizationState` before returning; unknown part ids, unknown slot keys, and
-  slot/part mismatches are dropped; legacy ids are mapped as in AC-15; standard parts may be
-  absent. The in-memory and Postgres implementations return the same shape and values. Evidence:
-  `economy-repository.test.ts`.
-- **AC-17 — Atomic lootbox open.** `applyLootboxOpen(userId, partId)` performs one conditional
+  state. **Normalization runs whenever legacy keys/ids are present, regardless of
+  `customization_version` (F15), and also when the version is `< 2`;** unknown part ids, unknown
+  slot keys, and slot/part mismatches are dropped; legacy ids/values are mapped as in AC-15;
+  standard parts may be absent. A restored row in a 006 database (version 2) with legacy ids is
+  therefore renderable/equippable after normalization. The in-memory and Postgres implementations
+  return the same shape and values. Evidence: `economy-repository.test.ts` (version-2 legacy-row
+  fixture).
+- **AC-17 — Atomic lootbox open.** `applyLootboxOpenV2(userId, partId)` performs one conditional
   atomic update: only when `lootboxes >= 1` **and** `keys >= 1` it decrements both by exactly 1,
   increments `parts[partId]` by exactly 1, and returns `{ state, duplicate }` where `duplicate` is
   true iff `partId` was already present before the increment. With insufficient counts it returns
@@ -213,12 +242,14 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   never go negative. The in-memory implementation follows the same contract and check order.
   Evidence: `economy-repository.test.ts`.
 - **AC-18 — Open success, server authority.** An account `openLootbox` selects exactly one part
-  with `selectLootPart(deps.random())`, calls `applyLootboxOpen`, updates `customization` on every
-  member with that `accountId`, broadcasts `customizationUpdate` to every joined connection of the
-  account (including the opener), and sends exactly one `lootboxOpened` message to the **opening
-  connection only** carrying the granted `partId`, `slot`, `rarity`, `duplicate` and the absolute
-  state. The granted part is always one of the 20 lootable catalog entries. Evidence:
-  `hub.test.ts`, `protocol.test.ts`.
+  with `selectLootPart(<the hub's captured random>)`, not a fresh `deps.random()` per open (F21);
+  the captured RNG is the same source used for the server's seeded draws, and the draw order is
+  documented in the plan. It calls `applyLootboxOpenV2`, updates `customization` on every member
+  with that `accountId`, broadcasts `customizationUpdate` to every joined connection of the account
+  (including the opener), and sends exactly one `lootboxOpened` message to the **opening connection
+  only** carrying the granted `partId`, `slot`, `rarity`, `duplicate` and the absolute state. The
+  granted part is always one of the 20 lootable catalog entries. Evidence: `hub.test.ts`
+  (seeded multi-open differs), `protocol.test.ts`.
 - **AC-19 — Open failure.** With `lootboxes === 0` or `keys === 0`, `openLootbox` yields
   `error { code: 'no_lootbox' }` or `error { code: 'no_key' }` in that check order; no DB write,
   no `customizationUpdate`, no `lootboxOpened`, no state change. Evidence: `hub.test.ts`.
@@ -230,9 +261,11 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   Evidence: `hub.test.ts`.
 - **AC-21 — Equip validation.** `equipPart { partId }` validates: unknown/malformed id →
   `unknown_part`; a non-standard part with `parts[partId] <= 0` → `not_owned`; a standard part is
-  always allowed. The target slot is derived from the catalog entry, never from the client. No
-  state changes on error. Client-supplied counts, rarity or slot are ignored. `unknown_slot` is
-  reserved for `unequipPart { slotId }` (AC-22). Evidence: `hub.test.ts`, `engine.test.ts`.
+  always allowed. The target slot is derived from the catalog entry, never from the client; the
+  **explicit legacy exception** is that a server-side legacy id (`wings-*`, `engine-*`) derives a
+  target set of two slots (AC-28). No state changes on error. Client-supplied counts, rarity or
+  slot are ignored. `unknown_slot` is reserved for `unequipPart { slotId }` (AC-22). Evidence:
+  `hub.test.ts`, `engine.test.ts`.
 - **AC-22 — Equip and unequip state.** A valid `equipPart` sets exactly
   `appearance[part.slot] = partId` through the atomic `setSlotAppearance` repository method,
   updates every member with that `accountId`, and broadcasts one `customizationUpdate`. Re-equipping
@@ -271,15 +304,22 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   published; no message is sent. Guest `equipPart`/`unequipPart` validate against the catalog,
   ownership and defaults, mutate `appearance`, and publish. Guest state remains ephemeral and is
   lost on reload/disconnect. Evidence: `engine.test.ts`, `session.test.ts`.
-- **AC-28 — Backward compatibility.** The server accepts the legacy part ids (`body-*`,
-  `wings-*`, `engine-*`, `nose-*`, `cockpit-*`) on `equipPart`: `body-X` equips `hull-X`; `wings-X`
-  equips both `wing-left-X` and `wing-right-X`; `engine-X` equips both `ignition-left-X` and
-  `ignition-right-X`; nose/cockpit ids equip normally. Legacy ids are never granted by a lootbox.
-  The frontend normalizer maps legacy appearance records to the new slot keys before rendering, so
-  an unmigrated or manually restored row still renders. Evidence: `hub.test.ts`, `parts.test.ts`,
-  `engine.test.ts`.
+- **AC-28 — Backward compatibility and legacy ownership.** The server accepts the legacy part ids
+  (`body-*`, `wings-*`, `engine-*`, `nose-*`, `cockpit-*`) on `equipPart`: `body-X` equips
+  `hull-X`; `wings-X` equips both `wing-left-X` and `wing-right-X`; `engine-X` equips both
+  `ignition-left-X` and `ignition-right-X`; nose/cockpit ids equip normally. **Ownership is
+  all-or-nothing for a multi-slot legacy id:** `body-*` requires `hull-*` owned; `wings-*` requires
+  **both** `wing-left-*` and `wing-right-*` owned, otherwise `not_owned`; `engine-*` requires both
+  ignition v2 parts. A standard legacy id is always allowed. Legacy ids are never granted by a
+  lootbox. The frontend normalizer maps legacy appearance values to the new slot keys before
+  rendering, so an unmigrated or manually restored row still renders. Evidence: `hub.test.ts`
+  (full/partial ownership), `parts-v2.test.ts`, `engine.test.ts`.
 - **AC-29 — Customization panel slots.** `SpaceshipCustomizationPanel` renders the lootbox/key
-  counts, one `Open lootbox` button (disabled when `lootboxes === 0 || keys === 0 || pendingOpen`),
+  counts, one `Open lootbox` button (disabled when `lootboxes === 0 || keys === 0 ||
+  pendingOpen`), where `pendingOpen` is produced by the session: set true when an account
+  `openLootbox` is sent, cleared on `lootboxOpened`, `customizationUpdate`, `error`, transport
+  status change or `welcome`; guest opens are synchronous and never pending. App passes the state
+  from the session snapshot (F6).
   and exactly 10 `<li class="customization-slot" data-slot="<slotId>">` rows in `SLOT_CATALOG`
   order. Each row shows the slot display name, the equipped part name, and exactly three
   `<li class="customization-variant" data-part="<partId>" data-owned="true|false"
@@ -320,46 +360,62 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   a rejoin within grace sees the new state; a pre-migration row with `wings-silver` +
   `appearance.wings='wings-silver'` loads as both `wing-left-silver` and `wing-right-silver` and
   `appearance['wing-left']='wing-left-silver'`, `appearance['wing-right']='wing-right-silver'`.
-  Guest rejoin/new connection starts from the zero state. Evidence: `hub.test.ts`,
+  The exact row fixture is `parts={"wings-silver":2,"engine-blue":1,"body-gold":1}` and
+  `appearance={"wings":"wings-silver","engine":"engine-blue","body":"body-gold"}` →
+  `parts={"wing-left-silver":2,"wing-right-silver":2,"ignition-left-blue":1,
+  "ignition-right-blue":1,"hull-gold":1}` and
+  `appearance={"wing-left":"wing-left-silver","wing-right":"wing-right-silver",
+  "ignition-left":"ignition-left-blue","ignition-right":"ignition-right-blue","hull":"hull-gold"}`.
+  A restored row with `customization_version=2` but legacy ids is normalized on read. Guest
+  rejoin/new connection starts from the zero state. Evidence: `hub.test.ts`,
   `economy-repository.test.ts`, `migration-006.test.ts`, `session.test.ts`, final smoke.
 
 ### Pillar C — observed motion language
 
 - **AC-34 — Motion tokens v2 (observed + extrapolated).** `src/frontend/src/game/motion.ts` is the
   single home for the new presentation-only tokens, with these exact values:
-  **observed** `reticleDwellMs 250`, `reticleFadeMs 120`, `coinPopMs 1100`, `coinRisePx 45`,
-  `coinRiseMs 220`, `coinMaxConcurrent 3`, `shockwaveGrowMs 330`, `shockwaveFadeMs 150`,
-  `shockwaveVisibleMs 480`, `shockwaveMaxScale 5`, `orbOvershootMs 250`,
-  `orbOvershootScale 1.25`, `bannerOvershootMs 450`, `bannerOvershootScale 1.08`,
-  `bannerPeakMs 370`, `bannerHaloMs 250`, `bannerRotateDeg 8`, `bannerWobbleDeg 2`,
-  `bannerHoldMs 1600`, `levelBurstMs 760`,
+  **observed** `reticleDwellMs 250`, `coinPopMs 1100`, `coinRisePx 45`, `coinRiseMs 220`,
+  `coinMaxConcurrent 3`, `shockwaveGrowMs 330`, `shockwaveFadeMs 150`, `shockwaveVisibleMs 480`,
+  `shockwaveMaxScale 5`, `orbOvershootMs 250`, `orbOvershootScale 1.25`,
+  `bannerOvershootMs 450`, `bannerOvershootScale 1.08`, `bannerPeakMs 250`, `bannerHaloMs 250`,
+  `bannerRotateDeg 8`, `bannerWobbleDeg 2`, `bannerHoldMs 1600`, `levelBurstMs 760`,
   `levelBurstAttackMs 250`, `levelBurstReleaseMs 510`, `levelRayGold 16`, `levelRayCyan 8`,
-  `levelRingCount 3`, `levelStarCount 12`, `levelCoinCount 12`, `rayCount 12`, `rayGrowMs 80`,
+  `levelRingCount 3`, `levelStarCount 12`, `levelCoinCount 20`, `rayCount 12`, `rayGrowMs 80`,
   `rayHoldMs 100`, `rayFadeMs 270`, `rayTotalMs 450`, `debrisPerPop 14`, `debrisPoolCap 42`,
-  `debrisLifetimeMs 900`, `debrisSpeedMin 1.8`, `debrisSpeedMax 3.6`, `debrisDragPerS 2`,
+  `debrisLifetimeMs 1200`, `debrisSpeedMin 1.8`, `debrisSpeedMax 3.6`, `debrisDragPerS 2`,
   `debrisGravity 6`, `debrisAngularMin 3`, `debrisAngularMax 8`, `coinsPerPop 6`,
   `coinPoolCap 18`, `coinLifetimeMs 1000`, `shipRollMs 700`, `shipOrbitRadius 1.2`,
   `fireTrailMs 700`, `fireTrailCount 16`, `plumeFlickerMs 100`;
-  **extrapolated `[E]`** `lootboxChargeMs 420`, `lootboxFlashMs 120`, `lootboxRevealMs 360`,
-  `lootboxSettleMs 140`, `lootboxTotalMs 1040`, `equipPulseMs 260`, `equipPulseScale 0.04`,
-  `equipRowFlashMs 260`, `upgradePulseMs 260`, `trailLifetimeMs 220`, `trailCount 8`,
-  `shipBankMaxRad 0.28`, `shipBankGain 2.4`, `shipPitchMaxRad 0.18`, `shipPitchGain 1.6`,
-  `shipIdleAmplitude 0.015`, `shipIdlePeriodMs 2600`.
-  It exports `easeOutCubic`, `easeOutBack(t, c1 = 1.5)` (standard formula; peak `1.08` at `t =
-  0.6` for `c1 = 1.5`, peak `1.25` at `t = 0.5` for `c1 = 3.0`), `easeOutQuad`, `easeOutQuint`,
-  `easeInOutCubic` and `clamp01`, with exact endpoints/midpoints. `game-view.css` mirrors the
-  durations as `--motion-*` custom properties on the `main` element (not the pinned nine-token
-  `:root` block); `game-view.css.test.ts` imports `MOTION` and asserts each value equals
-  `${token}ms`. No second copy exists in `effects.ts`, `app.css` or components. Evidence:
-  `motion.test.ts`, `game-view.css.test.ts`.
+  **implementation choices `[E]`** `reticleFadeMs 120` (not measured; game-feel fade),
+  `lootboxChargeMs 420`, `lootboxFlashMs 120`, `lootboxRevealMs 360`, `lootboxSettleMs 140`,
+  `lootboxTotalMs 1290`, `equipPulseMs 260`, `equipPulseScale 0.04`, `equipRowFlashMs 260`,
+  `upgradePulseMs 260`, `trailLifetimeMs 220`, `trailCount 8`, `shipBankMaxRad 0.28`,
+  `shipBankGain 2.4`, `shipPitchMaxRad 0.18`, `shipPitchGain 1.6`, `shipIdleAmplitude 0.015`,
+  `shipIdlePeriodMs 2600`.
+  It exports `easeOutCubic` (only here; `effects.ts` re-exports it, F14), `easeOutBack(t, c1 =
+  1.5)` (standard formula; peak `1.08` at `t = 0.6` for `c1 = 1.5`, peak `1.25` at `t = 0.5` for
+  `c1 = 3.0`), `easeOutQuad`, `easeOutQuint`, `easeInOutCubic` and `clamp01`, with exact
+  endpoints/midpoints. The exact CSS-token map is: `--motion-coin-pop-ms`=`coinPopMs`,
+  `--motion-loot-charge-ms`=`lootboxChargeMs`, `--motion-loot-orb-ms`=`orbOvershootMs`,
+  `--motion-loot-flash-ms`=`lootboxFlashMs`, `--motion-loot-reveal-ms`=`lootboxRevealMs`,
+  `--motion-loot-settle-ms`=`lootboxSettleMs`, `--motion-level-burst-ms`=`levelBurstMs`,
+  `--motion-banner-peak-ms`=`bannerPeakMs`, `--motion-banner-settle-ms`=`bannerOvershootMs`,
+  `--motion-banner-halo-ms`=`bannerHaloMs`, `--motion-equip-row-ms`=`equipRowFlashMs`,
+  `--motion-equip-pulse-ms`=`equipPulseMs`, `--motion-upgrade-pulse-ms`=`upgradePulseMs`; all
+  other tokens are intentionally JS-only. `game-view.css` declares these on `main` (not `:root`);
+  `game-view.css.test.ts` imports `MOTION` and asserts each mapped value equals `${token}ms`.
+  Evidence: `motion.test.ts`, `game-view.css.test.ts`.
 - **AC-35 — Target lock and reticle [O].** On pointer move the session resolves the front-face
-  mini-cube at most once per animation frame (`pickMiniCube`; no allocation) and calls
-  `SceneView.setHoverTarget(id | null)`. A hit shows a white outline around the hovered tile (one
+  mini-cube **at most once per animation frame** and calls `SceneView.setHoverTarget(id | null)`.
+  `picking.ts` owns a hover path with preallocated NDC/result storage (`pickHoverTarget`) so the
+  per-event path does not create a new result object; the click path (`pickMiniCube`) is unchanged
+  and may allocate an id string. A hit shows a white outline around the hovered tile (one
   `LineSegments` edge box at `1.03` tile scale, `depthTest: false`, `renderOrder: 11`, one draw)
   and six 2×14 px-equivalent ticks at 60° around the pointer/ship, 20 px-equivalent from the tip
-  (one `LineSegments`, 12 vertices). The reticle fades in over `reticleFadeMs = 120` and holds for
-  `reticleDwellMs = 250`; the cube is **not** scaled or squashed; a miss hides the reticle. Under
-  reduced motion the outline is static and the ticks are off. Evidence: `targeting.test.ts`,
+  (one `LineSegments`, 12 vertices). The reticle fades in over `reticleFadeMs = 120` (an
+  implementation choice `[E]`, not a measured value) and holds for `reticleDwellMs = 250`; the cube
+  is **not** scaled or squashed; a miss hides the reticle. Under reduced motion the outline is
+  static and the ticks are off. Evidence: `picking.test.ts`, `targeting.test.ts`,
   `session.test.ts`, `scene-spaceship.test.ts`.
 - **AC-36 — Instant cube conceal [O].** `MINI_CUBE_POP_MS === 0`: a clicked mini-cube is
   zero-scaled on the same frame (the accepted 160 ms pop-then-shrink is superseded); there is no
@@ -374,7 +430,7 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   tapered gold fan (`RAY_POOL_CAP = 3`, one `InstancedMesh`, grow `80 ms` `easeOutQuint`, hold
   `100 ms`, fade `270 ms`, total `450 ms`; lengths alternate 90–160 px-equivalent), 14 green beveled
   cube shards (`DEBRIS_POOL_CAP = 42`, one `InstancedMesh`, speed `1.8–3.6` world units/s, drag
-  `2 s⁻¹`, gravity `6` world units/s², angular `3–8 rad/s`, lifetime `900 ms`), 6 gold coin discs
+  `2 s⁻¹`, gravity `6` world units/s², angular `3–8 rad/s`, lifetime `1200 ms`), 6 gold coin discs
   (`COIN_POOL_CAP = 18`, one `InstancedMesh`, speed `0.8–1.2`, spin, lifetime `1000 ms`), and one
   ring (AC-38). The existing 24-point gold burst (`0xffcc66`, 350 ms, cap 72) remains the needle-
   spark layer and is not duplicated. Each pool is one draw call, recycles oldest first, and has no
@@ -396,10 +452,11 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   Evidence: `Hud.test.tsx`, `App.test.tsx`.
 - **AC-40 — Level-complete burst, banner and ship fly-by [O].** On a `levelIndex` increase the
   client shows `LevelCompleteBanner` for `bannerHoldMs = 1600`: a full-screen DOM burst of 16 gold
-  + 8 cyan rays, 3 concentric rings, 12 star glyphs and 12 coin glyphs over
+  + 8 cyan rays, 3 concentric rings, 12 star glyphs and 20 coin glyphs over
   `levelBurstMs = 760` (attack `250`, release `510`, `easeOutCubic` brightness envelope); the
-  banner enters at `scale 0.2`, `rotate(-8°)`, reaches `1.0` at `250 ms`, overshoots to `1.08` at
-  `~370 ms`, settles by `450 ms` with a decaying ±2° wobble and a 250 ms halo ring. The cursor ship
+  banner enters at `scale 0.2`, `rotate(-8°)`, reaches `1.0` at ≈`170 ms`, overshoots to `1.08` at
+  `bannerPeakMs = 250 ms` (the contact-sheet peak), settles by `450 ms` with a decaying ±2° wobble
+  and a 250 ms halo ring. The cursor ship
   performs one 360° roll on a `1.2`-world-unit orbit over `700 ms` (`easeInOutCubic`) with a
   16-point, `700 ms` fire trail, then returns to pointer-follow. No camera/HUD shake. Reduced
   motion: 150 ms white overlay at ≤15 % opacity, banner fades at `scale 1`/`0°` over 120 ms, no
@@ -413,11 +470,12 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   satellite rings belong to the ring shockwave, not the idle orb) charges for `420 ms`
   (`scale 1 → 1.06 → 1`, ±5 % pulse, no translation), overshoots to `1.25` over `250 ms`
   (`easeOutBack(3.0)`, the observed orb envelope), flashes for `120 ms`, reveals the card over
-  `360 ms` with an 8 % overshoot (`easeOutBack(1.5)`), and settles for `140 ms`; total `1040 ms`.
-  The grant attributes from AC-32 remain; the reveal `Equip` button is 44 px with a focus-visible
-  ring. Reduced motion: instant result, static orb, no charge/flash/overshoot. This is an
-  **extrapolation** from the observed orb + banner envelopes; the video has no lootbox panel.
-  Evidence: `SpaceshipCustomizationPanel.test.tsx`, `game-view.css.test.ts`.
+  `360 ms` with an 8 % overshoot (`easeOutBack(1.5)`), and settles for `140 ms`; the phases are
+  **420 + 250 + 120 + 360 + 140 = 1290 ms** (`lootboxTotalMs = 1290`). The grant attributes from
+  AC-32 remain; the reveal `Equip` button is 44 px with a focus-visible ring. Reduced motion:
+  instant result, static orb, no charge/flash/overshoot. This is an **extrapolation** from the
+  observed orb + banner envelopes; the video has no lootbox panel. Evidence:
+  `SpaceshipCustomizationPanel.test.tsx`, `game-view.css.test.ts`.
 - **AC-42 — Cursor ship adaptation [E].** Non-reduced cursor motion keeps the banking/pitch
   formulas (`vx/vy` per ms; `rotation.z = clamp(-vx * 2.4, ±0.28)`, `rotation.x =
   clamp(-vy * 1.6, ±0.18)`), the 8-point/220 ms trail, the 0.015/2600 ms idle bob, the 260 ms/4 %
@@ -425,12 +483,13 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   scale: the reference ship is stationary and does not react to pops. `dtMs === 0`, rest or reduced
   motion yields exact zero bank/pitch, 0 trail points and scale 1. Evidence: `ship-motion.test.ts`,
   `spaceship.test.ts`.
-- **AC-43 — Equip and upgrade feedback [E].** A part equip adds a 260 ms row flash and the 4 % ship
-  pulse; an upgrade-level increase adds `data-purchased="true"` for 260 ms with a single subtle
-  pulse. No new coin HUD pulse is added (the observed HUD updates instantly). Reduced motion makes
-  both instant. The video has no equipping or upgrade purchase; these inherit the observed banner
-  overshoot/settle language at a smaller amplitude. Evidence: `UpgradesPanel.test.tsx`,
-  `App.test.tsx`.
+- **AC-43 — Equip and upgrade feedback [E].** A part equip adds a 260 ms row flash
+  (`data-equipping="true"`, produced by `SpaceshipCustomizationPanel` in T12 and styled by T12's
+  CSS, F11) and the 4 % ship pulse; an upgrade-level increase adds `data-purchased="true"` for
+  260 ms with a single subtle pulse. No new coin HUD pulse is added (the observed HUD updates
+  instantly). Reduced motion makes both instant. The video has no equipping or upgrade purchase;
+  these inherit the observed banner overshoot/settle language at a smaller amplitude. Evidence:
+  `SpaceshipCustomizationPanel.test.tsx`, `UpgradesPanel.test.tsx`, `App.test.tsx`.
 
 ### Pillar C — invariants and evidence
 
@@ -451,41 +510,80 @@ functions/lines per workspace), `npm run build`, `npm run smoke`.
   observed beat (AC-35…AC-40, AC-44) to the shipped token and each extrapolated beat
   (AC-41…AC-43) to its nearest observed envelope. No unobserved value is presented as observed.
   Evidence: `video-analysis.md`, `reference/`, final build-log table.
-- **AC-47 — Motion performance and bundle.** With the local environment running, 10-second idle
-  and 10-clicks/second `requestAnimationFrame` traces at 1280×720 and 1920×1080 (three clean runs,
-  fresh page load) report average ≤ 16.7 ms and p95 ≤ 33 ms for the median and at least two of
-  three runs at both sizes. Worst-case live effect pools are 3 ray fans, 42 debris, 18 coins,
-  3 shockwave rings and 72 spark points; each pool is one draw and recycles oldest first. No
-  per-frame `new` allocation is added to the pop/impact/cursor paths. `npm run build` initial JS
-  gzip ≤ 350 KB. A reproducible miss blocks; no quality tier in v1 (Q-13). Evidence: final build
-  log.
+- **AC-47 — Motion performance, adaptive tiers and bundle.** With the local environment running,
+  10-second idle and 10-clicks/second `requestAnimationFrame` traces at 1280×720 and 1920×1080
+  (three clean runs, fresh page load) report average ≤ 16.7 ms and p95 ≤ 33 ms for the median and
+  at least two of three runs at both sizes **at high tier**. The same traces are recorded at
+  medium and low (forced via the test hook/policy input) and must show lower or equal draw counts
+  and no regression; a forced-low run must recover to high after the pinned stable window when
+  frame times return to budget. **The expected high-tier net draw-call growth is pinned:** old
+  cursor 7 → new cursor 22 (+15; 21 meshes + trail), impact +4, targeting +2 = **net +21 draws**,
+  with 19 materials (+12); medium is 17 cursor draws (no trail, four detail meshes hidden) and low
+  is 15 (no trail, six detail meshes hidden, no reticle/impact particles). Worst-case live effect
+  pools are 3 ray fans, 42 debris, 18 coins, 3 shockwave rings and 72 spark points; each pool is
+  one draw and recycles oldest first. No per-frame `new` allocation is added to the
+  pop/impact/cursor/hover paths. `npm run build` initial JS gzip ≤ 350 KB. A reproducible miss at
+  **high** still blocks; the approved adaptive tier (AC-52) is the mitigation, and no other
+  quality tier/LOD or budget change is allowed without explicit user approval (Q-13). Evidence:
+  final build log + T9/T14 performance traces.
 - **AC-48 — Reduced-motion coverage.** Every new animation has a pinned reduced variant: target
   reticle static/no ticks; cube conceal instant with no rays/debris/coins; ring 120 ms opacity
   flash at final scale; coin popup static 600 ms or numeric-only; level burst 150 ms ≤15 % overlay
   with no rays/rings/debris; banner fade 120 ms at scale 1/0° with no breathing; lootbox instant;
-  cursor bank/pitch/trail/idle/pulse/ignition zero; equip/upgrade instant. The CSS reduced-motion
+  cursor bank/pitch/trail/idle/pulse/ignition zero; equip/upgrade instant. The adaptive tier
+  cannot re-enable any of these (AC-52); reduced motion is authoritative. The CSS reduced-motion
   block disables every new animation/transition. Evidence: `motion.test.ts`,
   `impact-effects.test.ts`, `game-view.css.test.ts`, `spaceship.test.ts`,
   `SpaceshipCustomizationPanel.test.tsx`, `Hud.test.tsx`, `UpgradesPanel.test.tsx`,
   `LevelCompleteBanner.test.tsx`, manual A/B.
-
 ### Verification, docs, containers
 
 - **AC-49 — Coverage.** `npm run coverage` exits 0 with ≥ 80% statements/branches/functions/lines
   in both workspaces; new modules are included; no new exclusion or threshold change. Evidence:
   final build log.
-- **AC-50 — Documentation.** `README.md` contains the exact phrase `granular spaceship parts` and
-  a sentence stating the pointer ship is procedural and no external assets are used;
-  `docs/product/glossary.md` defines `part slot`, `lootbox reveal` and `motion token` and updates
-  the customization entry from categories to slots; `docs/features/README.md` is **not edited** —
-  the final build log records the proposed row diff for the orchestrator. Evidence: final build
-  log greps/diffs.
+- **AC-50 — Documentation.** `README.md` contains the exact phrase `granular spaceship parts`,
+  **preserves the accepted `detailed blue/orange hero spaceship` phrase (F17)**, and states the
+  pointer ship is procedural and no external assets are used; `docs/product/glossary.md` defines
+  `part slot`, `lootbox reveal` and `motion token` and updates the customization entry from
+  categories to slots; `docs/features/README.md` is **not edited** — the final build log records
+  the proposed row diff for the orchestrator and uses the feature `BASE` for the index guard
+  (F16/F27). Evidence: final build log greps/diffs.
 - **AC-51 — Containerization impact.** The only deployment artifact change is migration 006, applied
   by the existing startup runner against the existing `db` service. No new service, image, port,
   environment variable, health signal, compose entry, Dockerfile or WebSocket endpoint change;
   `podman compose up` and `npm run smoke` remain the local/container paths. The final gate runs
-  `npm run smoke` (the existing Mailpit/auth/multiplayer regression) and records the result.
+  `npm run smoke` (the existing Mailpit/auth/multiplayer regression) and records the result; a
+  skipped smoke is not a pass and the orchestrator supplies Podman before acceptance (F26).
   Evidence: final build log, `git diff` on container paths empty.
+- **AC-52 — Adaptive quality tier (user-approved).** `src/frontend/src/render/quality.ts` exports a
+  pure, DOM-free, random-free `createQualityPolicy()` and `qualityFeatures(tier, reducedMotion)`.
+  The policy starts at **high**, consumes injected `pushFrameTime(dtMs)` values, and maintains a
+  rolling window of `QUALITY_WINDOW_FRAMES = 120` clamped frame times
+  (`QUALITY_MAX_FRAME_MS = 250`; non-finite/≤0 ignored). It requires
+  `QUALITY_MIN_SAMPLES = 60` before any decision. `avg` is the arithmetic mean of the live window;
+  `p95` is the nearest-rank value of the sorted live window (`ceil(0.95 * n) - 1`, zero-based).
+  **Downgrade thresholds (one tier per decision, sustained `QUALITY_DOWNGRADE_STABLE_FRAMES =
+  60`):** high→medium when `avg > 18.0 ms` **or** `p95 > 24.0 ms`; medium→low when
+  `avg > 20.0 ms` **or** `p95 > 28.0 ms`. **Upgrade thresholds (hysteresis):** medium→high when
+  `avg <= 16.0 ms` **and** `p95 <= 20.0 ms` for `QUALITY_UPGRADE_STABLE_FRAMES = 180` frames;
+  low→medium when `avg <= 17.0 ms` **and** `p95 <= 22.0 ms` for `QUALITY_UPGRADE_STABLE_FRAMES =
+  240` frames. **Cooldowns:** no downgrade within `QUALITY_DOWNGRADE_COOLDOWN_MS = 1000` of the
+  last change; no upgrade within `QUALITY_UPGRADE_COOLDOWN_MS = 3000`. At most one tier change per
+  decision; default high.
+  **Feature matrix:** high = full 21-mesh cursor + trail + hover reticle + 12 rays/14 shards/6
+  coins/ring + 24-point spark burst + full banner; medium = full cursor but hide
+  `cursor-hull-seam-1/2` and `cursor-vent-left/right` (17 meshes), **no trail**, **no reticle**,
+  6 rays/7 shards/3 coins/ring, 12 spark points, full banner; low = **minimal cursor**
+  (hide `cursor-hull-seam-1/2`, `cursor-vent-left/right`, `cursor-wing-left-tip`,
+  `cursor-wing-right-tip`; no trail/bank/pitch/idle/equip pulse), **no reticle**, no rays/shards/
+  coins/spark points, ring + coin popup + banner remain. The banner is the core level-feedback
+  surface at every tier. No user-facing setting exists. **Reduced motion is authoritative:**
+  `qualityFeatures(tier, true)` disables trail, reticle, cursor motion, impact rays/shards/coins/
+  sparks, shockwave expansion and banner motion regardless of tier; the policy may still downgrade
+  static detail. Tests cover default, each downgrade/upgrade boundary, hysteresis, cooldown,
+  reduced-motion interaction, window/min-sample clamping and deterministic recovery. Evidence:
+  `quality.test.ts`, `scene.test.ts`, `spaceship.test.ts`, `impact-effects.test.ts`,
+  `targeting.test.ts`, T14 traces.
 
 ## Part catalog (pinned, v2)
 
@@ -545,8 +643,8 @@ are explicit adaptations of the nearest observed envelope. No `[E]` value is cla
 | Coin popup | `+0.50 Coins`, 24 px, scale 0.7→1 over 60–80 ms, rise 45 px over 220 ms, lifetime ≈1.1–1.2 s; 2–3 coexist; no HUD pulse | AC-39: 1100 ms popup, 45 px rise, max 3, numeric HUD same frame |
 | Golden orb | Wireframe gold sphere + orange core; radius 45→75→60 px (25 % overshoot, 250 ms settle), hovers ≈2.25 s, ±5 % pulse; no satellites on the idle orb | AC-41 `[E]` lootbox charge orb; satellites belong to the ring (AC-38) |
 | Ring shockwave | 70→350 px in 330 ms (`easeOutQuad`); 8 spokes + 4 satellite rings; ≈150 ms fade; total ≈490 ms; no shake | AC-38: 330 ms grow `1→5`, 150 ms fade, 480 ms visible, baked 8 spokes/4 satellites |
-| Level complete | 0.76 s burst: white core 0→300 px / 380 ms; 16 gold + 8 cyan rays; 3 rings; 40+ cubes, 20+ coins, hundreds of sparks; attack 250 ms, release 510 ms | AC-40: DOM 16+8 rays, 3 rings, 12 stars/coins, 760 ms burst; 3D pools supply extra debris |
-| Banner | ≈0.2 scale/−8° at 0; 1.0 at 250 ms; 1.08 at ≈370 ms; settle by ≈450 ms; ±2° wobble; halo 250 ms; audio impact at overshoot peak | AC-40: `easeOutBack(1.5)` 450 ms, exact keyframes, halo, hold 1600 ms |
+| Level complete | 0.76 s burst: white core 0→300 px / 380 ms; 16 gold + 8 cyan rays; 3 rings; 40+ cubes, 20+ coins, hundreds of sparks; attack 250 ms, release 510 ms | AC-40: DOM 16+8 rays, 3 rings, 12 stars/20 coins, 760 ms burst; 3D pools supply extra debris |
+| Banner | ≈0.2 scale/−8° at 0; 1.0 at ≈170 ms; 1.08 peak at 250 ms (7.875); settle by ≈450 ms; ±2° wobble; halo 250 ms; audio impact at overshoot peak | AC-40: `easeOutBack(1.5)` 450 ms, `bannerPeakMs 250`, halo, hold 1600 ms |
 | Ship fly-by | 360° roll on ≈120 px orbit over 0.55–0.70 s, `easeInOutCubic`; 30–50 px fire trail, ≈0.7 s; no normal-pop reaction | AC-40: cursor fly-by 700 ms, 1.2 world-unit orbit, 16-point/700 ms trail; idle plume flicker 100 ms |
 | Lootbox open / reveal | **Absent `[E]`** — nearest: orb charge/overshoot + banner settle | AC-41 `[E]`: 420 ms charge, 250 ms 25 % orb overshoot, 120 ms flash, 360 ms 8 % reveal, 140 ms settle; no shake |
 | Part equip | **Absent `[E]`** — nearest: banner overshoot | AC-43 `[E]`: 260 ms row flash + 4 % ship pulse |
@@ -627,7 +725,7 @@ are explicit adaptations of the nearest observed envelope. No `[E]` value is cla
 ## Testing strategy
 
 - **Backend unit (Vitest, node):**
-  - `game/parts.test.ts` — 10-slot model; 30-row catalog exact table; standard/rare/epic counts;
+  - `game/parts-v2.test.ts` — 10-slot model; 30-row catalog exact table; standard/rare/epic counts;
     `isValidSlotId`/`isValidPartId`/`partDefinition`/`partSlot`/`partsForSlot`/
     `defaultPartForSlot`; `selectLootPart` weights, boundaries, one draw, no standards; legacy
     normalization (parts + appearance, split keys, collisions, invalid values); `PART_CATALOG_VERSION`.
@@ -647,7 +745,7 @@ are explicit adaptations of the nearest observed envelope. No `[E]` value is cla
   receives `lootboxOpened` + `customizationUpdate`, equips/unequips, and a second connection sees
   the state update without a reveal.
 - **Frontend unit (Vitest, node):**
-  - `game/parts.test.ts` — mirror catalog/odds/normalizer/params.
+  - `game/parts-v2.test.ts` — mirror catalog/odds/normalizer/params; the legacy catalog tests stay green untouched.
   - `game/motion.test.ts` — all observed/extrapolated tokens, easings, exact endpoints/midpoints,
     `easeOutBack` peaks, `clamp01`.
   - `render/ship-motion.test.ts` — bank/pitch formulas/clamps, idle bob, trail ring buffer,
@@ -663,6 +761,9 @@ are explicit adaptations of the nearest observed envelope. No `[E]` value is cla
     easing, recycle, orientation, no per-spawn geometry, reduced path, disposal.
   - `render/targeting.test.ts` — outline position/scale, six ticks/angles, 120 ms fade, 250 ms
     dwell, miss hide, reduced static/no ticks.
+  - `render/quality.test.ts` — default high; min samples; each downgrade/upgrade boundary;
+    hysteresis; downgrade/upgrade cooldowns; one-tier-per-decision; deterministic recovery;
+    reduced-motion feature matrix; clamping/ignored inputs.
   - `render/scene-spaceship.test.ts` / `render/scene.test.ts` — appearance, hover/reticle, impact
     effects at deferred explosion, no camera shake, counts updated, reduced motion, disposal.
   - `render/preview.test.ts` — preview scene/model/appearance/rotation/dispose.
@@ -734,6 +835,9 @@ From `spaceship-cursor`:
 - **AC-2/AC-3/AC-4/AC-5/AC-6/AC-7** — retained in full; AC-8 is extended by AC-9 (new cursor
   motion is also frozen under reduced motion).
 - **Q-5 reduced motion** — retained (snap, no smoothing/shots); AC-9 adds no banking/trail/pulse.
+- **AC-10 (no backend/container change)** — superseded only to the extent of migration 006 plus the
+  backend catalog/protocol/repository/hub changes required by Pillar B; no new service, image,
+  port, environment variable or WebSocket endpoint is added (F23). All other AC-10 clauses remain.
 
 From `spaceship-cursor-polish` and `spaceship-cursor-refinement`:
 
@@ -763,9 +867,18 @@ From `spaceship-customization`:
 
 From `detailed-hero-spaceship`:
 
-- **AC-1 protected-path clause / Non-goals “cursor ship stays exactly as accepted” / Q-2** — the
-  cursor-ship protection and “cursor out of scope” clauses are superseded by this feature's
-  Pillar A. The hero ship, its position/palette/bob and its protected files are unchanged.
+- **AC-1 protected-path clause / Non-goals “cursor ship stays exactly as accepted” / Q-2** — for
+  this feature only, the AC-1 protected paths are **released** for the cursor/parts/motion work:
+  `src/backend/**`, `src/frontend/src/game/**`, `src/frontend/src/App.tsx`,
+  `src/frontend/src/ui/**`, and `src/frontend/src/render/{spaceship,scene,cube-view,picking,world.test}.ts`
+  (plus the new render/UI modules named in the file inventory). The **hero-ship files and
+  properties remain unchanged**: `render/spaceship-model.ts`, the `hero-ship` group position
+  `(9,-2.5,-14)`, `rotation.y = Math.PI/2`, the hero bob, palette and protected hero tests. This is
+  the exact AC-1 release scope (F4).
+- **AC-13/AC-14 scene-count clauses** — `countObjects(scene) === 102` and the 102 baseline in
+  AC-13/AC-14 are superseded by **136** (old cursor 8 → new cursor 34 = +26, impact +5, targeting
+  +3; `scene.children` stays 9/10 because impact/targeting are children of the existing particle
+  group). The frame bar in AC-14 is retained (F2/F4).
 
 From `cube-visual-polish` and `cube-world-transition`:
 
@@ -854,6 +967,46 @@ From `reference-image-game-view`, `modern-visual-overhaul`, `realistic-lighting-
 - Predecessor specs/plans/tasks/reviews remain authoritative for everything not listed under
   § Superseded predecessor criteria; they are never edited.
 
+## User-approved adaptive tier (r4)
+
+The user approved the adaptive high/medium/low tier described by AC-52, resolving the performance
+blocker F12. The tier is automatic and has no user-facing control; high is the default; downgrade
+happens on a sustained rolling-window miss, upgrade only after a longer stable window and cooldown.
+Reduced motion remains authoritative and disables the same motion at every tier. This is the only
+scope change from r3.
+
+## Review r1 disposition (F1–F27)
+
+| # | Disposition | Change |
+| --- | --- | --- |
+| F1 | Fixed | Tasks restructured to 14 green-per-task gates. Contract changes are additive (`parts-v2.ts`, protocol additions, repository v2 methods); every consumer/test is owned by the task that changes it. Full-workspace `npm run coverage` is the per-task gate; T14 is final. |
+| F2 | Fixed | Scene baseline recomputed: old cursor 8 → new 34 (+26), impact +5, targeting +3 → **136**; `scene.children` stays 9/10 because impact/targeting are nested under the particle group. AC-8/47, plan, T9/T14 updated. |
+| F3 | Fixed | Migration 006 rewrites legacy appearance **values** (both wings/ignitions, hull) and sets version 2 for every row; AC-33 exact fixture; repository normalizes restored legacy rows. |
+| F4 | Fixed | Detailed-hero AC-1 release paths and AC-13/AC-14 scene counts explicitly superseded; hero files/properties remain protected. |
+| F5 | Fixed | `parts-v2.ts` is additive; legacy `parts.ts` exports (`partCategory`, `randomPartId`, `appearanceToSpaceshipParams`, `SpaceshipVisualParams`) remain until consumers migrate. T1/T6/T10 note the compatibility policy. |
+| F6 | Fixed | Session `pendingLootboxOpen` is set/cleared on send/grant/update/error/status/welcome and passed to the panel; AC-29/T10/T12. |
+| F7 | Fixed | Reveal total is **1290 ms** (420+250+120+360+140); `lootboxTotalMs 1290`, CSS keyframes/T12/AC-41 updated. |
+| F8 | Fixed | `bannerPeakMs 250`; `reticleFadeMs 120` reclassified `[E]`; `levelCoinCount 20`; `debrisLifetimeMs 1200`; mapping table/T9/T12/T14 tests updated. |
+| F9 | Fixed | Rarity changes colour/accent/shape only; all structural parts use AC-4 finish values; AC-4/plan/T8 aligned. |
+| F10 | Fixed | Legacy ownership all-or-nothing: `wings-*` requires both wing v2 parts; `engine-*` both ignitions; partial → `not_owned`; T5 tests. |
+| F11 | Fixed | Equip-row flash is owned by T12 (`data-equipping` + timer) and styled there; AC-43/T12. |
+| F12 | Fixed | Expected high-tier net draws pinned: old 7 → cursor 22 (+15) + impact 4 + targeting 2 = **+21**, 19 materials (+12). **User-approved adaptive tier (AC-52)** adds high/medium/low with pinned thresholds/hysteresis/cooldowns; T14 measures all three and proves recovery; a reproducible **high-tier** miss still blocks. |
+| F13 | Fixed | `picking.ts`/test move to T10; hover path uses preallocated NDC/result and one raycast/frame; AC-35 explains click allocation is separate. |
+| F14 | Fixed | `easeOutCubic` lives only in `motion.ts`; `effects.ts` re-exports it in T9; no duplicate implementation. |
+| F15 | Fixed | Repository normalization runs when legacy keys/ids are present regardless of version; restored version-2 legacy row tested. |
+| F16 | Fixed | T13 uses the feature `BASE` and a scoped `git status` for `docs/features/README.md`; predecessor row is orchestrator-frozen. |
+| F17 | Fixed | AC-50/T13 preserve `detailed blue/orange hero spaceship` and add `granular spaceship parts`. |
+| F18 | Fixed | Migration count guard uses `value::numeric BETWEEN 0 AND 2147483647`; overflow-skip test. |
+| F19 | Fixed | Exact CSS-token map pinned (13 mapped tokens); unmapped tokens are JS-only; `game-view.css.test.ts` asserts each mapped value. |
+| F20 | Fixed | `video-analysis.md` §8.1/§9 marked historical and point at r3 AC-36/AC-46; the stale 160 ms recommendation is superseded. |
+| F21 | Fixed | Hub uses the captured `random` for `selectLootPart`, not a fresh factory call; draw order documented; seeded multi-open test. |
+| F22 | Fixed | AC-21/AC-28 state the legacy two-slot target-set exception explicitly. |
+| F23 | Fixed | `spaceship-cursor` AC-10 added to the supersession ledger with the migration-006 scope and no new service/port/env. |
+| F24 | Fixed | T2 records the pre-006 `pg_dump`/restore command; T14 records the dump as acceptance evidence. |
+| F25 | Info (orchestrator) | `status.md` still has the stale video blocker; orchestrator-owned, not edited by the planner. |
+| F26 | Fixed | T14/AC-51 require a real smoke run; a skipped smoke is not a pass and Podman must be supplied before acceptance. |
+| F27 | Info (orchestrator) | `docs/features/README.md` remains unedited; T13 proposes the row and uses the feature base guard. |
+
 ## Revision history
 
 - r1 — 2026-11-08 — initial draft (planning). Pillar A cursor replacement, Pillar B 10-slot/30-part
@@ -870,3 +1023,18 @@ From `reference-image-game-view`, `modern-visual-overhaul`, `realistic-lighting-
   Q-2 reduced to a build/performance option; AC-49…AC-51 renumber the verification/docs/container
   criteria. The 160 ms pop-then-shrink and its colour flash are the only accepted visual behavior
   superseded; all other A/B decisions are retained.
+- r3 — 2026-11-08 — **spec-r1 disposition (F1–F27).** Added the 14-task green-per-task package
+  (additive `parts-v2.ts`, additive protocol/repository methods, consumer/test ownership in the
+  changing task); scene baseline `136`; migration appearance **value** rewrite + unconditional
+  legacy normalization; detailed-hero AC-1/AC-13/AC-14 supersession; `pendingOpen`; reveal `1290`
+  ms; observed-value corrections (banner peak 250, level coins 20, debris 1200, reticle fade `[E]`);
+  no rarity finish; legacy ownership; row-flash owner; +21 draw-call budget; `picking.ts` ownership;
+  single `easeOutCubic`; CSS token map; old-easing/video-analysis/README/index/smoke/backup fixes.
+  Full A/B/C scope and `[O]`/`[E]` provenance retained. **r3 consistency verified:** AC-1…AC-51
+  each map to at least one of T1–T14; no `files_owned` duplicates; T14 is last.
+- r4 — 2026-11-08 — **user-approved adaptive quality tier.** Added AC-52 (pure
+  `render/quality.ts`, rolling 120-frame window, high/medium/low feature matrix, exact thresholds/
+  hysteresis/cooldowns, reduced-motion authority); updated AC-47 to measure all three tiers and
+  prove recovery while a high-tier miss still blocks; T9 owns the policy/tests and wiring; T14
+  verifies all tiers. No other scope change. **r4 consistency verified:** AC-1…AC-52 each map to
+  at least one of T1–T14; no `files_owned` duplicates; T14 remains last.

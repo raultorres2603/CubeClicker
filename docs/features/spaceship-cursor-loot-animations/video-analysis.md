@@ -329,31 +329,29 @@ custom cursor ship/trail; those rows are marked **[E]** and inherit the nearest 
 
 ## 8. Concrete timing / easing recommendations
 
-These are design recommendations for the planner; they do **not** change the pinned AC-34 token
-values. Where the spec value is shorter than the observed reference, both are listed.
+**Historical note (r3):** this section records the r1/r2 recommendation draft. The authoritative
+values are spec r3 AC-34/AC-40/AC-41. In particular, the 160 ms pop recommendation is **superseded
+by AC-36's one-frame conceal**, and the 650 ms coin/260 ms ring/`pressMs` rows are historical.
 
-### 8.1 Timing tokens
+### 8.1 Timing tokens (historical pre-r3; authoritative values in spec r3)
 
-| Token / motion | Spec value | Observed equivalent | Recommendation |
+| Token / motion | r3 spec value | Observed equivalent | Note |
 | --- | --- | --- | --- |
-| Press | `pressMs 90` | reticle dwell ≈250 ms; no press scale | keep 90 ms for game feel; add a separate 120 ms hover reticle, not a press scale |
-| Cube pop | existing 160 ms | 1-frame conceal + 0.46 s burst | keep 160 ms scale; conceal at t=0; burst ≈350 ms |
-| Starburst rays | — | 12 rays, 80 ms grow, 350–450 ms fade | 12 rays; `easeOutQuint` grow; `linear`/`easeOutQuad` fade |
-| Debris | — | 0.8–2.0 s | 0.9 s target, drag 2 s⁻¹, gravity 900 px/s², angular 3–8 rad/s |
-| Coin popup | `coinPopMs 650` | ≈1.1–1.2 s | 650 ms for pace; 900–1100 ms for fidelity; rise 40 px in 220 ms |
-| HUD pulse | `hudPulseMs 200` | not observed | 200 ms subtle scale/colour; no shake |
-| Orb spawn | — | 45→75→60 px, ≈250 ms | `easeOutBack(1.2)` 250 ms |
-| Ring shockwave | `shockwaveMs 260` | 330 ms grow, ≈490 ms visible; 70→350 px | 260 ms for click-size; 480–560 ms for special/level-size |
-| Lootbox charge | `lootboxShakeMs 420` | orb hover 2.25 s; no shake | use 420 ms charge pulse (scale 1→1.06→1), not a shake |
-| Lootbox burst | `lootboxBurstMs 120` | 80–150 ms core flash | 120 ms flash is supported |
-| Lootbox reveal | `lootboxRevealMs 360` | banner 160 ms in, 450 ms settle | 360 ms reveal + 140 ms settle is supported |
-| Equip pulse | `equipPulseMs 260` | not observed; banner settle 450 ms | 260 ms is fine as an extrapolation |
-| Upgrade pulse | `upgradePulseMs 260` | not observed | 200–260 ms |
-| Trail | `trailLifetimeMs 220`, `trailCount 8` | no cursor trail; ship fire trail ≈700 ms | keep 8/220 for cursor; use a separate 700 ms ribbon for the victory fly-by |
-| Ship bank | `shipBankMaxRad 0.28`, gain 2.4 | no velocity banking observed | keep as game-feel invention |
-| Ship pitch | `shipPitchMaxRad 0.18`, gain 1.6 | no pitch observed | keep as game-feel invention |
-| Ship idle | amplitude 0.015, period 2600 ms | hull static; plume flicker ≈0.1 s | 0.015 is subtle and safe; add plume flicker 80–125 ms |
-| Equip scale | `equipPulseScale 0.04` | orb overshoot 25 %, banner 8 % | 4 % is conservative and consistent |
+| Reticle | dwell 250 ms; fade 120 ms `[E]` | dwell ≈250 ms; no measured fade | no press scale |
+| Cube pop | instant conceal (AC-36) | 1-frame conceal + 0.46 s burst | 160 ms scale superseded |
+| Starburst rays | 12 rays, 80 grow/100 hold/270 fade | 12 rays, 80 ms grow, 350–450 ms fade | `easeOutQuint` grow |
+| Debris | 14/pop, 1200 ms | 0.8–2.0 s; >1.2 s | drag 2 s⁻¹, angular 3–8 rad/s |
+| Coin popup | 1100 ms, rise 45 px/220 ms | ≈1.1–1.2 s | no HUD pulse |
+| HUD pulse | none new | not observed | existing 200 ms click blink retained |
+| Orb spawn | 250 ms, 25 % overshoot | 45→75→60 px, ≈250 ms | `easeOutBack(3.0)` |
+| Ring shockwave | 330 grow + 150 fade = 480 visible | 330 ms grow, ≈490 ms visible | `easeOutQuad` |
+| Lootbox charge | 420 ms charge + 250 ms orb + 120 flash + 360 reveal + 140 settle = 1290 ms | orb hover 2.25 s; no shake | no shake |
+| Equip pulse | 260 ms; row flash 260 ms | not observed | `[E]` |
+| Upgrade pulse | 260 ms | not observed | `[E]`, no coin HUD pulse |
+| Trail | 8/220 ms cursor; 700 ms fly-by | no cursor trail; ship fire trail ≈700 ms | `[E]` cursor |
+| Ship bank/pitch | ±0.28/±0.18 rad | no velocity banking observed | `[E]` game-feel |
+| Ship idle | 0.015/2600 ms | hull static; plume flicker ≈0.1 s | `[E]`; 100 ms plume |
+| Equip scale | 4 % | orb 25 %, banner 8 % | `[E]` conservative |
 
 ### 8.2 CSS keyframe shapes (for the panel/HUD layer)
 
@@ -400,7 +398,7 @@ All reduced-motion variants keep the state change (numbers, banner text, reveal 
 audio cues; only the motion is suppressed. Use `prefers-reduced-motion: reduce` and also the
 in-game reduce-motion toggle if one exists.
 
-## 9. AC-40 status and open questions
+## 9. AC-40 status (historical; resolved by spec r3 AC-46)
 
 **Observed coverage.** The clip fully supports observed values for:
 click/hover target language, cube pop/shatter, sparks, coin popup/coin glyphs, the golden-orb
@@ -409,19 +407,12 @@ flicker and victory roll/trail.
 
 **Events absent from the reference.** It contains **no** lootbox panel/reveal, **no** part-equip
 action, **no** upgrade purchase, and **no** custom cursor ship or cursor trail. The ship is a
-stationary companion; the pointer is the OS arrow. Therefore AC-40's requirement of “observed
-values for every mapped game event in § Reference mapping” is **not fully satisfiable from this
-video**. The honest status is:
+stationary companion; the pointer is the OS arrow.
 
-- AC-40 passes for the observed beats (frames + timestamps are present).
-- AC-40 cannot pass for lootbox, equip, upgrade and cursor trail unless those rows are explicitly
-  accepted as extrapolations, or the video is replaced/extended with a clip that shows them.
-
-**Candidate resolution (for the planner/orchestrator, not applied here):** split AC-40 into
-“observed-beat fidelity” (this file + frames) and “extrapolated-beat provenance” (each absent row
-carries the nearest observed envelope and a `[E]` marker). The current spec's per-event observed
-claim should be amended accordingly; the animation system itself remains buildable with the spec's
-default tokens.
+**Resolution (r3):** AC-46 replaces the old AC-40 gate. Observed beats (AC-35…AC-40/AC-44/AC-45)
+are traced to frames/measurements; absent beats (AC-41…AC-43) are explicitly `[E]` extrapolations
+carrying the nearest observed envelope. No AC-40 claim of “observed for every mapped event”
+remains in the current spec; this section is kept as historical evidence.
 
 ## 10. Artifact manifest
 
