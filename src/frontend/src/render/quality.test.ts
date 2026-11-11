@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import * as qualityModule from './quality';
 import {
   createQualityPolicy,
   QUALITY_CURSOR_MESH_COUNTS,
@@ -10,6 +11,7 @@ import {
   QUALITY_MAX_FRAME_MS,
   QUALITY_MEDIUM_HIDDEN_MESHES,
   QUALITY_MIN_SAMPLES,
+  QUALITY_SHARD_COUNTS,
   QUALITY_SPARK_COUNTS,
   QUALITY_UPGRADE_COOLDOWN_MS,
   QUALITY_UPGRADE_STABLE_FRAMES,
@@ -36,8 +38,9 @@ describe('quality constants (AC-52)', () => {
     expect(QUALITY_UPGRADE_COOLDOWN_MS).toBe(3000);
   });
 
-  it('pins the per-tier mesh and spark counts', () => {
+  it('pins the per-tier mesh, shard and spark counts', () => {
     expect(QUALITY_CURSOR_MESH_COUNTS).toEqual({ high: 21, medium: 17, low: 15 });
+    expect(QUALITY_SHARD_COUNTS).toEqual({ high: 14, medium: 7, low: 0 });
     expect(QUALITY_SPARK_COUNTS).toEqual({ high: 24, medium: 12, low: 0 });
     expect(QUALITY_MEDIUM_HIDDEN_MESHES).toEqual([
       'cursor-hull-seam-1',
@@ -57,6 +60,22 @@ describe('quality constants (AC-52)', () => {
 });
 
 describe('qualityFeatures matrix (AC-52)', () => {
+  it('drops the retired impact fields and constant', () => {
+    expect(Object.keys(qualityModule)).not.toContain('QUALITY_IMPACT_COUNTS');
+    expect(Object.keys(qualityFeatures('high', false)).sort()).toEqual([
+      'bannerMotion',
+      'coinPopup',
+      'cursorMeshCount',
+      'cursorMotion',
+      'hiddenCursorMeshes',
+      'impactShards',
+      'reticle',
+      'sparks',
+      'tier',
+      'trail',
+    ]);
+  });
+
   it('high tier enables every layer', () => {
     expect(qualityFeatures('high', false)).toEqual({
       tier: 'high',
@@ -65,10 +84,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: true,
       hiddenCursorMeshes: [],
       cursorMeshCount: 21,
-      impactRays: 12,
       impactShards: 14,
-      impactCoins: 6,
-      shockwaveExpand: true,
       sparks: 24,
       coinPopup: true,
       bannerMotion: true,
@@ -83,17 +99,14 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: true,
       hiddenCursorMeshes: QUALITY_MEDIUM_HIDDEN_MESHES,
       cursorMeshCount: 17,
-      impactRays: 6,
       impactShards: 7,
-      impactCoins: 3,
-      shockwaveExpand: true,
       sparks: 12,
       coinPopup: true,
       bannerMotion: true,
     });
   });
 
-  it('low tier keeps only the minimal cursor, ring, coin popup and banner core', () => {
+  it('low tier keeps only the minimal cursor, coin popup and banner core', () => {
     expect(qualityFeatures('low', false)).toEqual({
       tier: 'low',
       reticle: false,
@@ -101,10 +114,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: false,
       hiddenCursorMeshes: QUALITY_LOW_HIDDEN_MESHES,
       cursorMeshCount: 15,
-      impactRays: 0,
       impactShards: 0,
-      impactCoins: 0,
-      shockwaveExpand: true,
       sparks: 0,
       coinPopup: true,
       bannerMotion: true,
@@ -119,10 +129,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: false,
       hiddenCursorMeshes: [],
       cursorMeshCount: 21,
-      impactRays: 0,
       impactShards: 0,
-      impactCoins: 0,
-      shockwaveExpand: false,
       sparks: 0,
       coinPopup: true,
       bannerMotion: false,
@@ -134,10 +141,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: false,
       hiddenCursorMeshes: QUALITY_MEDIUM_HIDDEN_MESHES,
       cursorMeshCount: 17,
-      impactRays: 0,
       impactShards: 0,
-      impactCoins: 0,
-      shockwaveExpand: false,
       sparks: 0,
       coinPopup: true,
       bannerMotion: false,
@@ -149,10 +153,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
       cursorMotion: false,
       hiddenCursorMeshes: QUALITY_LOW_HIDDEN_MESHES,
       cursorMeshCount: 15,
-      impactRays: 0,
       impactShards: 0,
-      impactCoins: 0,
-      shockwaveExpand: false,
       sparks: 0,
       coinPopup: true,
       bannerMotion: false,

@@ -75,13 +75,11 @@ export const QUALITY_CURSOR_MESH_COUNTS: Readonly<Record<QualityTier, number>> =
   low: 15,
 };
 
-/** Per-pop impact counts per tier (AC-52). */
-export const QUALITY_IMPACT_COUNTS: Readonly<
-  Record<QualityTier, { readonly rays: number; readonly shards: number; readonly coins: number }>
-> = {
-  high: { rays: 12, shards: 14, coins: 6 },
-  medium: { rays: 6, shards: 7, coins: 3 },
-  low: { rays: 0, shards: 0, coins: 0 },
+/** Green shards per pop per tier (AC-52). */
+export const QUALITY_SHARD_COUNTS: Readonly<Record<QualityTier, number>> = {
+  high: 14,
+  medium: 7,
+  low: 0,
 };
 
 /** Spark fragments per explosion per tier (AC-52). */
@@ -105,14 +103,8 @@ export interface QualityFeatures {
   readonly hiddenCursorMeshes: readonly string[];
   /** Number of visible cursor meshes (21/17/15). */
   readonly cursorMeshCount: number;
-  /** Tapered ray count per pop (12/6/0; 0 under reduced motion). */
-  readonly impactRays: number;
   /** Green shard count per pop (14/7/0; 0 under reduced motion). */
   readonly impactShards: number;
-  /** Gold coin count per pop (6/3/0; 0 under reduced motion). */
-  readonly impactCoins: number;
-  /** Ring keeps playing at every tier; this flag is `false` only under reduced motion. */
-  readonly shockwaveExpand: boolean;
   /** Spark fragments per explosion (24/12/0; 0 under reduced motion). */
   readonly sparks: number;
   /** Coin popup stays core at every tier. */
@@ -129,7 +121,6 @@ export function qualityFeatures(
   tier: QualityTier,
   reducedMotion: boolean,
 ): QualityFeatures {
-  const impact = QUALITY_IMPACT_COUNTS[tier];
   const high = tier === 'high';
   return {
     tier,
@@ -139,10 +130,7 @@ export function qualityFeatures(
     hiddenCursorMeshes:
       tier === 'low' ? QUALITY_LOW_HIDDEN_MESHES : tier === 'medium' ? QUALITY_MEDIUM_HIDDEN_MESHES : [],
     cursorMeshCount: QUALITY_CURSOR_MESH_COUNTS[tier],
-    impactRays: reducedMotion ? 0 : impact.rays,
-    impactShards: reducedMotion ? 0 : impact.shards,
-    impactCoins: reducedMotion ? 0 : impact.coins,
-    shockwaveExpand: !reducedMotion,
+    impactShards: reducedMotion ? 0 : QUALITY_SHARD_COUNTS[tier],
     sparks: reducedMotion ? 0 : QUALITY_SPARK_COUNTS[tier],
     coinPopup: true,
     bannerMotion: !reducedMotion,

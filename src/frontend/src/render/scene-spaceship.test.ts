@@ -277,7 +277,7 @@ function impactMeshCount(view: SceneView, name: string): number {
   return (mesh as { count: number }).count;
 }
 
-describe('scene impact and targeting integration (AC-35, AC-37, AC-38)', () => {
+describe('scene impact and targeting integration (AC-35, AC-37)', () => {
   it('nests impact and targeting under the particle group, keeping 9 scene children', () => {
     const view = createView();
 
@@ -288,37 +288,38 @@ describe('scene impact and targeting integration (AC-35, AC-37, AC-38)', () => {
     )!;
     expect(particles.children.map((child) => child.name)).toContain('impact-effects');
     expect(particles.children.map((child) => child.name)).toContain('targeting');
-    expect(namedGroup(view, 'impact-effects').children).toHaveLength(4);
+    const impact = namedGroup(view, 'impact-effects');
+    expect(impact.children).toHaveLength(1);
+    expect(impact.children.map((child) => child.name)).toEqual(['impact-shards']);
     expect(namedGroup(view, 'targeting').children).toHaveLength(2);
+
+    const names: string[] = [];
+    view.scene.traverse((object) => names.push(object.name));
+    expect(names).not.toContain('impact-rays');
+    expect(names).not.toContain('impact-coins');
+    expect(names).not.toContain('impact-ring');
   });
 
-  it('spawns the four impact pools at the deferred explosion', () => {
+  it('spawns 14 shards and 24 sparks at the high-tier deferred explosion', () => {
     const view = createView();
     applySnapshot(view, snapshot());
-    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(0);
 
-    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
-    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
+    applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(0);
 
     view.update(180);
-    expect(impactMeshCount(view, 'impact-rays')).toBe(12);
     expect(impactMeshCount(view, 'impact-shards')).toBe(14);
-    expect(impactMeshCount(view, 'impact-coins')).toBe(6);
-    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(24);
   });
 
-  it('reduced motion spawns only the static ring flash', () => {
+  it('reduced motion spawns no shards and no sparks', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
-    applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
+    applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
 
-    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
     expect(impactMeshCount(view, 'impact-shards')).toBe(0);
-    expect(impactMeshCount(view, 'impact-coins')).toBe(0);
-    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
-
-    view.update(120);
-    expect(impactMeshCount(view, 'impact-ring')).toBe(0);
+    expect(particlePoints(view).geometry.drawRange.count).toBe(0);
   });
 
   it('locks the hovered tile and clears on a miss', () => {
@@ -341,7 +342,7 @@ describe('scene impact and targeting integration (AC-35, AC-37, AC-38)', () => {
     expect(targeting.visible).toBe(false);
   });
 
-  it('keeps the camera and HUD transforms identical across a pop and ring (AC-44)', () => {
+  it('keeps the camera and HUD transforms identical across a pop (AC-44)', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     const position = view.camera.position.clone();
@@ -395,10 +396,11 @@ describe('scene adaptive quality wiring (AC-52)', () => {
 
     applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
     view.update(180);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(7);
     expect(particlePoints(view).geometry.drawRange.count).toBe(12);
   });
 
-  it('forces low: six detail meshes hidden, no sparks, ring only', () => {
+  it('forces low: six detail meshes hidden, no sparks, no shards', () => {
     const view = createView();
     applySnapshot(view, snapshot());
     view.setQualityTierForTesting('low');
@@ -410,8 +412,7 @@ describe('scene adaptive quality wiring (AC-52)', () => {
     applyIntents(view, [explosionIntent('front:0:0', 'front', 24)], 0);
     view.update(180);
     expect(particlePoints(view).geometry.drawRange.count).toBe(0);
-    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
-    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(0);
   });
 
   it('medium: the reticle ticks stay off while the outline locks the tile', () => {
@@ -428,7 +429,7 @@ describe('scene adaptive quality wiring (AC-52)', () => {
     expect(targeting.visible).toBe(true);
   });
 
-  it('reduced motion overrides the tier: no trail, no reticle, no sparks, static ring', () => {
+  it('reduced motion overrides the tier: no trail, no reticle, no sparks, no shards', () => {
     const view = createView();
     applySnapshot(view, snapshot({ reducedMotion: true }));
     view.setHoverTarget('front:0:0');
@@ -440,8 +441,7 @@ describe('scene adaptive quality wiring (AC-52)', () => {
 
     applyIntents(view, [explosionIntent('front:0:0', 'front')], 0);
     expect(particlePoints(view).geometry.drawRange.count).toBe(0);
-    expect(impactMeshCount(view, 'impact-rays')).toBe(0);
-    expect(impactMeshCount(view, 'impact-ring')).toBe(1);
+    expect(impactMeshCount(view, 'impact-shards')).toBe(0);
   });
 });
 

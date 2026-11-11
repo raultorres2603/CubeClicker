@@ -11,7 +11,7 @@
  *
  * - {@link SceneView.applyIntents} consumes the engine's one-shot `EffectIntent`s:
  *   an `explosion` reads the tile's world origin and outward face normal, conceals the
- *   tile and spawns the spark burst + impact pools in front of that surface (AC-36,
+ *   tile and spawns the spark burst + green shard debris in front of that surface (AC-36,
  *   AC-37); `faceCleared` starts the face-removal countdown (there is no plate to fade —
  *   spec AC-2); `levelChanged` only marks the rebuild *pending* (the next snapshot carries
  *   the new style, grid size and travel direction); and `travelStarted` needs nothing of
@@ -21,7 +21,7 @@
  *   pose over the current cube) → cube orientation → reduced-motion settle and quality
  *   matrix application.
  * - {@link SceneView.update} advances the frame-driven parts: the adaptive quality
- *   policy, the cursor/trail and target lock, particle and impact aging, the face-removal
+ *   policy, the cursor/trail and target lock, particle and shard aging, the face-removal
  *   countdowns, the background life, the camera-anchored cosmic backdrop's slow drift and
  *   the remote world (AC-4, AC-12, AC-52).
  *
@@ -471,7 +471,8 @@ export function createSceneView(options: {
   cube.group.position.copy(cubePosition);
   const particles: ParticleSystem = createParticleSystem(random);
   // Impact and targeting are children of the existing particle group, so the scene child
-  // list stays 9 (10 with a remote world) while countObjects grows by +8 (AC-47/F2).
+  // list stays 9 (10 with a remote world) while countObjects grows by +5 (impact +2,
+  // targeting +3; AC-47/F2).
   const impact: ImpactEffects = createImpactEffects(random);
   const targeting: Targeting = createTargeting();
   particles.group.add(impact.group, targeting.group);
@@ -608,7 +609,7 @@ export function createSceneView(options: {
     const origin = instanceOrigin(mesh, intent.id);
     const normal = worldFaceNormal(intent.faceId);
     cube.hideMiniCube(intent.id, reducedMotion);
-    // The impact pool starts at the tile surface (origin + normal · 0.02); the spark burst
+    // The shard pool starts at the tile surface (origin + normal · 0.02); the spark burst
     // keeps the accepted 0.5 outward offset.
     impact.spawnPop(origin, normal, nowMs);
     origin.addScaledVector(normal, BURST_ORIGIN_OFFSET);
@@ -935,12 +936,7 @@ export function createSceneView(options: {
     spaceship.setCursorMotionEnabled(features.cursorMotion);
     spaceship.setHiddenMeshes(features.hiddenCursorMeshes);
     targeting.setReticleEnabled(features.reticle);
-    impact.setFeatures({
-      rays: features.impactRays,
-      shards: features.impactShards,
-      coins: features.impactCoins,
-      shockwaveExpand: features.shockwaveExpand,
-    });
+    impact.setFeatures({ shards: features.impactShards });
     particles.setSparkLimit(features.sparks);
   }
   applyQuality();

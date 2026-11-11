@@ -1663,11 +1663,11 @@ describe('frame updates and lifecycle', () => {
     const starfield = starfieldPoints(view);
     const particles = particlePoints(view);
 
-    // 66 pre-backdrop objects plus the cosmic backdrop's 70
-    // (`COSMIC_BACKDROP_OBJECT_COUNT`) = 136 (AC-47/F2: old cursor 8 → 34, impact +5,
-    // targeting +3; the detailed-hero 102 baseline is superseded).
-    expect(baselineObjects).toBe(66 + COSMIC_BACKDROP_OBJECT_COUNT);
-    expect(baselineObjects).toBe(136);
+    // 63 pre-backdrop objects (including the two-object impact group) plus the cosmic
+    // backdrop's 70 (`COSMIC_BACKDROP_OBJECT_COUNT`) = 133 (AC-47/F2: old cursor 8 → 34,
+    // impact +2, targeting +3; the detailed-hero 102 baseline is superseded).
+    expect(baselineObjects).toBe(63 + COSMIC_BACKDROP_OBJECT_COUNT);
+    expect(baselineObjects).toBe(133);
     expect(cubeGroup(view).children).toHaveLength(7);
 
     for (let cycle = 0; cycle < 10; cycle += 1) {
