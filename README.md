@@ -45,9 +45,9 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `npm run typecheck` | TypeScript, no emit |
 | `npm test` | Vitest unit tests, all workspaces |
 | `npm run coverage` | Vitest with V8 coverage in all workspaces (thresholds ≥ 80% statements/branches/functions/lines per workspace) |
-| `npm run build` | build all workspaces |
+| `npm run build` | build all workspaces. The frontend build enforces the bundle budget (initial 150,000 B, Three.js 165,000 B, total 300,000 B gzip) and fails on a violation |
 | `npm run dev` | start the full local environment with hot reload (equivalent to `podman compose up`) |
-| `npm run smoke` | containerized end-to-end smoke test (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
+| `npm run smoke` | containerized end-to-end smoke test, including the production static-delivery checks (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
 
 ## Configuration
 
@@ -90,6 +90,8 @@ podman build --format docker --target prod -f src/frontend/Dockerfile .
 The `--format docker` form keeps the image `HEALTHCHECK`, which Podman 5's default OCI build format would drop.
 
 Both images are provider-neutral and are the deployable artifacts. Release tagging = commit SHA in the deploy pipeline (see the Deployment section above).
+
+The frontend image serves the code-split production build through nginx: the auth/menu entry is Three.js-free (the game runtime and the customization preview are lazy chunks), responses are gzip-compressed (`gzip_comp_level 6`), hashed `/assets/*` files carry `Cache-Control: public, max-age=31536000, immutable`, and the app shell (`/`, `/index.html`, and the SPA fallback) carries `Cache-Control: no-cache` so a deploy is picked up without stale JavaScript. `npm run smoke` includes the production static-delivery checks: it starts the smoke-only `frontend-prod` service (prod target, no published host port; the compose provider builds the image on first use) and asserts the wire headers, gzip encoding, and the served chunk graph from `/bundle-report.json`. Brotli is not enabled: the `nginxinc/nginx-unprivileged:1.27-alpine` base image has no `ngx_brotli` module, and a custom nginx build is out of scope.
 
 ## Stack
 
