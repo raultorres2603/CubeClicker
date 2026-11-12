@@ -533,7 +533,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
 
   return (
     <main data-customization-open={customizationOpen ? 'true' : 'false'}>
-      <GameCanvas session={session} />
+      <GameCanvas session={session} active={gateState.view === 'closed'} />
       {welcomed ? (
         <Hud
           stats={snapshot.stats}

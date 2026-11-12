@@ -327,6 +327,15 @@ function occurrences(html: string, needle: string): number {
   return html.split(needle).length - 1;
 }
 
+/** The shell's game canvas, or a concrete failure when the canvas is missing. */
+function canvasElement(): HTMLCanvasElement {
+  const canvas = document.querySelector<HTMLCanvasElement>('canvas');
+  if (canvas === null) {
+    throw new Error('App did not render the game canvas');
+  }
+  return canvas;
+}
+
 /** Exact HUD markup for the welcomed shell (T4): five icon rows, toggle last. */
 function hudMarkup({
   clicks,
@@ -1021,24 +1030,59 @@ describe('App — auth choice starts the game', () => {
 });
 
 describe('App — auth interaction', () => {
-  function introSession(join: ReturnType<typeof vi.fn>, retryConnection: ReturnType<typeof vi.fn>): OnlineGameSession {
+  function introSession(
+    join: ReturnType<typeof vi.fn>,
+    retryConnection: ReturnType<typeof vi.fn>,
+    attach: ReturnType<typeof vi.fn> = vi.fn(),
+  ): OnlineGameSession {
     return sessionFor(
       snapshotFor('intro'),
       multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
-      { join, retryConnection },
+      { join, retryConnection, attach },
     );
   }
+
+  it('does not attach while the guest menu or the login form is open (AC-1, AC-13)', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const attach = vi.fn();
+    const session = introSession(join, retryConnection, attach);
+    render(<App session={session} />);
+    const user = userEvent.setup();
+
+    expect(attach).toHaveBeenCalledTimes(0);
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Login',
+      'Register',
+      'Play as guest',
+    ]);
+
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Welcome back' }).textContent).toBe('Welcome back');
+    expect(attach).toHaveBeenCalledTimes(0);
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+  });
 
   it('clicking the rendered Play as guest button joins as guest and unmounts the menu', async () => {
     const join = vi.fn();
     const retryConnection = vi.fn();
-    const session = introSession(join, retryConnection);
+    const attach = vi.fn();
+    const session = introSession(join, retryConnection, attach);
     render(<App session={session} />);
     const user = userEvent.setup();
+
+    expect(attach).toHaveBeenCalledTimes(0);
+
     await user.click(screen.getByRole('button', { name: 'Play as guest' }));
     await waitFor(() => expect(join).toHaveBeenCalledTimes(1));
     expect(join).toHaveBeenCalledWith('guest');
     expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledWith(canvasElement());
+    expect(join.mock.invocationCallOrder[0]).toBeLessThan(attach.mock.invocationCallOrder[0]);
     expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Login' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Register' })).toBeNull();
@@ -1047,11 +1091,15 @@ describe('App — auth interaction', () => {
   it('drives the rendered login form submit and joins as account after reconnect', async () => {
     const join = vi.fn();
     const retryConnection = vi.fn();
-    const session = introSession(join, retryConnection);
+    const attach = vi.fn();
+    const session = introSession(join, retryConnection, attach);
     const login = vi.fn(async () => undefined);
     const store = authStoreFor({ email: 'alice@example.com', verified: true }, { login, register: vi.fn() });
     render(<App session={session} store={store} />);
     const user = userEvent.setup();
+
+    expect(attach).toHaveBeenCalledTimes(0);
+
     await user.click(screen.getByRole('button', { name: 'Login' }));
     await user.type(screen.getByLabelText('Username'), 'alice');
     await user.type(screen.getByLabelText('Password'), 'correct horse battery');
@@ -1061,9 +1109,61 @@ describe('App — auth interaction', () => {
     expect(login).toHaveBeenCalledWith({ username: 'alice', password: 'correct horse battery' });
     expect(retryConnection).toHaveBeenCalledTimes(1);
     expect(join).toHaveBeenCalledWith('account');
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledWith(canvasElement());
     expect(login.mock.invocationCallOrder[0]).toBeLessThan(retryConnection.mock.invocationCallOrder[0]);
     expect(retryConnection.mock.invocationCallOrder[0]).toBeLessThan(join.mock.invocationCallOrder[0]);
+    expect(join.mock.invocationCallOrder[0]).toBeLessThan(attach.mock.invocationCallOrder[0]);
     expect(screen.queryByRole('button', { name: 'Play as guest' })).toBeNull();
+  });
+
+  it('does not attach on the verification-pending screen or after Back to login (AC-3)', async () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const attach = vi.fn();
+    const session = introSession(join, retryConnection, attach);
+    const register = vi.fn(async () => ({ message: 'verification email sent' }));
+    const store = authStoreFor(null, { register, login: vi.fn() });
+    render(<App session={session} store={store} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await user.type(screen.getByLabelText('Username'), 'alice');
+    await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    await screen.findByText('Check your email to verify your account.');
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'correct horse battery',
+    });
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(attach).toHaveBeenCalledTimes(0);
+
+    await user.click(screen.getByRole('button', { name: 'Back to login' }));
+
+    expect(screen.getByRole('heading', { name: 'Welcome back' }).textContent).toBe('Welcome back');
+    expect(attach).toHaveBeenCalledTimes(0);
+    expect(join).toHaveBeenCalledTimes(0);
+  });
+
+  it('attaches once on mount when the gate starts closed (AC-4)', () => {
+    const join = vi.fn();
+    const retryConnection = vi.fn();
+    const attach = vi.fn();
+    const session = introSession(join, retryConnection, attach);
+
+    render(<App chosen session={session} />);
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledWith(canvasElement());
+    expect(join).toHaveBeenCalledTimes(0);
+    expect(retryConnection).toHaveBeenCalledTimes(0);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('shows the error text and does not join when rendered login fails', async () => {
