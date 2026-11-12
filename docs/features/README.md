@@ -25,11 +25,14 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | spaceship-cursor | Spaceship Cursor (3D spaceship follows cursor, shoots mini-cubes on explosion) | accepted | 2026-10-27 |
 | spaceship-cursor-polish | Spaceship Cursor Polish (farther diagonal, larger bullet ship, more delay, ignition fire) | accepted | 2026-10-27 |
 | spaceship-cursor-refinement | Spaceship Cursor Refinement (smaller ship, shifted left) | accepted | 2026-10-27 |
+| coin-economy | Coin Economy (coins from destroyed cubes, speed bonus, persistent per-user stats) | building | 2026-10-30 |
 | modern-visual-overhaul | Modern Visual Overhaul (bright starfield, shadows, fighter ship, animated HUD) | accepted | 2026-10-28 |
 | modern-ui-background-life | Modern UI & Background Life (border light, HUD blink, shooting stars, spaceships) | accepted | 2026-10-28 |
 | futuristic-hud-blue | Futuristic HUD Blue (blue technologic HUD styling) | accepted | 2026-10-28 |
 | metallic-hud-frames | Metallic HUD Frames (beveled metal frames, cyan glow) | accepted | 2026-10-28 |
 | metallic-hud-frames-polish | Metallic HUD Frames Polish (trailing newline, mask guard) | accepted | 2026-10-28 |
+| spending-upgrades | Spending & Upgrades (spend coins on upgrades to earn faster) | accepted | 2026-10-30 |
+| idle-accrual | Idle Accrual (coins accrue while away for accounts) | accepted | 2026-10-30 |
 | aws-deploy-pipeline | AWS Deploy Pipeline (Terraform infrastructure + GitHub Actions CI/CD + framework proof-of-working) | accepted | 2026-10-31 |
 | manual-deploy-trigger | Manual Deploy Trigger (manual `workflow_dispatch` deploy; automatic deploy deferred while only `production` exists) | accepted | 2026-11-01 |
 | workflow-hygiene | Workflow Hygiene (trailing newline in CI/CD workflows + scoped credential-audit command) | accepted | 2026-11-01 |
