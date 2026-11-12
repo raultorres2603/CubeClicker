@@ -9,8 +9,43 @@ declare const process: { env: Record<string, string | undefined> };
 /** Pinned default: the backend's published dev port (README configuration table). */
 const DEFAULT_WS_URL = 'ws://localhost:8080/ws';
 
+/**
+ * Split the stable vendor set out of the app chunks: `three` is a single shared
+ * lazy vendor chunk (game runtime + customization preview) and `react` keeps the
+ * framework bits cacheable independently. The entry must stay Three-free; the
+ * budget script (`scripts/check-bundle-budget.mjs`) enforces that boundary.
+ *
+ * `id` is an absolute module path; normalize Windows separators before matching
+ * so the same rule works on every host. Trailing slashes keep `react` from
+ * swallowing `react-dom` and `three` from swallowing `three-*` packages.
+ */
+function manualChunks(id: string): string | undefined {
+  const normalized = id.replace(/\\/g, '/');
+  if (normalized.includes('/node_modules/three/')) return 'three';
+  if (
+    normalized.includes('/node_modules/react/') ||
+    normalized.includes('/node_modules/react-dom/') ||
+    normalized.includes('/node_modules/scheduler/')
+  ) {
+    return 'react';
+  }
+  return undefined;
+}
+
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Emits dist/.vite/manifest.json, the chunk graph the bundle-budget gate reads.
+    manifest: true,
+    // Single chunks above 900 kB are a regression; keep the warning meaningful
+    // after the three/react vendor split.
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks,
+      },
+    },
+  },
   server: {
     host: true,
     port: 5173,
