@@ -746,6 +746,8 @@ describe('App', () => {
     expect(
       screen.getByRole('button', { name: 'Spaceship customization' }).getAttribute('aria-expanded'),
     ).toBe('true');
+    // The panel is loaded through a dynamic import (AC-4): wait for its resolved state.
+    expect((await screen.findByRole('button', { name: 'Open lootbox' })).tagName).toBe('BUTTON');
     expect(document.querySelectorAll('.customization-panel')).toHaveLength(1);
 
     await userEvent.click(
@@ -757,6 +759,7 @@ describe('App', () => {
       screen.getByRole('button', { name: 'Spaceship customization' }).getAttribute('aria-expanded'),
     ).toBe('false');
     expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Open lootbox' })).toBeNull();
   });
 
   it('blinks the welcomed HUD when clicks increase (AC-5)', async () => {
@@ -1213,7 +1216,7 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
     );
   }
 
-  it('passes pendingLootboxOpen to the panel and disables Open lootbox while pending', () => {
+  it('passes pendingLootboxOpen to the panel and disables Open lootbox while pending', async () => {
     render(
       <App
         hasChosen
@@ -1222,12 +1225,12 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
       />,
     );
 
-    const open = screen.getByRole('button', { name: 'Open lootbox' }) as HTMLButtonElement;
+    const open = await screen.findByRole<HTMLButtonElement>('button', { name: 'Open lootbox' });
     expect(open.disabled).toBe(true);
     expect(document.querySelectorAll('.customization-panel')).toHaveLength(1);
   });
 
-  it('enables Open lootbox when the open is not pending', () => {
+  it('enables Open lootbox when the open is not pending', async () => {
     render(
       <App
         hasChosen
@@ -1236,11 +1239,11 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
       />,
     );
 
-    const open = screen.getByRole('button', { name: 'Open lootbox' }) as HTMLButtonElement;
+    const open = await screen.findByRole<HTMLButtonElement>('button', { name: 'Open lootbox' });
     expect(open.disabled).toBe(false);
   });
 
-  it('passes the last grant into the reveal region and dismisses it through the session', () => {
+  it('passes the last grant into the reveal region and dismisses it through the session', async () => {
     const dismissLootboxReveal = vi.fn();
     render(
       <App
@@ -1259,20 +1262,26 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
       />,
     );
 
-    const region = document.querySelector<HTMLElement>('[data-reveal-active="true"]');
-    expect(region?.getAttribute('data-part-id')).toBe('wing-left-silver');
-    expect(region?.getAttribute('data-slot')).toBe('wing-left');
-    expect(region?.getAttribute('data-rarity')).toBe('rare');
-    expect(region?.getAttribute('data-duplicate')).toBe('false');
-    expect(region?.textContent).toContain('Port Silver Wing');
-    expect(region?.textContent).toContain('Rare');
-    expect(region?.textContent).toContain('New');
+    const region = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-reveal-active="true"]');
+      if (element === null) {
+        throw new Error('lootbox reveal region not rendered yet');
+      }
+      return element;
+    });
+    expect(region.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(region.getAttribute('data-slot')).toBe('wing-left');
+    expect(region.getAttribute('data-rarity')).toBe('rare');
+    expect(region.getAttribute('data-duplicate')).toBe('false');
+    expect(region.textContent).toContain('Port Silver Wing');
+    expect(region.textContent).toContain('Rare');
+    expect(region.textContent).toContain('New');
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }));
     expect(dismissLootboxReveal).toHaveBeenCalledTimes(1);
   });
 
-  it('routes panel equip and unequip controls to the session commands', () => {
+  it('routes panel equip and unequip controls to the session commands', async () => {
     const equipPart = vi.fn();
     const unequipPart = vi.fn();
     render(
@@ -1285,8 +1294,8 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Equip Port Silver Wing' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Unequip Hull' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Equip Port Silver Wing' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Unequip Hull' }));
 
     expect(equipPart).toHaveBeenCalledTimes(1);
     expect(equipPart).toHaveBeenCalledWith('wing-left-silver');

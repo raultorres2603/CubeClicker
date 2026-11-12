@@ -187,6 +187,49 @@
 }
 
 /*
+ * Gate-close runtime load state (AC-2). The session resolves its environment through a
+ * dynamic import after the auth gate closes; this centered chrome shows the pinned
+ * `loading`/`error` copy over the untouched canvas. `role="status"`/`role="alert"` carry
+ * the semantics (the markup owns them); this is the visual presentation only.
+ */
+.game-runtime-status,
+.game-runtime-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.75rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: linear-gradient(180deg, var(--panel-bg-top), var(--panel-bg-bottom));
+  color: var(--hud-text);
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.game-runtime-error button {
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--panel-radius);
+  background: transparent;
+  color: var(--hud-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.game-runtime-error button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
  * Motion tokens v2 (T12; AC-34). The 13 CSS-mapped presentation tokens live on `main`,
  * never on `:root`; every other motion token is intentionally JS-only. `lootbox-reveal`
  * sums the five loot phases (420 + 250 + 120 + 360 + 140 = 1290 ms).

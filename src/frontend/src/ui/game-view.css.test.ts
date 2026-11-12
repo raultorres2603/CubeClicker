@@ -264,6 +264,61 @@ describe('spaceship customization controls (AC-7)', () => {
   });
 });
 
+describe('gate-close runtime status (AC-2)', () => {
+  it('centers the loading and error chrome over the canvas', () => {
+    const body = ruleBody(
+      cssSource,
+      /^\.game-runtime-status,\s*\.game-runtime-error\s*\{([\s\S]*?)\}/m,
+    );
+    expect(declarations(body)).toEqual([
+      'position: absolute',
+      'top: 50%',
+      'left: 50%',
+      'display: flex',
+      'flex-wrap: wrap',
+      'align-items: center',
+      'justify-content: center',
+      'gap: 0.5rem 0.75rem',
+      'max-width: min(28rem, calc(100vw - 2rem))',
+      'margin: 0',
+      'padding: 0.75rem 1rem',
+      'border: 2px solid var(--panel-border)',
+      'border-radius: var(--panel-radius)',
+      'background: linear-gradient(180deg, var(--panel-bg-top), var(--panel-bg-bottom))',
+      'color: var(--hud-text)',
+      'text-align: center',
+      'transform: translate(-50%, -50%)',
+    ]);
+  });
+
+  it('gives the retry control a 44px target and an accent focus ring', () => {
+    expect(
+      declarations(ruleBody(cssSource, /^\.game-runtime-error button\s*\{([\s\S]*?)\}/m)),
+    ).toEqual([
+      'min-height: 44px',
+      'padding: 0.5rem 1rem',
+      'border: 1px solid var(--accent)',
+      'border-radius: var(--panel-radius)',
+      'background: transparent',
+      'color: var(--hud-text)',
+      'font: inherit',
+      'cursor: pointer',
+    ]);
+    expect(
+      declarations(
+        ruleBody(cssSource, /^\.game-runtime-error button:focus-visible\s*\{([\s\S]*?)\}/m),
+      ),
+    ).toEqual(['outline: 2px solid var(--accent)', 'outline-offset: 2px']);
+  });
+
+  it('adds no second reduced-motion block for the runtime chrome', () => {
+    expect(cssSource.match(/@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)/g) ?? []).toHaveLength(1);
+    const block = mediaBlock(cssSource, '@media (prefers-reduced-motion: reduce)');
+    expect(block.includes('.game-runtime-status')).toBe(false);
+    expect(block.includes('.game-runtime-error')).toBe(false);
+  });
+});
+
 describe('mobile bands (AC-18)', () => {
   it('has exactly one 720px block and no 480px block', () => {
     expect(cssSource.match(/@media\s*\(\s*max-width:\s*720px\s*\)/g) ?? []).toHaveLength(1);

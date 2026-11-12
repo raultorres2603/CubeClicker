@@ -11,11 +11,11 @@ import type { SpectateStatus } from './multiplayer/spectate';
 import { createTransport } from './multiplayer/transport';
 import { ConnectionBanner } from './ui/ConnectionBanner';
 import { CustomizationToggle } from './ui/CustomizationToggle';
+import { DeferredSpaceshipCustomizationPanel } from './ui/DeferredSpaceshipCustomizationPanel';
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud, type HudCoinPop } from './ui/Hud';
 import { LevelCompleteBanner } from './ui/LevelCompleteBanner';
 import { UpgradesPanel } from './ui/UpgradesPanel';
-import { SpaceshipCustomizationPanel } from './ui/SpaceshipCustomizationPanel';
 import { UserPanel } from './ui/UserPanel';
 import { AuthMenu } from './ui/AuthMenu';
 import { VerificationPending } from './ui/VerificationPending';
@@ -590,7 +590,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
         />
       ) : null}
       {welcomed && customizationOpen ? (
-        <SpaceshipCustomizationPanel
+        <DeferredSpaceshipCustomizationPanel
           customization={snapshot.customization ?? { lootboxes: 0, keys: 0, parts: {}, appearance: {} }}
           mode={mode}
           pendingOpen={pendingLootboxOpen}
