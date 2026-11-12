@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PIXEL_RATIO_CAP } from '../game/effects';
 import * as qualityModule from './quality';
 import {
   createQualityPolicy,
@@ -14,7 +15,9 @@ import {
   QUALITY_MAX_FRAME_MS,
   QUALITY_MEDIUM_HIDDEN_MESHES,
   QUALITY_MIN_SAMPLES,
+  QUALITY_PIXEL_RATIO_CAPS,
   QUALITY_SHARD_COUNTS,
+  QUALITY_SHADOW_MAP_SIZES,
   QUALITY_SHOT_FX,
   QUALITY_SPARK_COUNTS,
   QUALITY_UPGRADE_COOLDOWN_MS,
@@ -22,6 +25,7 @@ import {
   QUALITY_WINDOW_FRAMES,
   qualityFeatures,
   type QualityPolicy,
+  type QualityTier,
 } from './quality';
 
 function push(policy: QualityPolicy, count: number, dtMs: number): void {
@@ -72,6 +76,7 @@ describe('qualityFeatures matrix (AC-52)', () => {
     expect(Object.keys(qualityModule)).not.toContain('QUALITY_IMPACT_COUNTS');
     expect(Object.keys(qualityFeatures('high', false)).sort()).toEqual([
       'bannerMotion',
+      'bloom',
       'coinPopup',
       'cursorMeshCount',
       'cursorMotion',
@@ -80,9 +85,12 @@ describe('qualityFeatures matrix (AC-52)', () => {
       'explosionSmoke',
       'hiddenCursorMeshes',
       'impactShards',
+      'pixelRatioCap',
       'reticle',
+      'shadowMapSize',
       'shotFx',
       'sparks',
+      'ssao',
       'tier',
       'trail',
     ]);
@@ -104,6 +112,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: true,
       coinPopup: true,
       bannerMotion: true,
+      ssao: true,
+      bloom: true,
+      shadowMapSize: 2048,
+      pixelRatioCap: 2,
     });
   });
 
@@ -123,6 +135,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: true,
       coinPopup: true,
       bannerMotion: true,
+      ssao: false,
+      bloom: true,
+      shadowMapSize: 1024,
+      pixelRatioCap: 1.5,
     });
   });
 
@@ -142,6 +158,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: false,
       coinPopup: true,
       bannerMotion: true,
+      ssao: false,
+      bloom: false,
+      shadowMapSize: 0,
+      pixelRatioCap: 1,
     });
   });
 
@@ -161,6 +181,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: false,
       coinPopup: true,
       bannerMotion: false,
+      ssao: true,
+      bloom: true,
+      shadowMapSize: 2048,
+      pixelRatioCap: 2,
     });
     expect(qualityFeatures('medium', true)).toEqual({
       tier: 'medium',
@@ -177,6 +201,10 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: false,
       coinPopup: true,
       bannerMotion: false,
+      ssao: false,
+      bloom: true,
+      shadowMapSize: 1024,
+      pixelRatioCap: 1.5,
     });
     expect(qualityFeatures('low', true)).toEqual({
       tier: 'low',
@@ -193,7 +221,42 @@ describe('qualityFeatures matrix (AC-52)', () => {
       shotFx: false,
       coinPopup: true,
       bannerMotion: false,
+      ssao: false,
+      bloom: false,
+      shadowMapSize: 0,
+      pixelRatioCap: 1,
     });
+  });
+});
+
+describe('quality GPU matrix (AC-5)', () => {
+  it('pins the shadow-map size and DPR-cap constants', () => {
+    expect(QUALITY_SHADOW_MAP_SIZES).toEqual({ high: 2048, medium: 1024, low: 0 });
+    expect(QUALITY_PIXEL_RATIO_CAPS).toEqual({ high: 2, medium: 1.5, low: 1 });
+    // The high tier must keep the existing exported values exactly.
+    expect(QUALITY_SHADOW_MAP_SIZES.high).toBe(2048);
+    expect(QUALITY_PIXEL_RATIO_CAPS.high).toBe(PIXEL_RATIO_CAP);
+  });
+
+  it('exposes the exact GPU fields for every tier with and without reduced motion', () => {
+    const expected: Readonly<
+      Record<QualityTier, { ssao: boolean; bloom: boolean; shadowMapSize: number; pixelRatioCap: number }>
+    > = {
+      high: { ssao: true, bloom: true, shadowMapSize: 2048, pixelRatioCap: 2 },
+      medium: { ssao: false, bloom: true, shadowMapSize: 1024, pixelRatioCap: 1.5 },
+      low: { ssao: false, bloom: false, shadowMapSize: 0, pixelRatioCap: 1 },
+    };
+    for (const tier of ['high', 'medium', 'low'] as const) {
+      for (const reducedMotion of [false, true]) {
+        const features = qualityFeatures(tier, reducedMotion);
+        expect({
+          ssao: features.ssao,
+          bloom: features.bloom,
+          shadowMapSize: features.shadowMapSize,
+          pixelRatioCap: features.pixelRatioCap,
+        }).toEqual(expected[tier]);
+      }
+    }
   });
 });
 
@@ -420,5 +483,96 @@ describe('quality policy (AC-52)', () => {
 
     push(policy, 240, 17);
     expect(policy.getTier()).toBe('medium');
+  });
+});
+
+describe('sorted-window p95 (AC-11, AC-12)', () => {
+  /** Naive reference: copy + sort the live window and apply the same nearest-rank index. */
+  function naiveP95(liveWindow: readonly number[]): number {
+    if (liveWindow.length === 0) {
+      return 0;
+    }
+    const sorted = [...liveWindow].sort((a, b) => a - b);
+    const index = Math.ceil(0.95 * sorted.length) - 1;
+    return sorted[Math.min(sorted.length - 1, Math.max(0, index))]!;
+  }
+
+  it('matches a naive nearest-rank reference across pushes, duplicates and eviction', () => {
+    const policy = createQualityPolicy('low');
+    const reference: number[] = [];
+    // Duplicates and boundary values repeat while the window rolls past the 120 cap.
+    const stream = [5, 5, 5, 30, 30, 10, 250, 1, 17, 33.5];
+    for (let index = 0; index < 400; index += 1) {
+      const dtMs = stream[index % stream.length]!;
+      policy.pushFrameTime(dtMs);
+      reference.push(Math.min(QUALITY_MAX_FRAME_MS, dtMs));
+      if (reference.length > QUALITY_WINDOW_FRAMES) {
+        reference.shift();
+      }
+      const referenceSum = reference.reduce((sum, value) => sum + value, 0);
+      expect(policy.getWindowSize()).toBe(reference.length);
+      expect(policy.getAverageFrameMs()).toBe(referenceSum / reference.length);
+      expect(policy.getP95FrameMs()).toBe(naiveP95(reference));
+    }
+    expect(reference.length).toBe(QUALITY_WINDOW_FRAMES);
+  });
+
+  it('never sorts over 10,000 pushes and keeps the final tier and p95 exact', () => {
+    const policy = createQualityPolicy();
+    const originalSort = Array.prototype.sort;
+    Array.prototype.sort = (() => {
+      throw new Error('Array.prototype.sort must not be called by the quality policy');
+    }) as typeof Array.prototype.sort;
+    try {
+      for (let index = 0; index < 10_000; index += 1) {
+        // 8..20 ms keeps avg 13.875 and p95 20: no downgrade, so the final tier is high.
+        policy.pushFrameTime(8 + (index % 13));
+        // Both reads must stay sort-free across pushes and window evictions.
+        policy.getP95FrameMs();
+        policy.getAverageFrameMs();
+      }
+    } finally {
+      Array.prototype.sort = originalSort;
+    }
+
+    expect(policy.getWindowSize()).toBe(120);
+    expect(policy.getAverageFrameMs()).toBe(13.875);
+    expect(policy.getP95FrameMs()).toBe(20);
+    expect(policy.getTier()).toBe('high');
+  });
+
+  it('matches the pinned stream: 60×30, 60×10, 60×10', () => {
+    const policy = createQualityPolicy();
+    const tiers: QualityTier[] = [];
+
+    for (let index = 0; index < 60; index += 1) {
+      tiers.push(policy.pushFrameTime(30));
+    }
+    expect(policy.getWindowSize()).toBe(60);
+    expect(policy.getAverageFrameMs()).toBe(30);
+    expect(policy.getP95FrameMs()).toBe(30);
+    expect(policy.getTier()).toBe('medium');
+
+    for (let index = 0; index < 60; index += 1) {
+      tiers.push(policy.pushFrameTime(10));
+    }
+    expect(policy.getWindowSize()).toBe(120);
+    expect(policy.getAverageFrameMs()).toBe(20);
+    expect(policy.getP95FrameMs()).toBe(30);
+    expect(policy.getTier()).toBe('medium');
+
+    for (let index = 0; index < 60; index += 1) {
+      tiers.push(policy.pushFrameTime(10));
+    }
+    expect(policy.getWindowSize()).toBe(120);
+    expect(policy.getAverageFrameMs()).toBe(10);
+    expect(policy.getP95FrameMs()).toBe(10);
+    expect(policy.getTier()).toBe('low');
+
+    expect(tiers).toEqual([
+      ...Array.from({ length: 59 }, (): QualityTier => 'high'),
+      ...Array.from({ length: 100 }, (): QualityTier => 'medium'),
+      ...Array.from({ length: 21 }, (): QualityTier => 'low'),
+    ]);
   });
 });

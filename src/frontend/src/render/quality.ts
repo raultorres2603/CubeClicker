@@ -11,7 +11,8 @@
  *   into a rolling {@link QUALITY_WINDOW_FRAMES} window;
  * - no decision before {@link QUALITY_MIN_SAMPLES} samples;
  * - `avg` is the arithmetic mean and `p95` the nearest-rank value of the sorted live window
- *   (`ceil(0.95 * n) - 1`, zero-based);
+ *   (`ceil(0.95 * n) - 1`, zero-based); the ascending view is maintained by binary insertion
+ *   and one-occurrence removal on eviction, so no frame copies or sorts the window (AC-11);
  * - downgrade high→medium on `avg > 18.0 || p95 > 24.0` sustained for 60 frames;
  *   medium→low on `avg > 20.0 || p95 > 28.0` sustained for 60 frames; both gated by a
  *   1000 ms cooldown;
@@ -23,8 +24,11 @@
  * `qualityFeatures(tier, reducedMotion)` is the single source of the visual matrix.
  * Reduced motion is authoritative: it disables every motion layer regardless of tier while
  * the tier may still downgrade static detail. The banner remains the core level-feedback
- * surface at every tier.
+ * surface at every tier. The GPU fields (`ssao`, `bloom`, `shadowMapSize`, `pixelRatioCap`)
+ * are static cost, so reduced motion never changes them (AC-5).
  */
+
+import { PIXEL_RATIO_CAP } from '../game/effects';
 
 /** The three automatic tiers; there is no user-facing setting. */
 export type QualityTier = 'high' | 'medium' | 'low';
@@ -117,6 +121,23 @@ export const QUALITY_SHOT_FX: Readonly<Record<QualityTier, boolean>> = {
   low: false,
 };
 
+/** Key-light shadow-map edge per tier in pixels; `0` means no shadow pass (AC-5). */
+export const QUALITY_SHADOW_MAP_SIZES: Readonly<Record<QualityTier, number>> = {
+  high: 2048,
+  medium: 1024,
+  low: 0,
+};
+
+/**
+ * External device-pixel-ratio ceiling per tier (AC-5). The high cap reuses
+ * {@link PIXEL_RATIO_CAP} so the two constants cannot drift.
+ */
+export const QUALITY_PIXEL_RATIO_CAPS: Readonly<Record<QualityTier, number>> = {
+  high: PIXEL_RATIO_CAP,
+  medium: 1.5,
+  low: 1,
+};
+
 /** The exact per-tier visual feature matrix, reduced-motion aware (AC-52). */
 export interface QualityFeatures {
   /** The tier the matrix was computed for. */
@@ -147,6 +168,14 @@ export interface QualityFeatures {
   readonly coinPopup: boolean;
   /** Banner stays core; this flag disables its motion only under reduced motion. */
   readonly bannerMotion: boolean;
+  /** Screen-space ambient occlusion runs (high only; never affected by reduced motion). */
+  readonly ssao: boolean;
+  /** Unreal bloom runs (high/medium; never affected by reduced motion). */
+  readonly bloom: boolean;
+  /** Key-light shadow-map edge in pixels (2048/1024/0; `0` = no shadow pass). */
+  readonly shadowMapSize: number;
+  /** Device-pixel-ratio ceiling applied as `min(devicePixelRatio, cap)` (2/1.5/1). */
+  readonly pixelRatioCap: number;
 }
 
 /**
@@ -174,6 +203,10 @@ export function qualityFeatures(
     shotFx: !reducedMotion && QUALITY_SHOT_FX[tier],
     coinPopup: true,
     bannerMotion: !reducedMotion,
+    ssao: tier === 'high',
+    bloom: tier !== 'low',
+    shadowMapSize: QUALITY_SHADOW_MAP_SIZES[tier],
+    pixelRatioCap: QUALITY_PIXEL_RATIO_CAPS[tier],
   };
 }
 
@@ -205,6 +238,40 @@ function nearestRank95(sorted: readonly number[]): number {
   return sorted[Math.min(sorted.length - 1, Math.max(0, index))]!;
 }
 
+/** First index whose value is `>= value` in the ascending `sorted` array. */
+function lowerBound(sorted: readonly number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sorted[middle]! < value) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/** Inserts `value` into the ascending `sorted` array without allocating a copy (AC-11). */
+function insertSorted(sorted: number[], value: number): void {
+  const index = lowerBound(sorted, value);
+  sorted.push(value);
+  for (let cursor = sorted.length - 1; cursor > index; cursor -= 1) {
+    sorted[cursor] = sorted[cursor - 1]!;
+  }
+  sorted[index] = value;
+}
+
+/** Removes one occurrence of `value` from the ascending `sorted` array (AC-11). */
+function removeSorted(sorted: number[], value: number): void {
+  const index = lowerBound(sorted, value);
+  for (let cursor = index; cursor < sorted.length - 1; cursor += 1) {
+    sorted[cursor] = sorted[cursor + 1]!;
+  }
+  sorted.pop();
+}
+
 /**
  * Builds a quality policy. `initialTier` defaults to `high`; tests use it to exercise the
  * upgrade branches deterministically without replaying a downgrade first.
@@ -212,6 +279,8 @@ function nearestRank95(sorted: readonly number[]): number {
 export function createQualityPolicy(initialTier: QualityTier = 'high'): QualityPolicy {
   let tier: QualityTier = initialTier;
   const window: number[] = [];
+  /** Ascending view of `window`, in sync by binary insertion/removal (AC-11). */
+  const sortedWindow: number[] = [];
   let windowSum = 0;
   /** Policy clock: the sum of every accepted (clamped) frame time. */
   let nowMs = 0;
@@ -225,11 +294,10 @@ export function createQualityPolicy(initialTier: QualityTier = 'high'): QualityP
   }
 
   function p95(): number {
-    if (window.length === 0) {
+    if (sortedWindow.length === 0) {
       return 0;
     }
-    const sorted = [...window].sort((a, b) => a - b);
-    return nearestRank95(sorted);
+    return nearestRank95(sortedWindow);
   }
 
   function resetStreaks(): void {
@@ -311,8 +379,11 @@ export function createQualityPolicy(initialTier: QualityTier = 'high'): QualityP
     nowMs += clamped;
     window.push(clamped);
     windowSum += clamped;
+    insertSorted(sortedWindow, clamped);
     if (window.length > QUALITY_WINDOW_FRAMES) {
-      windowSum -= window.shift()!;
+      const evicted = window.shift()!;
+      windowSum -= evicted;
+      removeSorted(sortedWindow, evicted);
     }
     evaluate();
     return tier;
