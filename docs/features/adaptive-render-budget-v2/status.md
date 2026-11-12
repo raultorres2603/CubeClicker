@@ -1,8 +1,8 @@
 ---
 feature: adaptive-render-budget-v2
-state: building
+state: accepted
 spec_review_round: 3
-build_round: 1
+build_round: 2
 created: 2026-11-12
 updated: 2026-11-12
 ---
@@ -16,8 +16,8 @@ First performance feature of the approved audit queue: stop creating the Three.j
 - [x] T1 — Quality GPU matrix and sorted-window p95 (builder) `[seq]`
 - [x] T2 — Tier-aware renderer and session propagation (builder) `[seq]`
 - [x] T3 — Scene shadow budget (builder) `[seq]`
-- [ ] T4 — Gate-deferred attach (builder) `[seq]`
-- [ ] T5 — Documentation and final verification (builder) `[seq]`
+- [x] T4 — Gate-deferred attach (builder) `[seq]`
+- [x] T5 — Documentation and final verification (builder) `[seq]`
 
 ## Loop log
 - 2026-11-12 — created → PLANNING — audit queue item 1 (performance); raw request: "Proceed with all of them, one by one"
@@ -30,9 +30,13 @@ First performance feature of the approved audit queue: stop creating the Three.j
 - 2026-11-12 — building T1 completed — quality GPU matrix + sorted p95; commit `0e8343a`; frontend coverage 96.45/95.45/97.48/96.45; `quality.ts` 98.31/97.43/100/98.31 — `build-log-T1.md`
 - 2026-11-12 — building T2 completed — tier-aware postprocessing/renderer/session; commit `39f664b`; frontend coverage 96.46/95.47/97.49/96.46; named welcome test green — `build-log-T2.md`
 - 2026-11-12 — building T3 completed — tiered shadow map; commit `ff9d1a4`; frontend coverage 96.46/95.48/97.49/96.46; high 2048 / medium 1024 / low off — `build-log-T3.md`
+- 2026-11-12 — building T4 completed — gate-deferred attach; commit `5d0869b`; frontend coverage 96.47/96.14/97.64/96.47; named welcome test green — `build-log-T4.md`
+- 2026-11-12 — building T5 completed — docs + final verification; commit `11c5468`; manual visual pass not executed (no browser/GUI in environment) — `build-log-T5.md`
+- 2026-11-12 — building → code_review — all T1-T5 verified; backend coverage 95.43/87.71/99.70/95.43, frontend 96.47/96.14/97.64/96.47; build green — `build-log-T5.md`
+- 2026-11-12 — code_review → accepted — code review r1 approved (0 blockers); all 17 ACs verified; manual visual pass environment-deferred — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 - Q-1 — low-tier shadows: recommended fully off (alternative: one static contact-shadow plane); see `spec.md` § Open questions.
 - Q-2 — intro timing after gate close: recommended the intro plays from its start at attach; the `user-authentication` AC-18 "animating behind the overlay" clause is superseded in the ledger.
 - Q-3 — DPR ladder: recommended 2 / 1.5 / 1.0; tunable before acceptance if the containerized visual pass finds low too soft.
-- Draft artifacts written (spec r3, plan r3, tasks); spec approved r3; user approved Q-1/Q-2/Q-3 defaults; building T1 complete.
+- Draft artifacts written (spec r3, plan r3, tasks); spec approved r3; user approved Q-1/Q-2/Q-3 defaults; building complete; manual visual pass environment-deferred.

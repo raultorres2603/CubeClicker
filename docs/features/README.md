@@ -50,5 +50,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | particle-only-click-effects | Particle-Only Click Effects (remove gold click explosion; keep green shard debris and spark particles) | accepted | 2026-11-11 |
 | small-destruction-shot-fx | Small Destruction & Shot FX (little impact explosions, 140 ms mini-cube destroy, realistic tracer shot) | accepted | 2026-11-12 |
 | agent-skill-migration | Agent Skill Migration & Repository-State Repair (restore pipeline skills, track imported packs, curate allow-lists, reconcile feature index) | accepted | 2026-11-12 |
+| adaptive-render-budget-v2 | Adaptive Render Budget v2 (gate-deferred renderer, GPU-scaled tiers, sorted p95) | accepted | 2026-11-12 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
