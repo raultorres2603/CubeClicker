@@ -1,8 +1,8 @@
 ---
 feature: agent-skill-migration
-state: building
+state: accepted
 spec_review_round: 3
-build_round: 1
+build_round: 2
 created: 2026-11-12
 updated: 2026-11-12
 ---
@@ -15,8 +15,8 @@ Repair the half-migrated agent skill pipeline: restore the six project pipeline 
 - [x] T1 — Restore the six project pipeline skills and track the 31 imported packs + lockfile (builder) `[seq]`
 - [x] T2 — Curate agent allow-lists and document the skill policy (builder) `[seq]`
 - [x] T3 — Reconcile the feature index rows (orchestrator edit-only) `[seq]`
-- [ ] T4 — Pre-review verification and bookkeeping commit (builder) `[seq]`
-- [ ] T5 — Acceptance bookkeeping commit (builder) `[seq]`
+- [x] T4 — Pre-review verification and bookkeeping commit (builder) `[seq]`
+- [x] T5 — Acceptance bookkeeping commit (builder) `[seq]`
 
 ## Loop log
 - 2026-11-12 — created → PLANNING — request: "Proceed with all of them, one by one" (first item: repair the half-migrated skill pipeline)
@@ -27,6 +27,9 @@ Repair the half-migrated agent skill pipeline: restore the six project pipeline 
 - 2026-11-12 — building T1 completed — restored six pipeline skills; tracked 31 packs + lockfile; commits `633c67a` + `e2d607f` — `build-log-T1.md`
 - 2026-11-12 — building T2 completed — curated agent allow-lists; added `docs/architecture/skills.md`; commits `4a63b1e` + `6faf3b4` — `build-log-T2.md`
 - 2026-11-12 — building T3 completed — reconciled three feature-index rows in `docs/features/README.md` — `docs/features/README.md`
+- 2026-11-12 — building T4 completed — final verification green (T3 row check, T1/T2 re-runs, lint/typecheck/test/coverage/build, BASE_SHA no-runtime-diff guard); commits `4c82d38` + `058e715` — `build-log-T4.md`
+- 2026-11-12 — building → code_review — all T1-T4 tasks verified; coverage 95.43%/96.44% (backend/frontend statements); T5 pending code review — `build-log-T4.md`
+- 2026-11-12 — code_review → accepted — code review r1 approved (0 blockers); acceptance edits applied before T5; T5 bookkeeping pending — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 - Q-1 — canonical split recommended: project pipeline skills in `.opencode/skills/`, imported packs in `.agents/skills/`; see `spec.md` § Open questions.
