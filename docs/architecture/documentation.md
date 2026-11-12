@@ -17,7 +17,7 @@ This document is the single source of truth for documentation best practices and
 Run this checklist when a feature transitions from `code_review` to `accepted`. Apply targets **as applicable to the feature** — update only the documents the feature actually touched or affected; this is not a blanket rewrite of the repository's documentation.
 
 - [ ] **Root `README.md`** — installation/run instructions, commands, ports, and feature references still match shipped behavior.
-- [ ] **`docs/architecture/**`** — `stack.md`, `containerization.md`, and this document reflect any architectural or convention change; do not alter decided stack/container statements unless the feature amended them.
+- [ ] **`docs/architecture/**`** — `stack.md`, `containerization.md`, `skills.md`, and this document reflect any architectural or convention change; do not alter decided stack/container statements unless the feature amended them.
 - [ ] **`docs/product/**`** — `glossary.md` (terms), `vision.md`, and `realtime-backlog.md` updated when the feature changes a term, vision, or backlog item.
 - [ ] **`docs/features/README.md`** — the feature index reflects the feature's state and last-updated date.
 
@@ -40,4 +40,4 @@ The orchestrator applies the index update on acceptance. This merge strategy kee
 
 - **Orchestrator** dispatches and verifies the documentation update pass before transitioning a feature to `accepted`; the feature stays in `code_review` while the pass runs and transitions only once evidence is recorded in a build log. No new state is introduced.
 - Targets are applied as applicable to the feature, not as a blanket rewrite (see checklist above).
-- Link to the glossary: [glossary](../product/glossary.md). Link to the vision: [vision](../product/vision.md). Link to the containerization reference: [containerization](containerization.md). Link to the stack reference: [stack](stack.md).
+- Link to the glossary: [glossary](../product/glossary.md). Link to the vision: [vision](../product/vision.md). Link to the containerization reference: [containerization](containerization.md). Link to the stack reference: [stack](stack.md). Link to the skills policy: `docs/architecture/skills.md`.

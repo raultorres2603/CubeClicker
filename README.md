@@ -97,6 +97,7 @@ TypeScript (strict) on Node.js 24 LTS: a Fastify backend (HTTP health at `GET /h
 
 - `docs/architecture/stack.md` — the decided application stack and the canonical commands
 - `docs/architecture/containerization.md` — the settled container conventions (ports, env names, health, images, compose files)
+- `docs/architecture/skills.md` — skill locations (`.opencode/skills/` and `.agents/skills/`), per-agent allow-lists, imported-pack dispositions, and the binding-vs-advisory policy
 
 ## Deployment
 
