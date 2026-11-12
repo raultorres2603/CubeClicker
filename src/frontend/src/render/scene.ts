@@ -434,6 +434,33 @@ export interface SceneView {
 }
 
 /**
+ * Construction options of one {@link SceneView}.
+ *
+ * Exported so the session's injected render runtime (`RenderRuntime` in
+ * `game/session.ts`) can describe `createSceneView` without importing this module at
+ * runtime — the session only keeps a type-only reference.
+ */
+export interface SceneViewOptions {
+  /** Starting cube style (the cube view's materials). */
+  style: CubeStyle;
+  /** Tiles per face edge; defaults to the pinned `GRID_SIZE` (5). */
+  gridSize?: number;
+  /**
+   * Source for the starfield layout, the particle jitter, the background life and the
+   * nebula texture; injected so a seeded source makes the whole scene deterministic
+   * (defaults to `Math.random`).
+   */
+  random?: () => number;
+  /**
+   * The own member's server slot position; defaults to the offline origin `(0, 0)`, so
+   * the offline rest pose and intro stay exactly at `(0,0,12)`.
+   */
+  ownPosition?: Position;
+  /** Equipped spaceship appearance (part id per slot); defaults to no parts. */
+  appearance?: Record<string, string>;
+}
+
+/**
  * Builds the composed scene for one cube level.
  *
  * @param options.style starting cube style (the cube view's materials).
@@ -444,13 +471,7 @@ export interface SceneView {
  * @param options.ownPosition the own member's server slot position; defaults to the
  * offline origin `(0, 0)`, so the offline rest pose and intro stay exactly at `(0,0,12)`.
  */
-export function createSceneView(options: {
-  style: CubeStyle;
-  gridSize?: number;
-  random?: () => number;
-  ownPosition?: Position;
-  appearance?: Record<string, string>;
-}): SceneView {
+export function createSceneView(options: SceneViewOptions): SceneView {
   const gridSize = options.gridSize ?? GRID_SIZE;
   const random = options.random ?? Math.random;
 

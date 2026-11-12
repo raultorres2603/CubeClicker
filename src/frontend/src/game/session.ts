@@ -60,8 +60,22 @@
  * `cubeView` through the rebuild-aware accessor, so a `levelChanged` rebuild can never
  * leave the pick with a disposed handle.
  *
- * **three.js surface.** The only reference to three.js here is the type-only
- * `RendererAdapter` signature the plan pins; the session never imports or constructs it.
+ * **three.js surface.** The only references to three.js here are type-only (`Scene`,
+ * `PerspectiveCamera`, `SceneViewOptions`, `SceneView`, `CubeView`, `HoverPick`); the
+ * scene construction and picking functions themselves arrive through
+ * {@link SessionEnvironment.renderRuntime}. Production resolves the environment through a
+ * dynamic `import('../browser-env')`, so `session.ts` and its render boundary stay out of
+ * the auth/menu entry graph (frontend-delivery-hardening).
+ *
+ * **Runtime loading.** `attach` with an injected environment starts synchronously (the
+ * accepted attach contract, status `ready`). Without one, the status becomes `loading`,
+ * the loader resolves the environment once, and the start body runs on resolve (`ready`)
+ * or the status becomes `error` on reject (the UI offers a retry `attach`). The loader
+ * runs *before* the start body and never advances the engine: the frame baseline is set
+ * at the runtime start, so the loader's elapsed time is skipped and the intro still
+ * begins at progress 0 (the accepted gate-close timing is preserved). An attach-generation
+ * token makes a `dispose()` during loading cancel the pending start, and an attach while
+ * loading/active idempotent.
  *
  * **Lifecycle.** `attach` is idempotent and `dispose` is idempotent; disposing cancels the
  * pending frame, removes every listener it added, unsubscribes every source and transport
@@ -85,16 +99,16 @@ import {
 } from '../multiplayer/server-state';
 import { createSpectateController, type SpectateStatus } from '../multiplayer/spectate';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
-import { pickHoverTarget, pickMiniCube } from '../render/picking';
+import type { CubeView } from '../render/cube-view';
+import type { HoverPick } from '../render/picking';
 import { QUALITY_PIXEL_RATIO_CAPS } from '../render/quality';
 import type { QualityTier } from '../render/quality';
-import { createSceneView, type SceneView } from '../render/scene';
-import { browserEnvironment } from '../browser-env';
+import type { SceneView, SceneViewOptions } from '../render/scene';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
-import type { Board, CubeStyle, LootboxGrant, MiniCubeId } from './types';
+import type { Board, CubeStyle, FaceId, LootboxGrant, MiniCubeId } from './types';
 
 /** The drawing surface the session listens on and sizes. */
 export interface CanvasLike {
@@ -143,6 +157,33 @@ export interface RendererAdapter {
   dispose(): void;
 }
 
+/**
+ * The Three-touching functions the session drives, injected through
+ * {@link SessionEnvironment}.
+ *
+ * The session refers to scene construction and picking only through this runtime, so
+ * `session.ts` never statically imports the render modules. In production the whole
+ * environment (and with it `browser-env → render/scene`/`render/picking`) arrives through
+ * a dynamic import behind the auth gate; tests inject the real functions directly.
+ */
+export interface RenderRuntime {
+  createSceneView(options: SceneViewOptions): SceneView;
+  pickHoverTarget(
+    camera: PerspectiveCamera,
+    cubeView: CubeView,
+    frontFaceId: FaceId,
+    ndcX: number,
+    ndcY: number,
+  ): HoverPick;
+  pickMiniCube(
+    camera: PerspectiveCamera,
+    cubeView: CubeView,
+    frontFaceId: FaceId,
+    ndcX: number,
+    ndcY: number,
+  ): MiniCubeId | null;
+}
+
 /** Everything the session needs from the host, injectable end to end. */
 export interface SessionEnvironment {
   canvas: CanvasLike;
@@ -163,6 +204,27 @@ export interface SessionEnvironment {
   now(): number;
   random(): number;
   devicePixelRatio(): number;
+  /** The scene/picking functions (type-only surface in this module). */
+  renderRuntime: RenderRuntime;
+}
+
+/**
+ * The lifecycle of the runtime environment an attach cycle needs.
+ *
+ * `idle` before the first attach (and after a dispose), `loading` while the environment
+ * loader is pending, `ready` once the start body has run, `error` when the loader
+ * rejected. Only the `loading`/`error` states are observable additions for the UI; the
+ * accepted synchronous attach path reports `ready` immediately.
+ */
+export type RuntimeStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * The production environment loader: the dynamic import keeps `browser-env` (and with it
+ * `render/scene`, `render/picking` and three.js) out of the entry chunk. It is the default
+ * of {@link GameSessionOptions.loadEnvironment}.
+ */
+function loadBrowserEnvironment(canvas: CanvasLike): Promise<SessionEnvironment> {
+  return import('../browser-env').then(({ browserEnvironment }) => browserEnvironment(canvas));
 }
 
 /** The runtime handle the UI holds. */
@@ -177,6 +239,20 @@ export interface GameSession {
   subscribe(listener: () => void): () => void;
   /** Forwards a pointer target (clamped NDC) to the live scene; no-op while detached. */
   setPointerTarget(ndcX: number, ndcY: number): void;
+  /**
+   * The current runtime-environment status.
+   *
+   * Optional in the shared UI contract for source compatibility with existing session
+   * fakes; {@link createGameSession} always implements it.
+   */
+  getRuntimeStatus?(): RuntimeStatus;
+  /**
+   * Subscribes to runtime-status changes; the returned function unsubscribes.
+   *
+   * Optional in the shared UI contract for source compatibility with existing session
+   * fakes; {@link createGameSession} always implements it.
+   */
+  subscribeRuntime?(listener: () => void): () => void;
 }
 
 /**
@@ -240,6 +316,12 @@ export interface OnlineGameSession extends GameSession {
 
 /** Construction options; the environment, the engine and the transport are all injectable. */
 export interface GameSessionOptions {
+  /**
+   * A synchronously available environment. When present, `attach` starts the runtime
+   * immediately (the accepted attach contract); when omitted, `attach` loads the
+   * environment through {@link GameSessionOptions.loadEnvironment} and reports
+   * `loading`/`ready`/`error` through {@link GameSession.getRuntimeStatus}.
+   */
   env?: SessionEnvironment;
   engine?: GameEngine;
   /**
@@ -248,6 +330,11 @@ export interface GameSessionOptions {
    * input. Supplying it enables the protocol wiring described in the module header.
    */
   transport?: Transport;
+  /**
+   * Resolves the environment for an async attach. Test seam: production defaults to
+   * `import('../browser-env').then(({ browserEnvironment }) => browserEnvironment(canvas))`.
+   */
+  loadEnvironment?: (canvas: CanvasLike) => Promise<SessionEnvironment>;
 }
 
 /**
@@ -288,6 +375,8 @@ function resolveStyle(styleId: string, levelIndex: number): CubeStyle {
 export function createGameSession(options: GameSessionOptions = {}): OnlineGameSession {
   const providedEnv = options.env;
   const transport = options.transport;
+  /** The environment loader: the production dynamic import unless a test injects one. */
+  const loadEnvironment = options.loadEnvironment ?? loadBrowserEnvironment;
   /** Online only when a transport was injected: no transport keeps the offline defaults. */
   const online = transport !== undefined;
   /** Only an engine created here may be replaced to adopt the server's level-0 cube. */
@@ -323,6 +412,16 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let active = false;
   /** Releases everything the current attach cycle created; `null` while detached. */
   let teardown: (() => void) | null = null;
+  /** The runtime-environment status the UI observes (`idle` → `loading` → `ready`/`error`). */
+  let runtimeStatus: RuntimeStatus = 'idle';
+  /** The runtime-status listeners (the UI's `useSyncExternalStore` source). */
+  const runtimeListeners = new Set<() => void>();
+  /**
+   * Attach-cycle generation: bumped by every `attach` and every `dispose`. A loader
+   * resolution may start the runtime only when its cycle is still the current one, so a
+   * dispose (or a remount's new attach) during loading can never start a stale cycle.
+   */
+  let attachGeneration = 0;
   const unsubscribers: Array<() => void> = [];
   const listeners = new Set<() => void>();
   /** The snapshot the listeners were last told about (identity = "nothing changed"). */
@@ -354,6 +453,17 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     publishedSnapshot = snapshot;
     for (const listener of listeners) {
+      listener();
+    }
+  }
+
+  /** Applies a runtime-status transition and notifies the UI when it changed. */
+  function setRuntimeStatus(next: RuntimeStatus): void {
+    if (runtimeStatus === next) {
+      return;
+    }
+    runtimeStatus = next;
+    for (const listener of runtimeListeners) {
       listener();
     }
   }
@@ -1024,12 +1134,362 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     activeScene?.setPointerTarget(ndcX, ndcY);
   }
 
+  /**
+   * Starts one attach cycle with the resolved environment — the accepted attach body.
+   * `attach` calls this synchronously when an environment was provided, or from the
+   * loader's resolution for an async attach. The frame baseline is set here, at the
+   * runtime start, so the loader's elapsed time is never passed to `engine.advance`.
+   */
+  function start(target: CanvasLike, env: SessionEnvironment): void {
+    // The engine exists from session creation, so pre-attach snapshots run on its
+    // deterministic fallback; attach is where the host's randomness arrives. The scene
+    // is built at the level's drawn grid size (the engine's own value).
+    engine.setRandomSource(env.random);
+    const initialSnapshot = engine.getSnapshot();
+    const view = env.renderRuntime.createSceneView({
+      style: initialSnapshot.style,
+      random: env.random,
+      gridSize: initialSnapshot.gridSize,
+    });
+    const adapter: RendererAdapter = env.rendererFactory(target);
+    activeScene = view;
+    activeEnv = env;
+
+    /** The tier already pushed to the adapter; the first frame adds no call (AC-10). */
+    let appliedTier: QualityTier = view.getQualityTier();
+    // The adapter must know the starting tier before it receives the first viewport.
+    adapter.setQuality(appliedTier);
+
+    let frameHandle: number | null = null;
+    /** Frame time the next delta is measured from (a rewind never produces a negative dt). */
+    let frameBaselineMs = env.now();
+    let hidden = env.visibility.isHidden();
+    let press: PressPosition | null = null;
+
+    /** Pending trailing resize apply; `null` when no resize is queued. */
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Pushes the container size, the tier-capped pixel ratio and the camera aspect. */
+    function applyViewport(): void {
+      const rect = target.getBoundingClientRect();
+      adapter.setPixelRatio(
+        Math.min(env.devicePixelRatio(), QUALITY_PIXEL_RATIO_CAPS[view.getQualityTier()]),
+      );
+      adapter.setSize(rect.width, rect.height);
+      // Before the first layout the box is empty; a 1:1 aspect keeps the projection valid.
+      view.camera.aspect = rect.height > 0 ? rect.width / rect.height : 1;
+      view.camera.updateProjectionMatrix();
+    }
+
+    function clearResizeTimer(): void {
+      if (resizeTimer !== null) {
+        clearTimeout(resizeTimer);
+        resizeTimer = null;
+      }
+    }
+
+    function scheduleFrame(): void {
+      if (hidden || frameHandle !== null) {
+        return;
+      }
+      frameHandle = env.scheduler.schedule(onFrame);
+    }
+
+    /** One frame: time → intents → snapshot → render, then the next frame. */
+    function onFrame(nowMs: number): void {
+      frameHandle = null;
+      if (!active) {
+        // A callback that escaped `cancel`: the session is gone and must not render.
+        return;
+      }
+      if (pendingOrientation !== null && canRun()) {
+        if (currentNow() - lastSendMs >= 50) {
+          flushPendingRotate();
+        }
+      }
+      const dtMs = Math.max(0, nowMs - frameBaselineMs);
+      frameBaselineMs = nowMs;
+      if (pendingAutoReturn && canRun() && engine.getSnapshot().phase === 'playing') {
+        // The target left mid-flight; the current flight has landed, so fly home now.
+        pendingAutoReturn = false;
+        startOwnReturn();
+      }
+      const before = engine.getSnapshot();
+      if (canRun()) {
+        engine.advance(dtMs);
+      }
+      const after = engine.getSnapshot();
+      if (after.levelIndex !== before.levelIndex) {
+        // The online level midpoint: the queued cross-server world becomes current.
+        world = applyWorldSwap(world);
+      }
+      handleTravelArrival(before, after);
+      view.applyIntents(engine.drainIntents(), nowMs);
+      const snapshot = engine.getSnapshot();
+      // Target lock (AC-35): resolve the hovered front-face mini-cube at most once per
+      // animation frame; pointer moves only record the latest NDC.
+      if (snapshot.phase !== 'playing') {
+        hoverPickPending = false;
+        if (hoveredId !== null) {
+          hoveredId = null;
+          view.setHoverTarget(null);
+        }
+      } else if (hoverPickPending) {
+        hoverPickPending = false;
+        const pick = env.renderRuntime.pickHoverTarget(
+          view.camera,
+          view.cubeView,
+          frontFace(snapshot.orientation),
+          hoverNdc.x,
+          hoverNdc.y,
+        );
+        hoveredId = pick.id;
+        // Always pushed: a level rebuild clears the scene's target lock, so an
+        // unchanged id string must still be re-applied on the next pointer frame.
+        view.setHoverTarget(pick.id);
+      }
+      view.applySnapshot(snapshot, nowMs);
+      view.update(dtMs);
+      const tier = view.getQualityTier();
+      if (tier !== appliedTier) {
+        // The policy changed this frame: rebuild the GPU budget and re-cap the DPR
+        // before the frame renders (AC-10).
+        appliedTier = tier;
+        adapter.setQuality(tier);
+        applyViewport();
+      }
+      adapter.render(view.scene, view.camera);
+      publish(snapshot);
+      publishMultiplayer();
+      scheduleFrame();
+    }
+
+    function onPointerDown(event: unknown): void {
+      const { clientX, clientY } = event as { clientX: number; clientY: number };
+      press = { x: clientX, y: clientY };
+    }
+
+    /** Classifies the gesture at release: pointer events are the single input path. */
+    function onPointerUp(event: unknown): void {
+      const start = press;
+      press = null;
+      if (start === null) {
+        return;
+      }
+      const { clientX, clientY } = event as { clientX: number; clientY: number };
+      const rect = target.getBoundingClientRect();
+      dispatchGesture(
+        classifyPointer(
+          { x: start.x - rect.left, y: start.y - rect.top },
+          { x: clientX - rect.left, y: clientY - rect.top },
+          { width: rect.width, height: rect.height },
+        ),
+      );
+    }
+
+    function onPointerCancel(): void {
+      press = null;
+    }
+
+    /**
+     * Tracks pointer movement for the spaceship cursor (AC-7) and records the NDC for
+     * the frame's hover pick (AC-35). The pointer event itself never raycasts.
+     */
+    function onPointerMove(event: unknown): void {
+      const { clientX, clientY } = event as { clientX: number; clientY: number };
+      const rect = target.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      const rawX = (clientX - rect.left) / rect.width * 2 - 1;
+      const rawY = 1 - (clientY - rect.top) / rect.height * 2;
+      const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
+      hoverNdc.x = clamp(rawX);
+      hoverNdc.y = clamp(rawY);
+      hoverPickPending = true;
+      activeScene?.setPointerTarget(hoverNdc.x, hoverNdc.y);
+    }
+
+    /** A pointer leaving the canvas hides the reticle immediately (a miss, AC-35). */
+    function onPointerLeave(): void {
+      hoverPickPending = false;
+      if (hoveredId !== null) {
+        hoveredId = null;
+        activeScene?.setHoverTarget(null);
+      }
+    }
+
+    /**
+     * The phase policy: what one classified gesture means right now.
+     *
+     * A drag is classified by `gestures.ts` but dispatches nothing in any phase — the
+     * pointer never rotates the cube (rotation is keyboard/auto only) and never explodes.
+     */
+    function dispatchGesture(gesture: PointerGesture): void {
+      if (gesture === null) {
+        return;
+      }
+      const snapshot = engine.getSnapshot();
+      if (snapshot.phase === 'intro') {
+        // A click during the intro only ever skips it — never picks, never explodes.
+        if (gesture.kind === 'tap') {
+          dispatchAndPublish({ type: 'introSkip' });
+        }
+        return;
+      }
+      if (snapshot.phase === 'travel') {
+        return;
+      }
+      if (gesture.kind === 'drag') {
+        // Pointer rotation was removed (spec AC-2): a drag does nothing at all — no
+        // rotation, no explosion, no publish, so the snapshot identity is unchanged.
+        return;
+      }
+      // Front-face gate: only the current front face is pickable (a hit on any other
+      // face, a miss and a hidden instance all come back as `null`).
+      const id = env.renderRuntime.pickMiniCube(
+        view.camera,
+        view.cubeView,
+        frontFace(snapshot.orientation),
+        gesture.ndcX,
+        gesture.ndcY,
+      );
+      if (id !== null) {
+        dispatchAndPublish({ type: 'explodeMiniCube', id });
+      }
+    }
+
+    function onKeyDown(event: unknown): void {
+      const { key } = event as { key: string };
+      const mapped = mapKey(key, engine.getSnapshot().phase);
+      if (mapped !== null) {
+        dispatchAndPublish(mapped);
+      }
+    }
+
+    function onMotionChange(reduced: boolean): void {
+      engine.setReducedMotion(reduced);
+      publish(engine.getSnapshot());
+    }
+
+    /** Hidden tabs stop the loop; becoming visible resumes it without a time jump. */
+    function onVisibilityChange(isHidden: boolean): void {
+      if (!active) {
+        return;
+      }
+      hidden = isHidden;
+      if (hidden) {
+        if (frameHandle !== null) {
+          env.scheduler.cancel(frameHandle);
+          frameHandle = null;
+        }
+        return;
+      }
+      frameBaselineMs = env.now();
+      scheduleFrame();
+    }
+
+    /** Trailing resize: coalesces a burst of box changes into one viewport apply (AC-8). */
+    function onResize(): void {
+      if (!active) {
+        return;
+      }
+      clearResizeTimer();
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        if (active) {
+          applyViewport();
+        }
+      }, RESIZE_DEBOUNCE_MS);
+    }
+
+    /** A rotation lands on the final box: apply now and drop any queued resize (AC-8). */
+    function onOrientation(): void {
+      if (!active) {
+        return;
+      }
+      clearResizeTimer();
+      applyViewport();
+    }
+
+    // Motion is applied before the first frame so the starting profile is the current one.
+    engine.setReducedMotion(env.motion.matches());
+    applyViewport();
+    target.addEventListener('pointerdown', onPointerDown);
+    target.addEventListener('pointerup', onPointerUp);
+    target.addEventListener('pointercancel', onPointerCancel);
+    target.addEventListener('pointermove', onPointerMove);
+    target.addEventListener('pointerleave', onPointerLeave);
+    env.keyTarget.addEventListener('keydown', onKeyDown);
+    unsubscribers.push(env.motion.subscribe(onMotionChange));
+    unsubscribers.push(env.visibility.subscribe(onVisibilityChange));
+    unsubscribers.push(env.resize.subscribe(onResize));
+    if (env.orientation !== undefined) {
+      unsubscribers.push(env.orientation.subscribe(onOrientation));
+    }
+
+    // The transport shares the attach lifecycle: the session subscribes first, then
+    // connects, and teardown removes the handlers before closing the socket.
+    let unsubscribeTransportMessage: (() => void) | null = null;
+    let unsubscribeTransportStatus: (() => void) | null = null;
+    if (transport !== undefined) {
+      unsubscribeTransportMessage = transport.onMessage(handleServerMessage);
+      unsubscribeTransportStatus = transport.onStatus(handleStatus);
+      transport.connect();
+    }
+
+    scheduleFrame();
+
+    teardown = (): void => {
+      if (frameHandle !== null) {
+        env.scheduler.cancel(frameHandle);
+        frameHandle = null;
+      }
+      clearResizeTimer();
+      target.removeEventListener('pointerdown', onPointerDown);
+      target.removeEventListener('pointerup', onPointerUp);
+      target.removeEventListener('pointercancel', onPointerCancel);
+      target.removeEventListener('pointermove', onPointerMove);
+      target.removeEventListener('pointerleave', onPointerLeave);
+      env.keyTarget.removeEventListener('keydown', onKeyDown);
+      for (const unsubscribe of unsubscribers.splice(0)) {
+        unsubscribe();
+      }
+      unsubscribeTransportMessage?.();
+      unsubscribeTransportStatus?.();
+      transport?.close();
+      if (activeScene === view) {
+        activeScene = null;
+      }
+      if (activeEnv === env) {
+        activeEnv = null;
+      }
+      welcomed = false;
+      completionLevel = null;
+      pendingAutoReturn = false;
+      pendingLootboxOpen = false;
+      hoverPickPending = false;
+      hoveredId = null;
+      clearRotateTimer();
+      lastBroadcastOrientation = null;
+      pendingOrientation = null;
+      lastSendMs = 0;
+      spectate.reset();
+      engine.setSpectating?.(false);
+      publishMultiplayer();
+      adapter.dispose();
+      view.dispose();
+    };
+  }
+
   return {
     attach(target: CanvasLike): void {
       if (active) {
         return;
       }
       active = true;
+      attachGeneration += 1;
+      const generation = attachGeneration;
       if (online) {
         // A fresh attach cycle must not run on a previous connection's welcome.
         welcomed = false;
@@ -1044,346 +1504,35 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       hoverNdc.x = 0;
       hoverNdc.y = 0;
 
-      const env = providedEnv ?? browserEnvironment(target);
-      // The engine exists from session creation, so pre-attach snapshots run on its
-      // deterministic fallback; attach is where the host's randomness arrives. The scene
-      // is built at the level's drawn grid size (the engine's own value).
-      engine.setRandomSource(env.random);
-      const initialSnapshot = engine.getSnapshot();
-      const view = createSceneView({
-        style: initialSnapshot.style,
-        random: env.random,
-        gridSize: initialSnapshot.gridSize,
-      });
-      const adapter: RendererAdapter = env.rendererFactory(target);
-      activeScene = view;
-      activeEnv = env;
-
-      /** The tier already pushed to the adapter; the first frame adds no call (AC-10). */
-      let appliedTier: QualityTier = view.getQualityTier();
-      // The adapter must know the starting tier before it receives the first viewport.
-      adapter.setQuality(appliedTier);
-
-      let frameHandle: number | null = null;
-      /** Frame time the next delta is measured from (a rewind never produces a negative dt). */
-      let frameBaselineMs = env.now();
-      let hidden = env.visibility.isHidden();
-      let press: PressPosition | null = null;
-
-      /** Pending trailing resize apply; `null` when no resize is queued. */
-      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-
-      /** Pushes the container size, the tier-capped pixel ratio and the camera aspect. */
-      function applyViewport(): void {
-        const rect = target.getBoundingClientRect();
-        adapter.setPixelRatio(
-          Math.min(env.devicePixelRatio(), QUALITY_PIXEL_RATIO_CAPS[view.getQualityTier()]),
-        );
-        adapter.setSize(rect.width, rect.height);
-        // Before the first layout the box is empty; a 1:1 aspect keeps the projection valid.
-        view.camera.aspect = rect.height > 0 ? rect.width / rect.height : 1;
-        view.camera.updateProjectionMatrix();
+      if (providedEnv !== undefined) {
+        // The injected environment is synchronously available: the accepted attach body
+        // runs before `attach` returns, so the status is `ready` immediately.
+        start(target, providedEnv);
+        setRuntimeStatus('ready');
+        return;
       }
 
-      function clearResizeTimer(): void {
-        if (resizeTimer !== null) {
-          clearTimeout(resizeTimer);
-          resizeTimer = null;
-        }
-      }
-
-      function scheduleFrame(): void {
-        if (hidden || frameHandle !== null) {
-          return;
-        }
-        frameHandle = env.scheduler.schedule(onFrame);
-      }
-
-      /** One frame: time → intents → snapshot → render, then the next frame. */
-      function onFrame(nowMs: number): void {
-        frameHandle = null;
-        if (!active) {
-          // A callback that escaped `cancel`: the session is gone and must not render.
-          return;
-        }
-        if (pendingOrientation !== null && canRun()) {
-          if (currentNow() - lastSendMs >= 50) {
-            flushPendingRotate();
+      // Async attach: the loader runs before the start body and never advances the
+      // engine, so the intro clock stays anchored at the runtime start (AC-3).
+      setRuntimeStatus('loading');
+      void loadEnvironment(target).then(
+        (env) => {
+          if (!active || generation !== attachGeneration) {
+            // Disposed (or superseded by a newer attach) while loading: creates nothing.
+            return;
           }
-        }
-        const dtMs = Math.max(0, nowMs - frameBaselineMs);
-        frameBaselineMs = nowMs;
-        if (pendingAutoReturn && canRun() && engine.getSnapshot().phase === 'playing') {
-          // The target left mid-flight; the current flight has landed, so fly home now.
-          pendingAutoReturn = false;
-          startOwnReturn();
-        }
-        const before = engine.getSnapshot();
-        if (canRun()) {
-          engine.advance(dtMs);
-        }
-        const after = engine.getSnapshot();
-        if (after.levelIndex !== before.levelIndex) {
-          // The online level midpoint: the queued cross-server world becomes current.
-          world = applyWorldSwap(world);
-        }
-        handleTravelArrival(before, after);
-        view.applyIntents(engine.drainIntents(), nowMs);
-        const snapshot = engine.getSnapshot();
-        // Target lock (AC-35): resolve the hovered front-face mini-cube at most once per
-        // animation frame; pointer moves only record the latest NDC.
-        if (snapshot.phase !== 'playing') {
-          hoverPickPending = false;
-          if (hoveredId !== null) {
-            hoveredId = null;
-            view.setHoverTarget(null);
+          start(target, env);
+          setRuntimeStatus('ready');
+        },
+        () => {
+          if (!active || generation !== attachGeneration) {
+            return;
           }
-        } else if (hoverPickPending) {
-          hoverPickPending = false;
-          const pick = pickHoverTarget(
-            view.camera,
-            view.cubeView,
-            frontFace(snapshot.orientation),
-            hoverNdc.x,
-            hoverNdc.y,
-          );
-          hoveredId = pick.id;
-          // Always pushed: a level rebuild clears the scene's target lock, so an
-          // unchanged id string must still be re-applied on the next pointer frame.
-          view.setHoverTarget(pick.id);
-        }
-        view.applySnapshot(snapshot, nowMs);
-        view.update(dtMs);
-        const tier = view.getQualityTier();
-        if (tier !== appliedTier) {
-          // The policy changed this frame: rebuild the GPU budget and re-cap the DPR
-          // before the frame renders (AC-10).
-          appliedTier = tier;
-          adapter.setQuality(tier);
-          applyViewport();
-        }
-        adapter.render(view.scene, view.camera);
-        publish(snapshot);
-        publishMultiplayer();
-        scheduleFrame();
-      }
-
-      function onPointerDown(event: unknown): void {
-        const { clientX, clientY } = event as { clientX: number; clientY: number };
-        press = { x: clientX, y: clientY };
-      }
-
-      /** Classifies the gesture at release: pointer events are the single input path. */
-      function onPointerUp(event: unknown): void {
-        const start = press;
-        press = null;
-        if (start === null) {
-          return;
-        }
-        const { clientX, clientY } = event as { clientX: number; clientY: number };
-        const rect = target.getBoundingClientRect();
-        dispatchGesture(
-          classifyPointer(
-            { x: start.x - rect.left, y: start.y - rect.top },
-            { x: clientX - rect.left, y: clientY - rect.top },
-            { width: rect.width, height: rect.height },
-          ),
-        );
-      }
-
-      function onPointerCancel(): void {
-        press = null;
-      }
-
-      /**
-       * Tracks pointer movement for the spaceship cursor (AC-7) and records the NDC for
-       * the frame's hover pick (AC-35). The pointer event itself never raycasts.
-       */
-      function onPointerMove(event: unknown): void {
-        const { clientX, clientY } = event as { clientX: number; clientY: number };
-        const rect = target.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) {
-          return;
-        }
-        const rawX = (clientX - rect.left) / rect.width * 2 - 1;
-        const rawY = 1 - (clientY - rect.top) / rect.height * 2;
-        const clamp = (value: number): number => Math.min(1, Math.max(-1, value));
-        hoverNdc.x = clamp(rawX);
-        hoverNdc.y = clamp(rawY);
-        hoverPickPending = true;
-        activeScene?.setPointerTarget(hoverNdc.x, hoverNdc.y);
-      }
-
-      /** A pointer leaving the canvas hides the reticle immediately (a miss, AC-35). */
-      function onPointerLeave(): void {
-        hoverPickPending = false;
-        if (hoveredId !== null) {
-          hoveredId = null;
-          activeScene?.setHoverTarget(null);
-        }
-      }
-
-      /**
-       * The phase policy: what one classified gesture means right now.
-       *
-       * A drag is classified by `gestures.ts` but dispatches nothing in any phase — the
-       * pointer never rotates the cube (rotation is keyboard/auto only) and never explodes.
-       */
-      function dispatchGesture(gesture: PointerGesture): void {
-        if (gesture === null) {
-          return;
-        }
-        const snapshot = engine.getSnapshot();
-        if (snapshot.phase === 'intro') {
-          // A click during the intro only ever skips it — never picks, never explodes.
-          if (gesture.kind === 'tap') {
-            dispatchAndPublish({ type: 'introSkip' });
-          }
-          return;
-        }
-        if (snapshot.phase === 'travel') {
-          return;
-        }
-        if (gesture.kind === 'drag') {
-          // Pointer rotation was removed (spec AC-2): a drag does nothing at all — no
-          // rotation, no explosion, no publish, so the snapshot identity is unchanged.
-          return;
-        }
-        // Front-face gate: only the current front face is pickable (a hit on any other
-        // face, a miss and a hidden instance all come back as `null`).
-        const id = pickMiniCube(
-          view.camera,
-          view.cubeView,
-          frontFace(snapshot.orientation),
-          gesture.ndcX,
-          gesture.ndcY,
-        );
-        if (id !== null) {
-          dispatchAndPublish({ type: 'explodeMiniCube', id });
-        }
-      }
-
-      function onKeyDown(event: unknown): void {
-        const { key } = event as { key: string };
-        const mapped = mapKey(key, engine.getSnapshot().phase);
-        if (mapped !== null) {
-          dispatchAndPublish(mapped);
-        }
-      }
-
-      function onMotionChange(reduced: boolean): void {
-        engine.setReducedMotion(reduced);
-        publish(engine.getSnapshot());
-      }
-
-      /** Hidden tabs stop the loop; becoming visible resumes it without a time jump. */
-      function onVisibilityChange(isHidden: boolean): void {
-        if (!active) {
-          return;
-        }
-        hidden = isHidden;
-        if (hidden) {
-          if (frameHandle !== null) {
-            env.scheduler.cancel(frameHandle);
-            frameHandle = null;
-          }
-          return;
-        }
-        frameBaselineMs = env.now();
-        scheduleFrame();
-      }
-
-      /** Trailing resize: coalesces a burst of box changes into one viewport apply (AC-8). */
-      function onResize(): void {
-        if (!active) {
-          return;
-        }
-        clearResizeTimer();
-        resizeTimer = setTimeout(() => {
-          resizeTimer = null;
-          if (active) {
-            applyViewport();
-          }
-        }, RESIZE_DEBOUNCE_MS);
-      }
-
-      /** A rotation lands on the final box: apply now and drop any queued resize (AC-8). */
-      function onOrientation(): void {
-        if (!active) {
-          return;
-        }
-        clearResizeTimer();
-        applyViewport();
-      }
-
-      // Motion is applied before the first frame so the starting profile is the current one.
-      engine.setReducedMotion(env.motion.matches());
-      applyViewport();
-      target.addEventListener('pointerdown', onPointerDown);
-      target.addEventListener('pointerup', onPointerUp);
-      target.addEventListener('pointercancel', onPointerCancel);
-      target.addEventListener('pointermove', onPointerMove);
-      target.addEventListener('pointerleave', onPointerLeave);
-      env.keyTarget.addEventListener('keydown', onKeyDown);
-      unsubscribers.push(env.motion.subscribe(onMotionChange));
-      unsubscribers.push(env.visibility.subscribe(onVisibilityChange));
-      unsubscribers.push(env.resize.subscribe(onResize));
-      if (env.orientation !== undefined) {
-        unsubscribers.push(env.orientation.subscribe(onOrientation));
-      }
-
-      // The transport shares the attach lifecycle: the session subscribes first, then
-      // connects, and teardown removes the handlers before closing the socket.
-      let unsubscribeTransportMessage: (() => void) | null = null;
-      let unsubscribeTransportStatus: (() => void) | null = null;
-      if (transport !== undefined) {
-        unsubscribeTransportMessage = transport.onMessage(handleServerMessage);
-        unsubscribeTransportStatus = transport.onStatus(handleStatus);
-        transport.connect();
-      }
-
-      scheduleFrame();
-
-      teardown = (): void => {
-        if (frameHandle !== null) {
-          env.scheduler.cancel(frameHandle);
-          frameHandle = null;
-        }
-        clearResizeTimer();
-        target.removeEventListener('pointerdown', onPointerDown);
-        target.removeEventListener('pointerup', onPointerUp);
-        target.removeEventListener('pointercancel', onPointerCancel);
-        target.removeEventListener('pointermove', onPointerMove);
-        target.removeEventListener('pointerleave', onPointerLeave);
-        env.keyTarget.removeEventListener('keydown', onKeyDown);
-        for (const unsubscribe of unsubscribers.splice(0)) {
-          unsubscribe();
-        }
-        unsubscribeTransportMessage?.();
-        unsubscribeTransportStatus?.();
-        transport?.close();
-        if (activeScene === view) {
-          activeScene = null;
-        }
-        if (activeEnv === env) {
-          activeEnv = null;
-        }
-        welcomed = false;
-        completionLevel = null;
-        pendingAutoReturn = false;
-        pendingLootboxOpen = false;
-        hoverPickPending = false;
-        hoveredId = null;
-        clearRotateTimer();
-        lastBroadcastOrientation = null;
-        pendingOrientation = null;
-        lastSendMs = 0;
-        spectate.reset();
-        engine.setSpectating?.(false);
-        publishMultiplayer();
-        adapter.dispose();
-        view.dispose();
-      };
+          // A rejected load creates no renderer/listener/frame/connection; attach retries.
+          active = false;
+          setRuntimeStatus('error');
+        },
+      );
     },
 
     dispose(): void {
@@ -1391,8 +1540,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         return;
       }
       active = false;
+      attachGeneration += 1;
       teardown?.();
       teardown = null;
+      setRuntimeStatus('idle');
     },
 
     getSnapshot(): EngineSnapshot {
@@ -1403,6 +1554,17 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
+      };
+    },
+
+    getRuntimeStatus(): RuntimeStatus {
+      return runtimeStatus;
+    },
+
+    subscribeRuntime(listener: () => void): () => void {
+      runtimeListeners.add(listener);
+      return () => {
+        runtimeListeners.delete(listener);
       };
     },
 

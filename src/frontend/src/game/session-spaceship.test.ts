@@ -2,6 +2,8 @@ import { Group, type PerspectiveCamera, type Scene } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { createGameSession, type CanvasLike, type SessionEnvironment } from './session';
+import { pickHoverTarget, pickMiniCube } from '../render/picking';
+import { createSceneView } from '../render/scene';
 import { spaceshipTargetPosition } from '../render/spaceship';
 
 type Rect = { left: number; top: number; width: number; height: number };
@@ -66,6 +68,7 @@ function attach(rect: Rect) {
     now: () => 0,
     random: () => 0.5,
     devicePixelRatio: () => 1,
+    renderRuntime: { createSceneView, pickHoverTarget, pickMiniCube },
   };
   const session = createGameSession({ env });
   session.attach(canvas.surface);
@@ -143,6 +146,7 @@ describe('session spaceship pointer tracking (AC-7)', () => {
       now: () => 0,
       random: () => 0.5,
       devicePixelRatio: () => 1,
+      renderRuntime: { createSceneView, pickHoverTarget, pickMiniCube },
     };
     const session = createGameSession({ env });
     expect(() => session.setPointerTarget(0, 0)).not.toThrow();

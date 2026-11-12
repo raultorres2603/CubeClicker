@@ -10,8 +10,9 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
-import { pickHoverTarget } from '../render/picking';
+import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import type { QualityTier } from '../render/quality';
+import { createSceneView } from '../render/scene';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
 import { createBoard, removeMiniCube } from './board';
 import {
@@ -34,6 +35,7 @@ import {
   type OrientationSource,
   type RendererAdapter,
   type ResizeSource,
+  type RuntimeStatus,
   type SessionEnvironment,
   type VisibilitySource,
 } from './session';
@@ -439,6 +441,14 @@ function createFakeEnv(
       now: () => clock.now,
       random: options.random ?? fixedRandom,
       devicePixelRatio: () => options.dpr ?? 1,
+      // The real Three-touching runtime: the session reaches scene/picking only through
+      // the injected environment. `pickHoverTarget` is the module mock above so the
+      // per-frame coalescing assertions stay observable.
+      renderRuntime: {
+        createSceneView,
+        pickHoverTarget,
+        pickMiniCube,
+      },
     },
     canvas,
     keys,
@@ -578,6 +588,23 @@ function attachSession(fake: FakeEnv, engine?: GameEngine): GameSession {
   const session = createRealSession(fake, engine);
   session.attach(fake.canvas.surface);
   return session;
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+/** A promise the test settles explicitly — the injected environment loader. */
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 /** Press and release at one position — a gesture with zero travel, i.e. a tap. */
@@ -1035,6 +1062,230 @@ describe('attach', () => {
       'setSize:800:800',
       'render',
     ]);
+  });
+});
+
+describe('runtime environment loading (AC-2 session half, AC-3)', () => {
+  /** The status a concrete session reports (`createGameSession` always implements it). */
+  function statusOf(session: GameSession): RuntimeStatus | undefined {
+    return session.getRuntimeStatus?.();
+  }
+
+  it('starts synchronously and reports ready for a provided environment (loader unused)', () => {
+    const fake = createFakeEnv();
+    const loadEnvironment = vi.fn<(canvas: CanvasLike) => Promise<SessionEnvironment>>();
+    const session = createGameSession({ env: fake.env, loadEnvironment });
+    const statuses: RuntimeStatus[] = [];
+    session.subscribeRuntime?.(() => {
+      statuses.push(statusOf(session)!);
+    });
+
+    expect(statusOf(session)).toBe('idle');
+
+    session.attach(fake.canvas.surface);
+
+    expect(loadEnvironment).not.toHaveBeenCalled();
+    expect(statusOf(session)).toBe('ready');
+    expect(statuses).toEqual(['ready']);
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.scheduler.schedules()).toBe(1);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(1);
+  });
+
+  it('loads a deferred environment once: loading creates no host effects, then ready starts one cycle', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const pending = deferred<SessionEnvironment>();
+    const loadEnvironment = vi.fn(() => pending.promise);
+    const session = createGameSession({ loadEnvironment, transport: wire.transport });
+
+    session.attach(fake.canvas.surface);
+
+    expect(statusOf(session)).toBe('loading');
+    expect(loadEnvironment).toHaveBeenCalledTimes(1);
+    expect(loadEnvironment).toHaveBeenCalledWith(fake.canvas.surface);
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(0);
+    expect(fake.keys.listenerCount()).toBe(0);
+    expect(fake.motion.subscribeCount()).toBe(0);
+    expect(fake.visibility.subscribeCount()).toBe(0);
+    expect(fake.resize.subscribeCount()).toBe(0);
+    expect(fake.orientation.subscribeCount()).toBe(0);
+    expect(wire.events).toEqual([]);
+    expect(wire.connectCount()).toBe(0);
+
+    pending.resolve(fake.env);
+    await pending.promise;
+
+    expect(statusOf(session)).toBe('ready');
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.scheduler.pending()).toBe(1);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(1);
+    expect(fake.keys.listenerCount()).toBe(1);
+    expect(fake.motion.subscribeCount()).toBe(1);
+    expect(fake.visibility.subscribeCount()).toBe(1);
+    expect(fake.resize.subscribeCount()).toBe(1);
+    expect(fake.orientation.subscribeCount()).toBe(1);
+    expect(wire.events).toEqual(['onMessage', 'onStatus', 'connect']);
+    expect(wire.connectCount()).toBe(1);
+  });
+
+  it('cancels a pending load on dispose: the late resolution creates nothing', async () => {
+    const fake = createFakeEnv();
+    const pending = deferred<SessionEnvironment>();
+    const session = createGameSession({ loadEnvironment: () => pending.promise });
+
+    session.attach(fake.canvas.surface);
+    expect(statusOf(session)).toBe('loading');
+
+    session.dispose();
+    expect(statusOf(session)).toBe('idle');
+
+    pending.resolve(fake.env);
+    await pending.promise;
+
+    expect(statusOf(session)).toBe('idle');
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(0);
+    expect(fake.motion.subscribeCount()).toBe(0);
+  });
+
+  it('reports error on a rejected load without listeners, frames or connections', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const pending = deferred<SessionEnvironment>();
+    const session = createGameSession({
+      loadEnvironment: () => pending.promise,
+      transport: wire.transport,
+    });
+
+    session.attach(fake.canvas.surface);
+    pending.reject(new Error('runtime chunk failed'));
+    await pending.promise.catch(() => undefined);
+
+    expect(statusOf(session)).toBe('error');
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(0);
+    expect(fake.keys.listenerCount()).toBe(0);
+    expect(wire.events).toEqual([]);
+    expect(wire.connectCount()).toBe(0);
+  });
+
+  it('retries after an error with a second loader call and starts exactly one cycle', async () => {
+    const fake = createFakeEnv();
+    const first = deferred<SessionEnvironment>();
+    const second = deferred<SessionEnvironment>();
+    const loadEnvironment = vi.fn<(canvas: CanvasLike) => Promise<SessionEnvironment>>();
+    loadEnvironment.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const session = createGameSession({ loadEnvironment });
+
+    session.attach(fake.canvas.surface);
+    first.reject(new Error('runtime chunk failed'));
+    await first.promise.catch(() => undefined);
+
+    expect(statusOf(session)).toBe('error');
+    expect(loadEnvironment).toHaveBeenCalledTimes(1);
+
+    session.attach(fake.canvas.surface);
+
+    expect(statusOf(session)).toBe('loading');
+    expect(loadEnvironment).toHaveBeenCalledTimes(2);
+
+    second.resolve(fake.env);
+    await second.promise;
+
+    expect(statusOf(session)).toBe('ready');
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.scheduler.schedules()).toBe(1);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(1);
+  });
+
+  it('is idempotent while loading: a second attach neither reloads nor starts twice', async () => {
+    const fake = createFakeEnv();
+    const pending = deferred<SessionEnvironment>();
+    const loadEnvironment = vi.fn(() => pending.promise);
+    const session = createGameSession({ loadEnvironment });
+
+    session.attach(fake.canvas.surface);
+    session.attach(fake.canvas.surface);
+
+    expect(loadEnvironment).toHaveBeenCalledTimes(1);
+    expect(statusOf(session)).toBe('loading');
+
+    pending.resolve(fake.env);
+    await pending.promise;
+
+    expect(statusOf(session)).toBe('ready');
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.scheduler.schedules()).toBe(1);
+  });
+
+  it('drops a StrictMode-shaped first load: two loader calls, only the second starts', async () => {
+    const fake = createFakeEnv();
+    const first = deferred<SessionEnvironment>();
+    const second = deferred<SessionEnvironment>();
+    const loadEnvironment = vi.fn<(canvas: CanvasLike) => Promise<SessionEnvironment>>();
+    loadEnvironment.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const session = createGameSession({ loadEnvironment });
+
+    session.attach(fake.canvas.surface); // mount
+    session.dispose(); // unmount cancels the first load
+    session.attach(fake.canvas.surface); // remount
+
+    expect(loadEnvironment).toHaveBeenCalledTimes(2);
+    expect(statusOf(session)).toBe('loading');
+
+    first.resolve(fake.env);
+    await first.promise;
+
+    expect(statusOf(session)).toBe('loading');
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+
+    second.resolve(fake.env);
+    await second.promise;
+
+    expect(statusOf(session)).toBe('ready');
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.scheduler.schedules()).toBe(1);
+  });
+
+  it('anchors the intro clock at runtime start, skipping the loader elapsed (16 / introMs)', async () => {
+    // Baseline: an immediate (provided) environment whose first frame is 16 ms after attach.
+    const immediateFake = createFakeEnv();
+    const immediate = createGameSession({ env: immediateFake.env });
+    immediate.attach(immediateFake.canvas.surface);
+    immediateFake.clock.now = 16;
+    immediateFake.scheduler.tick(16);
+    expect(immediate.getSnapshot().phaseProgress).toBe(16 / 2500);
+
+    // Deferred: attach at t0, loader resolves at t0 + 500, first frame at t0 + 516.
+    const fake = createFakeEnv();
+    const pending = deferred<SessionEnvironment>();
+    const session = createGameSession({ loadEnvironment: () => pending.promise });
+    session.attach(fake.canvas.surface);
+
+    // The loader is pending: the engine is never advanced.
+    fake.clock.now = 500;
+    expect(session.getSnapshot().phaseProgress).toBe(0);
+
+    pending.resolve(fake.env);
+    await pending.promise;
+
+    expect(statusOf(session)).toBe('ready');
+    expect(session.getSnapshot().phaseProgress).toBe(0);
+    expect(fake.scheduler.pending()).toBe(1);
+
+    fake.clock.now = 516;
+    fake.scheduler.tick(516);
+
+    // The frame baseline is the runtime-start clock (500), so dt is 16 — never 516.
+    expect(session.getSnapshot().phase).toBe('intro');
+    expect(session.getSnapshot().phaseProgress).toBe(16 / 2500);
+    expect(session.getSnapshot().phaseProgress).toBe(immediate.getSnapshot().phaseProgress);
   });
 });
 

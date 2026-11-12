@@ -22,6 +22,26 @@ vi.mock('./render/webgl', () => ({
   createRafScheduler: webgl.createRafScheduler,
 }));
 
+/**
+ * The render modules are mocked too: `browserEnvironment` only carries their references
+ * (it never calls them), and the session integration tier exercises the real functions.
+ * Mocking keeps this boundary test free of a three.js scene graph.
+ */
+const renderScene = vi.hoisted(() => ({ createSceneView: vi.fn() }));
+const renderPicking = vi.hoisted(() => ({
+  pickHoverTarget: vi.fn(),
+  pickMiniCube: vi.fn(),
+}));
+
+vi.mock('./render/scene', () => ({
+  createSceneView: renderScene.createSceneView,
+}));
+
+vi.mock('./render/picking', () => ({
+  pickHoverTarget: renderPicking.pickHoverTarget,
+  pickMiniCube: renderPicking.pickMiniCube,
+}));
+
 type MediaQueryListener = (event: MediaQueryListEvent) => void;
 type DocumentListener = (event: Event) => void;
 
@@ -201,6 +221,15 @@ describe('browserEnvironment', () => {
     // The renderer factory is the WebGL bootstrap, not an eager renderer.
     expect(env.rendererFactory).toBe(webgl.createRealisticRenderer);
     expect(webgl.createRealisticRenderer).not.toHaveBeenCalled();
+
+    // The Three-touching runtime is a reference set the session consumes; assembling the
+    // environment never builds a scene or a raycast.
+    expect(env.renderRuntime.createSceneView).toBe(renderScene.createSceneView);
+    expect(env.renderRuntime.pickHoverTarget).toBe(renderPicking.pickHoverTarget);
+    expect(env.renderRuntime.pickMiniCube).toBe(renderPicking.pickMiniCube);
+    expect(renderScene.createSceneView).not.toHaveBeenCalled();
+    expect(renderPicking.pickHoverTarget).not.toHaveBeenCalled();
+    expect(renderPicking.pickMiniCube).not.toHaveBeenCalled();
 
     env.rendererFactory(canvas);
     expect(webgl.createRealisticRenderer).toHaveBeenCalledTimes(1);

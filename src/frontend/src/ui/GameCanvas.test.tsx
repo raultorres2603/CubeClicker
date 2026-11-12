@@ -10,6 +10,8 @@ import {
   type GameSession,
   type SessionEnvironment,
 } from '../game/session';
+import { pickHoverTarget, pickMiniCube } from '../render/picking';
+import { createSceneView } from '../render/scene';
 import { GameCanvas } from './GameCanvas';
 
 /**
@@ -171,6 +173,7 @@ function createSessionProbe(): SessionProbe {
     now: () => 0,
     random: () => 0.5,
     devicePixelRatio: () => 1,
+    renderRuntime: { createSceneView, pickHoverTarget, pickMiniCube },
   };
 
   const session = createGameSession({ env, engine: createEngine({ random: () => 0.5 }) });

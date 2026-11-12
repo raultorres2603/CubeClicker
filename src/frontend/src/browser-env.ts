@@ -8,6 +8,9 @@
  *
  * The default renderer factory and frame scheduler come from the render adapter's
  * bootstrap (`render/webgl.ts`); this module never constructs a renderer itself. The
+ * Three-touching scene/picking functions are exposed as `renderRuntime`, so `session.ts`
+ * never imports the render modules directly (this whole module is loaded dynamically
+ * behind the auth gate). The
  * key target is the top-level event target, the motion reader follows the pinned
  * `prefers-reduced-motion: reduce` query, the visibility reader follows the tab's own
  * visibility state plus its change event, the size reader follows a resize observer on
@@ -24,6 +27,8 @@ import type {
   SessionEnvironment,
   VisibilitySource,
 } from './game/session';
+import { pickHoverTarget, pickMiniCube } from './render/picking';
+import { createSceneView } from './render/scene';
 import { createRafScheduler, createRealisticRenderer } from './render/webgl';
 
 /** The pinned reduced-motion query (AC-12). */
@@ -84,5 +89,13 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     now: () => performance.now(),
     random: () => Math.random(),
     devicePixelRatio: () => window.devicePixelRatio,
+    // The Three-touching runtime surface: the session refers to it through
+    // `SessionEnvironment.renderRuntime`, so this module is the only static edge to the
+    // render scene/picking modules (and it is loaded behind the auth gate).
+    renderRuntime: {
+      createSceneView,
+      pickHoverTarget,
+      pickMiniCube,
+    },
   };
 }
