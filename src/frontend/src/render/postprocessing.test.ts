@@ -157,8 +157,8 @@ describe('postprocessing constants', () => {
 });
 
 describe('createPostprocessing', () => {
-  it('builds the composer with passes in order RenderPass, SSAOPass, UnrealBloomPass, OutputPass', () => {
-    createPostprocessing(renderer, scene, camera);
+  it('builds the high composer with passes in order RenderPass, SSAOPass, UnrealBloomPass, OutputPass', () => {
+    createPostprocessing(renderer, scene, camera, 'high');
 
     expect(composerInstances).toHaveLength(1);
     expect(renderPassInstances).toHaveLength(1);
@@ -174,8 +174,42 @@ describe('createPostprocessing', () => {
     ]);
   });
 
+  it('builds the medium composer with RenderPass, UnrealBloomPass, OutputPass and no SSAOPass', () => {
+    createPostprocessing(renderer, scene, camera, 'medium');
+
+    expect(composerInstances).toHaveLength(1);
+    expect(renderPassInstances).toHaveLength(1);
+    expect(ssaoInstances).toHaveLength(0);
+    expect(bloomInstances).toHaveLength(1);
+    expect(outputInstances).toHaveLength(1);
+
+    expect(composerInstances[0].passes).toEqual([
+      renderPassInstances[0],
+      bloomInstances[0],
+      outputInstances[0],
+    ]);
+    expect(bloomInstances[0].strength).toBe(BLOOM_STRENGTH);
+    expect(bloomInstances[0].radius).toBe(BLOOM_RADIUS);
+    expect(bloomInstances[0].threshold).toBe(BLOOM_THRESHOLD);
+  });
+
+  it('builds only RenderPass and OutputPass for a low-tier call (the adapter never calls it)', () => {
+    createPostprocessing(renderer, scene, camera, 'low');
+
+    expect(composerInstances).toHaveLength(1);
+    expect(renderPassInstances).toHaveLength(1);
+    expect(ssaoInstances).toHaveLength(0);
+    expect(bloomInstances).toHaveLength(0);
+    expect(outputInstances).toHaveLength(1);
+
+    expect(composerInstances[0].passes).toEqual([
+      renderPassInstances[0],
+      outputInstances[0],
+    ]);
+  });
+
   it('sets SSAO parameters from the pinned constants', () => {
-    createPostprocessing(renderer, scene, camera);
+    createPostprocessing(renderer, scene, camera, 'high');
 
     expect(ssaoInstances[0].kernelRadius).toBe(SSAO_KERNEL_RADIUS);
     expect(ssaoInstances[0].minDistance).toBe(SSAO_MIN_DISTANCE);
@@ -183,7 +217,7 @@ describe('createPostprocessing', () => {
   });
 
   it('sets bloom parameters from the pinned constants', () => {
-    createPostprocessing(renderer, scene, camera);
+    createPostprocessing(renderer, scene, camera, 'high');
 
     expect(bloomInstances[0].strength).toBe(BLOOM_STRENGTH);
     expect(bloomInstances[0].radius).toBe(BLOOM_RADIUS);
@@ -191,14 +225,14 @@ describe('createPostprocessing', () => {
   });
 
   it('binds the RenderPass to the provided scene and camera', () => {
-    createPostprocessing(renderer, scene, camera);
+    createPostprocessing(renderer, scene, camera, 'high');
 
     expect(renderPassInstances[0].scene).toBe(scene);
     expect(renderPassInstances[0].camera).toBe(camera);
   });
 
   it('forwards render to the composer', () => {
-    const pp = createPostprocessing(renderer, scene, camera);
+    const pp = createPostprocessing(renderer, scene, camera, 'high');
 
     pp.render();
 
@@ -206,7 +240,7 @@ describe('createPostprocessing', () => {
   });
 
   it('forwards setSize and setPixelRatio to the composer', () => {
-    const pp = createPostprocessing(renderer, scene, camera);
+    const pp = createPostprocessing(renderer, scene, camera, 'high');
 
     pp.setSize(1600, 800);
     pp.setPixelRatio(2);
@@ -217,8 +251,8 @@ describe('createPostprocessing', () => {
     expect(composerInstances[0].setPixelRatio).toHaveBeenCalledWith(2);
   });
 
-  it('releases the composer and every pass on dispose', () => {
-    const pp = createPostprocessing(renderer, scene, camera);
+  it('releases the composer and every high-tier pass on dispose', () => {
+    const pp = createPostprocessing(renderer, scene, camera, 'high');
 
     pp.dispose();
 
@@ -229,13 +263,37 @@ describe('createPostprocessing', () => {
     expect(outputInstances[0].dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('releases the composer and exactly the medium passes on dispose', () => {
+    const pp = createPostprocessing(renderer, scene, camera, 'medium');
+
+    pp.dispose();
+
+    expect(composerInstances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(renderPassInstances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(ssaoInstances).toHaveLength(0);
+    expect(bloomInstances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(outputInstances[0].dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the composer and exactly the low-tier passes on dispose', () => {
+    const pp = createPostprocessing(renderer, scene, camera, 'low');
+
+    pp.dispose();
+
+    expect(composerInstances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(renderPassInstances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(ssaoInstances).toHaveLength(0);
+    expect(bloomInstances).toHaveLength(0);
+    expect(outputInstances[0].dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the narrow adapter surface', () => {
-    const pp = createPostprocessing(renderer, scene, camera);
+    const pp = createPostprocessing(renderer, scene, camera, 'high');
     expect(Object.keys(pp)).toEqual(['render', 'setSize', 'setPixelRatio', 'dispose']);
   });
 
   it('keeps pass parameters unchanged after render() calls (AC-7)', () => {
-    const pp = createPostprocessing(renderer, scene, camera);
+    const pp = createPostprocessing(renderer, scene, camera, 'high');
 
     pp.render();
     pp.render();

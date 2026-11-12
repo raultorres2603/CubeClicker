@@ -86,9 +86,10 @@ import {
 import { createSpectateController, type SpectateStatus } from '../multiplayer/spectate';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
 import { pickHoverTarget, pickMiniCube } from '../render/picking';
+import { QUALITY_PIXEL_RATIO_CAPS } from '../render/quality';
+import type { QualityTier } from '../render/quality';
 import { createSceneView, type SceneView } from '../render/scene';
 import { browserEnvironment } from '../browser-env';
-import { PIXEL_RATIO_CAP } from './effects';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
@@ -136,6 +137,8 @@ export interface OrientationSource {
 export interface RendererAdapter {
   setSize(width: number, height: number): void;
   setPixelRatio(ratio: number): void;
+  /** Applies the tier's GPU budget (composer passes, shadow pass); idempotent per tier. */
+  setQuality(tier: QualityTier): void;
   render(scene: Scene, camera: PerspectiveCamera): void;
   dispose(): void;
 }
@@ -919,6 +922,11 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     status = 'connecting';
     welcomed = false;
     publishMultiplayer();
+    if (!active) {
+      // Detached (pre-attach login): the attach-time `connect()` opens the socket with the
+      // current session cookie, and the attach-time subscriptions cannot miss `welcome`.
+      return;
+    }
     transport.close();
     transport.connect();
   }
@@ -1051,6 +1059,11 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       activeScene = view;
       activeEnv = env;
 
+      /** The tier already pushed to the adapter; the first frame adds no call (AC-10). */
+      let appliedTier: QualityTier = view.getQualityTier();
+      // The adapter must know the starting tier before it receives the first viewport.
+      adapter.setQuality(appliedTier);
+
       let frameHandle: number | null = null;
       /** Frame time the next delta is measured from (a rewind never produces a negative dt). */
       let frameBaselineMs = env.now();
@@ -1060,10 +1073,12 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       /** Pending trailing resize apply; `null` when no resize is queued. */
       let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
-      /** Pushes the container size, the capped pixel ratio and the camera aspect. */
+      /** Pushes the container size, the tier-capped pixel ratio and the camera aspect. */
       function applyViewport(): void {
         const rect = target.getBoundingClientRect();
-        adapter.setPixelRatio(Math.min(env.devicePixelRatio(), PIXEL_RATIO_CAP));
+        adapter.setPixelRatio(
+          Math.min(env.devicePixelRatio(), QUALITY_PIXEL_RATIO_CAPS[view.getQualityTier()]),
+        );
         adapter.setSize(rect.width, rect.height);
         // Before the first layout the box is empty; a 1:1 aspect keeps the projection valid.
         view.camera.aspect = rect.height > 0 ? rect.width / rect.height : 1;
@@ -1139,6 +1154,14 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         }
         view.applySnapshot(snapshot, nowMs);
         view.update(dtMs);
+        const tier = view.getQualityTier();
+        if (tier !== appliedTier) {
+          // The policy changed this frame: rebuild the GPU budget and re-cap the DPR
+          // before the frame renders (AC-10).
+          appliedTier = tier;
+          adapter.setQuality(tier);
+          applyViewport();
+        }
         adapter.render(view.scene, view.camera);
         publish(snapshot);
         publishMultiplayer();

@@ -59,6 +59,7 @@ function attach(rect: Rect) {
     rendererFactory: () => ({
       setSize() {},
       setPixelRatio() {},
+      setQuality() {},
       render(scene, camera) { renders.push({ scene, camera }); },
       dispose() {},
     }),
@@ -138,7 +139,7 @@ describe('session spaceship pointer tracking (AC-7)', () => {
       visibility: { isHidden: () => false, subscribe: () => () => {} },
       resize: { subscribe: () => () => {} },
       orientation: { subscribe: () => () => {} },
-      rendererFactory: () => ({ setSize() {}, setPixelRatio() {}, render() {}, dispose() {} }),
+      rendererFactory: () => ({ setSize() {}, setPixelRatio() {}, setQuality() {}, render() {}, dispose() {} }),
       now: () => 0,
       random: () => 0.5,
       devicePixelRatio: () => 1,

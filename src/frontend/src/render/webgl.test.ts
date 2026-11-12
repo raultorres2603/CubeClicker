@@ -106,7 +106,7 @@ describe('createWebGLRenderer', () => {
 
     expect(threeMock.instances).toHaveLength(1);
     expect(threeMock.instances[0]!.options).toEqual({ canvas, antialias: true });
-    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'render', 'dispose']);
+    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'setQuality', 'render', 'dispose']);
   });
 
   it('configures tone mapping, color space, shadow type and enabled (AC-1)', () => {
@@ -141,6 +141,17 @@ describe('createWebGLRenderer', () => {
     expect(renderer.dispose).toHaveBeenCalledWith();
   });
 
+  it('exposes a no-op setQuality that keeps the plain renderer shadow pass enabled', () => {
+    const adapter = createWebGLRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+
+    adapter.setQuality('medium');
+    adapter.setQuality('low');
+
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(postprocessingMock.createPostprocessing).not.toHaveBeenCalled();
+  });
+
   it('builds one renderer per call (no shared singleton)', () => {
     const first = createWebGLRenderer(canvas);
     const second = createWebGLRenderer(canvas);
@@ -162,7 +173,7 @@ describe('createRealisticRenderer', () => {
 
     expect(threeMock.instances).toHaveLength(1);
     expect(postprocessingMock.createPostprocessing).not.toHaveBeenCalled();
-    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'render', 'dispose']);
+    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'setQuality', 'render', 'dispose']);
   });
 
   it('configures the base renderer (AC-1)', () => {
@@ -185,7 +196,12 @@ describe('createRealisticRenderer', () => {
     adapter.render(scene, camera);
 
     expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
-    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledWith(renderer, scene, camera);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledWith(
+      renderer,
+      scene,
+      camera,
+      'high',
+    );
     expect(composers[0]!.render).toHaveBeenCalledTimes(1);
   });
 
@@ -261,6 +277,159 @@ describe('createRealisticRenderer', () => {
     expect(renderer.setPixelRatio).toHaveBeenCalledWith(3);
     expect(composer.setPixelRatio).toHaveBeenCalledTimes(1);
     expect(composer.setPixelRatio).toHaveBeenCalledWith(3);
+  });
+
+  it('is idempotent for the current tier (AC-9)', () => {
+    const adapter = createRealisticRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    adapter.setQuality('high');
+    adapter.render(scene, camera);
+    const composer = composers[0]!;
+
+    adapter.setQuality('high');
+
+    expect(composer.dispose).not.toHaveBeenCalled();
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
+    adapter.render(scene, camera);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
+    expect(composer.render).toHaveBeenCalledTimes(2);
+    expect(renderer.shadowMap.enabled).toBe(true);
+  });
+
+  it('toggles shadows, disposes the old composer exactly once and replays the last size/ratio on rebuild (AC-9)', () => {
+    const adapter = createRealisticRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    adapter.setPixelRatio(2);
+    adapter.setSize(1600, 800);
+    adapter.render(scene, camera);
+    const highComposer = composers[0]!;
+    expect(postprocessingMock.createPostprocessing).toHaveBeenLastCalledWith(
+      renderer,
+      scene,
+      camera,
+      'high',
+    );
+
+    adapter.setQuality('medium');
+
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(highComposer.dispose).toHaveBeenCalledTimes(1);
+    expect(composers).toHaveLength(1);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
+
+    adapter.setSize(1000, 500);
+    adapter.setSize(1200, 600);
+    adapter.setPixelRatio(1.5);
+    adapter.render(scene, camera);
+
+    const mediumComposer = composers[1]!;
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(2);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenLastCalledWith(
+      renderer,
+      scene,
+      camera,
+      'medium',
+    );
+    expect(mediumComposer.setSize).toHaveBeenCalledTimes(1);
+    expect(mediumComposer.setSize).toHaveBeenCalledWith(1200, 600);
+    expect(mediumComposer.setPixelRatio).toHaveBeenCalledTimes(1);
+    expect(mediumComposer.setPixelRatio).toHaveBeenCalledWith(1.5);
+    expect(mediumComposer.render).toHaveBeenCalledTimes(1);
+
+    adapter.setQuality('low');
+
+    expect(renderer.shadowMap.enabled).toBe(false);
+    expect(mediumComposer.dispose).toHaveBeenCalledTimes(1);
+
+    adapter.setSize(800, 400);
+    adapter.setPixelRatio(1);
+    adapter.render(scene, camera);
+
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(2);
+    expect(renderer.render).toHaveBeenCalledTimes(1);
+    expect(renderer.render).toHaveBeenCalledWith(scene, camera);
+    expect(highComposer.dispose).toHaveBeenCalledTimes(1);
+    expect(mediumComposer.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('never constructs a composer at low and renders the base scene exactly once per call (AC-8)', () => {
+    const adapter = createRealisticRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    adapter.setQuality('low');
+    expect(renderer.shadowMap.enabled).toBe(false);
+
+    adapter.render(scene, camera);
+
+    expect(postprocessingMock.createPostprocessing).not.toHaveBeenCalled();
+    expect(composers).toHaveLength(0);
+    expect(renderer.render).toHaveBeenCalledTimes(1);
+    expect(renderer.render).toHaveBeenCalledWith(scene, camera);
+
+    adapter.render(scene, camera);
+
+    expect(renderer.render).toHaveBeenCalledTimes(2);
+    expect(postprocessingMock.createPostprocessing).not.toHaveBeenCalled();
+  });
+
+  it('matches the session contract: setQuality(medium) → setPixelRatio → setSize → render → setQuality(low) → render → setQuality(low) → setQuality(high) → render (AC-10)', () => {
+    const adapter = createRealisticRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    adapter.setQuality('medium');
+    adapter.setPixelRatio(1.5);
+    adapter.setSize(1200, 800);
+    adapter.render(scene, camera);
+
+    expect(postprocessingMock.createPostprocessing).toHaveBeenNthCalledWith(
+      1,
+      renderer,
+      scene,
+      camera,
+      'medium',
+    );
+    expect(composers[0]!.setPixelRatio).toHaveBeenCalledWith(1.5);
+    expect(composers[0]!.setSize).toHaveBeenCalledWith(1200, 800);
+    expect(composers[0]!.render).toHaveBeenCalledTimes(1);
+
+    adapter.setQuality('low');
+    adapter.render(scene, camera);
+
+    expect(composers[0]!.dispose).toHaveBeenCalledTimes(1);
+    expect(renderer.render).toHaveBeenCalledTimes(1);
+    expect(renderer.render).toHaveBeenCalledWith(scene, camera);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
+
+    adapter.setQuality('low');
+    expect(composers[0]!.dispose).toHaveBeenCalledTimes(1);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(1);
+
+    adapter.setQuality('high');
+    adapter.render(scene, camera);
+
+    expect(postprocessingMock.createPostprocessing).toHaveBeenCalledTimes(2);
+    expect(postprocessingMock.createPostprocessing).toHaveBeenNthCalledWith(
+      2,
+      renderer,
+      scene,
+      camera,
+      'high',
+    );
+    expect(composers[1]!.setPixelRatio).toHaveBeenCalledWith(1.5);
+    expect(composers[1]!.setSize).toHaveBeenCalledWith(1200, 800);
+    expect(composers[1]!.render).toHaveBeenCalledTimes(1);
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(renderer.render).toHaveBeenCalledTimes(1);
   });
 
   it('releases the composer and base renderer on dispose when constructed', () => {

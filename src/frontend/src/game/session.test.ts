@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
 import { pickHoverTarget } from '../render/picking';
+import type { QualityTier } from '../render/quality';
 import type { Transport, TransportStatus } from '../multiplayer/transport';
 import { createBoard, removeMiniCube } from './board';
 import {
@@ -126,7 +127,11 @@ interface RenderCall {
 interface FakeRendererFactory {
   factory: (canvas: CanvasLike) => RendererAdapter;
   canvases: CanvasLike[];
+  /** Viewport calls in arrival order (`setPixelRatio`/`setSize` only). */
   calls: string[];
+  /** Every adapter call in arrival order, including `setQuality` and `render`. */
+  order: string[];
+  qualities: QualityTier[];
   sizes: Array<[number, number]>;
   ratios: number[];
   renders: RenderCall[];
@@ -358,6 +363,8 @@ function createFakeOrientation(): FakeOrientation {
 function createFakeRendererFactory(): FakeRendererFactory {
   const canvases: CanvasLike[] = [];
   const calls: string[] = [];
+  const order: string[] = [];
+  const qualities: QualityTier[] = [];
   const sizes: Array<[number, number]> = [];
   const ratios: number[] = [];
   const renders: RenderCall[] = [];
@@ -369,21 +376,31 @@ function createFakeRendererFactory(): FakeRendererFactory {
         setSize(width, height) {
           sizes.push([width, height]);
           calls.push(`setSize:${width}:${height}`);
+          order.push(`setSize:${width}:${height}`);
         },
         setPixelRatio(ratio) {
           ratios.push(ratio);
           calls.push(`setPixelRatio:${ratio}`);
+          order.push(`setPixelRatio:${ratio}`);
+        },
+        setQuality(tier) {
+          qualities.push(tier);
+          order.push(`setQuality:${tier}`);
         },
         render(scene, camera) {
           renders.push({ scene, camera });
+          order.push('render');
         },
         dispose() {
           disposals += 1;
+          order.push('dispose');
         },
       };
     },
     canvases,
     calls,
+    order,
+    qualities,
     sizes,
     ratios,
     renders,
@@ -678,10 +695,20 @@ function clearLevel(engine: GameEngine, gridSize: number): void {
   }
 }
 
+/** Runs `frames` scheduled frames of `deltaMs` each on the attach-time baseline. */
+function tickFrames(fake: FakeEnv, frames: number, deltaMs: number): void {
+  for (let index = 0; index < frames; index += 1) {
+    fake.clock.now += deltaMs;
+    fake.scheduler.tick(fake.clock.now);
+  }
+}
+
 /** The multiplayer wire the session is wired to: records sends and replays frames/status. */
 interface FakeTransport {
   transport: Transport;
   sent: ClientMessage[];
+  /** Transport lifecycle/subscription calls in arrival order. */
+  events: string[];
   connectCount(): number;
   closeCount(): number;
   messageHandlerCount(): number;
@@ -695,6 +722,7 @@ function createFakeTransport(): FakeTransport {
   const messageHandlers = new Set<(message: ServerMessage) => void>();
   const statusHandlers = new Set<(status: TransportStatus) => void>();
   const sent: ClientMessage[] = [];
+  const events: string[] = [];
   const joinCallsList: Array<'guest' | 'account'> = [];
   let connects = 0;
   let closes = 0;
@@ -709,24 +737,29 @@ function createFakeTransport(): FakeTransport {
     transport: {
       connect() {
         connects += 1;
+        events.push('connect');
         publishStatus('connecting');
       },
       close() {
         closes += 1;
+        events.push('close');
       },
       join(mode) {
         joinCallsList.push(mode);
+        events.push(`join:${mode}`);
       },
       send(message) {
         sent.push(message);
       },
       onMessage(handler) {
+        events.push('onMessage');
         messageHandlers.add(handler);
         return () => {
           messageHandlers.delete(handler);
         };
       },
       onStatus(handler) {
+        events.push('onStatus');
         statusHandlers.add(handler);
         if (currentStatus !== null) {
           handler(currentStatus);
@@ -737,6 +770,7 @@ function createFakeTransport(): FakeTransport {
       },
     },
     sent,
+    events,
     connectCount: () => connects,
     closeCount: () => closes,
     messageHandlerCount: () => messageHandlers.size,
@@ -917,9 +951,12 @@ describe('attach', () => {
     const fake = createFakeEnv({ rect: { left: 0, top: 0, width: 800, height: 600 }, dpr: 3 });
     const session = attachSession(fake);
 
-    // The cap: min(devicePixelRatio, PIXEL_RATIO_CAP) = min(3, 2), applied before the size.
+    // The cap: min(devicePixelRatio, PIXEL_RATIO_CAP) = min(3, 2), applied before the size,
+    // with the starting tier pushed before either viewport call (AC-10).
     expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
     expect(fake.renderer.calls).toEqual(['setPixelRatio:2', 'setSize:800:600']);
+    expect(fake.renderer.qualities).toEqual(['high']);
+    expect(fake.renderer.order).toEqual(['setQuality:high', 'setPixelRatio:2', 'setSize:800:600']);
     // Attach applies the viewport directly: nothing is queued behind the resize debounce.
     expect(vi.getTimerCount()).toBe(0);
     expect(fake.scheduler.pending()).toBe(1);
@@ -960,6 +997,44 @@ describe('attach', () => {
     expect(fake.visibility.subscribeCount()).toBe(1);
     expect(fake.resize.subscribeCount()).toBe(1);
     expect(fake.orientation.subscribeCount()).toBe(1);
+  });
+
+  it('applies a tier change before that frame renders and re-caps the DPR (AC-10)', () => {
+    const fake = createFakeEnv({ dpr: 3 });
+    attachSession(fake);
+
+    // The first frame has a zero delta; the next 60 accepted frames are 30 ms each, so
+    // the pinned 60-sample/60-frame downgrade fires on the 60th real frame.
+    fake.scheduler.tick(0);
+    tickFrames(fake, 60, 30);
+
+    expect(fake.renderer.qualities).toEqual(['high', 'medium']);
+    expect(fake.renderer.order.slice(-4)).toEqual([
+      'setQuality:medium',
+      'setPixelRatio:1.5',
+      'setSize:800:800',
+      'render',
+    ]);
+
+    const stableFrom = fake.renderer.order.length;
+    tickFrames(fake, 3, 30);
+
+    // A stable tier adds no setQuality call and no extra pixel-ratio apply.
+    expect(fake.renderer.qualities).toEqual(['high', 'medium']);
+    expect(fake.renderer.ratios).toEqual([2, 1.5]);
+    expect(fake.renderer.order.slice(stableFrom)).toEqual(['render', 'render', 'render']);
+
+    tickFrames(fake, 57, 30);
+
+    // The medium→low downgrade fires on push 120 and re-caps the DPR to 1.
+    expect(fake.renderer.qualities).toEqual(['high', 'medium', 'low']);
+    expect(fake.renderer.ratios).toEqual([2, 1.5, 1]);
+    expect(fake.renderer.order.slice(-4)).toEqual([
+      'setQuality:low',
+      'setPixelRatio:1',
+      'setSize:800:800',
+      'render',
+    ]);
   });
 });
 
@@ -1462,16 +1537,26 @@ describe('resize and visibility', () => {
     expect(fake.renderer.renders).toHaveLength(2);
   });
 
-  it('never starts the loop while the tab is already hidden', () => {
-    const fake = createFakeEnv({ hidden: true });
-    attachSession(fake);
+  it('attaches while hidden: creates the renderer, schedules no frame and resumes once visible', () => {
+    const fake = createFakeEnv({ hidden: true, dpr: 3 });
+    const session = attachSession(fake);
 
+    // Attach still builds the adapter and applies the tier + viewport; only the loop waits.
+    expect(fake.renderer.canvases).toEqual([fake.canvas.surface]);
+    expect(fake.renderer.order).toEqual(['setQuality:high', 'setPixelRatio:2', 'setSize:800:800']);
     expect(fake.scheduler.schedules()).toBe(0);
     expect(fake.scheduler.pending()).toBe(0);
+    expect(fake.renderer.renders).toHaveLength(0);
+    expect(session.getSnapshot().phase).toBe('intro');
 
     fake.visibility.emit(false);
 
     expect(fake.scheduler.pending()).toBe(1);
+    expect(fake.scheduler.schedules()).toBe(1);
+
+    tickFrames(fake, 1, 16);
+
+    expect(fake.renderer.renders).toHaveLength(1);
   });
 
   it('ignores a visibility callback that escapes after dispose', () => {
@@ -1617,6 +1702,17 @@ describe('dispose', () => {
       'setPixelRatio:1',
       'setSize:800:800',
     ]);
+    expect(fake.renderer.qualities).toEqual(['high', 'high']);
+    expect(fake.renderer.order).toEqual([
+      'setQuality:high',
+      'setPixelRatio:1',
+      'setSize:800:800',
+      'render',
+      'dispose',
+      'setQuality:high',
+      'setPixelRatio:1',
+      'setSize:800:800',
+    ]);
     expect(fake.canvas.listenerCount('pointerdown')).toBe(1);
     expect(fake.motion.subscribeCount()).toBe(2);
     expect(fake.renderer.disposals()).toBe(1);
@@ -1624,6 +1720,108 @@ describe('dispose', () => {
 
     fake.scheduler.tick(16);
 
+    expect(fake.renderer.renders).toHaveLength(2);
+  });
+});
+
+describe('deferred lifecycle probes (AC-13)', () => {
+  it('ignores a resize emitted before attach without creating a renderer', () => {
+    const fake = createFakeEnv();
+    const session = createRealSession(fake);
+
+    fake.resize.emit();
+
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+    expect(fake.resize.subscribeCount()).toBe(0);
+    expect(session.getSnapshot().phase).toBe('intro');
+  });
+
+  it('survives a synthetic context loss/restore during the intro without listeners or frames', () => {
+    const fake = createFakeEnv();
+    const session = attachSession(fake);
+    fake.scheduler.tick(0);
+
+    expect(fake.scheduler.schedules()).toBe(2);
+    expect(fake.scheduler.pending()).toBe(1);
+    expect(fake.renderer.renders).toHaveLength(1);
+
+    fake.canvas.emit('webglcontextlost', {});
+    fake.canvas.emit('webglcontextrestored', {});
+
+    // No context listener is ours: three.js owns the restore path.
+    expect(fake.canvas.listenerCount('webglcontextlost')).toBe(0);
+    expect(fake.canvas.listenerCount('webglcontextrestored')).toBe(0);
+    expect(fake.canvas.listenerCount('pointerdown')).toBe(1);
+    expect(fake.canvas.listenerCount('pointerup')).toBe(1);
+    expect(fake.canvas.listenerCount('pointercancel')).toBe(1);
+    expect(fake.canvas.listenerCount('pointermove')).toBe(1);
+    expect(fake.canvas.listenerCount('pointerleave')).toBe(1);
+    // Neither the schedule nor the render count changed.
+    expect(fake.scheduler.schedules()).toBe(2);
+    expect(fake.scheduler.pending()).toBe(1);
+    expect(fake.renderer.renders).toHaveLength(1);
+    expect(session.getSnapshot().phase).toBe('intro');
+
+    tickFrames(fake, 1, 16);
+
+    expect(fake.renderer.renders).toHaveLength(2);
+    expect(fake.scheduler.schedules()).toBe(3);
+  });
+});
+
+describe('detached login path (AC-2, AC-14)', () => {
+  it('retryConnection before attach is status-only and never touches the transport', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+
+    session.retryConnection();
+
+    expect(wire.events).toEqual([]);
+    expect(wire.connectCount()).toBe(0);
+    expect(wire.closeCount()).toBe(0);
+    expect(wire.messageHandlerCount()).toBe(0);
+    expect(wire.statusHandlerCount()).toBe(0);
+    expect(fake.renderer.canvases).toEqual([]);
+    expect(fake.scheduler.schedules()).toBe(0);
+    expect(session.getMultiplayerSnapshot().status).toBe('connecting');
+  });
+
+  it('receives welcome after a detached retryConnection → join(account) → attach cycle', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+
+    // The auth gate's verified-login path: retry, then join, then attach (gate close).
+    session.retryConnection();
+    session.join('account');
+
+    expect(wire.events).toEqual(['join:account']);
+    expect(wire.connectCount()).toBe(0);
+    expect(wire.closeCount()).toBe(0);
+
+    session.attach(fake.canvas.surface);
+
+    // Subscribe-before-connect: both handlers exist before the single socket opens.
+    expect(wire.events).toEqual(['join:account', 'onMessage', 'onStatus', 'connect']);
+    expect(wire.messageHandlerCount()).toBe(1);
+    expect(wire.statusHandlerCount()).toBe(1);
+    expect(wire.connectCount()).toBe(1);
+    expect(wire.closeCount()).toBe(0);
+
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ serverId: 42, roster: [selfMember()] }));
+
+    expect(session.getMultiplayerSnapshot().world.serverId).toBe(42);
+    expect(session.getMultiplayerSnapshot().status).toBe('connected');
+
+    // The welcome releases `canRun`: the next scheduled frame advances the intro.
+    fake.scheduler.tick(0);
+    expect(session.getSnapshot().phaseProgress).toBe(0);
+    tickFrames(fake, 1, 16);
+    expect(session.getSnapshot().phase).toBe('intro');
+    expect(session.getSnapshot().phaseProgress).toBe(16 / 2500);
     expect(fake.renderer.renders).toHaveLength(2);
   });
 });

@@ -8,8 +8,9 @@
  * the render side; the session itself receives both through its injected environment.
  *
  * The pixel ratio and the drawing-buffer size are *not* decided here: the session owns
- * them (`min(devicePixelRatio, PIXEL_RATIO_CAP)` and the container rect) and this
- * adapter only forwards the values it is handed.
+ * them (the tier's `QUALITY_PIXEL_RATIO_CAPS` ceiling and the container rect) and this
+ * adapter only forwards the values it is handed. The adapter does own the tier's
+ * renderer-side GPU budget: the shadow pass toggle and the composer pass list.
  */
 
 import {
@@ -23,6 +24,7 @@ import {
 
 import { createPostprocessing } from './postprocessing';
 import type { Postprocessing } from './postprocessing';
+import type { QualityTier } from './quality';
 
 import type { CanvasLike, FrameScheduler, RendererAdapter } from '../game/session';
 
@@ -61,6 +63,9 @@ export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
     setPixelRatio(ratio: number): void {
       renderer.setPixelRatio(ratio);
     },
+    setQuality(): void {
+      // The plain renderer has no post-processing or shadow policy of its own.
+    },
     render(scene: Scene, camera: PerspectiveCamera): void {
       renderer.render(scene, camera);
     },
@@ -72,55 +77,79 @@ export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
 
 /**
  * Builds a renderer whose post-processing composer is constructed lazily on the first
- * `render(scene, camera)` call (AC-6).
+ * `render(scene, camera)` call and rebuilt on every tier change (AC-6, AC-9, AC-10).
+ *
+ * The adapter starts at high and owns the tier's GPU budget on the renderer side:
+ * `shadowMap.enabled` is on at high/medium and off at low; low bypasses the composer
+ * entirely. A composer replacement is disposed exactly once and the last forwarded size
+ * and pixel ratio are replayed onto the rebuilt composer exactly once.
  */
 export function createRealisticRenderer(canvas: CanvasLike): RendererAdapter {
   const renderer = buildBaseRenderer(canvas);
 
+  let tier: QualityTier = 'high';
   let composer: Postprocessing | null = null;
-  let bufferedWidth: number | null = null;
-  let bufferedHeight: number | null = null;
-  let bufferedPixelRatio: number | null = null;
+  let lastWidth: number | null = null;
+  let lastHeight: number | null = null;
+  let lastPixelRatio: number | null = null;
   let disposed = false;
+
+  function disposeComposer(): void {
+    if (composer !== null) {
+      composer.dispose();
+      composer = null;
+    }
+  }
 
   return {
     setSize(width: number, height: number): void {
       renderer.setSize(width, height);
+      lastWidth = width;
+      lastHeight = height;
       if (composer !== null) {
         composer.setSize(width, height);
-      } else {
-        bufferedWidth = width;
-        bufferedHeight = height;
       }
     },
     setPixelRatio(ratio: number): void {
       renderer.setPixelRatio(ratio);
+      lastPixelRatio = ratio;
       if (composer !== null) {
         composer.setPixelRatio(ratio);
-      } else {
-        bufferedPixelRatio = ratio;
       }
+    },
+    setQuality(next: QualityTier): void {
+      if (next === tier) {
+        return;
+      }
+      tier = next;
+      renderer.shadowMap.enabled = next !== 'low';
+      // The next render rebuilds the composer for the new tier; retaining the last size
+      // and ratio lets that rebuild replay them exactly once.
+      disposeComposer();
     },
     render(scene: Scene, camera: PerspectiveCamera): void {
       if (disposed) {
         return;
       }
+      if (tier === 'low') {
+        // Defensive: `setQuality` already released the composer on the transition.
+        disposeComposer();
+        renderer.render(scene, camera);
+        return;
+      }
       if (composer === null) {
-        composer = createPostprocessing(renderer, scene, camera);
-        if (bufferedWidth !== null && bufferedHeight !== null) {
-          composer.setSize(bufferedWidth, bufferedHeight);
+        composer = createPostprocessing(renderer, scene, camera, tier);
+        if (lastWidth !== null && lastHeight !== null) {
+          composer.setSize(lastWidth, lastHeight);
         }
-        if (bufferedPixelRatio !== null) {
-          composer.setPixelRatio(bufferedPixelRatio);
+        if (lastPixelRatio !== null) {
+          composer.setPixelRatio(lastPixelRatio);
         }
       }
       composer.render();
     },
     dispose(): void {
-      if (composer !== null) {
-        composer.dispose();
-        composer = null;
-      }
+      disposeComposer();
       renderer.dispose();
       disposed = true;
     },
