@@ -1,5 +1,8 @@
 # Containerized smoke test — opt-in override, never started by a plain `podman compose up`.
 # Run: podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
+# The prod frontend image is smoke-only: build the dependency explicitly if the compose
+# provider does not auto-build it:
+#   podman compose -f compose.yaml -f compose.smoke.yaml build frontend-prod
 services:
   db:
     environment:
@@ -13,6 +16,13 @@ services:
       RECONNECT_GRACE_MS: "1000"
       DATABASE_URL: "postgres://cubeclicker:cubeclicker@db:5432/cubeclicker"
 
+  frontend-prod:
+    build:
+      context: .
+      dockerfile: src/frontend/Dockerfile
+      target: prod
+    image: cubeclicker-frontend:prod-smoke
+
   smoke:
     image: docker.io/library/node:24-alpine
     working_dir: /smoke
@@ -23,6 +33,8 @@ services:
       backend:
         condition: service_started
       frontend:
+        condition: service_started
+      frontend-prod:
         condition: service_started
       mailpit:
         condition: service_started
