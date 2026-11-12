@@ -92,6 +92,7 @@ import { createParticleSystem, type ParticleSystem } from './particles';
 import {
   createQualityPolicy,
   qualityFeatures,
+  QUALITY_SHADOW_MAP_SIZES,
   type QualityPolicy,
   type QualityTier,
 } from './quality';
@@ -114,8 +115,13 @@ export const AMBIENT_INTENSITY_MAX = 1.0;
 /** Key-light intensity. */
 const KEY_INTENSITY = 1.2;
 
-/** Key-light shadow map size (width and height) — AC-2. */
-export const KEY_SHADOW_MAP_SIZE = 2048;
+/**
+ * Key-light shadow map size (width and height) at the high tier — AC-2. Reuses
+ * {@link QUALITY_SHADOW_MAP_SIZES.high} (2048) so the construction pin and the tier matrix
+ * cannot drift; {@link SceneView} scales the live map from the same matrix (medium 1024,
+ * low off).
+ */
+export const KEY_SHADOW_MAP_SIZE = QUALITY_SHADOW_MAP_SIZES.high;
 
 /** Key-light shadow bias — AC-2. */
 export const KEY_SHADOW_BIAS = -0.0001;
@@ -924,7 +930,9 @@ export function createSceneView(options: {
   /**
    * Applies the adaptive feature matrix to every consumer when the tier or the motion
    * setting changed (AC-52). Reduced motion is authoritative: it turns off every motion
-   * layer regardless of tier while the tier may still hide static detail.
+   * layer regardless of tier while the tier may still hide static detail. The key light's
+   * shadow budget is static GPU cost, so the tier scales its map (2048 → 1024) or turns
+   * the shadow pass off entirely at low (AC-6, AC-7, AC-8).
    */
   function applyQuality(): void {
     const tier = qualityPolicy.getTier();
@@ -949,6 +957,17 @@ export function createSceneView(options: {
       smoke: features.explosionSmoke,
     });
     particles.setSparkLimit(features.sparks);
+    // The key light is the scene's only shadow caster. A tier change to the map edge only
+    // takes effect once the live target is released; three.js allocates the new one on the
+    // next shadow render (spec A-4). At low the size is 0: the shadow pass is off and the
+    // existing map is neither resampled nor reallocated (AC-8).
+    const shadowMapSize = features.shadowMapSize;
+    keyLight.castShadow = shadowMapSize > 0;
+    if (shadowMapSize > 0 && keyLight.shadow.mapSize.width !== shadowMapSize) {
+      keyLight.shadow.map?.dispose();
+      keyLight.shadow.map = null;
+      keyLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+    }
   }
   applyQuality();
 

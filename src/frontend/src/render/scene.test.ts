@@ -13,6 +13,7 @@ import {
   Vector3,
   type Material,
   type Object3D,
+  type WebGLRenderTarget,
 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -579,6 +580,97 @@ describe('scene composition', () => {
     expect(view.camera.aspect).toBe(1);
     expect(view.camera.position.toArray()).toEqual([0, 0, 12]);
     expect(view.camera.quaternion.toArray()).toEqual([0, 0, 0, 1]);
+  });
+});
+
+describe('scene shadow budget (AC-6, AC-7, AC-8, AC-9)', () => {
+  /** The key light: the scene's only `DirectionalLight` and therefore its only caster. */
+  function keyLightOf(view: SceneView): DirectionalLight {
+    const light = view.scene.children.find(
+      (child): child is DirectionalLight => child instanceof DirectionalLight,
+    );
+    if (light === undefined) {
+      throw new Error('the scene has no key light');
+    }
+    return light;
+  }
+
+  it('starts at high with a 2048 map, shadows on and no allocated render target (AC-6)', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    const light = keyLightOf(view);
+
+    expect(view.getQualityTier()).toBe('high');
+    expect(light.castShadow).toBe(true);
+    expect(light.shadow.mapSize.width).toBe(2048);
+    expect(light.shadow.mapSize.height).toBe(2048);
+    // No frame has been drawn yet, so three.js has not allocated the shadow target.
+    expect(light.shadow.map).toBeNull();
+  });
+
+  it('resizes the map to 1024 at medium, keeping shadows on and no target allocated (AC-7)', () => {
+    const view = createView();
+    const light = keyLightOf(view);
+
+    view.setQualityTierForTesting('medium');
+
+    expect(view.getQualityTier()).toBe('medium');
+    expect(light.castShadow).toBe(true);
+    expect(light.shadow.mapSize.width).toBe(1024);
+    expect(light.shadow.mapSize.height).toBe(1024);
+    expect(light.shadow.map).toBeNull();
+  });
+
+  it('turns the shadow pass off at low without resampling the existing map (AC-8)', () => {
+    const view = createView();
+    const light = keyLightOf(view);
+    view.setQualityTierForTesting('medium');
+    expect(light.shadow.mapSize.width).toBe(1024);
+
+    view.setQualityTierForTesting('low');
+
+    expect(view.getQualityTier()).toBe('low');
+    expect(light.castShadow).toBe(false);
+    // The medium map size stays untouched: nothing renders it and nothing reallocates it.
+    expect(light.shadow.mapSize.width).toBe(1024);
+    expect(light.shadow.mapSize.height).toBe(1024);
+    expect(light.shadow.map).toBeNull();
+  });
+
+  it('restores the high shadow budget after low (AC-9)', () => {
+    const view = createView();
+    const light = keyLightOf(view);
+    view.setQualityTierForTesting('low');
+    expect(light.castShadow).toBe(false);
+
+    view.setQualityTierForTesting('high');
+
+    expect(view.getQualityTier()).toBe('high');
+    expect(light.castShadow).toBe(true);
+    expect(light.shadow.mapSize.width).toBe(2048);
+    expect(light.shadow.mapSize.height).toBe(2048);
+    expect(light.shadow.map).toBeNull();
+  });
+
+  it('disposes an allocated shadow map exactly once when the map size changes (AC-9)', () => {
+    const view = createView();
+    const light = keyLightOf(view);
+    const mapDispose = vi.fn();
+    light.shadow.map = { dispose: mapDispose } as unknown as WebGLRenderTarget;
+
+    view.setQualityTierForTesting('medium');
+
+    // A changed map size only takes effect once the live target is released and nulled,
+    // so three.js allocates a fresh 1024² map on the next shadow render (spec A-4).
+    expect(mapDispose).toHaveBeenCalledTimes(1);
+    expect(mapDispose).toHaveBeenCalledWith();
+    expect(light.shadow.map).toBeNull();
+    expect(light.shadow.mapSize.width).toBe(1024);
+
+    // The later medium → high transition has no map left to release: no double disposal.
+    view.setQualityTierForTesting('high');
+    expect(mapDispose).toHaveBeenCalledTimes(1);
+    expect(light.shadow.mapSize.width).toBe(2048);
   });
 });
 
