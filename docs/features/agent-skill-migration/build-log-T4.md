@@ -873,3 +873,55 @@ $ git status --porcelain   # after smoke
 
 The smoke is **unavailable/supplementary**: the CLI spawned a session but the provider returned HTTP 402 (insufficient balance) before any model turn, so the JSON contains no `"skill"` strings. No files were modified. Per `tasks.md` T4 Notes and AC-13, static resolution is authoritative; the T1/T2 static checks above are the integration evidence, and this unavailable smoke does not weaken the gate. (`npm run smoke` is intentionally not run: the feature has no container/runtime change — plan D-9.)
 
+
+## Commit 1 — content/bookkeeping (T4_CONTENT_SHA)
+
+```text
+$ git add docs/features/agent-skill-migration/build-log-T4.md docs/features/agent-skill-migration/spec.md docs/features/agent-skill-migration/plan.md docs/features/agent-skill-migration/tasks.md docs/features/agent-skill-migration/status.md docs/features/agent-skill-migration/reviews docs/features/README.md
+[exit 0]
+
+$ git diff --cached --stat
+ docs/features/README.md                            |   3 +
+ .../features/agent-skill-migration/build-log-T4.md | 875 +++++++++++++++++++++
+ docs/features/agent-skill-migration/plan.md        | 187 +++++
+ .../reviews/spec-review-r1.md                      |  66 ++
+ .../reviews/spec-review-r2.md                      |  73 ++
+ .../reviews/spec-review-r3.md                      |  71 ++
+ docs/features/agent-skill-migration/spec.md        | 106 +++
+ docs/features/agent-skill-migration/status.md      |  34 +
+ docs/features/agent-skill-migration/tasks.md       | 408 ++++++++++
+ 9 files changed, 1823 insertions(+)
+
+$ git commit -m "docs: agent-skill-migration final verification and feature bookkeeping"
+[main 4c82d38] docs: agent-skill-migration final verification and feature bookkeeping
+ 9 files changed, 1823 insertions(+)
+ create mode 100644 docs/features/agent-skill-migration/build-log-T4.md
+ create mode 100644 docs/features/agent-skill-migration/plan.md
+ create mode 100644 docs/features/agent-skill-migration/reviews/spec-review-r1.md
+ create mode 100644 docs/features/agent-skill-migration/reviews/spec-review-r2.md
+ create mode 100644 docs/features/agent-skill-migration/reviews/spec-review-r3.md
+ create mode 100644 docs/features/agent-skill-migration/spec.md
+ create mode 100644 docs/features/agent-skill-migration/status.md
+ create mode 100644 docs/features/agent-skill-migration/tasks.md
+
+$ git rev-parse HEAD
+T4_CONTENT_SHA=4c82d38a7148dd3cb22ea557a94e445edae04e0c
+
+$ git show --stat --oneline HEAD
+4c82d38 docs: agent-skill-migration final verification and feature bookkeeping
+ docs/features/README.md                            |   3 +
+ .../features/agent-skill-migration/build-log-T4.md | 875 +++++++++++++++++++++
+ docs/features/agent-skill-migration/plan.md        | 187 +++++
+ .../reviews/spec-review-r1.md                      |  66 ++
+ .../reviews/spec-review-r2.md                      |  73 ++
+ .../reviews/spec-review-r3.md                      |  71 ++
+ docs/features/agent-skill-migration/spec.md        | 106 +++
+ docs/features/agent-skill-migration/status.md      |  34 +
+ docs/features/agent-skill-migration/tasks.md       | 408 ++++++++++
+ 9 files changed, 1823 insertions(+)
+
+$ git status --porcelain
+(empty)
+```
+
+The content commit lists only this log (`files_owned`) plus the declared `commits_also` bookkeeping paths. `status.md` is committed as authored by the orchestrator (T4 still `[ ]`; the builder's edit allow-list denies `status.md`), and `docs/features/README.md` carries only the T3 rows. `T4_EVIDENCE_SHA` and the evidence commit's `git show --stat --oneline HEAD` are recorded post-commit in the Subagent Report and the requested orchestrator `status.md` loop-log entry (F1-r3 carry); recording them here would require a third commit and dirty the tree, so the pinned two-commit sequence is kept.
