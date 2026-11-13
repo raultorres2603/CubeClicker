@@ -29,6 +29,7 @@ import {
   lootboxOpenedMessage,
   parseClientMessage,
   parseLootboxOpened,
+  pongMessage,
   rotateMessage,
   stateSyncMessage,
   welcomeMessage,
@@ -1180,5 +1181,44 @@ describe('placement customization field', () => {
 
   it('omits customization when absent', () => {
     expect(welcomeMessage(PLACEMENT)).not.toHaveProperty('customization');
+  });
+});
+
+describe('diagnostic ping/pong (AC-23)', () => {
+  it('decodes a ping with a finite numeric t and drops unknown extra fields', () => {
+    expect(parseClientMessage('{"type":"ping","t":123}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: 123 },
+    });
+    expect(parseClientMessage('{"type":"ping","t":0}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: 0 },
+    });
+    expect(parseClientMessage('{"type":"ping","t":-4.5,"extra":true}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: -4.5 },
+    });
+  });
+
+  it('rejects a missing, null, string, boolean, NaN or Infinity t', () => {
+    const invalidFrames: readonly string[] = [
+      '{"type":"ping"}',
+      '{"type":"ping","t":null}',
+      '{"type":"ping","t":"123"}',
+      '{"type":"ping","t":true}',
+      // JSON has no NaN literal: this frame fails to parse and is still bad_message.
+      '{"type":"ping","t":NaN}',
+      // 1e999 parses to Infinity, which must not reach the hub.
+      '{"type":"ping","t":1e999}',
+    ];
+    for (const frame of invalidFrames) {
+      expect(parseClientMessage(frame)).toEqual({ ok: false, error: 'bad_message' });
+    }
+  });
+
+  it('builds the exact pong echo and encodes it as one JSON frame', () => {
+    expect(pongMessage(123)).toEqual({ type: 'pong', t: 123 });
+    expect(encodeServerMessage(pongMessage(123))).toBe('{"type":"pong","t":123}');
+    expect(pongMessage(0)).toEqual({ type: 'pong', t: 0 });
   });
 });

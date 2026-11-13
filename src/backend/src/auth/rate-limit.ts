@@ -9,6 +9,9 @@
  * The clock is injectable so callers (and tests) can control time deterministically
  * instead of relying on `Date.now()`; the default clock is `Date.now`.
  *
+ * An optional `onDenied(key)` callback is invoked exactly once per denied `allow`, so the
+ * composition root can count drops without ever logging, labelling or storing the key.
+ *
  * A window starts on the first admitted/rejected call for a key and lasts
  * `windowMs` milliseconds; once `now - windowStart >= windowMs` the counter resets.
  */
@@ -21,10 +24,12 @@ export type Clock = () => number;
 
 export class RateLimiter {
   private readonly now: Clock;
+  private readonly onDenied: ((key: string) => void) | null;
   private readonly buckets: Map<string, WindowEntry>;
 
-  constructor(now: Clock = () => Date.now()) {
+  constructor(now: Clock = () => Date.now(), onDenied?: (key: string) => void) {
     this.now = now;
+    this.onDenied = onDenied ?? null;
     this.buckets = new Map<string, WindowEntry>();
   }
 
@@ -38,6 +43,7 @@ export class RateLimiter {
     }
 
     if (limit <= 0) {
+      this.onDenied?.(key);
       return false;
     }
 
@@ -46,6 +52,9 @@ export class RateLimiter {
       return true;
     }
 
+    // Exactly one notification per denied `allow`; the callback owns the key (the metrics
+    // wiring discards it and only counts the drop), so no key ever reaches a log or label.
+    this.onDenied?.(key);
     return false;
   }
 }
@@ -54,6 +63,9 @@ export class RateLimiter {
  * Factory for a {@link RateLimiter} bound to the given clock (defaults to
  * `Date.now`). Convenience for callers that prefer a function over `new`.
  */
-export function createRateLimiter(now: Clock = () => Date.now()): RateLimiter {
-  return new RateLimiter(now);
+export function createRateLimiter(
+  now: Clock = () => Date.now(),
+  onDenied?: (key: string) => void,
+): RateLimiter {
+  return new RateLimiter(now, onDenied);
 }

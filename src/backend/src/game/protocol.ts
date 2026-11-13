@@ -23,7 +23,10 @@
  *   throws `TypeError` instead of putting an invalid payload on the wire; the legacy
  *   one-id `miniCubeRemoved` shape is unchanged (AC-9);
  * - `MAX_MESSAGE_BYTES` (1024) is exported here as the codec constant; the size check
- *   itself belongs to the caller, which drops oversized frames with `bad_message`.
+ *   itself belongs to the caller, which drops oversized frames with `bad_message`;
+ * - the diagnostic `ping`/`pong` pair is additive: `parseClientMessage` accepts a
+ *   `{ type: 'ping', t }` frame only with a finite numeric `t`, and `pongMessage(t)` echoes
+ *   it. The pair carries no identity or game state and changes no other frame.
  */
 
 import type { Position } from './servers.js';
@@ -106,7 +109,8 @@ export type ClientMessage =
   | { type: 'purchaseUpgrade'; upgradeId: string }
   | { type: 'openLootbox' }
   | { type: 'equipPart'; partId: string }
-  | { type: 'unequipPart'; slotId: string };
+  | { type: 'unequipPart'; slotId: string }
+  | { type: 'ping'; t: number };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -169,7 +173,8 @@ export type ServerMessage =
   | { type: 'upgradesUpdate'; upgrades: UpgradeState }
   | { type: 'customizationUpdate'; lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> }
   | ({ type: 'lootboxOpened' } & LootboxOpened)
-  | { type: 'error'; code: ErrorCode; detail?: string };
+  | { type: 'error'; code: ErrorCode; detail?: string }
+  | { type: 'pong'; t: number };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
 export type ClientMessageParseResult =
@@ -200,6 +205,11 @@ function isNumber(value: unknown): value is number {
 /** A required integer field (rejects booleans, floats and non-numbers). */
 function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value);
+}
+
+/** A finite JSON number (`1e999` parses to `Infinity` and must not reach the hub). */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function badMessage(): ClientMessageParseResult {
@@ -292,6 +302,14 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         return badMessage();
       }
       return { ok: true, message: { type: 'unequipPart', slotId: frame.slotId } };
+
+    case 'ping':
+      // Diagnostic RTT echo: one finite number, nothing else (AC-23). A missing, string,
+      // boolean or non-finite `t` is exactly the pinned `bad_message` result.
+      if (!isFiniteNumber(frame.t)) {
+        return badMessage();
+      }
+      return { ok: true, message: { type: 'ping', t: frame.t } };
 
     default:
       return badMessage();
@@ -654,6 +672,16 @@ export function rotateMessage(
 /** An error addressed to one client (`detail` omitted when not supplied). */
 export function errorMessage(code: ErrorCode, detail?: string): ServerMessage {
   return detail === undefined ? { type: 'error', code } : { type: 'error', code, detail };
+}
+
+/**
+ * The diagnostic `pong` reply: echoes the client's `t` unchanged (AC-23).
+ *
+ * Additive, connection-local and inert: it carries no identity, room or game state, and the
+ * hub answers at most one per second per connection.
+ */
+export function pongMessage(t: number): ServerMessage {
+  return { type: 'pong', t };
 }
 
 /** Serialises one server message into the single JSON text frame sent over the wire. */

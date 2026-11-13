@@ -135,3 +135,55 @@ describe('RateLimiter', () => {
     expect(limiter.allow('k', 1, 1000)).toBe(false);
   });
 });
+
+describe('RateLimiter onDenied callback', () => {
+  it('notifies exactly once per denied allow, with the key, and never for an admitted call', () => {
+    const denied: string[] = [];
+    let now = 0;
+    const limiter = new RateLimiter(
+      () => now,
+      (key) => denied.push(key),
+    );
+
+    expect(limiter.allow('ip:1.2.3.4:login', 2, 1000)).toBe(true);
+    expect(limiter.allow('ip:1.2.3.4:login', 2, 1000)).toBe(true);
+    expect(denied).toEqual([]);
+
+    expect(limiter.allow('ip:1.2.3.4:login', 2, 1000)).toBe(false);
+    expect(limiter.allow('ip:1.2.3.4:login', 2, 1000)).toBe(false);
+    expect(denied).toEqual(['ip:1.2.3.4:login', 'ip:1.2.3.4:login']);
+
+    now = 1000;
+    expect(limiter.allow('ip:1.2.3.4:login', 2, 1000)).toBe(true);
+    expect(denied).toHaveLength(2);
+
+    // A different key keeps its own budget and is only reported when it is denied.
+    expect(limiter.allow('ip:5.6.7.8:login', 1, 1000)).toBe(true);
+    expect(limiter.allow('ip:5.6.7.8:login', 1, 1000)).toBe(false);
+    expect(denied).toEqual(['ip:1.2.3.4:login', 'ip:1.2.3.4:login', 'ip:5.6.7.8:login']);
+  });
+
+  it('reports every limit-0 denial once per call', () => {
+    const denied: string[] = [];
+    const limiter = new RateLimiter(
+      () => 0,
+      (key) => denied.push(key),
+    );
+
+    expect(limiter.allow('scope-key', 0, 1000)).toBe(false);
+    expect(limiter.allow('scope-key', 0, 1000)).toBe(false);
+    expect(denied).toEqual(['scope-key', 'scope-key']);
+  });
+
+  it('binds the callback through createRateLimiter', () => {
+    const denied: string[] = [];
+    const limiter = createRateLimiter(
+      () => 5,
+      (key) => denied.push(key),
+    );
+
+    expect(limiter.allow('k', 1, 100)).toBe(true);
+    expect(limiter.allow('k', 1, 100)).toBe(false);
+    expect(denied).toEqual(['k']);
+  });
+});

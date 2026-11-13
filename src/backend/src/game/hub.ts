@@ -71,6 +71,7 @@ import {
   miniCubesRemovedMessage,
   cubeRotatedMessage,
   parseClientMessage,
+  pongMessage,
   stateSyncMessage,
   economyUpdateMessage,
   upgradesUpdateMessage,
@@ -129,9 +130,23 @@ import {
   type PartIdV2,
   type SlotId,
 } from './parts-v2.js';
+import type { LogSink } from '../observability/logging.js';
+import type { Metrics } from '../observability/metrics.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
+
+/**
+ * Diagnostic ping limit: at most one accepted `ping` per connection per second (AC-23).
+ * The bound makes pong replies connection-local, small and non-amplifying.
+ */
+export const PING_RATE_LIMIT_MS = 1000;
+
+/**
+ * Log value used when a direct hub `attach` has no Fastify request id (tests/benchmarks).
+ * Production always passes `req.id`; the constant keeps the `connectionId` field present.
+ */
+const UNKNOWN_CONNECTION_ID = 'unknown';
 
 /** Removal coalescing window: at most one removal frame per member per window (AC-8/AC-14). */
 export const MINI_CUBE_BATCH_WINDOW_MS = 40;
@@ -238,6 +253,16 @@ export interface HubDeps {
    * calls its `assign`/`removeMember`/`moveMember`/`plan`/`locationOf`/`forEachMember`).
    */
   registry?: ServerRegistry;
+  /**
+   * Optional in-process metrics registry. Absent => every increment/gauge/observation is a
+   * no-op, so the hub keeps working in benchmarks, scripts and existing tests.
+   */
+  metrics?: Metrics;
+  /**
+   * Optional event-first log sink (`info(event, fields)`). Never pass a raw `app.log`:
+   * `createLogSink` adapts Pino's object-first API. Absent => no lifecycle logs.
+   */
+  log?: LogSink;
 }
 
 /** Account session resolved from the upgrade cookie (server-authoritative). */
@@ -256,8 +281,13 @@ export interface GameHub {
    * without ever starting the protocol (AC-20, F5).
    */
   hasCapacity(): boolean;
-  /** Attaches one socket: registers the lifecycle listeners and the heartbeat. */
-  attach(peer: Peer, accountSession?: AccountSession | null): void;
+  /**
+   * Attaches one socket: registers the lifecycle listeners and the heartbeat.
+   *
+   * `connectionId` is the Fastify request id (`req.id`) used for log correlation; a direct
+   * attach omits it and the lifecycle logs use the constant `unknown` placeholder.
+   */
+  attach(peer: Peer, accountSession?: AccountSession | null, connectionId?: string): void;
   /** Number of currently attached sockets (bounded by `config.maxConnections`). */
   connectionCount(): number;
   /** Clears every hub-owned timer and forgets the connections (app shutdown). */
@@ -269,11 +299,16 @@ export interface GameHub {
   revisionStateForTesting(): { economyRevisions: number; upgradeRevisions: number };
 }
 
+/** Why a connection left the hub; the closed counter label uses the same values. */
+type CloseReason = 'client' | 'heartbeat' | 'error' | 'server';
+
 /** One attached socket and its per-connection state. */
 interface Connection {
   peer: Peer;
   /** Resolved from the upgrade cookie; never from client input. */
   accountSession: AccountSession | null;
+  /** Fastify request id used for log correlation (or `null` for a direct attach). */
+  connectionId: string | null;
   /** `null` until a successful join/rejoin. */
   playerId: string | null;
   /** Consecutive pings that received no pong (reset by any pong). */
@@ -281,6 +316,14 @@ interface Connection {
   /** Whether the previous heartbeat tick sent a ping that is still unanswered. */
   awaitingPong: boolean;
   heartbeat: ReturnType<typeof setInterval> | null;
+  /** Whether a join/rejoin ever succeeded on this socket (close-log field). */
+  wasJoined: boolean;
+  /** Hub clock at attach, for the connection-duration histogram. */
+  attachedAtMs: number;
+  /** Defaults to `client`; set by the path that terminates the socket. */
+  closeReason: CloseReason;
+  /** Hub clock of the last accepted diagnostic ping, or `null`. */
+  lastPingAtMs: number | null;
 }
 
 /** One member's explode quota for the trailing second. */
@@ -341,6 +384,8 @@ export function createGameHub(deps: HubDeps): GameHub {
    */
   const random = deps.random();
   const timers = deps.timers;
+  const metrics = deps.metrics ?? null;
+  const log = deps.log ?? null;
 
   const connections = new Set<Connection>();
   const members = new Map<string, Member>();
@@ -358,6 +403,45 @@ export function createGameHub(deps: HubDeps): GameHub {
   /** Per-account last applied purchase revision (`applyUpgradeSnapshot`, AC-29). */
   const upgradeRevisions = new Map<string, number>();
 
+  /** The `connectionId` log field (production passes `req.id`; direct attaches are `unknown`). */
+  function connectionIdOf(connection: Connection): string {
+    return connection.connectionId ?? UNKNOWN_CONNECTION_ID;
+  }
+
+  /** Connection lifetime in milliseconds from the injected clock, never negative. */
+  function connectionDurationMs(connection: Connection): number {
+    return Math.max(0, deps.now() - connection.attachedAtMs);
+  }
+
+  /** Connection lifetime in seconds (the histogram unit). */
+  function connectionDurationSeconds(connection: Connection): number {
+    return connectionDurationMs(connection) / 1000;
+  }
+
+  /** Open/capacity gauges, refreshed after an attach or close. */
+  function refreshConnectionGauges(): void {
+    if (metrics === null) {
+      return;
+    }
+    metrics.set('cubeclicker_ws_connections_open', connections.size);
+    metrics.set('cubeclicker_ws_connections_capacity', config.maxConnections);
+  }
+
+  /** Room/member/capacity gauges, refreshed after every membership change and on close. */
+  function refreshRoomGauges(): void {
+    if (metrics === null) {
+      return;
+    }
+    metrics.set('cubeclicker_servers_active', registry.serverCount());
+    metrics.set('cubeclicker_members_active', members.size);
+    metrics.set('cubeclicker_server_capacity', config.maxUsersPerServer);
+  }
+
+  // The configured capacities are constant, so they are published once even before the
+  // first attach; the live gauges above take over from the first membership event.
+  refreshConnectionGauges();
+  refreshRoomGauges();
+
   /**
    * Coalesces accepted removals into one 40 ms window. The callback builds the legacy
    * single-id frame or the batched frame and broadcasts it once per group (AC-8/AC-9).
@@ -366,13 +450,20 @@ export function createGameHub(deps: HubDeps): GameHub {
     windowMs: MINI_CUBE_BATCH_WINDOW_MS,
     timers,
     flush(groups): void {
+      let flushedIds = 0;
       for (const group of groups) {
+        flushedIds += group.ids.length;
+        metrics?.observe('cubeclicker_removal_batch_size', group.ids.length);
         const message =
           group.ids.length === 1
             ? miniCubeRemovedMessage(group.playerId, group.ids[0]!)
             : miniCubesRemovedMessage(group.playerId, group.ids);
         broadcast(group.serverId, message);
       }
+      metrics?.inc('cubeclicker_removal_flushes_total');
+      metrics?.inc('cubeclicker_removal_ids_total', undefined, flushedIds);
+      // The batcher clears its pending groups before invoking this callback.
+      metrics?.set('cubeclicker_removal_batch_pending_groups', removalBatcher.pendingGroups());
     },
   });
 
@@ -385,6 +476,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     timers,
     flush(userId, _revision, economy): void {
       broadcastEconomyUpdate(userId, economy);
+      metrics?.inc('cubeclicker_economy_flushes_total');
+      // The coalescer deletes the account's pending entry before invoking this callback.
+      metrics?.set('cubeclicker_economy_pending_accounts', economyCoalescer.pendingAccounts());
     },
   });
 
@@ -403,21 +497,26 @@ export function createGameHub(deps: HubDeps): GameHub {
    *
    * The `isOpen` guard is kept, and a synchronous `send` throw is isolated: only that peer
    * is terminated (through the normal close path), so a failed send can neither abort a
-   * fan-out nor leak a connection (AC-2).
+   * fan-out nor leak a connection (AC-2). Returns whether the frame reached the peer; the
+   * frame-sent counter and the broadcast fan-out observe only successful deliveries.
    */
-  function deliver(connection: Connection, text: string): void {
+  function deliver(connection: Connection, text: string, type: ServerMessage['type']): boolean {
     if (closed) {
-      return;
+      return false;
     }
     const peer = connection.peer;
     if (!peer.isOpen()) {
-      return;
+      return false;
     }
     try {
       peer.send(text);
     } catch {
-      terminate(connection);
+      // A failed send terminates this peer with the pinned `error` close reason.
+      terminate(connection, 'error');
+      return false;
     }
+    metrics?.inc('cubeclicker_ws_frames_sent_total', { type });
+    return true;
   }
 
   /** Encodes once and sends to one connection. */
@@ -425,7 +524,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     if (closed) {
       return;
     }
-    deliver(connection, encodeServerMessage(message));
+    const text = encodeServerMessage(message);
+    metrics?.inc('cubeclicker_ws_messages_encoded_total', { type: message.type });
+    deliver(connection, text, message.type);
   }
 
   function sendError(connection: Connection, code: ErrorCode): void {
@@ -443,15 +544,19 @@ export function createGameHub(deps: HubDeps): GameHub {
       return;
     }
     const text = encodeServerMessage(message);
+    metrics?.inc('cubeclicker_ws_messages_encoded_total', { type: message.type });
+    let recipients = 0;
     registry.forEachMember(serverId, (playerId) => {
       if (playerId === except) {
         return;
       }
       const connection = members.get(playerId)?.connection;
-      if (connection) {
-        deliver(connection, text);
+      if (connection && deliver(connection, text, message.type)) {
+        recipients += 1;
       }
     });
+    metrics?.inc('cubeclicker_ws_broadcasts_total');
+    metrics?.observe('cubeclicker_ws_broadcast_fanout', recipients);
   }
 
   /**
@@ -482,8 +587,9 @@ export function createGameHub(deps: HubDeps): GameHub {
       return;
     }
     const text = encodeServerMessage(message);
+    metrics?.inc('cubeclicker_ws_messages_encoded_total', { type: message.type });
     for (const connection of targets) {
-      deliver(connection, text);
+      deliver(connection, text, message.type);
     }
   }
 
@@ -630,6 +736,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       broadcast(location.serverId, memberLeftMessage(playerId, 'left'));
     }
     recomputePlan();
+    refreshRoomGauges();
   }
 
   function handleClose(connection: Connection): void {
@@ -640,6 +747,16 @@ export function createGameHub(deps: HubDeps): GameHub {
       timers.clearInterval(connection.heartbeat);
       connection.heartbeat = null;
     }
+    refreshConnectionGauges();
+    refreshRoomGauges();
+    metrics?.inc('cubeclicker_ws_connections_closed_total', { reason: connection.closeReason });
+    metrics?.observe('cubeclicker_ws_connection_duration_seconds', connectionDurationSeconds(connection));
+    log?.info('ws_connection_closed', {
+      connectionId: connectionIdOf(connection),
+      reason: connection.closeReason,
+      durationMs: connectionDurationMs(connection),
+      wasJoined: connection.wasJoined,
+    });
     const playerId = connection.playerId;
     connection.playerId = null;
     if (playerId === null) {
@@ -679,21 +796,27 @@ export function createGameHub(deps: HubDeps): GameHub {
    */
   function heartbeat(connection: Connection): void {
     if (!connection.peer.isOpen()) {
-      terminate(connection);
+      terminate(connection, 'heartbeat');
       return;
     }
     connection.peer.ping();
     if (connection.awaitingPong) {
       connection.missedPongs += 1;
       if (connection.missedPongs >= config.missedPongsLimit) {
-        terminate(connection);
+        metrics?.inc('cubeclicker_ws_heartbeat_timeouts_total');
+        log?.warn('ws_heartbeat_timeout', {
+          connectionId: connectionIdOf(connection),
+          wasJoined: connection.wasJoined,
+        });
+        terminate(connection, 'heartbeat');
         return;
       }
     }
     connection.awaitingPong = true;
   }
 
-  function terminate(connection: Connection): void {
+  function terminate(connection: Connection, reason: 'heartbeat' | 'error'): void {
+    connection.closeReason = reason;
     if (connection.heartbeat !== null) {
       timers.clearInterval(connection.heartbeat);
       connection.heartbeat = null;
@@ -848,6 +971,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     members.set(member.playerId, member);
     tokens.set(member.token, member.playerId);
     connection.playerId = member.playerId;
+    connection.wasJoined = true;
     // Join-time idle credit keeps today's immediate pre-`welcome` economyUpdate (AC-21);
     // the forced flush also cancels that account's automatic window.
     if (accountId !== null && idleSnapshot !== null) {
@@ -857,6 +981,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     send(connection, welcomeMessage(placementFor(member)));
     broadcast(assignment.serverId, memberJoinedMessage(memberState(member)), member.playerId);
     recomputePlan();
+    refreshRoomGauges();
   }
 
   function handleRejoin(connection: Connection, token: string): void {
@@ -902,8 +1027,10 @@ export function createGameHub(deps: HubDeps): GameHub {
     clearGraceTimer(member.playerId);
     member.connection = connection;
     connection.playerId = member.playerId;
+    connection.wasJoined = true;
     send(connection, welcomeMessage(placementFor(member)));
     recomputePlan();
+    refreshRoomGauges();
   }
 
   function handleExplode(
@@ -920,6 +1047,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       rate.admitted.shift();
     }
     if (rate.admitted.length >= config.clickRateLimitPerSecond) {
+      // Every dropped exploded frame counts, even when the rate-limit error is throttled.
+      metrics?.inc('cubeclicker_rate_limit_drops_total', { scope: 'explode' });
       if (rate.lastLimitedAt === null || now - rate.lastLimitedAt >= RATE_WINDOW_MS) {
         rate.lastLimitedAt = now;
         sendError(connection, 'rate_limited');
@@ -937,6 +1066,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Authority first: the removed id is recorded synchronously above; only the
     // notification is coalesced into the 40 ms window (AC-8/AC-9).
     removalBatcher.enqueue(location.serverId, member.playerId, id);
+    metrics?.set('cubeclicker_removal_batch_pending_groups', removalBatcher.pendingGroups());
 
     // Face-clear detection: all N² ids of that face now removed.
     const face = id.split(':')[0] as string;
@@ -998,10 +1128,12 @@ export function createGameHub(deps: HubDeps): GameHub {
    */
   function applyEconomySnapshot(accountId: string, snapshot: EconomySnapshot): boolean {
     if (closed) {
+      // A result rejected only because the hub is closed is not a stale rejection (AC-15).
       return false;
     }
     const last = economyRevisions.get(accountId) ?? 0;
     if (snapshot.revision <= last) {
+      metrics?.inc('cubeclicker_economy_revision_rejections_total');
       return false;
     }
     economyRevisions.set(accountId, snapshot.revision);
@@ -1026,10 +1158,12 @@ export function createGameHub(deps: HubDeps): GameHub {
     upgrades: UpgradeState,
   ): boolean {
     if (closed) {
+      // A result rejected only because the hub is closed is not a stale rejection (AC-15).
       return false;
     }
     const last = upgradeRevisions.get(accountId) ?? 0;
     if (revision <= last) {
+      metrics?.inc('cubeclicker_upgrade_revision_rejections_total');
       return false;
     }
     upgradeRevisions.set(accountId, revision);
@@ -1044,6 +1178,7 @@ export function createGameHub(deps: HubDeps): GameHub {
   /** Queues an accepted snapshot for the 250 ms cadence (absolute totals, AC-19/AC-20). */
   function queueEconomy(accountId: string, snapshot: EconomySnapshot): void {
     economyCoalescer.queue(accountId, snapshot.revision, snapshot.economy);
+    metrics?.set('cubeclicker_economy_pending_accounts', economyCoalescer.pendingAccounts());
   }
 
   function broadcastEconomyUpdate(userId: string, economy: EconomyState): void {
@@ -1129,6 +1264,7 @@ export function createGameHub(deps: HubDeps): GameHub {
         position: positionOf(previous.slot),
       };
       broadcast(previous.serverId, levelAdvancedMessage(advance));
+      refreshRoomGauges();
       return;
     }
     // An executed move is itself a membership change: re-plan the remaining donors now, so
@@ -1139,6 +1275,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     send(connection, worldEnteredMessage(placementFor(member)));
     broadcast(previous.serverId, memberLeftMessage(member.playerId, 'moved'));
     broadcast(location.serverId, memberJoinedMessage(memberState(member)), member.playerId);
+    refreshRoomGauges();
   }
 
   async function handlePurchaseUpgrade(member: Member, connection: Connection, upgradeId: string): Promise<void> {
@@ -1324,7 +1461,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       rate.admitted.shift();
     }
     if (rate.admitted.length >= ROTATE_RATE_LIMIT) {
-      // Dropped silently: no state change, no broadcast, no reply.
+      // Dropped silently: no state change, no broadcast, no reply (but still counted).
+      metrics?.inc('cubeclicker_rate_limit_drops_total', { scope: 'rotate' });
       return;
     }
     rate.admitted.push(now);
@@ -1338,23 +1476,52 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
+  /**
+   * Answers a diagnostic `ping` with the exact echoed `pong`.
+   *
+   * One accepted ping per 1000 ms per connection (boundary at exactly +1000 ms); later
+   * pings in the window are dropped and counted. It runs before `memberFor`, so a
+   * connection can measure RTT before joining, and it touches no membership/game state.
+   */
+  function handlePing(connection: Connection, t: number): void {
+    const now = deps.now();
+    if (connection.lastPingAtMs !== null && now - connection.lastPingAtMs < PING_RATE_LIMIT_MS) {
+      metrics?.inc('cubeclicker_rate_limit_drops_total', { scope: 'ping' });
+      return;
+    }
+    connection.lastPingAtMs = now;
+    send(connection, pongMessage(t));
+  }
+
   function handleMessage(connection: Connection, raw: unknown): void {
     // A late frame after shutdown is inert before decoding or touching rate-limit state.
     if (closed) {
       return;
     }
     const frame = frameOf(raw);
+    if (frame === null) {
+      metrics?.inc('cubeclicker_ws_messages_received_total', { type: 'invalid' });
+      sendError(connection, 'bad_message');
+      return;
+    }
     // Oversized frames are dropped before decoding (AC-20), even when they would parse.
-    if (frame === null || frame.bytes > config.maxMessageBytes) {
+    if (frame.bytes > config.maxMessageBytes) {
+      metrics?.inc('cubeclicker_ws_messages_received_total', { type: 'oversized' });
       sendError(connection, 'bad_message');
       return;
     }
     const decoded = parseClientMessage(frame.text);
     if (!decoded.ok) {
+      metrics?.inc('cubeclicker_ws_messages_received_total', { type: 'invalid' });
       sendError(connection, 'bad_message');
       return;
     }
     const message = decoded.message;
+    metrics?.inc('cubeclicker_ws_messages_received_total', { type: message.type });
+    if (message.type === 'ping') {
+      handlePing(connection, message.t);
+      return;
+    }
     if (message.type === 'join') {
       handleJoin(connection, message.mode);
       return;
@@ -1403,7 +1570,11 @@ export function createGameHub(deps: HubDeps): GameHub {
       return connections.size < config.maxConnections;
     },
 
-    attach(peer: Peer, accountSession: AccountSession | null = null): void {
+    attach(
+      peer: Peer,
+      accountSession: AccountSession | null = null,
+      connectionId?: string,
+    ): void {
       // A socket attached after shutdown is closed immediately; no listener or timer is
       // created for it (AC-30).
       if (closed) {
@@ -1414,15 +1585,23 @@ export function createGameHub(deps: HubDeps): GameHub {
       // beyond the cap is closed before any state is created for it.
       if (connections.size >= config.maxConnections) {
         peer.close();
+        const rejectedId = connectionId ?? UNKNOWN_CONNECTION_ID;
+        metrics?.inc('cubeclicker_ws_connections_rejected_total', { reason: 'capacity' });
+        log?.warn('ws_connection_rejected', { connectionId: rejectedId, reason: 'capacity' });
         return;
       }
       const connection: Connection = {
         peer,
         accountSession,
+        connectionId: connectionId ?? null,
         playerId: null,
         missedPongs: 0,
         awaitingPong: false,
         heartbeat: null,
+        wasJoined: false,
+        attachedAtMs: deps.now(),
+        closeReason: 'client',
+        lastPingAtMs: null,
       };
       connections.add(connection);
       peer.on('message', (arg) => handleMessage(connection, arg));
@@ -1435,6 +1614,10 @@ export function createGameHub(deps: HubDeps): GameHub {
         () => heartbeat(connection),
         config.heartbeatIntervalMs,
       );
+      refreshConnectionGauges();
+      refreshRoomGauges();
+      metrics?.inc('cubeclicker_ws_connections_total');
+      log?.info('ws_connection_opened', { connectionId: connectionIdOf(connection) });
     },
 
     connectionCount(): number {
@@ -1449,12 +1632,33 @@ export function createGameHub(deps: HubDeps): GameHub {
     },
 
     close(): void {
+      if (closed) {
+        return;
+      }
+      // Capture the summary before the state is cleared; `hub_closed` is the shutdown line.
+      const summary = {
+        connections: connections.size,
+        members: members.size,
+        servers: registry.serverCount(),
+      };
       // Flip the guard first: every late frame, continuation, enqueue and send is inert from
       // this point (AC-30).
       closed = true;
       removalBatcher.discard();
       economyCoalescer.discard();
       for (const connection of connections) {
+        connection.closeReason = 'server';
+        metrics?.inc('cubeclicker_ws_connections_closed_total', { reason: 'server' });
+        metrics?.observe(
+          'cubeclicker_ws_connection_duration_seconds',
+          connectionDurationSeconds(connection),
+        );
+        log?.info('ws_connection_closed', {
+          connectionId: connectionIdOf(connection),
+          reason: 'server',
+          durationMs: connectionDurationMs(connection),
+          wasJoined: connection.wasJoined,
+        });
         if (connection.heartbeat !== null) {
           timers.clearInterval(connection.heartbeat);
           connection.heartbeat = null;
@@ -1470,6 +1674,14 @@ export function createGameHub(deps: HubDeps): GameHub {
       openingMembers.clear();
       economyRevisions.clear();
       upgradeRevisions.clear();
+      // Metrics-only shutdown reset (AC-13); the registry object is not cleared, so other
+      // counters keep their process totals and no registry equality is asserted after close.
+      metrics?.set('cubeclicker_removal_batch_pending_groups', 0);
+      metrics?.set('cubeclicker_economy_pending_accounts', 0);
+      metrics?.set('cubeclicker_ws_connections_open', 0);
+      metrics?.set('cubeclicker_members_active', 0);
+      metrics?.set('cubeclicker_servers_active', 0);
+      log?.info('hub_closed', summary);
     },
   };
 }

@@ -3,12 +3,16 @@ import { loadGameConfig, type GameConfig } from './config.js';
 import { allIds } from './cubes.js';
 import {
   createGameHub,
+  type AccountSession,
   type GameHub,
   type Peer,
   ECONOMY_BROADCAST_INTERVAL_MS,
   MINI_CUBE_BATCH_WINDOW_MS,
+  PING_RATE_LIMIT_MS,
 } from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
+import type { LogFields, LogSink } from '../observability/logging.js';
+import { createMetrics, type Metrics } from '../observability/metrics.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
 import type { EconomyDelta, EconomySnapshot } from '../auth/economy-repository.js';
 import { createServerRegistry, type ServerRegistry } from './servers.js';
@@ -3815,5 +3819,538 @@ describe('registry index hot paths (T3-B)', () => {
     expect(registry.snapshots).toBe(0);
     expect(registry.assignCalls).toBe(2);
     expect(hub.connectionCount()).toBe(1);
+  });
+});
+
+describe('runtime observability (T2)', () => {
+  /** One captured `LogSink` call: level, event name and structured fields. */
+  interface RecordedLog {
+    level: 'info' | 'warn' | 'error';
+    event: string;
+    fields: LogFields;
+  }
+
+  interface LogRecorder extends LogSink {
+    readonly entries: RecordedLog[];
+  }
+
+  function createLogRecorder(): LogRecorder {
+    const entries: RecordedLog[] = [];
+    return {
+      entries,
+      info(event, fields) {
+        entries.push({ level: 'info', event, fields });
+      },
+      warn(event, fields) {
+        entries.push({ level: 'warn', event, fields });
+      },
+      error(event, fields) {
+        entries.push({ level: 'error', event, fields });
+      },
+    };
+  }
+
+  /**
+   * A hub with the T1 metrics registry and a captured log sink. Every connection gets an
+   * explicit `connectionId` (default `req-<n>`) so lifecycle logs stay correlated.
+   */
+  function createObservabilityHarness(
+    overrides: Partial<GameConfig> = {},
+    options: { draw?: () => number; economy?: InMemoryEconomyRepository } = {},
+  ) {
+    const config: GameConfig = { ...loadGameConfig({}), ...overrides };
+    const metrics = createMetrics();
+    const log = createLogRecorder();
+    let clock = 0;
+    let counter = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => options.draw ?? (() => 0),
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      metrics,
+      log,
+      ...(options.economy === undefined ? {} : { economy: options.economy }),
+    });
+    return {
+      config,
+      hub,
+      metrics,
+      log,
+      connect(connectionId?: string, session: AccountSession | null = null): FakePeer {
+        counter += 1;
+        const peer = new FakePeer();
+        hub.attach(peer, session, connectionId ?? `req-${counter}`);
+        return peer;
+      },
+      join(peer: FakePeer): void {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+      advance(ms: number): void {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      advanceTimersOnly(ms: number): void {
+        vi.advanceTimersByTime(ms);
+      },
+      setNow(ms: number): void {
+        clock = ms;
+      },
+    };
+  }
+
+  /** The numeric value of one exact rendered sample (`name` or `name{labels}`), or `null`. */
+  function sampleValue(metrics: Metrics, sample: string): number | null {
+    const line = metrics
+      .render()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${sample} `));
+    if (line === undefined) {
+      return null;
+    }
+    return Number(line.slice(sample.length + 1));
+  }
+
+  describe('connection lifecycle metrics and logs (AC-10, AC-3)', () => {
+    it('counts attaches, capacity rejections, client closes and durations with exact samples', () => {
+      const h = createObservabilityHarness({ maxConnections: 2 });
+      const first = h.connect('req-1');
+      const second = h.connect('req-2');
+
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_total')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_capacity')).toBe(2);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+      ).toBeNull();
+
+      const rejected = h.connect('req-3');
+      expect(rejected.closed).toBe(true);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_rejected_total{reason="capacity"}'),
+      ).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(2);
+
+      h.setNow(1500);
+      first.drop();
+
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+      ).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connection_duration_seconds_count')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connection_duration_seconds_sum')).toBe(1.5);
+      expect(second.closed).toBe(false);
+
+      expect(h.log.entries).toEqual([
+        { level: 'info', event: 'ws_connection_opened', fields: { connectionId: 'req-1' } },
+        { level: 'info', event: 'ws_connection_opened', fields: { connectionId: 'req-2' } },
+        {
+          level: 'warn',
+          event: 'ws_connection_rejected',
+          fields: { connectionId: 'req-3', reason: 'capacity' },
+        },
+        {
+          level: 'info',
+          event: 'ws_connection_closed',
+          fields: { connectionId: 'req-1', reason: 'client', durationMs: 1500, wasJoined: false },
+        },
+      ]);
+    });
+
+    it('terminates on the second missed pong with timeout, heartbeat close and duration metrics', () => {
+      const h = createObservabilityHarness();
+      const peer = h.connect('req-hb');
+      h.join(peer);
+
+      h.advance(30_000);
+      h.advance(30_000);
+      h.advance(30_000);
+
+      expect(peer.closed).toBe(true);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_heartbeat_timeouts_total')).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="heartbeat"}'),
+      ).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connection_duration_seconds_count')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connection_duration_seconds_sum')).toBe(90);
+      expect(h.log.entries).toEqual([
+        { level: 'info', event: 'ws_connection_opened', fields: { connectionId: 'req-hb' } },
+        {
+          level: 'warn',
+          event: 'ws_heartbeat_timeout',
+          fields: { connectionId: 'req-hb', wasJoined: true },
+        },
+        {
+          level: 'info',
+          event: 'ws_connection_closed',
+          fields: {
+            connectionId: 'req-hb',
+            reason: 'heartbeat',
+            durationMs: 90_000,
+            wasJoined: true,
+          },
+        },
+      ]);
+    });
+
+    it('reports a send failure as an error close while the fan-out continues', () => {
+      const h = createObservabilityHarness({ maxUsersPerServer: 2 });
+      const thrower = new ThrowingPeer();
+      h.hub.attach(thrower, null, 'req-1');
+      h.join(thrower);
+      const other = h.connect('req-2');
+      h.join(other);
+      thrower.clear();
+      other.clear();
+      thrower.failNextSend = true;
+
+      explode(thrower, 'front:0:0');
+      flushRemovals(h);
+
+      expect(thrower.closed).toBe(true);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="error"}'),
+      ).toBe(1);
+      expect(other.messages()).toEqual([
+        { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+      ]);
+      expect(h.log.entries).toContainEqual({
+        level: 'info',
+        event: 'ws_connection_closed',
+        fields: { connectionId: 'req-1', reason: 'error', durationMs: 0, wasJoined: true },
+      });
+    });
+
+    it('logs hub_closed with pre-clear counts and counts server closes on shutdown', () => {
+      const h = createObservabilityHarness({ maxUsersPerServer: 2 });
+      const first = h.connect('req-1');
+      h.join(first);
+      const second = h.connect('req-2');
+      h.join(second);
+
+      h.hub.close();
+
+      expect(h.log.entries.at(-1)).toEqual({
+        level: 'info',
+        event: 'hub_closed',
+        fields: { connections: 2, members: 2, servers: 1 },
+      });
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="server"}'),
+      ).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(0);
+    });
+
+    it('uses the unknown placeholder when a direct attach has no request id', () => {
+      const h = createObservabilityHarness();
+      const peer = new FakePeer();
+
+      h.hub.attach(peer);
+      peer.drop();
+
+      expect(h.log.entries).toEqual([
+        { level: 'info', event: 'ws_connection_opened', fields: { connectionId: 'unknown' } },
+        {
+          level: 'info',
+          event: 'ws_connection_closed',
+          fields: { connectionId: 'unknown', reason: 'client', durationMs: 0, wasJoined: false },
+        },
+      ]);
+    });
+  });
+
+  describe('messages, encode-once and fan-out (AC-11)', () => {
+    it('records types, one removal encode, per-recipient frames and fan-out after the join baseline', () => {
+      const h = createObservabilityHarness({ maxUsersPerServer: 2 });
+      const first = h.connect('req-1');
+      h.join(first);
+      const second = h.connect('req-2');
+      h.join(second);
+
+      // Baseline after the second join's `memberJoined` broadcast settled: the first join
+      // broadcast had no recipients, the second had one.
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="join"}'),
+      ).toBe(2);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="memberJoined"}'),
+      ).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="memberJoined"}')).toBe(
+        1,
+      );
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="welcome"}')).toBe(
+        2,
+      );
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="welcome"}')).toBe(2);
+
+      explode(first, 'front:0:0');
+      flushRemovals(h);
+
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(3);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="miniCubeRemoved"}'),
+      ).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="miniCubeRemoved"}'),
+      ).toBe(2);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="explode"}'),
+      ).toBe(1);
+      const removal = { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' };
+      expect(first.messages().at(-1)).toEqual(removal);
+      expect(second.messages().at(-1)).toEqual(removal);
+
+      first.receive('{');
+      first.receive('x'.repeat(1025));
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="invalid"}'),
+      ).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="oversized"}'),
+      ).toBe(1);
+    });
+  });
+
+  describe('room, member and capacity gauges (AC-12)', () => {
+    it('tracks joins, a move/server destroy and the final leave', () => {
+      // The third join draws 0.5 for its next cube after completion (the pinned merge flow).
+      const draws = [0, 0, 0, 0.5];
+      let drawIndex = 0;
+      const h = createObservabilityHarness(
+        { maxUsersPerServer: 2 },
+        { draw: () => draws[drawIndex++] ?? 0 },
+      );
+      const first = h.connect('req-1');
+      h.join(first);
+      const second = h.connect('req-2');
+      h.join(second);
+      const third = h.connect('req-3');
+      h.join(third);
+
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_server_capacity')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_capacity')).toBe(200);
+
+      // Grace expiry removes p1: two live servers and two roster members.
+      first.drop();
+      h.advance(h.config.reconnectGraceMs);
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(2);
+
+      // The lone server-2 member completes and moves into server 1; server 2 is destroyed.
+      removeLevel(h, third, allIds(3));
+      third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(2);
+
+      // The last two members leave; the final server is destroyed.
+      second.drop();
+      third.drop();
+      h.advance(h.config.reconnectGraceMs);
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(0);
+    });
+  });
+
+  describe('removal and economy flush depths and cadence (AC-13)', () => {
+    it('tracks removal pending groups, flush count, id total and batch size', () => {
+      const h = createObservabilityHarness();
+      const peer = h.connect('req-1');
+      h.join(peer);
+      const ids = allIds(3);
+
+      explode(peer, ids[0]!);
+      explode(peer, ids[1]!);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_pending_groups')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_flushes_total')).toBe(0);
+
+      h.advanceTimersOnly(MINI_CUBE_BATCH_WINDOW_MS);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_pending_groups')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_flushes_total')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_ids_total')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_size_count')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_size_sum')).toBe(2);
+    });
+
+    it('tracks economy pending accounts and cadence, then resets the gauges on close', async () => {
+      const repo = new InMemoryEconomyRepository();
+      const h = createObservabilityHarness({}, { economy: repo });
+      const peer = h.connect('req-a', { userId: 'u1', username: 'alice', verified: true });
+      h.join(peer);
+      await drainMicrotasks();
+
+      explode(peer, 'front:0:0');
+      await drainMicrotasks();
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_pending_accounts')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_flushes_total')).toBe(0);
+
+      h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_pending_accounts')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_flushes_total')).toBe(1);
+
+      // Leave one removal group and one economy snapshot pending, then shut down.
+      explode(peer, 'front:0:1');
+      await drainMicrotasks();
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_pending_groups')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_pending_accounts')).toBe(1);
+
+      h.hub.close();
+      expect(sampleValue(h.metrics, 'cubeclicker_removal_batch_pending_groups')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_pending_accounts')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(0);
+    });
+  });
+
+  describe('rate-limit drops (AC-14)', () => {
+    it('counts every dropped explode and rotate while received totals keep the parsed types', () => {
+      const h = createObservabilityHarness({ clickRateLimitPerSecond: 2 });
+      const peer = h.connect('req-1');
+      h.join(peer);
+      const ids = allIds(3);
+
+      explode(peer, ids[0]!);
+      explode(peer, ids[1]!);
+      explode(peer, ids[2]!);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="explode"}'),
+      ).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_rate_limit_drops_total{scope="explode"}')).toBe(1);
+
+      for (let index = 0; index < 21; index += 1) {
+        peer.receive(JSON.stringify({ type: 'rotate', yawSteps: index, pitchSteps: 0 }));
+      }
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="rotate"}')).toBe(
+        21,
+      );
+      expect(sampleValue(h.metrics, 'cubeclicker_rate_limit_drops_total{scope="rotate"}')).toBe(1);
+      // The admitted 20 rotated; the 21st was dropped before any encode/broadcast.
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="cubeRotated"}'),
+      ).toBe(20);
+    });
+
+    it('answers a pre-join ping exactly once per second and counts the dropped ping', () => {
+      const h = createObservabilityHarness();
+      const peer = h.connect('req-ping');
+
+      peer.receive('{"type":"ping","t":123}');
+      expect(peer.sent).toEqual(['{"type":"pong","t":123}']);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="ping"}')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="pong"}')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="pong"}')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_rate_limit_drops_total{scope="ping"}')).toBeNull();
+
+      peer.receive('{"type":"ping","t":456}');
+      expect(peer.sent).toEqual(['{"type":"pong","t":123}']);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="ping"}')).toBe(2);
+      expect(sampleValue(h.metrics, 'cubeclicker_rate_limit_drops_total{scope="ping"}')).toBe(1);
+
+      h.advance(PING_RATE_LIMIT_MS);
+      peer.receive('{"type":"ping","t":789}');
+      expect(peer.sent).toEqual(['{"type":"pong","t":123}', '{"type":"pong","t":789}']);
+      expect(sampleValue(h.metrics, 'cubeclicker_rate_limit_drops_total{scope="ping"}')).toBe(1);
+    });
+  });
+
+  describe('stale revision rejections (AC-15)', () => {
+    it('counts a stale economy snapshot but not a result rejected by the closed hub', async () => {
+      const repo = new DeferredEconomyRepository();
+      const h = createObservabilityHarness({}, { economy: repo });
+      const peer = h.connect('req-a', { userId: 'u1', username: 'alice', verified: true });
+      h.join(peer);
+      await drainMicrotasks();
+      peer.clear();
+
+      const release = repo.holdNextCredit();
+      explode(peer, 'front:0:0');
+      explode(peer, 'front:0:1');
+      await drainMicrotasks();
+      h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_revision_rejections_total')).toBe(0);
+
+      release();
+      await drainMicrotasks();
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_revision_rejections_total')).toBe(1);
+
+      // A deferred result rejected only because the hub is closed is not a stale rejection.
+      const releaseAfterClose = repo.holdNextCredit();
+      explode(peer, 'front:0:2');
+      await drainMicrotasks();
+      h.hub.close();
+      releaseAfterClose();
+      await drainMicrotasks();
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_revision_rejections_total')).toBe(1);
+    });
+
+    it('counts a late older purchase on both revision guards (AC-15)', async () => {
+      const repo = new DeferredEconomyRepository();
+      await repo.creditWithRevision('u1', { coins: 100 });
+      const h = createObservabilityHarness({}, { economy: repo });
+      const peer = h.connect('req-a', { userId: 'u1', username: 'alice', verified: true });
+      h.join(peer);
+      await drainMicrotasks();
+      peer.clear();
+
+      const release = repo.holdNextPurchase();
+      peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+      await drainMicrotasks();
+      peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+      await drainMicrotasks();
+      expect(sampleValue(h.metrics, 'cubeclicker_upgrade_revision_rejections_total')).toBe(0);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_revision_rejections_total')).toBe(0);
+
+      release();
+      await drainMicrotasks();
+
+      expect(sampleValue(h.metrics, 'cubeclicker_upgrade_revision_rejections_total')).toBe(1);
+      expect(sampleValue(h.metrics, 'cubeclicker_economy_revision_rejections_total')).toBe(1);
+    });
+  });
+
+  describe('log privacy (AC-3)', () => {
+    it('logs only connection lifecycle fields, never player/account/username or payload values', async () => {
+      const repo = new InMemoryEconomyRepository();
+      const h = createObservabilityHarness({}, { economy: repo });
+      const peer = h.connect('req-pii', {
+        userId: 'account-9',
+        username: 'alice@example.test',
+        verified: true,
+      });
+      h.join(peer);
+      await drainMicrotasks();
+      peer.receive('{"type":"explode","id":"front:0:0","level":0}');
+      peer.drop();
+      h.hub.close();
+
+      expect(h.log.entries.map((entry) => entry.event)).toEqual([
+        'ws_connection_opened',
+        'ws_connection_closed',
+        'hub_closed',
+      ]);
+      expect(h.log.entries[0]).toEqual({
+        level: 'info',
+        event: 'ws_connection_opened',
+        fields: { connectionId: 'req-pii' },
+      });
+      const serialized = JSON.stringify(h.log.entries);
+      expect(serialized).not.toContain('account-9');
+      expect(serialized).not.toContain('alice@example.test');
+      expect(serialized).not.toContain('p1');
+      expect(serialized).not.toContain('front:0:0');
+      expect(serialized).not.toContain('u1');
+    });
   });
 });
