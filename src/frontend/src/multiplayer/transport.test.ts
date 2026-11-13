@@ -503,6 +503,22 @@ describe('createTransport — join/resume over the retry connection (integration
     h.transport.close();
   });
 
+  it('decodes and forwards a raw miniCubesRemoved batch frame', () => {
+    const h = harness();
+    h.transport.connect();
+    const socket = current(h);
+    socket.emitOpen();
+
+    socket.emitMessage('{"type":"miniCubesRemoved","playerId":"p2","ids":["back:1:1","top:0:0"]}');
+
+    expect(h.messages).toEqual([
+      { type: 'miniCubesRemoved', playerId: 'p2', ids: ['back:1:1', 'top:0:0'] },
+    ]);
+    expect(socket.sent).toEqual([]);
+
+    h.transport.close();
+  });
+
   it('answers each socket hello once and forwards catalog frames untouched', () => {
     const h = harness();
     h.transport.connect();

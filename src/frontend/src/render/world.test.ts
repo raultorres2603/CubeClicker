@@ -386,6 +386,76 @@ describe('applyMessage', () => {
     expect(world.particles.activeCount()).toBe(0);
   });
 
+  it('applies every id of a miniCubesRemoved batch and never restarts a duplicate id', () => {
+    const world = createWorld();
+    const p2 = member('p2', SLOT_2, { gridSize: 5, styleId: OBSIDIAN.id });
+    world.applyRoster([p2]);
+    const view = world.views().get('p2')!;
+    const front = view.faces.get('front')!;
+    const back = view.faces.get('back')!;
+
+    world.applyMessage({
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['front:1:2', 'back:0:0'],
+    });
+
+    expect(view.isMiniCubeHidden('front:1:2')).toBe(true);
+    expect(view.isMiniCubeHidden('back:0:0')).toBe(true);
+    expect(view.isMiniCubeHidden('front:1:3')).toBe(false);
+    // Both tiles start their own 140 ms destroy on the same impact frame.
+    expect(instanceScale(front, 7)).toEqual([
+      Math.fround(0.95),
+      Math.fround(0.95),
+      0.25,
+    ]);
+    expect(instanceColor(front, 7)).toEqual([3, 3, 3]);
+    expect(instanceScale(back, 0)).toEqual([
+      Math.fround(0.95),
+      Math.fround(0.95),
+      0.25,
+    ]);
+    expect(instanceColor(back, 0)).toEqual([3, 3, 3]);
+    expect(world.particles.activeCount()).toBe(48);
+
+    world.update(70);
+    const midCollapse = [
+      0.4154876172542572,
+      0.4154876172542572,
+      0.10933884233236313,
+    ];
+    expect(instanceScale(front, 7)).toEqual(midCollapse);
+    expect(instanceScale(back, 0)).toEqual(midCollapse);
+
+    // A replayed batch is a no-op: no destroy restart and no second burst per tile.
+    world.applyMessage({
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['front:1:2', 'back:0:0'],
+    });
+    expect(instanceScale(front, 7)).toEqual(midCollapse);
+    expect(instanceScale(back, 0)).toEqual(midCollapse);
+    expect(world.particles.activeCount()).toBe(48);
+  });
+
+  it('ignores a miniCubesRemoved batch for a member the world does not render', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2)]);
+    const view = world.views().get('p2')!;
+
+    world.applyMessage({
+      type: 'miniCubesRemoved',
+      playerId: 'p9',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+
+    expect(world.views().size).toBe(1);
+    expect(world.views().get('p2')).toBe(view);
+    expect(view.isMiniCubeHidden('front:0:0')).toBe(false);
+    expect(view.isMiniCubeHidden('front:0:1')).toBe(false);
+    expect(world.particles.activeCount()).toBe(0);
+  });
+
   it('derives a face clear from the 0-remaining transition after the accepted fade', () => {
     const world = createWorld();
     const p3 = member('p3', SLOT_3, { gridSize: 3, styleId: CRIMSON.id });

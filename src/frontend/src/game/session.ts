@@ -27,8 +27,9 @@
  * - the engine holds its intro at progress 0 until `welcome`, then the intro clock starts
  *   and the scene enters the server world at the own slot position (AC-23);
  * - own-cube play stays optimistic: a successful `explodeMiniCube` is forwarded as
- *   `explode { id, level }`; the server's `miniCubeRemoved` ack is a no-op when the local
- *   board already matches, and `stateSync`/`welcome` adopt the authoritative cube exactly in
+ *   `explode { id, level }`; the server's `miniCubeRemoved`/`miniCubesRemoved` ack is a
+ *   no-op when the local board already matches (every id of a batch is reconciled in
+ *   acceptance order), and `stateSync`/`welcome` adopt the authoritative cube exactly in
  *   both directions (restored and removed tiles, level/grid/style) — stats are never rolled
  *   back (AC-14);
  * - clearing the sixth face sends `cubeCompleted { level }` and the engine (created in
@@ -771,6 +772,22 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     applyAuthoritativeRemoval(message.id);
   }
 
+  /**
+   * `miniCubesRemoved` batch ack: reconcile every id of the own board in acceptance order.
+   * Remote members are presentation-only here — their board lives in the world reducer and
+   * the scene's world view, so this handler does no engine work for them.
+   */
+  function handleMiniCubesRemoved(
+    message: Extract<ServerMessage, { type: 'miniCubesRemoved' }>,
+  ): void {
+    if (message.playerId !== world.self.playerId) {
+      return;
+    }
+    for (const id of message.ids) {
+      applyAuthoritativeRemoval(id);
+    }
+  }
+
   /** `stateSync`: the server's full cube replaces the own board exactly (no stat rollback). */
   function handleStateSync(message: Extract<ServerMessage, { type: 'stateSync' }>): void {
     if (message.playerId !== world.self.playerId) {
@@ -883,6 +900,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         break;
       case 'miniCubeRemoved':
         handleMiniCubeRemoved(message);
+        break;
+      case 'miniCubesRemoved':
+        handleMiniCubesRemoved(message);
         break;
       case 'levelAdvanced':
         handleLevelAdvanced(message);

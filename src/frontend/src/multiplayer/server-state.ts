@@ -194,7 +194,10 @@ function withoutMember(state: WorldState, playerId: string): WorldState {
   return { ...state, members: state.members.filter((_, position) => position !== index) };
 }
 
-/** `miniCubeRemoved`: add one removed tile id to its owner's board (idempotent — ack no-op). */
+/**
+ * `miniCubeRemoved`/`miniCubesRemoved`: add one removed tile id to its owner's board
+ * (idempotent — ack no-op). The batched frame folds this over its ids in acceptance order.
+ */
 function withRemovedId(state: WorldState, playerId: string, id: string): WorldState {
   if (playerId === state.self.playerId) {
     if (state.self.cube.removedIds.includes(id)) {
@@ -348,9 +351,9 @@ function withRotated(state: WorldState, msg: Extract<ServerMessage, { type: 'cub
  *
  * Handled: `welcome` (seed identity/placement/roster, clear any pending swap),
  * `worldEntered` (record the pending swap), `memberJoined`/`memberLeft` (roster),
- * `miniCubeRemoved` (board delta), `levelAdvanced` (fresh cube + position), `stateSync`
- * (authoritative board), `cubeRotated` (orientation). `hello` and `error` carry no world
- * state and return the same reference.
+ * `miniCubeRemoved` (one board delta), `miniCubesRemoved` (every id of a batch, in order),
+ * `levelAdvanced` (fresh cube + position), `stateSync` (authoritative board), `cubeRotated`
+ * (orientation). `hello` and `error` carry no world state and return the same reference.
  */
 export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldState {
   switch (msg.type) {
@@ -399,6 +402,16 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
     case 'miniCubeRemoved':
       return withRemovedId(state, msg.playerId, msg.id);
+
+    case 'miniCubesRemoved': {
+      // Fold in acceptance order: each id is applied exactly once, so a replayed frame or a
+      // duplicate id returns the same reference as soon as nothing new is left to apply.
+      let next = state;
+      for (const id of msg.ids) {
+        next = withRemovedId(next, msg.playerId, id);
+      }
+      return next;
+    }
 
     case 'levelAdvanced':
       return withAdvanced(state, msg);

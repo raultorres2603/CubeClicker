@@ -291,6 +291,79 @@ describe('reduceWorldState — miniCubeRemoved', () => {
   });
 });
 
+describe('reduceWorldState — miniCubesRemoved', () => {
+  it('applies every id of a self batch in acceptance order without touching the roster', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['back:0:0', 'top:4:4'],
+    });
+
+    expect(next.self.cube.removedIds).toEqual(['front:0:0', 'back:0:0', 'top:4:4']);
+    expect(next.members).toBe(state.members);
+  });
+
+  it('applies every id of a remote batch in acceptance order and keeps the untouched branches', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+
+    expect(next.members[0].removedIds).toEqual(['front:0:0', 'front:0:1']);
+    expect(next.members[1]).toBe(state.members[1]);
+    expect(next.self).toBe(state.self);
+  });
+
+  it('adds only the new ids of a mixed batch', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'miniCubesRemoved',
+      playerId: 'p3',
+      ids: ['back:1:1', 'front:2:2'],
+    });
+
+    expect(next.members[1].removedIds).toEqual(['back:1:1', 'front:2:2']);
+  });
+
+  it('is idempotent for duplicate ids inside one batch', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['front:0:0', 'front:0:0'],
+    });
+
+    expect(next.members[0].removedIds).toEqual(['front:0:0']);
+  });
+
+  it('returns the same state when every id is already present', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, {
+        type: 'miniCubesRemoved',
+        playerId: 'p3',
+        ids: ['back:1:1'],
+      }),
+    ).toBe(state);
+  });
+
+  it('is a no-op for an unknown member', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, {
+        type: 'miniCubesRemoved',
+        playerId: 'p9',
+        ids: ['front:0:0', 'front:0:1'],
+      }),
+    ).toBe(state);
+  });
+});
+
 describe('reduceWorldState — levelAdvanced', () => {
   it('replaces a remote member’s cube and position with a fresh board', () => {
     const state = reduceWorldState(seeded(), {

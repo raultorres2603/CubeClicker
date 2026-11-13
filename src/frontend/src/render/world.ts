@@ -21,8 +21,9 @@
  *
  * - `miniCubeRemoved` hides exactly that tile instance, starts its 140 ms destroy
  *   animation and spawns the existing particle burst `BURST_ORIGIN_OFFSET` in front of the
- *   tile (the same effect the local cube plays). Duplicate ids are no-ops, so the origin's
- *   ack can never restart a destroy or double-spawn a burst.
+ *   tile (the same effect the local cube plays). `miniCubesRemoved` applies every id of a
+ *   batch in acceptance order with the same per-tile behaviour. Duplicate ids are no-ops,
+ *   so the origin's ack can never restart a destroy or double-spawn a burst.
  * - Face clears are derived: when the last tile of a face is removed, the face is scheduled
  *   for removal with the accepted `faceFadeMs` (400 ms) countdown, so the last tile's
  *   destroy and burst are visible, and `removeFace` then releases the face's
@@ -83,10 +84,10 @@ export interface WorldView {
    */
   applyRoster(members: readonly MemberState[]): void;
   /**
-   * Applies one decoded server message: `miniCubeRemoved` (tile pop + burst + derived face
-   * clear), `levelAdvanced` (dispose once + rebuild), `memberJoined`/`memberLeft`. Messages
-   * for the local player or an unknown member, and messages the world does not own, are
-   * no-ops.
+   * Applies one decoded server message: `miniCubeRemoved`/`miniCubesRemoved` (tile pop +
+   * burst + derived face clear), `levelAdvanced` (dispose once + rebuild),
+   * `memberJoined`/`memberLeft`. Messages for the local player or an unknown member, and
+   * messages the world does not own, are no-ops.
    */
   applyMessage(msg: ServerMessage): void;
   /** Advances the pop animations, the cleared-face countdowns and the burst particles. */
@@ -371,6 +372,15 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
           const memberCube = members.get(msg.playerId);
           if (memberCube !== undefined) {
             applyRemoval(memberCube, msg.id);
+          }
+          break;
+        }
+        case 'miniCubesRemoved': {
+          const memberCube = members.get(msg.playerId);
+          if (memberCube !== undefined) {
+            for (const id of msg.ids) {
+              applyRemoval(memberCube, id);
+            }
           }
           break;
         }

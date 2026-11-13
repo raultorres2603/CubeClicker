@@ -3,17 +3,22 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  PerspectiveCamera,
   Scene,
   Vector3,
-  type PerspectiveCamera,
 } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
 import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import type { QualityTier } from '../render/quality';
-import { createSceneView } from '../render/scene';
-import type { Transport, TransportStatus } from '../multiplayer/transport';
+import { createSceneView, type SceneView, type SceneWorld } from '../render/scene';
+import { createWorldView, type WorldView } from '../render/world';
+import {
+  createTransport,
+  type Transport,
+  type TransportStatus,
+} from '../multiplayer/transport';
 import { createBoard, removeMiniCube } from './board';
 import {
   createEngine,
@@ -2503,6 +2508,233 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
 
     fake.scheduler.tick(0);
     expect(cubeGroup(fake.renderer.renders.at(-1)!.scene).position.toArray()).toEqual([0, 24, 0]);
+  });
+});
+
+describe('batched mini-cube removals (AC-17, AC-18)', () => {
+  /**
+   * Stand-in for the browser WebSocket surface the real retry connection and transport use
+   * (the same shape as `transport.test.ts`): the transport still runs its real decode path.
+   */
+  class FakeBatchSocket {
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+
+    readonly sent: string[] = [];
+
+    constructor(readonly url: string) {}
+
+    send(text: string): void {
+      this.sent.push(text);
+    }
+
+    close(): void {}
+
+    emitOpen(): void {
+      this.onopen?.();
+    }
+
+    emitMessage(data: unknown): void {
+      this.onmessage?.({ data });
+    }
+  }
+
+  /**
+   * The AC-18 scene delegate: a fake `SceneView` whose only real work is the remote world —
+   * `enterWorld` applies the roster to a real `WorldView` and `applyWorldMessage` delegates
+   * straight to its real `applyMessage`. No session dependency is mocked here.
+   */
+  function createDelegatingScene(worldView: WorldView): SceneView {
+    return {
+      scene: new Scene(),
+      camera: new PerspectiveCamera(),
+      cubeView: null as unknown as SceneView['cubeView'],
+      worldView,
+      cosmicBackdrop: null as unknown as SceneView['cosmicBackdrop'],
+      enterWorld(world: SceneWorld): void {
+        worldView.applyRoster(world.roster);
+      },
+      queueWorldSwap(): void {},
+      applyWorldMessage(message: ServerMessage): void {
+        worldView.applyMessage(message);
+      },
+      setPointerTarget(): void {},
+      setHoverTarget(): void {},
+      triggerFlyBy(): void {},
+      getQualityTier(): QualityTier {
+        return 'high';
+      },
+      setQualityTierForTesting(): void {},
+      shots: [],
+      lastFrameTime: 0,
+      lastAppearance: {},
+      lastAppliedAppearance: {},
+      appliedAppearance: {},
+      applyIntents(): void {},
+      applySnapshot(): void {},
+      update(): void {},
+      dispose(): void {
+        worldView.dispose();
+      },
+    };
+  }
+
+  it('reconciles every self id and never touches the engine for remote, duplicate or unknown batches', () => {
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }), {
+      mutateExplosions: true,
+    });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    wire.emit({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:0:0' },
+      { type: 'explodeMiniCube', id: 'front:0:1' },
+    ]);
+    expect(recording.engine.getSnapshot().stats.clicks).toBe(2);
+    expect(session.getMultiplayerSnapshot().world.self.cube.removedIds).toEqual([
+      'front:0:0',
+      'front:0:1',
+    ]);
+    expect(wire.sent).toEqual([]);
+
+    // A replayed self batch changes nothing: no extra engine dispatch, no store churn.
+    const stable = session.getMultiplayerSnapshot();
+    wire.emit({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:0:0' },
+      { type: 'explodeMiniCube', id: 'front:0:1' },
+    ]);
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+
+    // A remote batch is presentation-only for the session: the world reducer carries it and
+    // the own engine receives no removal work.
+    wire.emit({
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['back:1:1', 'top:0:0'],
+    });
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:0:0' },
+      { type: 'explodeMiniCube', id: 'front:0:1' },
+    ]);
+    expect(session.getMultiplayerSnapshot().world.members[0]!.removedIds).toEqual([
+      'back:1:1',
+      'top:0:0',
+    ]);
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('proves the backend batch frame end-to-end through transport → decoder → reducer → session → WorldView (AC-18)', () => {
+    const fake = createFakeEnv();
+    const worldView = createWorldView({ maxUsers: 10, random: () => 0.5 });
+    fake.env.renderRuntime = {
+      ...fake.env.renderRuntime,
+      createSceneView: () => createDelegatingScene(worldView),
+    };
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }), {
+      mutateExplosions: true,
+    });
+    const sockets: FakeBatchSocket[] = [];
+    const transport = createTransport({
+      url: 'ws://test.local/ws',
+      socketFactory: (url) => {
+        const socket = new FakeBatchSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+    const session = createGameSession({
+      env: fake.env,
+      engine: recording.engine,
+      transport,
+    });
+    session.attach(fake.canvas.surface);
+
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    transport.join('guest');
+    socket.emitMessage('{"type":"hello","serverTime":"2026-11-13T00:00:00.000Z"}');
+    socket.emitMessage(
+      JSON.stringify(welcomeMessage({ maxUsers: 10, roster: [selfMember(), member()] })),
+    );
+
+    expect(session.getMultiplayerSnapshot().world.self.playerId).toBe('p1');
+    expect(
+      session.getMultiplayerSnapshot().world.members.map((entry) => entry.playerId),
+    ).toEqual(['p2']);
+    expect([...worldView.views().keys()]).toEqual(['p2']);
+
+    // Remote two-id batch, byte-for-byte the backend frame: one reducer application per id
+    // and one live-view removal per id.
+    socket.emitMessage(
+      '{"type":"miniCubesRemoved","playerId":"p2","ids":["back:1:1","top:0:0"]}',
+    );
+    expect(session.getMultiplayerSnapshot().world.members[0]!.removedIds).toEqual([
+      'back:1:1',
+      'top:0:0',
+    ]);
+    const p2View = worldView.views().get('p2')!;
+    expect(p2View.isMiniCubeHidden('back:1:1')).toBe(true);
+    expect(p2View.isMiniCubeHidden('top:0:0')).toBe(true);
+    expect(worldView.particles.activeCount()).toBe(48);
+    expect(recording.events).toEqual([]);
+
+    // Self two-id batch: the real session reconciles each id into the own engine.
+    socket.emitMessage(
+      '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}',
+    );
+    expect(recording.events).toEqual([
+      { type: 'explodeMiniCube', id: 'front:0:0' },
+      { type: 'explodeMiniCube', id: 'front:0:1' },
+    ]);
+    expect(session.getMultiplayerSnapshot().world.self.cube.removedIds).toEqual([
+      'front:0:0',
+      'front:0:1',
+    ]);
+    // The own cube belongs to the scene, never to the remote world view.
+    expect(worldView.particles.activeCount()).toBe(48);
+
+    // Duplicate frame: the reducer returns the same reference and no effect restarts.
+    const duplicateCheck = session.getMultiplayerSnapshot();
+    socket.emitMessage(
+      '{"type":"miniCubesRemoved","playerId":"p2","ids":["back:1:1","top:0:0"]}',
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(duplicateCheck);
+    expect(worldView.particles.activeCount()).toBe(48);
+    expect(recording.events).toHaveLength(2);
+
+    // Unknown member: no reducer, engine or world-view change.
+    const unknownCheck = session.getMultiplayerSnapshot();
+    socket.emitMessage(
+      '{"type":"miniCubesRemoved","playerId":"p9","ids":["front:0:0","front:0:1"]}',
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(unknownCheck);
+    expect(worldView.particles.activeCount()).toBe(48);
+    expect(recording.events).toHaveLength(2);
+
+    // Malformed empty batch: the real decoder drops it with no state change.
+    socket.emitMessage('{"type":"miniCubesRemoved","playerId":"p2","ids":[]}');
+    expect(session.getMultiplayerSnapshot()).toBe(unknownCheck);
+    expect(worldView.particles.activeCount()).toBe(48);
+    expect(recording.events).toHaveLength(2);
+
+    session.dispose();
   });
 });
 
