@@ -8,6 +8,7 @@ import { FakeEmailService } from './email.js';
 import { createPasswordHasher, DEFAULT_ARGON2_PARAMS } from './password.js';
 import { createRateLimiter } from './rate-limit.js';
 import authRoutes, { SESSION_COOKIE_NAME } from './auth-routes.js';
+import type { SessionCookieSameSite } from './config.js';
 
 const FIXED_NOW = 1_700_000_000_000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -23,7 +24,12 @@ interface Ctx {
   clock: () => number;
 }
 
-async function buildCtx(): Promise<Ctx> {
+interface CookieOptions {
+  sessionCookieSecure?: boolean;
+  sessionCookieSameSite?: SessionCookieSameSite;
+}
+
+async function buildCtx(cookieOptions: CookieOptions = {}): Promise<Ctx> {
   let now = FIXED_NOW;
   const clock = () => now;
   const users = new InMemoryUserRepository({ now: clock });
@@ -50,7 +56,8 @@ async function buildCtx(): Promise<Ctx> {
     rateLimiter,
     clock,
     allowedOrigin: 'http://localhost:5173',
-    sessionCookieSecure: false,
+    sessionCookieSecure: cookieOptions.sessionCookieSecure ?? false,
+    sessionCookieSameSite: cookieOptions.sessionCookieSameSite ?? 'lax',
     sessionTtlMs: SESSION_TTL_MS,
   });
   await app.ready();
@@ -158,7 +165,8 @@ describe('auth routes', () => {
     expect(res.json().user.verified).toBe(false);
     const sc = getSetCookie(res);
     expect(sc).toContain('HttpOnly');
-    expect(sc.toLowerCase()).toContain('samesite=lax');
+    expect(sc).toContain('SameSite=Lax');
+    expect(sc).not.toContain('Secure');
     expect(sc).toContain('Path=/');
     expect(cookieValue(sc, SESSION_COOKIE_NAME)).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -435,5 +443,118 @@ describe('auth routes', () => {
     const sc = getSetCookie(login);
     expect(sc).toContain('Secure');
     await app.close();
+  });
+
+  it('sets and clears a SameSite=None; Secure cookie when configured', async () => {
+    const cloud = await buildCtx({ sessionCookieSecure: true, sessionCookieSameSite: 'none' });
+    try {
+      await cloud.app.inject({
+        method: 'POST',
+        url: '/auth/register',
+        headers: { origin: 'http://localhost:5173' },
+        payload: { username: 'alice', email: 'a@x.com', password: 'password1234' },
+      });
+      const login = await cloud.app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        headers: { origin: 'http://localhost:5173' },
+        payload: { username: 'alice', password: 'password1234' },
+      });
+      expect(login.statusCode).toBe(200);
+      const sc = getSetCookie(login);
+      expect(sc).toContain('HttpOnly');
+      expect(sc).toContain('Secure');
+      expect(sc).toContain('SameSite=None');
+      expect(sc).toContain('Path=/');
+
+      const token = cookieValue(sc, SESSION_COOKIE_NAME)!;
+      const logout = await cloud.app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { origin: 'http://localhost:5173', cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      });
+      expect(logout.statusCode).toBe(204);
+      const cleared = getSetCookie(logout);
+      expect(cleared).toContain('Secure');
+      expect(cleared).toContain('SameSite=None');
+      expect(cleared).toContain('Path=/');
+    } finally {
+      await cloud.app.close();
+    }
+  });
+
+  it('uses the configured SameSite=Strict value for set and clear', async () => {
+    const strict = await buildCtx({ sessionCookieSameSite: 'strict' });
+    try {
+      await strict.app.inject({
+        method: 'POST',
+        url: '/auth/register',
+        headers: { origin: 'http://localhost:5173' },
+        payload: { username: 'alice', email: 'a@x.com', password: 'password1234' },
+      });
+      const login = await strict.app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        headers: { origin: 'http://localhost:5173' },
+        payload: { username: 'alice', password: 'password1234' },
+      });
+      const sc = getSetCookie(login);
+      expect(sc).toContain('SameSite=Strict');
+      expect(sc).not.toContain('Secure');
+
+      const token = cookieValue(sc, SESSION_COOKIE_NAME)!;
+      const logout = await strict.app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: { origin: 'http://localhost:5173', cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      });
+      const cleared = getSetCookie(logout);
+      expect(cleared).toContain('SameSite=Strict');
+      expect(cleared).not.toContain('Secure');
+    } finally {
+      await strict.app.close();
+    }
+  });
+
+  it('accepts every origin in the configured allowlist and rejects others', async () => {
+    const now = FIXED_NOW;
+    const clock = () => now;
+    const users = new InMemoryUserRepository({ now: clock });
+    const sessions = new InMemorySessionRepository({ now: clock });
+    const tokens = new InMemoryVerificationTokenRepository({ now: clock });
+    const email = new FakeEmailService();
+    const hasher = createPasswordHasher(DEFAULT_ARGON2_PARAMS);
+    const rl = createRateLimiter(clock);
+    const service = createAuthService({ users, sessions, verificationTokens: tokens, email, passwordHasher: hasher, rateLimiter: rl, clock, config: { appBaseUrl: 'http://localhost:5173', sessionTtlMs: SESSION_TTL_MS, verificationTokenTtlMs: 24 * 60 * 60 * 1000 } });
+    const app = Fastify();
+    await app.register(authRoutes, {
+      authService: service,
+      sessions,
+      rateLimiter: rl,
+      clock,
+      allowedOrigins: ['https://app.example.test', 'https://admin.example.test'],
+      sessionTtlMs: SESSION_TTL_MS,
+    });
+    await app.ready();
+    try {
+      const allowed = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        headers: { origin: 'https://admin.example.test' },
+        payload: { username: 'ghost', password: 'password1234' },
+      });
+      expect(allowed.statusCode).toBe(401);
+
+      const denied = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        headers: { origin: 'https://evil.example' },
+        payload: { username: 'ghost', password: 'password1234' },
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json()).toEqual({ message: 'origin not allowed', code: 'origin_not_allowed' });
+    } finally {
+      await app.close();
+    }
   });
 });

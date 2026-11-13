@@ -13,6 +13,12 @@ import { FakeEmailService, SmtpEmailService } from './auth/email.js';
 import { createRateLimiter } from './auth/rate-limit.js';
 import { createAuthService, type AuthService } from './auth/auth-service.js';
 import { authRoutes } from './auth/auth-routes.js';
+import {
+  isWebSocketOriginAllowed,
+  registerCors,
+  resolveCorsOrigins,
+  WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE,
+} from './cors.js';
 
 /** The pinned `hello` envelope the backend sends to every client that connects. */
 export interface HelloMessage {
@@ -115,6 +121,13 @@ export function buildApp(
 ): FastifyInstance {
   const config: GameConfig = { ...loadGameConfig(env), ...options.config };
   const authConfig: AuthConfig = { ...loadAuthConfig(env), ...(options.authConfig ?? {}), ...(options.auth?.authConfig ?? {}) };
+  // Exact-origin allowlist for CORS, the CSRF Origin check and the WS upgrade guard.
+  // `CORS_ORIGIN` is authoritative; `ALLOWED_ORIGIN` (including a buildApp override)
+  // remains the fallback so the local same-origin path is unchanged.
+  const allowedOrigins = resolveCorsOrigins({
+    ...env,
+    ALLOWED_ORIGIN: env.ALLOWED_ORIGIN ?? authConfig.allowedOrigin,
+  });
 
   // Repositories / pool
   const pool = (options.auth?.pool as { end?: () => Promise<void> } | null | undefined) ??
@@ -190,10 +203,18 @@ export function buildApp(
     economy: economy as never,
   });
 
-  const app = Fastify();
+  // Fly terminates TLS at its edge proxy and forwards X-Forwarded-For/Proto to the
+  // machine. Trust those headers only in production (Fly sets NODE_ENV=production via
+  // fly.config.toml) so `request.ip` is the client for auth rate limiting and
+  // `request.protocol` reflects the public https origin; local compose keeps direct
+  // connection semantics and cannot spoof its IP into the limiter.
+  const app = Fastify({ trustProxy: env.NODE_ENV === 'production' });
 
   // cookie support
   app.register(cookie);
+
+  // CORS must run before auth routes so preflights never reach auth/cookie handling.
+  registerCors(app, { allowedOrigins });
 
   // auth routes
   app.register(authRoutes, {
@@ -209,7 +230,9 @@ export function buildApp(
     authConfig,
     config: authConfig,
     allowedOrigin: authConfig.allowedOrigin,
+    allowedOrigins,
     sessionCookieSecure: authConfig.sessionCookieSecure,
+    sessionCookieSameSite: authConfig.sessionCookieSameSite,
     sessionTtlMs: authConfig.sessionTtlMs,
     clock: nowFn,
     now: nowFn,
@@ -254,6 +277,13 @@ export function buildApp(
     await instance.register(websocket);
 
     instance.get('/ws', { websocket: true }, async (socket, req) => {
+      // Browsers do not enforce CORS on WebSocket upgrades: validate a present Origin
+      // against the same exact allowlist and close 1008 before `hello`. A missing
+      // Origin stays allowed for non-browser clients (Node smoke/CLI).
+      if (!isWebSocketOriginAllowed(req.headers.origin, allowedOrigins)) {
+        socket.close(WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE);
+        return;
+      }
       if (!hub.hasCapacity()) {
         socket.close();
         return;

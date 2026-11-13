@@ -23,6 +23,12 @@ export const DEFAULT_APP_BASE_URL = 'http://localhost:5173';
 /** Default allowed Origin for CSRF checks (frontend dev server). */
 export const DEFAULT_ALLOWED_ORIGIN = 'http://localhost:5173';
 
+/** Session-cookie SameSite values accepted from `SESSION_COOKIE_SAMESITE`. */
+export type SessionCookieSameSite = 'lax' | 'strict' | 'none';
+
+/** Default SameSite posture: first-party cookies, local and same-site custom domains. */
+export const DEFAULT_SESSION_COOKIE_SAMESITE: SessionCookieSameSite = 'lax';
+
 /** Default session lifetime in days (AC-16: 7-day sliding expiry). */
 export const DEFAULT_SESSION_TTL_DAYS = 7;
 export const MIN_SESSION_TTL_DAYS = 1;
@@ -64,6 +70,8 @@ export interface AuthConfig {
   allowedOrigin: string;
   /** Whether the session cookie is marked Secure. */
   sessionCookieSecure: boolean;
+  /** SameSite attribute for the session cookie (`none` requires Secure). */
+  sessionCookieSameSite: SessionCookieSameSite;
   /** Session lifetime in days. */
   sessionTtlDays: number;
   /** Session lifetime in milliseconds (derived from `sessionTtlDays`). */
@@ -151,6 +159,22 @@ function readBoolean(
   );
 }
 
+function readSessionCookieSameSite(
+  env: Record<string, string | undefined>,
+): SessionCookieSameSite {
+  const raw = env.SESSION_COOKIE_SAMESITE;
+  if (raw === undefined) {
+    return DEFAULT_SESSION_COOKIE_SAMESITE;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === 'lax' || value === 'strict' || value === 'none') {
+    return value;
+  }
+  throw new Error(
+    `SESSION_COOKIE_SAMESITE must be one of "lax", "strict", or "none"; received "${raw}"`,
+  );
+}
+
 function readDatabaseUrl(
   env: Record<string, string | undefined>,
 ): string | null {
@@ -186,6 +210,10 @@ export function loadAuthConfig(
     DEFAULT_ALLOWED_ORIGIN,
   );
   const sessionCookieSecure = readBoolean(env, 'SESSION_COOKIE_SECURE', false);
+  const sessionCookieSameSite = readSessionCookieSameSite(env);
+  if (sessionCookieSameSite === 'none' && !sessionCookieSecure) {
+    throw new Error('SESSION_COOKIE_SAMESITE=none requires SESSION_COOKIE_SECURE=true');
+  }
   const sessionTtlDays = readInteger(
     env,
     'SESSION_TTL_DAYS',
@@ -232,6 +260,7 @@ export function loadAuthConfig(
     appBaseUrl,
     allowedOrigin,
     sessionCookieSecure,
+    sessionCookieSameSite,
     sessionTtlDays,
     sessionTtlMs: sessionTtlDays * 24 * 60 * 60 * 1000,
     argon2MemoryCost,

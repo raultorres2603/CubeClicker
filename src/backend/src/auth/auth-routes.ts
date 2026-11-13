@@ -13,7 +13,11 @@ import { AuthService, AuthServiceError } from './auth-service.js';
 import type { SessionRepository } from './session-repository.js';
 import type { RateLimiter } from './rate-limit.js';
 import type { Clock } from './rate-limit.js';
-import type { AuthConfig } from './config.js';
+import {
+  DEFAULT_SESSION_COOKIE_SAMESITE,
+  type AuthConfig,
+  type SessionCookieSameSite,
+} from './config.js';
 
 export const SESSION_COOKIE_NAME = 'session';
 
@@ -26,7 +30,9 @@ export interface AuthRoutesOptions {
   authConfig?: Partial<AuthConfig>;
   config?: Partial<AuthConfig>;
   allowedOrigin?: string;
+  allowedOrigins?: string[];
   sessionCookieSecure?: boolean;
+  sessionCookieSameSite?: SessionCookieSameSite;
   sessionTtlMs?: number;
   sessionTtlDays?: number;
   cookieName?: string;
@@ -45,8 +51,9 @@ interface Resolved {
   sessions: SessionRepository | null;
   rateLimiter: RateLimiter | null;
   clock: Clock;
-  allowedOrigin: string;
+  allowedOrigins: readonly string[];
   secure: boolean;
+  sameSite: SessionCookieSameSite;
   sessionTtlMs: number;
   cookieName: string;
 }
@@ -63,13 +70,18 @@ function resolveOpts(opts: AuthRoutesOptions): Resolved {
   const clock = opts.clock ?? opts.now ?? (() => Date.now());
   const cfg = opts.authConfig ?? opts.config ?? {};
   const allowedOrigin = opts.allowedOrigin ?? cfg.allowedOrigin ?? 'http://localhost:5173';
+  const allowedOrigins = opts.allowedOrigins ?? [allowedOrigin];
   const secure = opts.sessionCookieSecure ?? cfg.sessionCookieSecure ?? false;
+  const sameSite =
+    opts.sessionCookieSameSite ??
+    cfg.sessionCookieSameSite ??
+    DEFAULT_SESSION_COOKIE_SAMESITE;
   const sessionTtlMs =
     opts.sessionTtlMs ??
     cfg.sessionTtlMs ??
     (opts.sessionTtlDays ?? cfg.sessionTtlDays ?? 7) * 24 * 60 * 60 * 1000;
   const cookieName = opts.cookieName ?? SESSION_COOKIE_NAME;
-  return { service, sessions, rateLimiter, clock, allowedOrigin, secure, sessionTtlMs, cookieName };
+  return { service, sessions, rateLimiter, clock, allowedOrigins, secure, sameSite, sessionTtlMs, cookieName };
 }
 
 function getBody(request: FastifyRequest): Record<string, unknown> {
@@ -96,9 +108,13 @@ function str(v: unknown): string {
 // blocks CSRF while permitting non-browser clients (curl, server-to-server, WebSocket
 // upgrades) that legitimately omit Origin. Stricter rejection of missing Origin was
 // considered and rejected to avoid breaking those clients.
-function checkOrigin(request: FastifyRequest, reply: FastifyReply, allowedOrigin: string): boolean {
+function checkOrigin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  allowedOrigins: readonly string[],
+): boolean {
   const origin = request.headers.origin;
-  if (origin !== undefined && origin !== null && origin !== allowedOrigin) {
+  if (origin !== undefined && origin !== null && !allowedOrigins.includes(origin)) {
     reply.code(403).send({ message: 'origin not allowed', code: 'origin_not_allowed' });
     return false;
   }
@@ -125,7 +141,7 @@ function setSessionCookie(reply: FastifyReply, r: Resolved, token: string, expir
   reply.setCookie(r.cookieName, token, {
     httpOnly: true,
     secure: r.secure,
-    sameSite: 'lax',
+    sameSite: r.sameSite,
     path: '/',
     maxAge,
     expires: expiresAt ? new Date(expiresAt) : undefined,
@@ -136,7 +152,7 @@ function clearSessionCookie(reply: FastifyReply, r: Resolved): void {
   reply.clearCookie(r.cookieName, {
     httpOnly: true,
     secure: r.secure,
-    sameSite: 'lax',
+    sameSite: r.sameSite,
     path: '/',
   });
 }
@@ -151,7 +167,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- POST /auth/register ----------
   const registerHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     const ip = request.ip || (request.socket as { remoteAddress?: string })?.remoteAddress || 'unknown';
     if (r.rateLimiter && !r.rateLimiter.allow(`ip:${ip}:register`, 5, 60 * 1000)) {
       reply.code(429).send({ message: 'rate limit exceeded', code: 'rate_limited', error: 'rate_limited' });
@@ -178,7 +194,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- POST /auth/login ----------
   const loginHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     const ip = request.ip || (request.socket as { remoteAddress?: string })?.remoteAddress || 'unknown';
     if (r.rateLimiter && !r.rateLimiter.allow(`ip:${ip}:login`, 10, 60 * 1000)) {
       reply.code(429).send({ message: 'rate limit exceeded', code: 'rate_limited', error: 'rate_limited' });
@@ -205,7 +221,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- verify (GET + POST) ----------
   const verifyHandler = async (request: FastifyRequest, reply: FastifyReply, tokenOverride?: string) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     if (!r.service) {
       reply.code(503).send({ message: 'auth service unavailable', code: 'service_unavailable' });
       return;
@@ -230,7 +246,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- resend (POST) ----------
   const resendHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     const ip = request.ip || (request.socket as { remoteAddress?: string })?.remoteAddress || 'unknown';
     if (r.rateLimiter && !r.rateLimiter.allow(`ip:${ip}:resend`, 3, 60 * 60 * 1000)) {
       reply.code(429).send({ message: 'rate limit exceeded', code: 'rate_limited', error: 'rate_limited' });
@@ -256,7 +272,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- logout (POST) ----------
   const logoutHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     const token = getTokenFromCookie(request, r.cookieName);
     if (r.service && token) {
       try {
@@ -314,7 +330,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
 
   // ---------- session-touch (GET + POST) ----------
   const touchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkOrigin(request, reply, r.allowedOrigin)) return;
+    if (!checkOrigin(request, reply, r.allowedOrigins)) return;
     if (!r.service) {
       reply.code(503).send({ message: 'auth service unavailable', code: 'service_unavailable' });
       return;

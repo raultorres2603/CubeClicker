@@ -1,3 +1,4 @@
+import http from 'node:http';
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, helloMessage, toPeer } from './app.js';
@@ -6,6 +7,7 @@ import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
 import type { PartId } from './game/parts.js';
 import { roundCoins, idleCoins } from './game/economy.js';
+import { WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE } from './cors.js';
 
 interface HelloEnvelope {
   type: unknown;
@@ -22,6 +24,120 @@ function listenPort(app: FastifyInstance): number {
     throw new Error('expected an inet address after listen');
   }
   return address.port;
+}
+
+interface RawFrame {
+  opcode: number;
+  payload: Buffer;
+}
+
+interface RawUpgradeResult {
+  statusCode: number;
+  frames: RawFrame[];
+}
+
+/** Parses one unmasked server frame; returns null until the full frame is buffered. */
+function parseRawFrame(buffer: Buffer): { frame: RawFrame; rest: Buffer } | null {
+  if (buffer.length < 2) return null;
+  const opcode = buffer[0]! & 0x0f;
+  const masked = (buffer[1]! & 0x80) !== 0;
+  let length = buffer[1]! & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < 4) return null;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  } else if (length === 127) {
+    if (buffer.length < 10) return null;
+    length = Number(buffer.readBigUInt64BE(2));
+    offset = 10;
+  }
+  const maskBytes = masked ? 4 : 0;
+  if (buffer.length < offset + maskBytes + length) return null;
+  let payload = buffer.subarray(offset + maskBytes, offset + maskBytes + length);
+  if (masked) {
+    const mask = buffer.subarray(offset, offset + 4);
+    payload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]!));
+  }
+  return {
+    frame: { opcode, payload },
+    rest: buffer.subarray(offset + maskBytes + length),
+  };
+}
+
+/**
+ * Performs a raw `node:http` WebSocket upgrade (no client dependency) and resolves with
+ * the upgrade status plus the first frame the server sends. A close frame (opcode 8) or
+ * the first text frame (opcode 1) ends the collection, so an allowed upgrade resolves on
+ * `hello` and a denied upgrade resolves on the close frame, proving no `hello` was sent.
+ */
+function rawUpgrade(port: number, origin?: string): Promise<RawUpgradeResult> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/ws',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        // RFC 6455 example nonce: 16 bytes, accepted by the ws handshake.
+        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version': '13',
+        ...(origin === undefined ? {} : { Origin: origin }),
+      },
+    });
+    let settled = false;
+    let buffer = Buffer.alloc(0);
+    const frames: RawFrame[] = [];
+    const timer = setTimeout(() => {
+      fail(new Error('timed out waiting for WebSocket frames'));
+    }, 2000);
+
+    function fail(error: Error): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    }
+
+    function settle(response: http.IncomingMessage): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ statusCode: response.statusCode ?? 0, frames });
+    }
+
+    request.on('upgrade', (response, socket, head) => {
+      buffer = Buffer.from(head);
+      const drain = (): void => {
+        for (;;) {
+          const parsed = parseRawFrame(buffer);
+          if (parsed === null) return;
+          buffer = parsed.rest;
+          frames.push(parsed.frame);
+          if (parsed.frame.opcode === 8 || parsed.frame.opcode === 1) {
+            socket.end();
+            settle(response);
+            return;
+          }
+        }
+      };
+      socket.on('data', (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        drain();
+      });
+      socket.on('close', () => {
+        settle(response);
+      });
+      socket.on('error', fail);
+      drain();
+    });
+    request.on('response', (response) => {
+      fail(new Error(`expected a WebSocket upgrade, received HTTP ${response.statusCode}`));
+    });
+    request.on('error', fail);
+    request.end();
+  });
 }
 
 /** Opens a real client (Node's global WebSocket) and resolves with the first message. */
@@ -517,6 +633,113 @@ describe('GET /ws', () => {
     } finally {
       accepted.close();
       await app.close();
+    }
+  });
+});
+
+describe('GET /ws Origin guard (AC-7)', () => {
+  it('closes a present, non-allowlisted Origin with 1008 and sends no hello', async () => {
+    const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const result = await rawUpgrade(listenPort(app), 'https://evil.example');
+
+      expect(result.statusCode).toBe(101);
+      expect(result.frames.map((frame) => frame.opcode)).toEqual([8]);
+      expect(result.frames[0]!.payload.readUInt16BE(0)).toBe(
+        WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE,
+      );
+      expect(WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE).toBe(1008);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('sends the pinned hello to an allowlisted Origin', async () => {
+    const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const result = await rawUpgrade(listenPort(app), 'https://app.example.test');
+
+      expect(result.statusCode).toBe(101);
+      expect(result.frames.map((frame) => frame.opcode)).toEqual([1]);
+      const message = JSON.parse(result.frames[0]!.payload.toString('utf8')) as HelloEnvelope;
+      expect(message.type).toBe('hello');
+      expect(isIsoDate(message.serverTime)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('sends hello when Origin is absent for non-browser clients', async () => {
+    const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const result = await rawUpgrade(listenPort(app));
+
+      expect(result.statusCode).toBe(101);
+      expect(result.frames.map((frame) => frame.opcode)).toEqual([1]);
+      const message = JSON.parse(result.frames[0]!.payload.toString('utf8')) as HelloEnvelope;
+      expect(message.type).toBe('hello');
+      expect(isIsoDate(message.serverTime)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps the local dev origin allowed with the default allowlist', async () => {
+    const app = buildApp({});
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const result = await rawUpgrade(listenPort(app), 'http://localhost:5173');
+
+      expect(result.statusCode).toBe(101);
+      expect(result.frames.map((frame) => frame.opcode)).toEqual([1]);
+      const message = JSON.parse(result.frames[0]!.payload.toString('utf8')) as HelloEnvelope;
+      expect(message.type).toBe('hello');
+      expect(isIsoDate(message.serverTime)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('trust proxy (Fly)', () => {
+  it('trusts X-Forwarded-For/Proto in production and ignores them locally', async () => {
+    const production = buildApp({ NODE_ENV: 'production' });
+    production.get('/test/request-origin', async (request) => ({
+      ip: request.ip,
+      protocol: request.protocol,
+    }));
+    await production.ready();
+    try {
+      const response = await production.inject({
+        method: 'GET',
+        url: '/test/request-origin',
+        headers: { 'x-forwarded-for': '203.0.113.9', 'x-forwarded-proto': 'https' },
+        remoteAddress: '10.0.0.2',
+      });
+      expect(response.json()).toEqual({ ip: '203.0.113.9', protocol: 'https' });
+    } finally {
+      await production.close();
+    }
+
+    const local = buildApp({ NODE_ENV: 'development' });
+    local.get('/test/request-origin', async (request) => ({
+      ip: request.ip,
+      protocol: request.protocol,
+    }));
+    await local.ready();
+    try {
+      const response = await local.inject({
+        method: 'GET',
+        url: '/test/request-origin',
+        headers: { 'x-forwarded-for': '203.0.113.9', 'x-forwarded-proto': 'https' },
+        remoteAddress: '127.0.0.1',
+      });
+      expect(response.json()).toEqual({ ip: '127.0.0.1', protocol: 'http' });
+    } finally {
+      await local.close();
     }
   });
 });

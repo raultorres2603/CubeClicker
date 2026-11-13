@@ -6,6 +6,7 @@ import {
   DEFAULT_ARGON2_MEMORY_COST,
   DEFAULT_ARGON2_PARALLELISM,
   DEFAULT_ARGON2_TIME_COST,
+  DEFAULT_SESSION_COOKIE_SAMESITE,
   DEFAULT_SESSION_TTL_DAYS,
   DEFAULT_SMTP_FROM,
   DEFAULT_SMTP_HOST,
@@ -33,6 +34,7 @@ const DEFAULT_CONFIG = {
   appBaseUrl: 'http://localhost:5173',
   allowedOrigin: 'http://localhost:5173',
   sessionCookieSecure: false,
+  sessionCookieSameSite: 'lax',
   sessionTtlDays: 7,
   sessionTtlMs: 7 * 24 * 60 * 60 * 1000,
   argon2MemoryCost: 19456,
@@ -48,6 +50,7 @@ describe('pinned constants', () => {
     expect(DEFAULT_SMTP_FROM).toBe('no-reply@cubeclicker.local');
     expect(DEFAULT_APP_BASE_URL).toBe('http://localhost:5173');
     expect(DEFAULT_ALLOWED_ORIGIN).toBe('http://localhost:5173');
+    expect(DEFAULT_SESSION_COOKIE_SAMESITE).toBe('lax');
     expect(DEFAULT_SESSION_TTL_DAYS).toBe(7);
     expect(MIN_SESSION_TTL_DAYS).toBe(1);
     expect(MAX_SESSION_TTL_DAYS).toBe(365);
@@ -170,6 +173,46 @@ describe('SESSION_COOKIE_SECURE', () => {
     expect(() => loadAuthConfig({ SESSION_COOKIE_SECURE: 'yes' })).toThrowError(
       'SESSION_COOKIE_SECURE must be a boolean ("true", "false", "1", or "0"); received "yes"',
     );
+  });
+});
+
+describe('SESSION_COOKIE_SAMESITE', () => {
+  it('defaults to lax', () => {
+    expect(loadAuthConfig({}).sessionCookieSameSite).toBe('lax');
+    expect(DEFAULT_SESSION_COOKIE_SAMESITE).toBe('lax');
+  });
+
+  it('accepts lax, strict and none case-insensitively', () => {
+    expect(loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'lax' }).sessionCookieSameSite).toBe('lax');
+    expect(loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'STRICT' }).sessionCookieSameSite).toBe(
+      'strict',
+    );
+    expect(
+      loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'None', SESSION_COOKIE_SECURE: 'true' })
+        .sessionCookieSameSite,
+    ).toBe('none');
+  });
+
+  it('rejects an unknown value naming the variable', () => {
+    expect(() => loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'weird' })).toThrowError(
+      'SESSION_COOKIE_SAMESITE must be one of "lax", "strict", or "none"; received "weird"',
+    );
+    expect(() => loadAuthConfig({ SESSION_COOKIE_SAMESITE: '' })).toThrowError(
+      'SESSION_COOKIE_SAMESITE must be one of "lax", "strict", or "none"; received ""',
+    );
+  });
+
+  it('requires Secure when SameSite is none', () => {
+    expect(() => loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'none' })).toThrowError(
+      'SESSION_COOKIE_SAMESITE=none requires SESSION_COOKIE_SECURE=true',
+    );
+    expect(() =>
+      loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'none', SESSION_COOKIE_SECURE: 'false' }),
+    ).toThrowError('SESSION_COOKIE_SAMESITE=none requires SESSION_COOKIE_SECURE=true');
+    expect(
+      loadAuthConfig({ SESSION_COOKIE_SAMESITE: 'none', SESSION_COOKIE_SECURE: 'true' })
+        .sessionCookieSecure,
+    ).toBe(true);
   });
 });
 
