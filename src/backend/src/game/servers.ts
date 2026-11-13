@@ -16,7 +16,9 @@
  * - move plan: pack membership toward the lowest ids; donors are members of higher-id servers
  *   taken in **join order** (a refilled hole can make slot order differ); a planned target is
  *   always strictly lower (spec § 4, AC-10);
- * - empty servers are destroyed immediately and ids are never reused (spec § 1, AC-3).
+ * - empty servers are destroyed immediately and ids are never reused (spec § 1, AC-3);
+ * - the O(1) location index (`locations`/`serversById`) is derived from the slot tables and
+ *   kept in sync by every mutator, while `servers()` stays a defensive snapshot (AC-4…AC-6).
  */
 
 /** Pinned ring arc spacing — the accepted cube spacing (`CUBE_SPACING`), spec § 5. */
@@ -56,6 +58,12 @@ export interface PickedServer extends ServerAssignment {
 export interface MemberRemoval {
   left: boolean;
   serverDestroyed: boolean;
+}
+
+/** A live member's position in the registry (the shape {@link ServerRegistry.locationOf} returns). */
+export interface ServerLocation {
+  serverId: number;
+  slot: number;
 }
 
 /**
@@ -227,6 +235,17 @@ export interface ServerRegistry {
   serverCount(): number;
   /** A snapshot of the live servers in ascending id order (defensive copies of the slot tables). */
   servers(): ServerState[];
+  /**
+   * O(1) live location from the maintained index; a fresh object, or `null` for an unknown
+   * member (AC-4).
+   */
+  locationOf(playerId: string): ServerLocation | null;
+  /**
+   * Visits the occupied slots of one server in ascending slot order, skipping holes. The
+   * visitor receives primitives only, so no mutable slot table escapes (AC-5). An unknown or
+   * destroyed server visits nothing.
+   */
+  forEachMember(serverId: number, visit: (playerId: string, slot: number) => void): void;
   /** Applies the join rule: picks the lowest-id server with a free slot (lowest free slot), creating one when needed. */
   assign(joining: string): ServerAssignment;
   /** Removes a member, vacating exactly their slot and destroying their server when it becomes empty. */
@@ -250,20 +269,35 @@ export interface ServerRegistry {
  */
 export function createServerRegistry(maxUsersPerServer: number): ServerRegistry {
   const servers: ServerState[] = [];
+  /** Derived index: live member → `{ serverId, slot }` (updated by every mutator). */
+  const locations = new Map<string, ServerLocation>();
+  /** Derived index: live server id → its slot table (same object as the array entry). */
+  const serversById = new Map<number, ServerState>();
   /** Monotonic join sequence per live member (spec § 4: donors are taken in join order). */
   const joinSequence = new Map<string, number>();
   let joinCounter = 0;
   let nextId = 1;
 
-  /** Finds a member's server and its 1-based slot (the slot table index is `slot − 1`). */
-  function locate(playerId: string): { serverIndex: number; slot: number } | null {
-    for (let serverIndex = 0; serverIndex < servers.length; serverIndex += 1) {
-      const slot = servers[serverIndex].members.indexOf(playerId);
-      if (slot !== -1) {
-        return { serverIndex, slot: slot + 1 };
-      }
+  /** Resolves a member's indexed location to its live server and 1-based slot. */
+  function locate(playerId: string): { server: ServerState; slot: number } | null {
+    const location = locations.get(playerId);
+    if (location === undefined) {
+      return null;
     }
-    return null;
+    const server = serversById.get(location.serverId);
+    if (server === undefined) {
+      return null;
+    }
+    return { server, slot: location.slot };
+  }
+
+  /** Destroys an emptied server: removes it from the ascending table and both indexes. */
+  function destroy(server: ServerState): void {
+    const index = servers.indexOf(server);
+    if (index !== -1) {
+      servers.splice(index, 1);
+    }
+    serversById.delete(server.id);
   }
 
   return {
@@ -275,15 +309,38 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
       return servers.map((server) => ({ id: server.id, members: [...server.members] }));
     },
 
+    locationOf(playerId: string): ServerLocation | null {
+      const location = locations.get(playerId);
+      return location === undefined
+        ? null
+        : { serverId: location.serverId, slot: location.slot };
+    },
+
+    forEachMember(serverId: number, visit: (playerId: string, slot: number) => void): void {
+      const server = serversById.get(serverId);
+      if (server === undefined) {
+        return;
+      }
+      for (let index = 0; index < server.members.length; index += 1) {
+        const playerId = server.members[index];
+        if (playerId !== null) {
+          visit(playerId, index + 1);
+        }
+      }
+    },
+
     assign(joining: string): ServerAssignment {
       const picked = pickServer(servers, maxUsersPerServer, nextId);
       if (picked.created) {
         // A fresh id is always the highest, so appending keeps the ascending invariant.
-        servers.push({ id: picked.serverId, members: [] });
+        const created: ServerState = { id: picked.serverId, members: [] };
+        servers.push(created);
+        serversById.set(created.id, created);
         nextId = picked.serverId + 1;
       }
-      const server = servers.find((candidate) => candidate.id === picked.serverId)!;
+      const server = serversById.get(picked.serverId)!;
       place(server, picked.slot, joining);
+      locations.set(joining, { serverId: picked.serverId, slot: picked.slot });
       joinCounter += 1;
       joinSequence.set(joining, joinCounter);
       return { serverId: picked.serverId, slot: picked.slot };
@@ -294,11 +351,11 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
       if (where === null) {
         return { left: false, serverDestroyed: false };
       }
-      const server = servers[where.serverIndex];
-      vacate(server, where.slot);
+      vacate(where.server, where.slot);
+      locations.delete(playerId);
       joinSequence.delete(playerId);
-      if (occupiedCount(server.members) === 0) {
-        servers.splice(where.serverIndex, 1);
+      if (occupiedCount(where.server.members) === 0) {
+        destroy(where.server);
         return { left: true, serverDestroyed: true };
       }
       return { left: true, serverDestroyed: false };
@@ -309,12 +366,12 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
       if (where === null) {
         return null;
       }
-      const current = servers[where.serverIndex];
+      const current = where.server;
       // Moves only ever go down: equal or higher targets are rejected (stability, AC-10).
       if (targetServerId >= current.id) {
         return null;
       }
-      const target = servers.find((candidate) => candidate.id === targetServerId);
+      const target = serversById.get(targetServerId);
       if (target === undefined) {
         return null;
       }
@@ -325,8 +382,9 @@ export function createServerRegistry(maxUsersPerServer: number): ServerRegistry 
 
       vacate(current, where.slot);
       place(target, slot, playerId);
+      locations.set(playerId, { serverId: target.id, slot });
       if (occupiedCount(current.members) === 0) {
-        servers.splice(where.serverIndex, 1);
+        destroy(current);
       }
       return { slot };
     },

@@ -484,3 +484,246 @@ describe('composition: config + registry + ring layout (AC-11 at registry level)
     expect([...registry.plan()]).toEqual([]);
   });
 });
+
+describe('registry index (T2)', () => {
+  /** A tiny deterministic LCG (no runtime randomness): state advances on every draw. */
+  function createSeededRandom(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  }
+
+  it('returns the snapshot location for a live member and a fresh object every call', () => {
+    const registry = createServerRegistry(3);
+    registry.assign('p1');
+    registry.assign('p2');
+
+    expect(registry.locationOf('p1')).toEqual({ serverId: 1, slot: 1 });
+    expect(registry.locationOf('p2')).toEqual({ serverId: 1, slot: 2 });
+
+    const first = registry.locationOf('p1');
+    const second = registry.locationOf('p1');
+    expect(first).not.toBe(second);
+    // Mutating a returned location never reaches the registry (fresh object, not an alias).
+    first!.serverId = 42;
+    first!.slot = 99;
+    expect(registry.locationOf('p1')).toEqual({ serverId: 1, slot: 1 });
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p2')]);
+  });
+
+  it('returns null for an unknown member', () => {
+    const registry = createServerRegistry(3);
+    registry.assign('p1');
+
+    expect(registry.locationOf('ghost')).toBeNull();
+    expect(registry.removeMember('ghost')).toEqual({ left: false, serverDestroyed: false });
+    expect(registry.locationOf('p1')).toEqual({ serverId: 1, slot: 1 });
+  });
+
+  it('keeps survivors on their slots across a hole and tracks the member that refills it', () => {
+    const registry = createServerRegistry(3);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+
+    // p2 leaves slot 2 of server 1: an explicit hole, survivors keep slots 1 and 3.
+    expect(registry.removeMember('p2')).toEqual({ left: true, serverDestroyed: false });
+    expect(registry.locationOf('p2')).toBeNull();
+    expect(registry.locationOf('p1')).toEqual({ serverId: 1, slot: 1 });
+    expect(registry.locationOf('p3')).toEqual({ serverId: 1, slot: 3 });
+    expect(registry.locationOf('p4')).toEqual({ serverId: 2, slot: 1 });
+
+    // The next join refills the lowest hole (slot 2) without moving anyone.
+    expect(registry.assign('p5')).toEqual({ serverId: 1, slot: 2 });
+    expect(registry.locationOf('p5')).toEqual({ serverId: 1, slot: 2 });
+    expect(registry.locationOf('p3')).toEqual({ serverId: 1, slot: 3 });
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p5', 'p3'), server(2, 'p4')]);
+  });
+
+  it('tracks an executed move and clears the member’s old slot', () => {
+    const registry = createServerRegistry(3);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+    registry.removeMember('p2');
+
+    expect(registry.moveMember('p4', 1)).toEqual({ slot: 2 });
+    expect(registry.locationOf('p4')).toEqual({ serverId: 1, slot: 2 });
+    expect(registry.locationOf('p2')).toBeNull();
+    expect(registry.locationOf('p3')).toEqual({ serverId: 1, slot: 3 });
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p4', 'p3')]);
+  });
+
+  it('drops the index and the server entry when an emptied server is destroyed', () => {
+    const registry = createServerRegistry(2);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+
+    expect(registry.removeMember('p3')).toEqual({ left: true, serverDestroyed: true });
+    expect(registry.locationOf('p3')).toBeNull();
+    expect(registry.serverCount()).toBe(1);
+
+    let visits = 0;
+    registry.forEachMember(2, () => {
+      visits += 1;
+    });
+    expect(visits).toBe(0);
+
+    // The destroyed id is never reused; the next overflow creates a fresh id.
+    expect(registry.assign('p4')).toEqual({ serverId: 3, slot: 1 });
+    expect(registry.locationOf('p4')).toEqual({ serverId: 3, slot: 1 });
+  });
+
+  it('visits occupied slots ascending, skipping holes, and passes primitives only', () => {
+    const registry = createServerRegistry(4);
+    registry.assign('p1');
+    registry.assign('p2');
+    registry.assign('p3');
+    registry.assign('p4');
+    registry.assign('p5');
+    registry.assign('p6');
+    registry.removeMember('p2');
+    registry.removeMember('p4');
+    registry.assign('p7');
+
+    // Server 1 slots: 1 p1, 2 p7 (refilled hole), 3 p3; slot 4 was trimmed after p4 left.
+    const visited: Array<[string, number]> = [];
+    const visits: string[] = [];
+    registry.forEachMember(1, (playerId, slot) => {
+      visited.push([playerId, slot]);
+      visits.push(`${typeof playerId}:${typeof slot}`);
+    });
+
+    expect(visited).toEqual([
+      ['p1', 1],
+      ['p7', 2],
+      ['p3', 3],
+    ]);
+    expect(visits).toEqual(['string:number', 'string:number', 'string:number']);
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p7', 'p3'), server(2, 'p5', 'p6')]);
+  });
+
+  it('visits nothing for an unknown server id', () => {
+    const registry = createServerRegistry(2);
+    registry.assign('p1');
+
+    const visited: string[] = [];
+    registry.forEachMember(999, (playerId, slot) => {
+      visited.push(`${playerId}:${slot}`);
+    });
+
+    expect(visited).toEqual([]);
+  });
+
+  it('keeps locationOf equal to every servers() snapshot location over 200 seeded operations', () => {
+    const registry = createServerRegistry(3);
+    const random = createSeededRandom(0x5eed);
+    const everAssigned = new Set<string>();
+    let nextPlayer = 1;
+    let holes = 0;
+    let destroyed = 0;
+    let moves = 0;
+    let maxServerCount = 0;
+    let minServerCount = Number.POSITIVE_INFINITY;
+
+    for (let step = 0; step < 200; step += 1) {
+      const roll = random();
+      const live = [...everAssigned].filter((playerId) => registry.locationOf(playerId) !== null);
+
+      if (roll < 0.4 || live.length === 0) {
+        const playerId = `p${nextPlayer}`;
+        nextPlayer += 1;
+        const assignment = registry.assign(playerId);
+        everAssigned.add(playerId);
+        expect(registry.locationOf(playerId)).toEqual({
+          serverId: assignment.serverId,
+          slot: assignment.slot,
+        });
+      } else if (roll < 0.7) {
+        const playerId = live[Math.floor(random() * live.length)]!;
+        const removal = registry.removeMember(playerId);
+        expect(removal.left).toBe(true);
+        if (removal.serverDestroyed) {
+          destroyed += 1;
+        } else {
+          holes += 1;
+        }
+        expect(registry.locationOf(playerId)).toBeNull();
+      } else {
+        const playerId = live[Math.floor(random() * live.length)]!;
+        const before = registry.locationOf(playerId)!;
+        const targetServerId = 1 + Math.floor(random() * 4);
+        const moved = registry.moveMember(playerId, targetServerId);
+        if (moved === null) {
+          expect(registry.locationOf(playerId)).toEqual(before);
+        } else {
+          moves += 1;
+          expect(targetServerId).toBeLessThan(before.serverId);
+          expect(registry.locationOf(playerId)).toEqual({
+            serverId: targetServerId,
+            slot: moved.slot,
+          });
+          // The moved member is the only slot that changed on the target.
+          const visitTarget = registry.servers().find((entry) => entry.id === targetServerId)!;
+          expect(visitTarget.members[moved.slot - 1]).toBe(playerId);
+        }
+      }
+
+      // Invariant after every step: for every id ever assigned, locationOf matches the
+      // snapshot location when live and is null otherwise.
+      const snapshot = registry.servers();
+      const liveLocations = new Map<string, { serverId: number; slot: number }>();
+      for (const entry of snapshot) {
+        for (let index = 0; index < entry.members.length; index += 1) {
+          const member = entry.members[index];
+          if (member !== null) {
+            liveLocations.set(member, { serverId: entry.id, slot: index + 1 });
+          }
+        }
+      }
+      for (const playerId of everAssigned) {
+        expect(registry.locationOf(playerId)).toEqual(liveLocations.get(playerId) ?? null);
+      }
+
+      // Ascending server ids and one slot per member (the unchanged registry invariant).
+      expect(snapshot.map((entry) => entry.id)).toEqual(
+        [...snapshot.map((entry) => entry.id)].sort((left, right) => left - right),
+      );
+      expect(liveLocations.size).toBe(
+        snapshot.reduce(
+          (count, entry) => count + entry.members.filter((member) => member !== null).length,
+          0,
+        ),
+      );
+      maxServerCount = Math.max(maxServerCount, snapshot.length);
+      minServerCount = Math.min(minServerCount, snapshot.length);
+    }
+
+    // The seeded sequence must actually exercise all three churn kinds.
+    expect(holes).toBeGreaterThan(0);
+    expect(destroyed).toBeGreaterThan(0);
+    expect(moves).toBeGreaterThan(0);
+    expect(maxServerCount).toBeGreaterThan(1);
+    expect(minServerCount).toBeLessThan(maxServerCount);
+  });
+
+  it('keeps the defensive servers() contract against entry mutation', () => {
+    const registry = createServerRegistry(3);
+    registry.assign('p1');
+    registry.assign('p2');
+
+    const snapshot = registry.servers();
+    snapshot[0].members[0] = 'intruder';
+    snapshot[0].members.reverse();
+    snapshot[0].id = 99;
+
+    expect(registry.servers()).toEqual([server(1, 'p1', 'p2')]);
+    expect(registry.locationOf('p1')).toEqual({ serverId: 1, slot: 1 });
+    expect(registry.locationOf('intruder')).toBeNull();
+  });
+});
