@@ -1,8 +1,8 @@
 ---
 feature: realtime-broadcast-batching
-state: building
+state: accepted
 spec_review_round: 4
-build_round: 1
+build_round: 2
 created: 2026-11-13
 updated: 2026-11-13
 ---
@@ -18,7 +18,7 @@ Next performance feature of the approved audit queue: the hub serializes every s
 - [x] T2 — Registry index, broadcast schedulers, benchmark harness (builder) `[seq]`
 - [x] T3 — Hub fan-out, batching, economy coalescing, smoke burst (builder) `[seq]`
 - [x] T4 — Frontend consumption (reducer/session/world) (builder) `[seq]`
-- [ ] T5 — Documentation and final verification (builder) `[seq]`
+- [x] T5 — Documentation and final verification (builder) `[seq]`
 
 ## Loop log
 
@@ -36,6 +36,9 @@ Next performance feature of the approved audit queue: the hub serializes every s
 - 2026-11-13 — building T2 completed — registry index + broadcast batchers + benchmark baseline; commit `b47af70`; backend 903 tests; coverage 95.49/88/99.72/95.49; baseline encode 10/broadcast, removal 100, economy 100, p95 2.45 ms — `build-log-T2.md`
 - 2026-11-13 — building T3 completed — economy revisions (`728d930`), hub encode-once/batching/coalescing (`6dab4f0`), after benchmark + smoke (`50bc999`); backend 959 tests, coverage 94.63/87.35/99.46/94.63; encode 1, registry 0, removal 4, economy 4, p95 41.24 ms; smoke 21/21 — `build-log-T3.md`
 - 2026-11-13 — building T4 completed — frontend batch consumption + AC-18 integration chain; commit `18dea2d`; frontend 1844 tests, coverage 96.47/96.14/97.54/96.47 — `build-log-T4.md`
+- 2026-11-13 — building T5 completed — docs + final verification; commit `53f7cbd`; full suite 2,803 tests; coverage backend 94.63/87.35/99.46/94.63, frontend 96.47/96.14/97.54/96.47; build + smoke 21/21 + benchmark green — `build-log-T5.md`
+- 2026-11-13 — building → code_review — all T1-T5 verified; docs/index row pending — `build-log-T5.md`
+- 2026-11-13 — code_review → accepted — code review r1 approved (0 blockers); all 30 ACs verified; final smoke evidence rebuild pending in build log — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 
@@ -47,4 +50,4 @@ Next performance feature of the approved audit queue: the hub serializes every s
 - Q-6 — completion message fusion: recommended no (encode-once only); builder default.
 - Q-7 — `HubDeps.registry` test seam: recommended include; builder default.
 - Q-8 — docs home: new `docs/architecture/realtime.md` plus README benchmark subsection; builder default.
-- Spec approved r4 (0 blockers); awaiting Q-1..Q-5 user confirmation. No code, protocol, test or feature state has been changed.
+- Accepted r1 (0 blockers); final smoke evidence rebuild recorded in `build-log-T5.md`; feature-index row applied.

@@ -52,5 +52,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | agent-skill-migration | Agent Skill Migration & Repository-State Repair (restore pipeline skills, track imported packs, curate allow-lists, reconcile feature index) | accepted | 2026-11-12 |
 | adaptive-render-budget-v2 | Adaptive Render Budget v2 (gate-deferred renderer, GPU-scaled tiers, sorted p95) | accepted | 2026-11-12 |
 | frontend-delivery-hardening | Frontend Delivery Hardening (gate-deferred three.js chunk, bundle budget, nginx gzip/immutable assets, prod smoke) | accepted | 2026-11-13 |
+| realtime-broadcast-batching | Real-Time Broadcast Batching (encode-once fan-out, registry index, 40 ms removal batches, 4 Hz economy coalescing) | accepted | 2026-11-13 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

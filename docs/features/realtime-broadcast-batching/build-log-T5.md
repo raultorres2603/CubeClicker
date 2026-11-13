@@ -370,3 +370,147 @@ This is the stat of the T5 commit before this stat block itself was appended. Th
 amended with `git commit --amend --no-edit` to carry the recorded stat; the file set is
 unchanged (only this log's insertion count grows). The pre-existing `build-log-T1.md`–
 `build-log-T4.md` were committed with their own tasks.
+
+## Final-image smoke evidence (code-review F1)
+
+Code review r1 (F1) found that the T5 smoke section above was captured against a stale
+`frontend-prod` image: it served `assets/index-Cu7lmcVH.js` (87,059 B, the T3 bundle) while the
+T5 build produced `assets/index-BiM91p6y.js` (87,485 B, the T4 bundle). The stale run above is
+kept as history. At acceptance, `frontend-prod` was rebuilt from the current tree
+(`HEAD 53f7cbd`, working tree clean apart from the acceptance docs) and `npm run smoke` was
+re-run against the final bundle.
+
+Rebuild command (exit 0):
+
+```
+$ podman compose -f compose.yaml -f compose.smoke.yaml build frontend-prod
+```
+
+Raw output (build-context progress lines elided; every build step below is the verbatim
+`STEP`/cache/result output of the rebuild):
+
+```
+[2/3] STEP 1/10: FROM docker.io/library/node:24-alpine AS build
+[2/3] STEP 2/10: WORKDIR /app
+--> Using cache 08aa04b85941e76e1085e0667b2619260c8e651314d285cb17054f3f934793d3
+--> 08aa04b85941
+[2/3] STEP 3/10: COPY package.json package-lock.json tsconfig.json ./
+--> Using cache 2903b704bcf444813f06bb7bbe0bfbae2dd6ded3f2638b64d75cf276c8f474b8
+--> 2903b704bcf4
+[2/3] STEP 4/10: COPY src/backend/package.json src/backend/package.json
+--> Using cache 80a0004ef70eac788efdce8b18c568ffe25b7a25fa4244480d8b84de0e077031
+--> 80a0004ef70e
+[2/3] STEP 5/10: COPY src/frontend/package.json src/frontend/package.json
+--> Using cache bf9412ee93dd609c614fdbca75422fee5d2a758f6ad858275853db7b351daf95
+--> bf9412ee93dd
+[2/3] STEP 6/10: RUN npm ci
+--> Using cache 5d525c560d53fdb0703e1aadfddd640e98b907462a266c052a21c4599931b5a2
+--> 5d525c560d53
+[2/3] STEP 7/10: COPY src/frontend src/frontend
+--> Using cache b0e78afa8fb8a69ca99a1d543b20216210e55f68e0307a57f250cc3c36c725e3
+--> b0e78afa8fb8
+[2/3] STEP 8/10: ARG VITE_WS_URL="ws://localhost:8080/ws"
+--> Using cache aa9adc32c1f4458800e9dff8fdcaa5987f97ddce798efaa88c2dc9d2d773462a
+--> aa9adc32c1f4
+[2/3] STEP 9/10: ENV VITE_WS_URL=${VITE_WS_URL}
+--> Using cache 54ef942f787f0a1ba65b29ecf4d7d7f174223181fa2ae9ae82fae41726c5c593
+--> 54ef942f787f
+[2/3] STEP 10/10: RUN npm run build -w @cubeclicker/frontend
+--> Using cache a77ae4bf34f98924931d1e07b96ab0519e71db5b4cede2f95367c78a666881a8
+--> a77ae4bf34f9
+[3/3] STEP 1/6: FROM docker.io/nginxinc/nginx-unprivileged:1.27-alpine AS prod
+[3/3] STEP 2/6: COPY src/frontend/nginx.conf /etc/nginx/conf.d/default.conf
+--> Using cache bd692aaa86d3e862d916a3985e544c6e405ac904775732e1b57680b3c63d9d5a
+--> bd692aaa86d3
+[3/3] STEP 3/6: COPY --from=build /app/src/frontend/dist/ /usr/share/nginx/html/
+--> Using cache b3dded702c7f6c6886101f1e72934a0858cad92f5cb083c8f22ecfa393f81c13
+--> b3dded702c7f
+[3/3] STEP 4/6: EXPOSE 8080
+--> Using cache 04e2685385b702bfd0e29c88fa774c80cda6eecc6f11e6339fbbecf77fc85597
+--> 04e2685385b7
+[3/3] STEP 5/6: HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=15s   CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+--> Using cache 67e7ba0a34cf84043de26a15f2eacf3dad77a97e0e515dabf3200b881e2c06ab
+--> 67e7ba0a34cf
+[3/3] STEP 6/6: LABEL "com.docker.compose.image.builder"="classic"
+--> Using cache a262a5625f5713080c39572a30c35e4d2953d37ee3eee0a096ad44c6122858a3
+[3/3] COMMIT docker.io/library/cubeclicker-frontend:prod-smoke
+--> a262a5625f57
+Successfully tagged docker.io/library/cubeclicker-frontend:prod-smoke
+a262a5625f5713080c39572a30c35e4d2953d37ee3eee0a096ad44c6122858a3
+Successfully built a262a5625f57
+Successfully tagged cubeclicker-frontend:prod-smoke
+ Image cubeclicker-frontend:prod-smoke Built 
+ Image cubeclicker-frontend:prod-smoke Built 
+```
+
+Image/container identity and final entry bundle:
+
+```
+$ podman image inspect docker.io/library/cubeclicker-frontend:prod-smoke --format '{{.Id}} created={{.Created}}'
+a262a5625f5713080c39572a30c35e4d2953d37ee3eee0a096ad44c6122858a3 created=2026-11-13 11:28:32.649834112 +0000 UTC
+$ podman inspect cubeclicker-frontend-prod-1 --format 'image={{.Image}} imageName={{.ImageName}} started={{.State.StartedAt}}'
+image=a262a5625f5713080c39572a30c35e4d2953d37ee3eee0a096ad44c6122858a3 imageName=docker.io/library/cubeclicker-frontend:prod-smoke started=2026-11-13 12:28:41.455524506 +0100 CET
+$ podman run --rm --entrypoint sha256sum docker.io/library/cubeclicker-frontend:prod-smoke /usr/share/nginx/html/assets/index-BiM91p6y.js
+79f9d0e67f28988cad560d610938bf9f204e84f99e455f495865b9730f40acc9  /usr/share/nginx/html/assets/index-BiM91p6y.js
+$ sha256sum src/frontend/dist/assets/index-BiM91p6y.js
+79f9d0e67f28988cad560d610938bf9f204e84f99e455f495865b9730f40acc9  src/frontend/dist/assets/index-BiM91p6y.js
+$ grep -o 'assets/index-[A-Za-z0-9_-]*\.js' src/frontend/dist/index.html
+assets/index-BiM91p6y.js
+```
+
+- Final entry bundle: `assets/index-BiM91p6y.js` (Vite content hash `BiM91p6y`), 87,485 B raw;
+  file SHA-256 `79f9d0e67f28988cad560d610938bf9f204e84f99e455f495865b9730f40acc9`, identical
+  inside the `frontend-prod` image and in the local `npm run build` output.
+- The running `cubeclicker-frontend-prod-1` container uses image `a262a5625f57…`, the image
+  produced by the rebuild command above, so the smoke run below exercised the final bundle.
+  Compose reported the container as `Running` (no recreate) because the rebuild is a
+  deterministic cache hit that produced the same image ID the reviewer's rebuild had already
+  started; the served-asset check pins the actual bundle bytes.
+
+Final-image smoke — `npm run smoke` (exit 0; ANSI escapes stripped):
+
+```
+
+> smoke
+> podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke
+
+>>>> Executing external compose provider "/usr/local/bin/docker-compose". Please see podman-compose(1) for how to disable this message. <<<<
+
+ Container cubeclicker-db-1 Running 
+ Container cubeclicker-mailpit-1 Running 
+ Container cubeclicker-backend-1 Running 
+ Container cubeclicker-frontend-prod-1 Running 
+ Container cubeclicker-frontend-1 Running 
+ Container cubeclicker-db-1 Waiting 
+ Container cubeclicker-db-1 Healthy 
+ Container cubeclicker-smoke-run-da0b5f5e15b5 Creating 
+ Container cubeclicker-smoke-run-da0b5f5e15b5 Created 
+smoke: backend=http://backend:8080 frontend=http://frontend:5173 prodFrontend=http://frontend-prod:8080 ws=ws://backend:8080/ws readyTimeoutMs=30000
+PASS backend http://backend:8080/healthz responds 200 with {"status":"ok"}
+PASS frontend http://frontend:5173/ responds 200 with text/html
+PASS websocket client 1 received hello from ws://backend:8080/ws
+PASS websocket client 2 received hello from ws://backend:8080/ws
+PASS multiplayer join: two clients land on the same server (maxUsers 2) with roster sizes 1 then 2 and A receives memberJoined — server 8
+PASS multiplayer overflow: the third client lands on the next server id (X = 2) — server 9
+PASS multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)
+PASS multiplayer batching: two explodes in one turn yield one miniCubesRemoved [front:0:1, front:0:2] on A (ack) and B (broadcast)
+PASS multiplayer batching: front:0:1 and front:0:2 never arrive as single miniCubeRemoved frames on A or B
+PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1001ms
+PASS auth register: POST /auth/register returns 202
+PASS auth verify: Mailpit delivers a verification email and POST /auth/verify activates the account
+PASS auth login: POST /auth/login returns 200 with a session cookie
+PASS auth guest: WebSocket join with mode "guest" yields a guest welcome
+PASS prod frontend http://frontend-prod:8080/ is ready for delivery checks
+PASS prod http://frontend-prod:8080/bundle-report.json serves the build report with no-cache, gzip, and a lazy three chunk
+PASS prod http://frontend-prod:8080/ serves the gzip app shell with no-cache and the report entry script — content-encoding gzip; cache-control no-cache
+PASS prod /assets/index-BiM91p6y.js is served gzip with immutable caching — content-encoding gzip; 87485 B decompressed
+PASS prod /assets/three-4rmoIDEa.js is served gzip with immutable caching — content-encoding gzip; 609337 B decompressed
+PASS prod http://frontend-prod:8080/assets/missing.js returns 404 and never the app shell — status 404 without a long-cache header
+PASS prod http://frontend-prod:8080/missing/route serves the gzip SPA shell with no-cache — status 200; cache-control no-cache
+SMOKE PASS (21/21 checks)
+```
+
+F1 closure: `SMOKE PASS (21/21 checks)` plus `PASS prod /assets/index-BiM91p6y.js is served
+gzip with immutable caching — content-encoding gzip; 87485 B decompressed` proves AC-26/AC-28
+against the final frontend bundle, superseding the stale T3-bundle evidence above. No source,
+test, config, compose file, Dockerfile or review artifact was edited for this evidence run.
