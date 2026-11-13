@@ -5,6 +5,7 @@ import {
   type LootboxOpened,
   type MemberState,
   MAX_MESSAGE_BYTES,
+  type MiniCubeId,
   type Placement,
   UpgradeState,
   copyCustomizationState,
@@ -13,6 +14,7 @@ import {
   encodeClientMessage,
   encodeServerMessage,
   lootboxOpenedMessage,
+  miniCubesRemovedMessage,
   parseClientMessage,
   parseLootboxOpened,
   parseServerMessage,
@@ -313,6 +315,28 @@ describe('parseServerMessage — catalog happy paths', () => {
     });
   });
 
+  it('decodes miniCubesRemoved with a fresh copy of the ids', () => {
+    const text =
+      '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}';
+    const first = parseServerMessage(text);
+    const second = parseServerMessage(text);
+
+    expect(first).toStrictEqual({
+      ok: true,
+      message: { type: 'miniCubesRemoved', playerId: 'p1', ids: ['front:0:0', 'front:0:1'] },
+    });
+    if (
+      !first.ok ||
+      first.message.type !== 'miniCubesRemoved' ||
+      !second.ok ||
+      second.message.type !== 'miniCubesRemoved'
+    ) {
+      throw new Error('the pinned miniCubesRemoved frame must decode twice');
+    }
+    expect(second.message.ids).toEqual(['front:0:0', 'front:0:1']);
+    expect(second.message.ids).not.toBe(first.message.ids);
+  });
+
   it('decodes levelAdvanced with its fresh (empty) board', () => {
     expect(
       parseServerMessage(
@@ -415,6 +439,8 @@ describe('parseServerMessage — missing required fields', () => {
     '{"type":"memberLeft","reason":"left"}',
     '{"type":"miniCubeRemoved","playerId":"p1"}',
     '{"type":"miniCubeRemoved","id":"front:0:0"}',
+    '{"type":"miniCubesRemoved","playerId":"p1"}',
+    '{"type":"miniCubesRemoved","ids":["front:0:0"]}',
     '{"type":"levelAdvanced","playerId":"p1","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon"}',
     '{"type":"stateSync","playerId":"p1","levelIndex":1,"gridSize":3}',
     '{"type":"error"}',
@@ -447,6 +473,12 @@ describe('parseServerMessage — wrong field types and out-of-catalog values', (
     '{"type":"memberLeft","playerId":"p3","reason":7}',
     '{"type":"miniCubeRemoved","playerId":"p1","id":""}',
     '{"type":"miniCubeRemoved","playerId":"p1","id":["front:0:0"]}',
+    '{"type":"miniCubesRemoved","playerId":"","ids":["front:0:0"]}',
+    '{"type":"miniCubesRemoved","playerId":"p1","ids":null}',
+    '{"type":"miniCubesRemoved","playerId":"p1","ids":"front:0:0"}',
+    '{"type":"miniCubesRemoved","playerId":"p1","ids":[]}',
+    '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0",7]}',
+    '{"type":"miniCubesRemoved","playerId":"p1","ids":[""]}',
     '{"type":"levelAdvanced","playerId":"p1","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon","position":{"x":0,"y":0},"removedIds":["front:0:0"]}',
     '{"type":"levelAdvanced","playerId":"p1","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon","position":{"x":0,"y":0},"removedIds":"none"}',
     '{"type":"levelAdvanced","playerId":"p1","levelIndex":1,"gridSize":3,"styleId":"obsidian-neon","position":{"x":0,"y":0}}',
@@ -1220,6 +1252,48 @@ describe('lootboxOpenedMessage', () => {
   it('encodes as one JSON frame', () => {
     expect(encodeServerMessage(lootboxOpenedMessage(LOOTBOX_OPENED))).toBe(
       '{"type":"lootboxOpened","partId":"wing-left-silver","slot":"wing-left","rarity":"rare","duplicate":false,"lootboxes":2,"keys":1,"parts":{"wing-left-silver":2,"hull-default":1},"appearance":{"wing-left":"wing-left-silver","hull":"hull-default"}}',
+    );
+  });
+});
+
+describe('miniCubesRemovedMessage', () => {
+  it('builds the batch with a copy of the ids', () => {
+    const ids: MiniCubeId[] = ['front:0:0', 'front:0:1'];
+    const message = miniCubesRemovedMessage('p1', ids);
+
+    expect(message).toStrictEqual({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+
+    ids.push('top:0:0');
+    expect(message).toStrictEqual({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+  });
+
+  it.each([
+    ['a missing playerId', undefined, ['front:0:0']],
+    ['an empty playerId', '', ['front:0:0']],
+    ['a non-string playerId', 7, ['front:0:0']],
+    ['missing ids', 'p1', undefined],
+    ['null ids', 'p1', null],
+    ['non-array ids', 'p1', 'front:0:0'],
+    ['empty ids', 'p1', []],
+    ['a non-string id', 'p1', ['front:0:0', 7]],
+    ['an empty id', 'p1', ['']],
+  ])('rejects %s', (_label, playerId, ids) => {
+    expect(() =>
+      miniCubesRemovedMessage(playerId as string, ids as unknown as MiniCubeId[]),
+    ).toThrow(new TypeError('invalid miniCubesRemoved payload'));
+  });
+
+  it('encodes as one JSON frame', () => {
+    expect(encodeServerMessage(miniCubesRemovedMessage('p1', ['front:0:0', 'front:0:1']))).toBe(
+      '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}',
     );
   });
 });

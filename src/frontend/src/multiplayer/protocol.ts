@@ -16,6 +16,10 @@
  * - `parseLootboxOpened`/`lootboxOpenedMessage` mirror the backend's opener-only grant
  *   codec (AC-24): the payload is the reveal's server authority, so both directions are
  *   validated and copied here;
+ * - `miniCubesRemoved` is the batched removal frame (AC-16): the decoder requires a
+ *   non-empty player and a non-empty list of non-empty ids and returns a copied array; the
+ *   parity builder validates and copies the same way the backend does, and the legacy
+ *   one-id `miniCubeRemoved` shape stays unchanged (AC-9);
  * - `encodeClientMessage` serialises one client message into the single JSON text frame.
  *
  * Field validation is presence + type only, exactly like the backend: an unknown `type`,
@@ -160,6 +164,7 @@ export type ServerMessage =
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
   | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
+  | { type: 'miniCubesRemoved'; playerId: string; ids: MiniCubeId[] }
   | {
       type: 'levelAdvanced';
       playerId: string;
@@ -786,6 +791,24 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
         },
       };
 
+    case 'miniCubesRemoved': {
+      if (
+        !isNonEmptyString(frame.playerId) ||
+        !Array.isArray(frame.ids) ||
+        frame.ids.length === 0
+      ) {
+        return badServerMessage();
+      }
+      const ids: MiniCubeId[] = [];
+      for (const entry of frame.ids) {
+        if (!isNonEmptyString(entry)) {
+          return badServerMessage();
+        }
+        ids.push(entry as MiniCubeId);
+      }
+      return { ok: true, message: { type: 'miniCubesRemoved', playerId: frame.playerId, ids } };
+    }
+
     case 'levelAdvanced': {
       const position = parsePosition(frame.position);
       if (
@@ -981,6 +1004,33 @@ export function lootboxOpenedMessage(payload: LootboxOpened): ServerMessage {
     throw new TypeError('invalid lootboxOpened payload');
   }
   return { type: 'lootboxOpened', ...parsed };
+}
+
+/**
+ * Builds the batched `miniCubesRemoved` frame (parity helper with the backend builder).
+ *
+ * The payload is validated at runtime before it is copied: `playerId` must be a non-empty
+ * string, `ids` must be a non-empty array, and every id must be a non-empty string. Any
+ * violation throws `TypeError`; the returned `ids` array is always a fresh copy.
+ */
+export function miniCubesRemovedMessage(
+  playerId: string,
+  ids: readonly MiniCubeId[],
+): ServerMessage {
+  if (
+    typeof playerId !== 'string' ||
+    playerId.length === 0 ||
+    !Array.isArray(ids) ||
+    ids.length === 0
+  ) {
+    throw new TypeError('invalid miniCubesRemoved payload');
+  }
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new TypeError('invalid miniCubesRemoved payload');
+    }
+  }
+  return { type: 'miniCubesRemoved', playerId, ids: [...ids] };
 }
 
 /** Builds a client `purchaseUpgrade` message. */

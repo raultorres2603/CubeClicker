@@ -18,6 +18,10 @@
  * - `lootboxOpened` is the opener-only grant: `parseLootboxOpened` pins the AC-24 rules and
  *   copies the nested maps, and `lootboxOpenedMessage` rejects an invalid payload instead of
  *   putting it on the wire;
+ * - `miniCubesRemoved` is the batched removal frame (AC-8): `miniCubesRemovedMessage`
+ *   validates the non-empty player and every non-empty id at runtime, copies the ids, and
+ *   throws `TypeError` instead of putting an invalid payload on the wire; the legacy
+ *   one-id `miniCubeRemoved` shape is unchanged (AC-9);
  * - `MAX_MESSAGE_BYTES` (1024) is exported here as the codec constant; the size check
  *   itself belongs to the caller, which drops oversized frames with `bad_message`.
  */
@@ -141,6 +145,7 @@ export type ServerMessage =
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
   | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
+  | { type: 'miniCubesRemoved'; playerId: string; ids: MiniCubeId[] }
   | {
       type: 'levelAdvanced';
       playerId: string;
@@ -561,6 +566,35 @@ export function memberLeftMessage(playerId: string, reason: 'left' | 'moved'): S
 /** Broadcast to **all** members of a server, including the origin player (ack). */
 export function miniCubeRemovedMessage(playerId: string, id: MiniCubeId): ServerMessage {
   return { type: 'miniCubeRemoved', playerId, id };
+}
+
+/**
+ * Builds the batched `miniCubesRemoved` frame (AC-8): the removal delta of one member
+ * coalesced into a single message.
+ *
+ * The payload is validated at runtime before it is copied: `playerId` must be a non-empty
+ * string, `ids` must be a non-empty array, and every id must be a non-empty string. Any
+ * violation throws `TypeError` (mirroring `lootboxOpenedMessage`), so an invalid payload
+ * can never reach the wire; the returned `ids` array is always a fresh copy.
+ */
+export function miniCubesRemovedMessage(
+  playerId: string,
+  ids: readonly MiniCubeId[],
+): ServerMessage {
+  if (
+    typeof playerId !== 'string' ||
+    playerId.length === 0 ||
+    !Array.isArray(ids) ||
+    ids.length === 0
+  ) {
+    throw new TypeError('invalid miniCubesRemoved payload');
+  }
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new TypeError('invalid miniCubesRemoved payload');
+    }
+  }
+  return { type: 'miniCubesRemoved', playerId, ids: [...ids] };
 }
 
 /** Broadcast to all members of a server when one member's cube advances to a fresh level. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { helloMessage } from '../app.js';
 import { loadGameConfig } from './config.js';
+import { allIds } from './cubes.js';
 import {
   type CubeState,
   type CubeSync,
@@ -9,6 +10,7 @@ import {
   MAX_STEPS,
   MAX_ROTATE_BYTES,
   type MemberState,
+  type MiniCubeId,
   type Placement,
   type CustomizationState,
   cubeRotatedMessage,
@@ -22,6 +24,7 @@ import {
   memberJoinedMessage,
   memberLeftMessage,
   miniCubeRemovedMessage,
+  miniCubesRemovedMessage,
   type LootboxOpened,
   lootboxOpenedMessage,
   parseClientMessage,
@@ -344,6 +347,25 @@ describe('server-message builders', () => {
     });
   });
 
+  it('builds miniCubesRemoved with an ordered copy of the ids', () => {
+    const ids: MiniCubeId[] = ['front:0:0', 'front:0:1'];
+    const message = miniCubesRemovedMessage('p1', ids);
+
+    expect(message).toStrictEqual({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+
+    // Later hub mutations of the pending-id array must not rewrite a queued batch.
+    ids.push('top:0:0');
+    expect(message).toStrictEqual({
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    });
+  });
+
   it('builds levelAdvanced with an empty (fresh-board) removed set', () => {
     expect(
       levelAdvancedMessage({
@@ -430,6 +452,18 @@ describe('encodeServerMessage', () => {
     );
   });
 
+  it('keeps the legacy miniCubeRemoved frame byte-identical', () => {
+    expect(encodeServerMessage(miniCubeRemovedMessage('p1', 'top:1:2'))).toBe(
+      '{"type":"miniCubeRemoved","playerId":"p1","id":"top:1:2"}',
+    );
+  });
+
+  it('encodes miniCubesRemoved as one pinned JSON frame', () => {
+    expect(
+      encodeServerMessage(miniCubesRemovedMessage('p1', ['front:0:0', 'front:0:1'])),
+    ).toBe('{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}');
+  });
+
   it('round-trips a placement message through JSON', () => {
     const encoded = encodeServerMessage(welcomeMessage(PLACEMENT));
 
@@ -453,6 +487,31 @@ describe('encodeServerMessage', () => {
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
+  });
+});
+
+describe('miniCubesRemovedMessage — runtime validation', () => {
+  it.each([
+    ['a missing playerId', undefined, ['front:0:0']],
+    ['an empty playerId', '', ['front:0:0']],
+    ['a non-string playerId', 7, ['front:0:0']],
+    ['missing ids', 'p1', undefined],
+    ['null ids', 'p1', null],
+    ['non-array ids', 'p1', 'front:0:0'],
+    ['empty ids', 'p1', []],
+    ['a non-string id', 'p1', ['front:0:0', 7]],
+    ['an empty id', 'p1', ['']],
+  ])('rejects %s', (_label, playerId, ids) => {
+    expect(() =>
+      miniCubesRemovedMessage(playerId as string, ids as unknown as MiniCubeId[]),
+    ).toThrow(new TypeError('invalid miniCubesRemoved payload'));
+  });
+
+  it('keeps a 30-id batch frame under the 1024-byte cap', () => {
+    const ids = allIds(7).slice(0, 30) as MiniCubeId[];
+    const encoded = encodeServerMessage(miniCubesRemovedMessage('p1', ids));
+
+    expect(Buffer.byteLength(encoded, 'utf8')).toBeLessThanOrEqual(1024);
   });
 });
 
