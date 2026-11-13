@@ -208,4 +208,3 @@ docs: document frontend delivery hardening
  docs/features/frontend-delivery-hardening/tasks.md |  79 ++++++
  11 files changed, 1042 insertions(+), 6 deletions(-)
 ```
-

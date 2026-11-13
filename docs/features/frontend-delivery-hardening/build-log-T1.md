@@ -173,4 +173,3 @@ All files          |   96.41 |    96.12 |   97.51 |   96.41 |
 
 The amended commit (`perf: load frontend runtime behind a dynamic seam`) contains the 7 T1
 source/test files plus this build log; no planner artifacts, no T2-T5 artifacts.
-

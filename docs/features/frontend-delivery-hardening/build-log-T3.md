@@ -534,4 +534,3 @@ GREP_EXIT=0
 Deviations from spec: none. The only budget change is the user-approved r3 `threeGzipBytes` 140,000 → 165,000 B.
 
 **Commit:** the T3 implementation and this log are committed together with `perf: split three.js bundle and enforce gzip budget` (no push).
-

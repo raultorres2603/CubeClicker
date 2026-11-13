@@ -1,10 +1,10 @@
 ---
 feature: frontend-delivery-hardening
-state: building
+state: accepted
 spec_review_round: 3
-build_round: 1
+build_round: 2
 created: 2026-11-12
-updated: 2026-11-12
+updated: 2026-11-13
 ---
 # Status — Frontend Delivery Hardening
 
@@ -17,7 +17,7 @@ Next performance feature of the approved audit queue: **P-04** (the frontend is 
 - [x] T2 — Gate-close loading/error UI and deferred customization preview (builder) `[seq]`
 - [x] T3 — Vite chunking and bundle-budget gate (builder) `[seq]`
 - [x] T4 — nginx delivery and containerized prod smoke (builder) `[seq]`
-- [ ] T5 — Documentation and final verification (builder) `[seq]`
+- [x] T5 — Documentation and final verification (builder) `[seq]`
 
 ## Loop log
 - 2026-11-12 — created → PLANNING — audit queue item (performance P-04/P-06); planner artifacts r1 written (`spec.md`, `plan.md`, `tasks.md`); raw request quoted above.
@@ -32,16 +32,19 @@ Next performance feature of the approved audit queue: **P-04** (the frontend is 
 - 2026-11-12 — spec_review → building — r3 review confirms spec consistent; sole blocker is the T3 implementation still pinning 140000; no planner revision needed; T3 fix-up/resume — `reviews/spec-review-r3.md`
 - 2026-11-12 — building T3 completed — Vite chunking + gzip budget gate; commit `62fde61`; fresh 95,903 / 154,323 / 273,854 B vs 150,000 / 165,000 / 300,000; build green — `build-log-T3.md`
 - 2026-11-12 — building T4 completed — nginx gzip/immutable/no-cache + prod smoke; commit `4290713`; smoke 19/19; brotli absent; nginx config valid — `build-log-T4.md`
+- 2026-11-12 — building T5 completed — docs + final verification; commit `ea942e4`; full suite 2,681 tests; coverage backend 95.43/87.71/99.70/95.43, frontend 96.42/96.10/97.53/96.42; build + smoke green — `build-log-T5.md`
+- 2026-11-12 — building → code_review — all T1-T5 verified; docs/index row pending — `build-log-T5.md`
+- 2026-11-13 — code_review → accepted — code review r1 approved (0 blockers); all 11 ACs verified; prod smoke 19/19; bundle gate 95,903/154,323/273,854 B — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 - Q-1 — budget ceilings approved r3: initial ≤ 150,000 B gzip, three ≤ 165,000 B gzip, total ≤ 300,000 B gzip; fresh T3 measurement 95,903 / 154,323 / 273,854; future overruns block, never silently raise.
-- Q-2 — brotli: recommended gzip only; `nginxinc/nginx-unprivileged:1.27-alpine` has no `ngx_brotli`; a custom nginx build is out of scope.
+- Q-2 — approved: gzip only; the production nginx image has no `ngx_brotli`; no custom nginx build.
 - Q-3 — loading/error copy: exact strings pinned in AC-2/AC-4 (`Loading the game…`, `The game could not be loaded.`, `Try again`; `Loading customization…`, `Customization could not be loaded.`, `Try again`).
 - Q-4 — resolved: gate-close intro timing is preserved; the loader elapsed is skipped; not a user decision and no supersession.
-- Q-5 — prod smoke service: recommended smoke-only `frontend-prod` in `compose.smoke.yaml`, no host port; `podman compose up` unchanged.
-- Q-6 — shell cache policy: recommended `no-cache` for `/`/`index.html`/SPA fallback.
-- Q-7 — bundle-report exposure: recommended serving `/bundle-report.json` (names/sizes only).
-- Q-8 — React vendor chunk: recommended explicit `react` manual chunk.
-- Q-9 — compose auto-build: if the CI compose provider does not build a missing `frontend-prod` on `run --rm smoke`, a user-owned `--build` CI amendment is needed.
-- Planner revision r2 applied; spec review round 2 approved; r3 budget revision applied; T3 fix-up in progress.
-- **T3 budget blocker resolved:** user approved raising the Three.js ceiling to 165,000 B; initial 150,000 and total 300,000 unchanged. T3 fix-up/re-run pending.
+- Q-5 — approved: smoke-only `frontend-prod` in `compose.smoke.yaml`, no host port; `podman compose up` unchanged.
+- Q-6 — approved: `no-cache` for `/`/`index.html`/SPA fallback; immutable only hashed `/assets/*`.
+- Q-7 — bundle-report exposure: serving `/bundle-report.json` (names/sizes only).
+- Q-8 — React vendor chunk: explicit `react` manual chunk.
+- Q-9 — recorded: T4's clean run auto-built `frontend-prod` and passed 19/19; explicit `build frontend-prod` remains the documented CI fallback if a provider does not auto-build.
+- T1-T5 complete; code review r1 approved; acceptance bookkeeping applied.
+- **T3 budget final:** Three.js ceiling 165,000 B approved; fresh measured 154,323 B; gate green.
