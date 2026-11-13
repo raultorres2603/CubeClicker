@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadGameConfig, type GameConfig } from './config.js';
 import { allIds } from './cubes.js';
-import { createGameHub, type GameHub, type Peer } from './hub.js';
+import {
+  createGameHub,
+  type GameHub,
+  type Peer,
+  ECONOMY_BROADCAST_INTERVAL_MS,
+  MINI_CUBE_BATCH_WINDOW_MS,
+} from './hub.js';
 import type { Position, ServerMessage } from './protocol.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
+import type { EconomyDelta, EconomySnapshot } from '../auth/economy-repository.js';
+import { createServerRegistry, type ServerRegistry } from './servers.js';
 import type { CustomizationState, PartIdV2 } from './parts-v2.js';
 import { COINS_PER_MINI_CUBE, COINS_PER_CUBE, thresholdSeconds, roundCoins, IDLE_CAP_MS, idleCoins } from './economy.js';
 
@@ -78,6 +86,162 @@ class FakePeer implements Peer {
   }
 }
 
+/** A peer whose next `send` throws synchronously (AC-2 error isolation). */
+class ThrowingPeer extends FakePeer {
+  failNextSend = false;
+
+  override send(text: string): void {
+    if (this.failNextSend) {
+      this.failNextSend = false;
+      throw new Error('peer send failed');
+    }
+    super.send(text);
+  }
+}
+
+/** Counts `servers()` snapshots and `assign` calls while delegating every registry rule. */
+class CountingRegistry implements ServerRegistry {
+  snapshots = 0;
+  assignCalls = 0;
+
+  constructor(private readonly inner: ServerRegistry) {}
+
+  serverCount(): number {
+    return this.inner.serverCount();
+  }
+
+  servers() {
+    this.snapshots += 1;
+    return this.inner.servers();
+  }
+
+  locationOf(playerId: string) {
+    return this.inner.locationOf(playerId);
+  }
+
+  forEachMember(serverId: number, visit: (playerId: string, slot: number) => void): void {
+    this.inner.forEachMember(serverId, visit);
+  }
+
+  assign(joining: string) {
+    this.assignCalls += 1;
+    return this.inner.assign(joining);
+  }
+
+  removeMember(playerId: string) {
+    return this.inner.removeMember(playerId);
+  }
+
+  moveMember(playerId: string, targetServerId: number) {
+    return this.inner.moveMember(playerId, targetServerId);
+  }
+
+  plan() {
+    return this.inner.plan();
+  }
+}
+
+/**
+ * In-memory repository that can hold a credit/purchase **result** after the write already
+ * happened, so tests can resolve two async writes out of order (AC-29).
+ */
+class DeferredEconomyRepository extends InMemoryEconomyRepository {
+  readonly creditDeltas: EconomyDelta[] = [];
+  private creditHold: Promise<void> | null = null;
+  private releaseCredit: (() => void) | null = null;
+  private purchaseHold: Promise<void> | null = null;
+  private releasePurchase: (() => void) | null = null;
+
+  /** Holds the next `creditWithRevision` result; returns its release. */
+  holdNextCredit(): () => void {
+    this.creditHold = new Promise<void>((resolve) => {
+      this.releaseCredit = resolve;
+    });
+    return () => {
+      this.releaseCredit?.();
+      this.releaseCredit = null;
+    };
+  }
+
+  /** Holds the next `purchaseUpgrade` result; returns its release. */
+  holdNextPurchase(): () => void {
+    this.purchaseHold = new Promise<void>((resolve) => {
+      this.releasePurchase = resolve;
+    });
+    return () => {
+      this.releasePurchase?.();
+      this.releasePurchase = null;
+    };
+  }
+
+  override async creditWithRevision(userId: string, delta: EconomyDelta): Promise<EconomySnapshot> {
+    this.creditDeltas.push({ ...delta });
+    const snapshot = await super.creditWithRevision(userId, delta);
+    const hold = this.creditHold;
+    if (hold !== null) {
+      this.creditHold = null;
+      await hold;
+    }
+    return snapshot;
+  }
+
+  override async purchaseUpgrade(
+    userId: string,
+    upgradeId: Parameters<InMemoryEconomyRepository['purchaseUpgrade']>[1],
+    cost: number,
+    currentLevel: number,
+  ): Promise<Awaited<ReturnType<InMemoryEconomyRepository['purchaseUpgrade']>>> {
+    const result = await super.purchaseUpgrade(userId, upgradeId, cost, currentLevel);
+    const hold = this.purchaseHold;
+    if (hold !== null) {
+      this.purchaseHold = null;
+      await hold;
+    }
+    return result;
+  }
+}
+
+/** In-memory repository that can hold the join's economy-snapshot read (AC-30). */
+class DeferredJoinRepository extends InMemoryEconomyRepository {
+  private snapshotHold: Promise<void> | null = null;
+  private releaseSnapshot: (() => void) | null = null;
+
+  holdEconomySnapshot(): () => void {
+    this.snapshotHold = new Promise<void>((resolve) => {
+      this.releaseSnapshot = resolve;
+    });
+    return () => {
+      this.releaseSnapshot?.();
+      this.releaseSnapshot = null;
+    };
+  }
+
+  override async findEconomySnapshot(userId: string): Promise<EconomySnapshot | null> {
+    const snapshot = await super.findEconomySnapshot(userId);
+    const hold = this.snapshotHold;
+    if (hold !== null) {
+      this.snapshotHold = null;
+      await hold;
+    }
+    return snapshot;
+  }
+}
+
+/** The `JSON.stringify` calls whose argument is a server message of `type`. */
+function encodeCallsFor(
+  spy: { mock: { calls: Array<[unknown, ...unknown[]]> } },
+  type: ServerMessage['type'],
+): unknown[] {
+  return spy.mock.calls
+    .map((call) => call[0])
+    .filter((value) => {
+      if (typeof value !== 'object' || value === null) {
+        return false;
+      }
+      return (value as { type?: unknown }).type === type;
+    });
+}
+
 /** A deterministic hub plus the helpers every test needs. */
 interface Harness {
   readonly config: GameConfig;
@@ -87,6 +251,30 @@ interface Harness {
   advance(ms: number): void;
   advanceTimersOnly(ms: number): void;
   setNow(ms: number): void;
+}
+
+/** The clock/timer surface the batching helpers need. */
+interface TimerHarness {
+  advance(ms: number): void;
+  advanceTimersOnly(ms: number): void;
+}
+
+/** Fires the 40 ms removal window without moving the hub's click clock. */
+function flushRemovals(harness: TimerHarness): void {
+  harness.advanceTimersOnly(MINI_CUBE_BATCH_WINDOW_MS);
+}
+
+/** Drains the fire-and-forget repository continuations. */
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+/** Resolves the credit continuations, then lets the 250 ms economy window fire. */
+async function settleEconomy(harness: TimerHarness): Promise<void> {
+  await drainMicrotasks();
+  harness.advance(ECONOMY_BROADCAST_INTERVAL_MS);
 }
 
 function createHarness(
@@ -125,6 +313,42 @@ function createHarness(
   };
 }
 
+/** A deterministic account hub (three tabs of `u1`) with the same fake-timer controls. */
+function createAccountHarness(repo: InMemoryEconomyRepository) {
+  const config = loadGameConfig({});
+  let clock = 0;
+  const hub = createGameHub({
+    config,
+    now: () => clock,
+    random: () => () => 0,
+    timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+    economy: repo,
+  });
+  return {
+    config,
+    hub,
+    clock: () => clock,
+    setNow: (ms: number) => {
+      clock = ms;
+    },
+    advance: (ms: number) => {
+      clock += ms;
+      vi.advanceTimersByTime(ms);
+    },
+    advanceTimersOnly: (ms: number) => {
+      vi.advanceTimersByTime(ms);
+    },
+    connect: (userId = 'u1', username = 'alice') => {
+      const peer = new FakePeer();
+      hub.attach(peer, { userId, username, verified: true });
+      return peer;
+    },
+    join: (peer: FakePeer) => {
+      peer.receive(JSON.stringify({ type: 'join' }));
+    },
+  };
+}
+
 type WelcomeMessage = Extract<ServerMessage, { type: 'welcome' }>;
 
 /** The single message of `type` on a peer (fails the test when absent or duplicated). */
@@ -141,6 +365,11 @@ function onlyType<T extends ServerMessage['type']>(
 
 function welcomeOf(peer: FakePeer): WelcomeMessage {
   return onlyType(peer, 'welcome');
+}
+
+/** Every sent text frame on `peer` whose decoded type is `type`. */
+function sentTextsOfType(peer: FakePeer, type: ServerMessage['type']): string[] {
+  return peer.sent.filter((text) => (JSON.parse(text) as ServerMessage).type === type);
 }
 
 /** One cube's wire state; `LEVEL_0` is the first cube of every member (draw 0 → N = 3). */
@@ -194,13 +423,16 @@ function explode(peer: FakePeer, id: string, level = 0): void {
 }
 
 /** Removes a whole level inside the 30/s budget (a 1 s gap between 30-id batches). */
-function removeLevel(harness: Harness, peer: FakePeer, ids: readonly string[], level = 0): void {
+function removeLevel(harness: TimerHarness, peer: FakePeer, ids: readonly string[], level = 0): void {
   ids.forEach((id, index) => {
     if (index > 0 && index % 30 === 0) {
       harness.advance(1000);
     }
     explode(peer, id, level);
   });
+  // The next assertion that follows a level removal is a boundary message (`levelAdvanced`,
+  // `memberLeft`, `worldEntered`): flush the batch exactly as the hub does at its boundary.
+  flushRemovals(harness);
 }
 
 beforeEach(() => {
@@ -209,6 +441,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('connection lifecycle', () => {
@@ -425,6 +658,7 @@ describe('reconnect grace', () => {
     const second = harness.connect();
     harness.join(second);
     explode(first, 'front:0:0');
+    flushRemovals(harness);
     first.drop();
     second.clear();
     first.clear();
@@ -544,6 +778,7 @@ describe('reconnect grace', () => {
     second.clear();
 
     explode(second, 'front:0:0');
+    flushRemovals(harness);
 
     expect(second.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' },
@@ -633,6 +868,7 @@ describe('explode broadcasts', () => {
     other.clear();
 
     explode(first, 'front:0:0');
+    flushRemovals(harness);
 
     const expected = [{ type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' }] as const;
     expect(first.messages()).toEqual(expected);
@@ -709,6 +945,7 @@ describe('explode broadcasts', () => {
 
     peer.clear();
     explode(peer, 'front:0:0');
+    flushRemovals(harness);
     expect(peer.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
     ]);
@@ -724,9 +961,10 @@ describe('explode broadcasts', () => {
     for (let index = 0; index < 30; index += 1) {
       explode(peer, ids[index]!);
     }
-    expect(peer.messages()).toEqual(
-      ids.slice(0, 30).map((id) => ({ type: 'miniCubeRemoved', playerId: 'p1', id })),
-    );
+    flushRemovals(harness);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubesRemoved', playerId: 'p1', ids: ids.slice(0, 30) },
+    ]);
 
     peer.clear();
     explode(peer, ids[30]!);
@@ -744,6 +982,7 @@ describe('explode broadcasts', () => {
     // At exactly +1000 ms the t = 0 attempts are outside (now − 1000, now]: quota is fresh.
     harness.advance(1);
     explode(peer, ids[30]!);
+    flushRemovals(harness);
     expect(peer.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
     ]);
@@ -760,7 +999,10 @@ describe('explode broadcasts', () => {
     for (let index = 0; index < 30; index += 1) {
       explode(peer, ids[index]!);
     }
-    expect(peer.messages()).toHaveLength(30);
+    flushRemovals(harness);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubesRemoved', playerId: 'p1', ids: ids.slice(0, 30) },
+    ]);
 
     // A fixed window anchored at join time (t = 0) would reset at t = 1000 and accept this
     // click. The trailing window still contains the 30 attempts from t = 900 → dropped.
@@ -778,6 +1020,7 @@ describe('explode broadcasts', () => {
     // The burst ages out exactly one second after it was admitted.
     harness.advance(1);
     explode(peer, ids[30]!);
+    flushRemovals(harness);
     expect(peer.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
     ]);
@@ -792,7 +1035,10 @@ describe('explode broadcasts', () => {
 
     explode(peer, ids[0]!);
     explode(peer, ids[1]!);
-    expect(peer.messages()).toHaveLength(2);
+    flushRemovals(harness);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubesRemoved', playerId: 'p1', ids: [ids[0]!, ids[1]!] },
+    ]);
 
     peer.clear();
     explode(peer, ids[2]!);
@@ -810,9 +1056,9 @@ describe('explode broadcasts', () => {
     harness.advance(1);
     explode(peer, ids[2]!);
     explode(peer, ids[3]!);
+    flushRemovals(harness);
     expect(peer.messages()).toEqual([
-      { type: 'miniCubeRemoved', playerId: 'p1', id: ids[2]! },
-      { type: 'miniCubeRemoved', playerId: 'p1', id: ids[3]! },
+      { type: 'miniCubesRemoved', playerId: 'p1', ids: [ids[2]!, ids[3]!] },
     ]);
 
     peer.clear();
@@ -853,6 +1099,7 @@ describe('cube completion', () => {
     // The fresh board is authoritative: a level-1 id is accepted.
     first.clear();
     explode(first, 'front:0:0', 1);
+    flushRemovals(harness);
     expect(first.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
     ]);
@@ -1448,38 +1695,6 @@ describe('orientation storage and rotate (T2)', () => {
 });
 
 describe('account economy (T3)', () => {
-  function createAccountHarness(repo: InMemoryEconomyRepository) {
-    const config = loadGameConfig({});
-    let clock = 0;
-    const hub = createGameHub({
-      config,
-      now: () => clock,
-      random: () => () => 0,
-      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
-      economy: repo,
-    });
-    return {
-      config,
-      hub,
-      clock: () => clock,
-      setNow: (ms: number) => {
-        clock = ms;
-      },
-      advance: (ms: number) => {
-        clock += ms;
-        vi.advanceTimersByTime(ms);
-      },
-      connect: (userId = 'u1', username = 'alice') => {
-        const peer = new FakePeer();
-        hub.attach(peer, { userId, username, verified: true });
-        return peer;
-      },
-      join: (peer: FakePeer) => {
-        peer.receive(JSON.stringify({ type: 'join' }));
-      },
-    };
-  }
-
   async function flush() {
     for (let i = 0; i < 50; i += 1) {
       await Promise.resolve();
@@ -1509,12 +1724,12 @@ describe('account economy (T3)', () => {
     second.clear();
 
     explode(first, 'front:0:0');
-    await flush();
+    await settleEconomy(h);
 
     const expected = { type: 'economyUpdate', coins: COINS_PER_MINI_CUBE, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 };
     // round coins to 2 decimals already
-    expect(first.messages()).toContainEqual(expected);
-    expect(second.messages()).toContainEqual(expected);
+    expect(onlyType(first, 'economyUpdate')).toEqual(expected);
+    expect(onlyType(second, 'economyUpdate')).toEqual(expected);
   });
 
   it('increments facesDestroyed when an explode clears a face', async () => {
@@ -1536,11 +1751,9 @@ describe('account economy (T3)', () => {
 
     const last = ids[ids.length - 1]!;
     explode(peer, last);
-    await flush();
+    await settleEconomy(h);
 
-    const msgs = peer.messages();
-    const update = msgs.find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update.type).toBe('economyUpdate');
+    const update = onlyType(peer, 'economyUpdate');
     expect(update.facesDestroyed).toBe(1);
     expect(update.clicks).toBe(ids.length);
   });
@@ -1558,10 +1771,9 @@ describe('account economy (T3)', () => {
 
     h.setNow(0); // within threshold (grid 3 -> 15s = 15000ms); elapsed 0
     peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
-    await flush();
+    await settleEconomy(h);
 
-    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update.type).toBe('economyUpdate');
+    const update = onlyType(peer, 'economyUpdate');
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
     expect(update.cubesDestroyed).toBe(1);
   });
@@ -1578,10 +1790,9 @@ describe('account economy (T3)', () => {
 
     h.setNow(100_000); // elapsed large
     peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
-    await flush();
+    await settleEconomy(h);
 
-    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(update.type).toBe('economyUpdate');
+    const update = onlyType(peer, 'economyUpdate');
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE));
   });
 
@@ -1622,9 +1833,9 @@ describe('account economy (T3)', () => {
     const thresholdMs = thresholdSeconds(3) * 1000;
     h.setNow(thresholdMs);
     peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
-    await flush();
+    await settleEconomy(h);
 
-    const update = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
+    const update = onlyType(peer, 'economyUpdate');
     expect(update.coins).toBe(roundCoins(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2));
   });
 });
@@ -1854,6 +2065,9 @@ describe('granular spaceship customization (T5)', () => {
       },
       advance: (ms: number) => {
         clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      advanceTimersOnly: (ms: number) => {
         vi.advanceTimersByTime(ms);
       },
       connect: (userId = 'u1', username = 'alice') => {
@@ -2685,5 +2899,921 @@ describe('granular spaceship customization (T5)', () => {
       appearance: {},
     });
     expect(peer2.messages().some((m) => m.type === 'lootboxOpened')).toBe(false);
+  });
+});
+
+describe('encode-once fan-out (T3-B)', () => {
+  it('encodes one removal broadcast once for ten members and fans out identical bytes', () => {
+    const harness = createHarness();
+    const peers: FakePeer[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const peer = harness.connect();
+      harness.join(peer);
+      peers.push(peer);
+    }
+    for (const peer of peers) {
+      peer.clear();
+    }
+
+    const stringify = vi.spyOn(JSON, 'stringify');
+    explode(peers[0]!, 'front:0:0');
+    explode(peers[0]!, 'front:0:1');
+    flushRemovals(harness);
+
+    expect(encodeCallsFor(stringify, 'miniCubesRemoved')).toHaveLength(1);
+    const expectedText =
+      '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}';
+    for (const peer of peers) {
+      expect(peer.sent).toEqual([expectedText]);
+    }
+  });
+
+  it('encodes one memberLeft broadcast once for ten members', () => {
+    const harness = createHarness();
+    const peers: FakePeer[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const peer = harness.connect();
+      harness.join(peer);
+      peers.push(peer);
+    }
+    for (const peer of peers) {
+      peer.clear();
+    }
+
+    const stringify = vi.spyOn(JSON, 'stringify');
+    peers[0]!.drop();
+    harness.advance(harness.config.reconnectGraceMs);
+
+    expect(encodeCallsFor(stringify, 'memberLeft')).toHaveLength(1);
+    const expectedText = '{"type":"memberLeft","playerId":"p1","reason":"left"}';
+    for (const peer of peers.slice(1)) {
+      expect(peer.sent).toEqual([expectedText]);
+    }
+    expect(peers[0]!.sent).toEqual([]);
+  });
+
+  it('isolates a throwing peer and delivers the frame to every other member (AC-2)', () => {
+    const harness = createHarness();
+    const peers: FakePeer[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const peer = harness.connect();
+      harness.join(peer);
+      peers.push(peer);
+    }
+    const throwing = new ThrowingPeer();
+    harness.hub.attach(throwing);
+    harness.join(throwing);
+    for (let index = 0; index < 5; index += 1) {
+      const peer = harness.connect();
+      harness.join(peer);
+      peers.push(peer);
+    }
+    for (const peer of peers) {
+      peer.clear();
+    }
+    throwing.clear();
+
+    throwing.failNextSend = true;
+    explode(peers[0]!, 'front:0:0');
+    explode(peers[0]!, 'front:0:1');
+    flushRemovals(harness);
+
+    const expected = {
+      type: 'miniCubesRemoved',
+      playerId: 'p1',
+      ids: ['front:0:0', 'front:0:1'],
+    };
+    for (const peer of peers) {
+      expect(peer.messages()).toEqual([expected]);
+    }
+    expect(throwing.messages()).toEqual([]);
+    expect(throwing.closed).toBe(true);
+    expect(harness.hub.connectionCount()).toBe(9);
+  });
+
+  it('encodes each account message type once for three connections (AC-3)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createAccountHarness(repo);
+    const peers = [h.connect(), h.connect(), h.connect()];
+    for (const peer of peers) {
+      h.join(peer);
+    }
+    await drainMicrotasks();
+    for (const peer of peers) {
+      peer.clear();
+    }
+
+    const stringify = vi.spyOn(JSON, 'stringify');
+    explode(peers[0]!, 'front:0:0');
+    await settleEconomy(h);
+
+    expect(encodeCallsFor(stringify, 'economyUpdate')).toHaveLength(1);
+    const economyText =
+      '{"type":"economyUpdate","coins":100.1,"clicks":1,"facesDestroyed":0,"cubesDestroyed":0}';
+    for (const peer of peers) {
+      expect(sentTextsOfType(peer, 'economyUpdate')).toEqual([economyText]);
+    }
+    for (const peer of peers) {
+      peer.clear();
+    }
+
+    stringify.mockClear();
+    peers[0]!.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+
+    expect(encodeCallsFor(stringify, 'upgradesUpdate')).toHaveLength(1);
+    expect(encodeCallsFor(stringify, 'economyUpdate')).toHaveLength(1);
+    const upgradesText = '{"type":"upgradesUpdate","upgrades":{"mini_cube_value":1}}';
+    const purchaseEconomyText =
+      '{"type":"economyUpdate","coins":90.1,"clicks":1,"facesDestroyed":0,"cubesDestroyed":0}';
+    for (const peer of peers) {
+      expect(sentTextsOfType(peer, 'upgradesUpdate')).toEqual([upgradesText]);
+      expect(sentTextsOfType(peer, 'economyUpdate')).toEqual([purchaseEconomyText]);
+      peer.clear();
+    }
+
+    stringify.mockClear();
+    peers[0]!.receive('{"type":"equipPart","partId":"wing-left-default"}');
+    await drainMicrotasks();
+
+    expect(encodeCallsFor(stringify, 'customizationUpdate')).toHaveLength(1);
+    const customizationText =
+      '{"type":"customizationUpdate","lootboxes":0,"keys":0,"parts":{},"appearance":{"wing-left":"wing-left-default"}}';
+    for (const peer of peers) {
+      expect(sentTextsOfType(peer, 'customizationUpdate')).toEqual([customizationText]);
+    }
+  });
+});
+
+describe('removal batching (T3-B)', () => {
+  it('keeps the legacy frame for one id and batches two ids in acceptance order', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    expect(first.messages()).toEqual([]);
+    flushRemovals(harness);
+    expect(first.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+    ]);
+    expect(second.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+    ]);
+
+    first.clear();
+    second.clear();
+    explode(first, 'front:0:1');
+    explode(first, 'front:0:2');
+    flushRemovals(harness);
+    expect(first.messages()).toEqual([
+      {
+        type: 'miniCubesRemoved',
+        playerId: 'p1',
+        ids: ['front:0:1', 'front:0:2'],
+      },
+    ]);
+    expect(second.messages()).toEqual([
+      {
+        type: 'miniCubesRemoved',
+        playerId: 'p1',
+        ids: ['front:0:1', 'front:0:2'],
+      },
+    ]);
+  });
+
+  it('collapses a 30-click burst into one frame bounded by 1024 bytes (AC-10/AC-14)', () => {
+    const harness = createHarness();
+    const peer = harness.connect();
+    harness.join(peer);
+    peer.clear();
+
+    const ids = allIds(3).slice(0, 30);
+    for (const id of ids) {
+      explode(peer, id);
+    }
+    expect(peer.messages()).toEqual([]);
+
+    flushRemovals(harness);
+    expect(peer.messages()).toEqual([
+      { type: 'miniCubesRemoved', playerId: 'p1', ids },
+    ]);
+    expect(Buffer.byteLength(peer.sent[0]!, 'utf8')).toBeLessThanOrEqual(1024);
+  });
+
+  it('groups per member in first-enqueue order and never per click', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    const firstIds = allIds(3).slice(0, 3);
+    const secondIds = allIds(3).slice(3, 6);
+    for (const id of firstIds) {
+      explode(first, id);
+    }
+    for (const id of secondIds) {
+      explode(second, id);
+    }
+    flushRemovals(harness);
+
+    const expected = [
+      { type: 'miniCubesRemoved', playerId: 'p1', ids: firstIds },
+      { type: 'miniCubesRemoved', playerId: 'p2', ids: secondIds },
+    ];
+    expect(first.messages()).toEqual(expected);
+    expect(second.messages()).toEqual(expected);
+  });
+
+  it('flushes pending removals before levelAdvanced on a completion boundary', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const ids = allIds(3);
+    removeLevel(harness, first, ids.slice(0, ids.length - 1));
+    first.clear();
+    second.clear();
+
+    explode(first, ids[ids.length - 1]!);
+    // No timer advance: the completion boundary itself must flush the pending removal first.
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const removal = {
+      type: 'miniCubeRemoved',
+      playerId: 'p1',
+      id: ids[ids.length - 1]!,
+    };
+    const advanced = {
+      type: 'levelAdvanced',
+      playerId: 'p1',
+      levelIndex: 1,
+      gridSize: 3,
+      styleId: 'crimson-alloy',
+      position: X2_SLOT_1,
+      removedIds: [],
+    };
+    expect(first.messages()).toEqual([removal, advanced]);
+    expect(second.messages()).toEqual([removal, advanced]);
+  });
+
+  it('flushes pending removals before memberJoined on a join boundary', () => {
+    const harness = createHarness({ maxUsersPerServer: 3 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    const third = harness.connect();
+    harness.join(third);
+
+    expect(second.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+      { type: 'memberJoined', member: memberOf('p3', 'Player 3', X3_SLOT_3) },
+    ]);
+    expect(third.messages().map((message) => message.type)).toEqual(['welcome']);
+  });
+
+  it('flushes pending removals before memberLeft on grace finalisation', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const secondToken = welcomeOf(second).token;
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    second.drop();
+    harness.setNow(harness.config.reconnectGraceMs);
+    const late = harness.connect();
+    late.receive(JSON.stringify({ type: 'rejoin', token: secondToken }));
+
+    expect(first.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+      { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+    ]);
+    expect(late.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
+  });
+
+  it('flushes a mover batch to the old server before the move and never to the new server', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    const third = harness.connect();
+    harness.join(third);
+    expect(welcomeOf(third).serverId).toBe(2);
+
+    first.drop();
+    harness.advance(harness.config.reconnectGraceMs);
+    second.clear();
+    third.clear();
+
+    const ids = allIds(3);
+    removeLevel(harness, third, ids.slice(0, ids.length - 1));
+    second.clear();
+    third.clear();
+    explode(third, ids[ids.length - 1]!);
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(third.messages().map((message) => message.type)).toEqual([
+      'miniCubeRemoved',
+      'worldEntered',
+    ]);
+    expect(onlyType(third, 'miniCubeRemoved')).toEqual({
+      type: 'miniCubeRemoved',
+      playerId: 'p3',
+      id: ids[ids.length - 1]!,
+    });
+    expect(onlyType(third, 'worldEntered').serverId).toBe(1);
+    expect(second.messages().map((message) => message.type)).toEqual(['memberJoined']);
+  });
+
+  it('does not flush on rotate; a missed batch is recovered from the rejoin welcome (AC-13)', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const firstToken = welcomeOf(first).token;
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    first.receive(JSON.stringify({ type: 'rotate', yawSteps: 1, pitchSteps: 0 }));
+    expect(second.messages()).toEqual([
+      { type: 'cubeRotated', playerId: 'p1', yawSteps: 1, pitchSteps: 0 },
+    ]);
+
+    explode(first, 'front:0:1');
+    first.drop();
+    harness.advance(MINI_CUBE_BATCH_WINDOW_MS);
+    expect(second.messages().slice(1)).toEqual([
+      {
+        type: 'miniCubesRemoved',
+        playerId: 'p1',
+        ids: ['front:0:0', 'front:0:1'],
+      },
+    ]);
+
+    const resumed = harness.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token: firstToken }));
+    const welcome = welcomeOf(resumed);
+    expect(welcome.self.removedIds).toEqual(['front:0:0', 'front:0:1']);
+    expect(welcome.roster[0]!.removedIds).toEqual(['front:0:0', 'front:0:1']);
+  });
+});
+
+describe('economy coalescing and revision ordering (T3-B)', () => {
+  it('coalesces thirty accepted clicks into one absolute frame with thirty writes (AC-19)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const writes = vi.spyOn(repo, 'creditWithRevision');
+    const h = createAccountHarness(repo);
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    await drainMicrotasks();
+    first.clear();
+    second.clear();
+
+    const ids = allIds(3);
+    for (let index = 0; index < 30; index += 1) {
+      explode(first, ids[index]!);
+    }
+    await drainMicrotasks();
+    expect(first.messages().filter((message) => message.type === 'economyUpdate')).toEqual([]);
+
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    const expected = {
+      type: 'economyUpdate',
+      coins: 3,
+      clicks: 30,
+      facesDestroyed: 3,
+      cubesDestroyed: 0,
+    };
+    expect(onlyType(first, 'economyUpdate')).toEqual(expected);
+    expect(onlyType(second, 'economyUpdate')).toEqual(expected);
+    expect(writes).toHaveBeenCalledTimes(30);
+  });
+
+  it('limits automatic economy frames to the 250 ms cadence (AC-20)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const ids = allIds(3);
+    explode(peer, ids[0]!);
+    await drainMicrotasks();
+    h.advance(100);
+    explode(peer, ids[1]!);
+    await drainMicrotasks();
+    h.advance(150);
+    const firstWindow = peer
+      .messages()
+      .filter((message): message is Extract<ServerMessage, { type: 'economyUpdate' }> =>
+        message.type === 'economyUpdate',
+      );
+    expect(firstWindow).toHaveLength(1);
+    expect(firstWindow[0]).toEqual({
+      type: 'economyUpdate',
+      coins: 0.2,
+      clicks: 2,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+
+    h.advance(50);
+    explode(peer, ids[2]!);
+    await drainMicrotasks();
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    const bothWindows = peer
+      .messages()
+      .filter((message): message is Extract<ServerMessage, { type: 'economyUpdate' }> =>
+        message.type === 'economyUpdate',
+      );
+    expect(bothWindows).toHaveLength(2);
+    expect(bothWindows[1]).toEqual({
+      type: 'economyUpdate',
+      coins: 0.3,
+      clicks: 3,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+  });
+
+  it('keeps the highest-revision totals when an older credit resolves last (AC-29a)', async () => {
+    const repo = new DeferredEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const ids = allIds(3);
+    const release = repo.holdNextCredit();
+    explode(peer, ids[0]!);
+    explode(peer, ids[1]!);
+    await drainMicrotasks();
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    expect(onlyType(peer, 'economyUpdate')).toEqual({
+      type: 'economyUpdate',
+      coins: 0.2,
+      clicks: 2,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+
+    release();
+    await drainMicrotasks();
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    expect(peer.messages().filter((message) => message.type === 'economyUpdate')).toHaveLength(1);
+    expect(onlyType(peer, 'economyUpdate')).toEqual({
+      type: 'economyUpdate',
+      coins: 0.2,
+      clicks: 2,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(await repo.findByUserId('u1')).toEqual({
+      coins: 0.2,
+      clicks: 2,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+  });
+
+  it('flushes a purchase immediately and cancels the automatic window (AC-21)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+    expect(onlyType(peer, 'upgradesUpdate')).toEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 1 },
+    });
+    expect(onlyType(peer, 'economyUpdate')).toEqual({
+      type: 'economyUpdate',
+      coins: 90,
+      clicks: 0,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    expect(peer.messages().filter((message) => message.type === 'economyUpdate')).toHaveLength(1);
+    expect(await repo.findByUserId('u1')).toEqual({
+      coins: 90,
+      clicks: 0,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+  });
+
+  it('keeps the join idle credit as an immediate pre-welcome frame (AC-21)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 5 });
+    await repo.touchLastSeen('u1', 0, null);
+    const h = createAccountHarness(repo);
+    h.setNow(120_000);
+
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+
+    expect(peer.messages().map((message) => message.type)).toEqual(['economyUpdate', 'welcome']);
+    expect(onlyType(peer, 'economyUpdate')).toEqual({
+      type: 'economyUpdate',
+      coins: 6.2,
+      clicks: 0,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+  });
+
+  it('drops a late older purchase and keeps the newer multiplier for later credits (AC-29c)', async () => {
+    const repo = new DeferredEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const release = repo.holdNextPurchase();
+    peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+    peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+    expect(onlyType(peer, 'upgradesUpdate')).toEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 2 },
+    });
+
+    release();
+    await drainMicrotasks();
+    expect(peer.messages().filter((message) => message.type === 'upgradesUpdate')).toHaveLength(1);
+    expect(onlyType(peer, 'upgradesUpdate')).toEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 2 },
+    });
+    const stored = await repo.findByUserId('u1');
+    expect(stored).toEqual({
+      coins: 70,
+      clicks: 0,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(onlyType(peer, 'economyUpdate')).toEqual({ type: 'economyUpdate', ...stored });
+
+    peer.clear();
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    expect(repo.creditDeltas.at(-1)).toEqual({
+      coins: 0.12,
+      clicks: 1,
+      facesDestroyed: 0,
+    });
+  });
+
+  it('applies a newest purchase upgrades after a newer credit without regressing economy (AC-29b)', async () => {
+    const repo = new DeferredEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const release = repo.holdNextPurchase();
+    peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    expect(peer.messages().filter((message) => message.type === 'economyUpdate')).toEqual([]);
+
+    release();
+    await drainMicrotasks();
+    expect(onlyType(peer, 'upgradesUpdate')).toEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 1 },
+    });
+    expect(peer.messages().filter((message) => message.type === 'economyUpdate')).toEqual([]);
+
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    const stored = await repo.findByUserId('u1');
+    expect(stored).toEqual({
+      coins: 90.1,
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(onlyType(peer, 'economyUpdate')).toEqual({ type: 'economyUpdate', ...stored });
+    expect(peer.messages().filter((message) => message.type === 'upgradesUpdate')).toHaveLength(1);
+  });
+
+  it('drops a credit that resolves after a newer purchase flush (AC-29 race)', async () => {
+    const repo = new DeferredEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const release = repo.holdNextCredit();
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    peer.receive('{"type":"purchaseUpgrade","upgradeId":"mini_cube_value"}');
+    await drainMicrotasks();
+
+    const stored = await repo.findByUserId('u1');
+    expect(stored).toEqual({
+      coins: 90.1,
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(onlyType(peer, 'upgradesUpdate')).toEqual({
+      type: 'upgradesUpdate',
+      upgrades: { mini_cube_value: 1 },
+    });
+    expect(onlyType(peer, 'economyUpdate')).toEqual({ type: 'economyUpdate', ...stored });
+
+    release();
+    await drainMicrotasks();
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+    expect(peer.messages().filter((message) => message.type === 'economyUpdate')).toHaveLength(1);
+    expect(onlyType(peer, 'economyUpdate')).toEqual({ type: 'economyUpdate', ...stored });
+  });
+
+  it('returns before encoding when a coalesced flush has no joined connection (AC-22)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    const stringify = vi.spyOn(JSON, 'stringify');
+    peer.drop();
+    h.advance(ECONOMY_BROADCAST_INTERVAL_MS);
+
+    expect(encodeCallsFor(stringify, 'economyUpdate')).toEqual([]);
+    expect(peer.messages()).toEqual([]);
+  });
+
+  it('delivers the latest totals in a rejoin welcome during a pending window (AC-22)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    const token = welcomeOf(peer).token;
+    peer.clear();
+
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    peer.drop();
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+    await drainMicrotasks();
+
+    const welcome = welcomeOf(resumed);
+    expect(welcome.economy).toEqual({
+      coins: 0.1,
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+  });
+
+  it('starts a joining tab from a newer applied revision than its own read (AC-22)', async () => {
+    const repo = new DeferredJoinRepository();
+    await repo.creditWithRevision('u1', { coins: 5 });
+    const h = createAccountHarness(repo);
+    const first = h.connect();
+    h.join(first);
+    await drainMicrotasks();
+    first.clear();
+
+    // The second tab's economy read is taken at revision 1, then held while a newer
+    // revision 2 write happens on the first tab.
+    const release = repo.holdEconomySnapshot();
+    const second = h.connect();
+    h.join(second);
+    await drainMicrotasks();
+    explode(first, 'front:0:0');
+    await drainMicrotasks();
+
+    release();
+    await drainMicrotasks();
+
+    const welcome = welcomeOf(second);
+    expect(welcome.economy).toEqual({
+      coins: 5.1,
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(second.messages().filter((message) => message.type === 'economyUpdate')).toEqual([]);
+    expect(h.hub.revisionStateForTesting()).toEqual({
+      economyRevisions: 1,
+      upgradeRevisions: 1,
+    });
+  });
+});
+
+describe('shutdown guard (T3-B)', () => {
+  it('discards pending removal/economy state and makes timers inert after close (AC-30)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    expect(h.hub.revisionStateForTesting()).toEqual({
+      economyRevisions: 1,
+      upgradeRevisions: 1,
+    });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    h.hub.close();
+    expect(h.hub.revisionStateForTesting()).toEqual({
+      economyRevisions: 0,
+      upgradeRevisions: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.hub.connectionCount()).toBe(0);
+
+    h.advance(1000);
+    expect(peer.messages()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ignores a deferred credit that resolves after close', async () => {
+    const repo = new DeferredEconomyRepository();
+    const h = createAccountHarness(repo);
+    const peer = h.connect();
+    h.join(peer);
+    await drainMicrotasks();
+    peer.clear();
+
+    const release = repo.holdNextCredit();
+    explode(peer, 'front:0:0');
+    await drainMicrotasks();
+    h.hub.close();
+    release();
+    await drainMicrotasks();
+    h.advance(1000);
+
+    // The DB write still happened once (one write per click); only the continuation is inert.
+    expect(await repo.findByUserId('u1')).toEqual({
+      coins: 0.1,
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    });
+    expect(peer.messages()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.hub.revisionStateForTesting()).toEqual({
+      economyRevisions: 0,
+      upgradeRevisions: 0,
+    });
+  });
+
+  it('leaves no member, token, connection, timer or send when a deferred join resolves after close (AC-30)', async () => {
+    const repo = new DeferredJoinRepository();
+    const config = loadGameConfig({});
+    const registry = new CountingRegistry(createServerRegistry(config.maxUsersPerServer));
+    const clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      economy: repo,
+      registry,
+    });
+    const release = repo.holdEconomySnapshot();
+    const peer = new FakePeer();
+    hub.attach(peer, { userId: 'u1', username: 'alice', verified: true });
+    peer.receive(JSON.stringify({ type: 'join' }));
+    await drainMicrotasks();
+    expect(registry.assignCalls).toBe(0);
+
+    hub.close();
+    release();
+    await drainMicrotasks();
+
+    expect(registry.assignCalls).toBe(0);
+    expect(peer.messages()).toEqual([]);
+    expect(hub.connectionCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(hub.revisionStateForTesting()).toEqual({
+      economyRevisions: 0,
+      upgradeRevisions: 0,
+    });
+  });
+
+  it('drops late client frames and closes a late attach after close (AC-30)', () => {
+    const harness = createHarness({ maxUsersPerServer: 2 });
+    const first = harness.connect();
+    harness.join(first);
+    const second = harness.connect();
+    harness.join(second);
+    first.clear();
+    second.clear();
+
+    harness.hub.close();
+    first.receive(JSON.stringify({ type: 'explode', id: 'front:0:0', level: 0 }));
+    first.receive(JSON.stringify({ type: 'join' }));
+    first.receive(JSON.stringify({ type: 'rotate', yawSteps: 1, pitchSteps: 0 }));
+    harness.advance(1000);
+
+    expect(first.messages()).toEqual([]);
+    expect(second.messages()).toEqual([]);
+    expect(harness.hub.connectionCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    const late = harness.connect();
+    expect(late.closed).toBe(true);
+    expect(harness.hub.connectionCount()).toBe(0);
+  });
+});
+
+describe('registry index hot paths (T3-B)', () => {
+  it('calls registry.servers() zero times across join/explode/completion/rotate/leave (AC-7)', () => {
+    const config = loadGameConfig({ maxUsersPerServer: 12 });
+    const registry = new CountingRegistry(createServerRegistry(config.maxUsersPerServer));
+    let clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      registry,
+    });
+    const first = new FakePeer();
+    hub.attach(first);
+    first.receive(JSON.stringify({ type: 'join' }));
+    const second = new FakePeer();
+    hub.attach(second);
+    second.receive(JSON.stringify({ type: 'join' }));
+    expect(registry.assignCalls).toBe(2);
+
+    const ids = allIds(3);
+    // One accepted explode plus its 40 ms flush.
+    explode(first, ids[0]!);
+    vi.advanceTimersByTime(MINI_CUBE_BATCH_WINDOW_MS);
+    // Age the click out of the trailing second, then remove the rest of the level (30/s).
+    clock += 1000;
+    vi.advanceTimersByTime(1000);
+    for (let index = 1; index < ids.length; index += 1) {
+      if ((index - 1) % 30 === 0) {
+        clock += 1000;
+        vi.advanceTimersByTime(1000);
+      }
+      explode(first, ids[index]!);
+    }
+    // Completion (boundary flush included), then a rotate and a grace-expiry removal.
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    first.receive(JSON.stringify({ type: 'rotate', yawSteps: 1, pitchSteps: 0 }));
+    second.drop();
+    clock += config.reconnectGraceMs;
+    vi.advanceTimersByTime(config.reconnectGraceMs);
+
+    expect(registry.snapshots).toBe(0);
+    expect(registry.assignCalls).toBe(2);
+    expect(hub.connectionCount()).toBe(1);
   });
 });

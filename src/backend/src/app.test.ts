@@ -74,15 +74,6 @@ function framesBeforeClose(url: string): Promise<unknown[]> {
   });
 }
 
-/** Reads exactly `count` server frames from a live client. */
-async function collect(client: TestClient, count: number): Promise<ServerMessage[]> {
-  const messages: ServerMessage[] = [];
-  for (let index = 0; index < count; index += 1) {
-    messages.push(await client.next());
-  }
-  return messages;
-}
-
 describe('helloMessage', () => {
   it('builds the pinned envelope with an ISO-8601 serverTime', () => {
     const now = new Date('2026-10-18T10:00:00.000Z');
@@ -253,13 +244,12 @@ describe('GET /ws', () => {
       for (let index = 0; index < 30; index += 1) {
         client.send({ type: 'explode', id: ids[index]!, level: 0 });
       }
-      const removed: ServerMessage[] = [];
-      for (let index = 0; index < 30; index += 1) {
-        removed.push(await client.next());
-      }
-      expect(removed).toEqual(
-        ids.slice(0, 30).map((id) => ({ type: 'miniCubeRemoved', playerId: 'p1', id })),
-      );
+      // The 40 ms removal window collapses the burst into one batch frame (AC-8/AC-10).
+      expect(await client.next()).toEqual({
+        type: 'miniCubesRemoved',
+        playerId: 'p1',
+        ids: ids.slice(0, 30),
+      });
 
       // The 31st click in the same trailing second is dropped with a single error.
       client.send({ type: 'explode', id: ids[30]!, level: 0 });
@@ -362,11 +352,14 @@ describe('GET /ws', () => {
       for (const id of thirdIds) {
         third.send({ type: 'explode', id, level: 0 });
       }
-      const thirdRemovals = await collect(third, thirdIds.length);
-      expect(thirdRemovals).toEqual(
-        thirdIds.map((id) => ({ type: 'miniCubeRemoved', playerId: 'p3', id })),
-      );
-      expect(await collect(fourth, thirdIds.length)).toEqual(thirdRemovals);
+      // One 40 ms window holds the whole level: one batch frame per recipient.
+      const thirdBatch = await third.next();
+      expect(thirdBatch).toEqual({
+        type: 'miniCubesRemoved',
+        playerId: 'p3',
+        ids: thirdIds,
+      });
+      expect(await fourth.next()).toEqual(thirdBatch);
       third.send({ type: 'cubeCompleted', level: 0 });
       const enteredThird = await third.next();
       expect(enteredThird.type).toBe('worldEntered');
@@ -422,10 +415,11 @@ describe('GET /ws', () => {
       for (const id of fifthIds) {
         fifth.send({ type: 'explode', id, level: 0 });
       }
-      const fifthRemovals = await collect(fifth, fifthIds.length);
-      expect(fifthRemovals).toEqual(
-        fifthIds.map((id) => ({ type: 'miniCubeRemoved', playerId: 'p5', id })),
-      );
+      expect(await fifth.next()).toEqual({
+        type: 'miniCubesRemoved',
+        playerId: 'p5',
+        ids: fifthIds,
+      });
       fifth.send({ type: 'cubeCompleted', level: 0 });
       const enteredFifth = await fifth.next();
       expect(enteredFifth.type).toBe('worldEntered');

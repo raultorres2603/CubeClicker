@@ -68,6 +68,7 @@ import {
   memberJoinedMessage,
   memberLeftMessage,
   miniCubeRemovedMessage,
+  miniCubesRemovedMessage,
   cubeRotatedMessage,
   parseClientMessage,
   stateSyncMessage,
@@ -95,7 +96,14 @@ import {
   worldPosition,
   type ServerRegistry,
 } from './servers.js';
-import type { EconomyRepository } from '../auth/economy-repository.js';
+import {
+  createEconomyCoalescer,
+  createRemovalBatcher,
+} from './broadcast.js';
+import type {
+  EconomyRepository,
+  EconomySnapshot,
+} from '../auth/economy-repository.js';
 import {
   COINS_PER_CUBE,
   COINS_PER_MINI_CUBE,
@@ -124,6 +132,12 @@ import {
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
+
+/** Removal coalescing window: at most one removal frame per member per window (AC-8/AC-14). */
+export const MINI_CUBE_BATCH_WINDOW_MS = 40;
+
+/** Automatic economy broadcast cadence: at most 4 Hz per account (AC-19/AC-20). */
+export const ECONOMY_BROADCAST_INTERVAL_MS = 250;
 
 /** Max `rotate` messages per trailing second per member (AC-6). */
 const ROTATE_RATE_LIMIT = 20;
@@ -218,6 +232,12 @@ export interface HubDeps {
   timers: HubTimers;
   /** Optional economy repository; absent => no persistence (guests / tests). */
   economy?: EconomyRepository | null;
+  /**
+   * Test/benchmark seam: a registry matching `config.maxUsersPerServer`. Production omits
+   * it and the hub creates its own; the injected registry is used unchanged (the hub only
+   * calls its `assign`/`removeMember`/`moveMember`/`plan`/`locationOf`/`forEachMember`).
+   */
+  registry?: ServerRegistry;
 }
 
 /** Account session resolved from the upgrade cookie (server-authoritative). */
@@ -242,6 +262,11 @@ export interface GameHub {
   connectionCount(): number;
   /** Clears every hub-owned timer and forgets the connections (app shutdown). */
   close(): void;
+  /**
+   * Test-only observability: the number of entries in the two revision guards.
+   * Has no production caller (AC-29/AC-30).
+   */
+  revisionStateForTesting(): { economyRevisions: number; upgradeRevisions: number };
 }
 
 /** One attached socket and its per-connection state. */
@@ -300,7 +325,8 @@ interface Member {
 export function createGameHub(deps: HubDeps): GameHub {
   const { config } = deps;
   const economyRepo = deps.economy ?? null;
-  const registry: ServerRegistry = createServerRegistry(config.maxUsersPerServer);
+  const registry: ServerRegistry =
+    deps.registry ?? createServerRegistry(config.maxUsersPerServer);
   const grace: GraceTracker = createGraceTracker({
     graceMs: config.reconnectGraceMs,
     now: deps.now,
@@ -325,57 +351,150 @@ export function createGameHub(deps: HubDeps): GameHub {
   let playerCounter = 0;
   let movePlan = new Map<string, number>();
 
+  /** Set first in `close()`; makes late frames, late continuations and sends inert (AC-30). */
+  let closed = false;
+  /** Per-account last applied economy write revision (`applyEconomySnapshot`, AC-29). */
+  const economyRevisions = new Map<string, number>();
+  /** Per-account last applied purchase revision (`applyUpgradeSnapshot`, AC-29). */
+  const upgradeRevisions = new Map<string, number>();
+
+  /**
+   * Coalesces accepted removals into one 40 ms window. The callback builds the legacy
+   * single-id frame or the batched frame and broadcasts it once per group (AC-8/AC-9).
+   */
+  const removalBatcher = createRemovalBatcher({
+    windowMs: MINI_CUBE_BATCH_WINDOW_MS,
+    timers,
+    flush(groups): void {
+      for (const group of groups) {
+        const message =
+          group.ids.length === 1
+            ? miniCubeRemovedMessage(group.playerId, group.ids[0]!)
+            : miniCubesRemovedMessage(group.playerId, group.ids);
+        broadcast(group.serverId, message);
+      }
+    },
+  });
+
+  /**
+   * Coalesces automatic economy frames per account to one 250 ms cadence. The flush is
+   * encode-free when no joined connection of the account remains (AC-22).
+   */
+  const economyCoalescer = createEconomyCoalescer({
+    intervalMs: ECONOMY_BROADCAST_INTERVAL_MS,
+    timers,
+    flush(userId, _revision, economy): void {
+      broadcastEconomyUpdate(userId, economy);
+    },
+  });
+
+  /** Boundary flush: pending removals go out before the next level/membership message. */
+  function flushRemovalBatches(): void {
+    removalBatcher.flush();
+  }
+
   /** Recomputes the packing plan from the current membership (the pinned triggers). */
   function recomputePlan(): void {
     movePlan = registry.plan();
   }
 
-  function send(connection: Connection, message: ServerMessage): void {
-    if (!connection.peer.isOpen()) {
+  /**
+   * Delivers one pre-encoded frame to one connection.
+   *
+   * The `isOpen` guard is kept, and a synchronous `send` throw is isolated: only that peer
+   * is terminated (through the normal close path), so a failed send can neither abort a
+   * fan-out nor leak a connection (AC-2).
+   */
+  function deliver(connection: Connection, text: string): void {
+    if (closed) {
       return;
     }
-    connection.peer.send(encodeServerMessage(message));
+    const peer = connection.peer;
+    if (!peer.isOpen()) {
+      return;
+    }
+    try {
+      peer.send(text);
+    } catch {
+      terminate(connection);
+    }
+  }
+
+  /** Encodes once and sends to one connection. */
+  function send(connection: Connection, message: ServerMessage): void {
+    if (closed) {
+      return;
+    }
+    deliver(connection, encodeServerMessage(message));
   }
 
   function sendError(connection: Connection, code: ErrorCode): void {
     send(connection, errorMessage(code));
   }
 
-  function sendToPlayer(playerId: string, message: ServerMessage): void {
-    const member = members.get(playerId);
-    if (member?.connection) {
-      send(member.connection, message);
-    }
-  }
-
-  /** Sends to every member of `serverId` that still has an open socket (holes skipped). */
+  /**
+   * Broadcasts to every member of `serverId` with an open socket (holes skipped).
+   *
+   * The message is encoded exactly once and the same text is fanned out through the
+   * registry's slot-table visitor; call order is per-server delivery order (AC-1).
+   */
   function broadcast(serverId: number, message: ServerMessage, except?: string): void {
-    const server = registry.servers().find((candidate) => candidate.id === serverId);
-    if (server === undefined) {
+    if (closed) {
       return;
     }
-    for (const playerId of server.members) {
-      if (playerId === null || playerId === except) {
+    const text = encodeServerMessage(message);
+    registry.forEachMember(serverId, (playerId) => {
+      if (playerId === except) {
+        return;
+      }
+      const connection = members.get(playerId)?.connection;
+      if (connection) {
+        deliver(connection, text);
+      }
+    });
+  }
+
+  /**
+   * Broadcasts one message to every joined connection of an account.
+   *
+   * The recipient list is collected first: with no joined connection the function returns
+   * before encoding, so a coalesced flush after every tab left sends and encodes nothing
+   * (AC-22). Otherwise the message is encoded once for all recipients (AC-3).
+   */
+  function broadcastAccount(userId: string, message: ServerMessage): void {
+    if (closed) {
+      return;
+    }
+    const targets: Connection[] = [];
+    for (const connection of connections) {
+      if (connection.playerId === null) {
         continue;
       }
-      sendToPlayer(playerId, message);
+      if (connection.accountSession?.userId !== userId) {
+        continue;
+      }
+      if (!connection.peer.isOpen()) {
+        continue;
+      }
+      targets.push(connection);
+    }
+    if (targets.length === 0) {
+      return;
+    }
+    const text = encodeServerMessage(message);
+    for (const connection of targets) {
+      deliver(connection, text);
     }
   }
 
   /**
-   * The member's current placement, derived from the registry (never cached).
+   * The member's current placement from the registry's O(1) index (never cached).
    *
-   * The registry's `members` array is the server's slot table (index = slot − 1), so the
-   * index is the member's actual slot — a vacated slot next to them leaves it unchanged.
+   * The visitor/index is the registry's derived view of the slot table, so a vacated slot
+   * next to the member leaves their slot unchanged.
    */
   function locationOf(playerId: string): { serverId: number; slot: number } | null {
-    for (const server of registry.servers()) {
-      const slotIndex = server.members.indexOf(playerId);
-      if (slotIndex !== -1) {
-        return { serverId: server.id, slot: slotIndex + 1 };
-      }
-    }
-    return null;
+    return registry.locationOf(playerId);
   }
 
   function positionOf(slot: number): { x: number; y: number } {
@@ -410,16 +529,13 @@ export function createGameHub(deps: HubDeps): GameHub {
 
   /** Every member of a server in slot order (holes skipped; the roster always includes the receiver). */
   function rosterFor(serverId: number): MemberState[] {
-    const server = registry.servers().find((candidate) => candidate.id === serverId);
-    if (server === undefined) {
-      return [];
-    }
     const roster: MemberState[] = [];
-    for (const playerId of server.members) {
-      if (playerId !== null) {
-        roster.push(memberState(members.get(playerId)!));
+    registry.forEachMember(serverId, (playerId) => {
+      const member = members.get(playerId);
+      if (member !== undefined) {
+        roster.push(memberState(member));
       }
-    }
+    });
     return roster;
   }
 
@@ -495,6 +611,9 @@ export function createGameHub(deps: HubDeps): GameHub {
 
   /** Final removal of a grace member: `memberLeft (left)`, destroy-if-empty, plan refresh. */
   function removeMember(playerId: string): void {
+    if (closed) {
+      return;
+    }
     const member = members.get(playerId);
     if (member === undefined) {
       return;
@@ -502,6 +621,8 @@ export function createGameHub(deps: HubDeps): GameHub {
     const location = locationOf(playerId);
     grace.cancel(playerId);
     clearGraceTimer(playerId);
+    // Boundary: the member's own pending removals reach the server before `memberLeft`.
+    flushRemovalBatches();
     const removal = registry.removeMember(playerId);
     members.delete(playerId);
     tokens.delete(member.token);
@@ -612,31 +733,97 @@ export function createGameHub(deps: HubDeps): GameHub {
     const isAccount = effectiveMode === 'account';
     const accountId = isAccount ? connection.accountSession!.userId : null;
 
-    // Load persisted economy before creating the member (account + repo present).
+    // Load persisted economy before creating the member (account + repo present). Both
+    // revision guards are seeded from one read each, so an in-flight older result can never
+    // beat the persisted baseline (AC-29).
     let loadedEconomy: EconomyState = { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 };
     let loadedUpgrades: UpgradeState = {};
     let loadedCustomization: CustomizationState = { lootboxes: 0, keys: 0, parts: {}, appearance: {} };
-    let touched = false;
-    let creditedCoins = 0;
+    let loadedEconomyRevision = 0;
+    let loadedUpgradesRevision = 0;
+    let idleSnapshot: EconomySnapshot | null = null;
     if (isAccount && accountId !== null && economyRepo !== null) {
-      const found = await economyRepo.findByUserId(accountId);
-      if (found !== null) {
-        loadedEconomy = found;
+      const economySnapshot = await economyRepo.findEconomySnapshot(accountId);
+      if (closed) {
+        return;
       }
-      loadedUpgrades = await economyRepo.findUpgradesByUserId(accountId);
+      const knownEconomyRevision = economyRevisions.get(accountId) ?? 0;
+      if (economySnapshot !== null && economySnapshot.revision >= knownEconomyRevision) {
+        loadedEconomy = economySnapshot.economy;
+        loadedEconomyRevision = economySnapshot.revision;
+        economyRevisions.set(accountId, economySnapshot.revision);
+      } else {
+        loadedEconomy = economyOfAccountMember(accountId)
+          ?? economySnapshot?.economy
+          ?? loadedEconomy;
+        loadedEconomyRevision = knownEconomyRevision;
+      }
+
+      const upgradesSnapshot = await economyRepo.findUpgradesSnapshot(accountId);
+      if (closed) {
+        return;
+      }
+      const knownUpgradeRevision = upgradeRevisions.get(accountId) ?? 0;
+      if (upgradesSnapshot.revision >= knownUpgradeRevision) {
+        loadedUpgrades = upgradesSnapshot.upgrades;
+        loadedUpgradesRevision = upgradesSnapshot.revision;
+        upgradeRevisions.set(accountId, upgradesSnapshot.revision);
+      } else {
+        loadedUpgrades = upgradesOfAccountMember(accountId) ?? upgradesSnapshot.upgrades;
+        loadedUpgradesRevision = knownUpgradeRevision;
+      }
+
       loadedCustomization = await economyRepo.findCustomizationByUserId(accountId);
+      if (closed) {
+        return;
+      }
       const lastSeenAt = await economyRepo.findLastSeenAt(accountId);
+      if (closed) {
+        return;
+      }
       const now = deps.now();
-      touched = await economyRepo.touchLastSeen(accountId, now, lastSeenAt);
+      const touched = await economyRepo.touchLastSeen(accountId, now, lastSeenAt);
+      if (closed) {
+        return;
+      }
       if (touched) {
         const elapsed = lastSeenAt === null ? 0 : now - lastSeenAt;
         const coins = idleCoins(elapsed, loadedUpgrades);
         if (coins > 0) {
-          loadedEconomy = await economyRepo.credit(accountId, { coins });
-          creditedCoins = coins;
+          const snapshot = await economyRepo.creditWithRevision(accountId, { coins });
+          if (closed) {
+            return;
+          }
+          loadedEconomy = snapshot.economy;
+          loadedEconomyRevision = Math.max(loadedEconomyRevision, snapshot.revision);
+          // Accepted idle credit is flushed immediately after the member exists (the
+          // joining connection is then included, as before), never on the automatic window.
+          if (applyEconomySnapshot(accountId, snapshot)) {
+            idleSnapshot = snapshot;
+          } else {
+            loadedEconomy = economyOfAccountMember(accountId) ?? loadedEconomy;
+            loadedEconomyRevision = economyRevisions.get(accountId) ?? loadedEconomyRevision;
+          }
         }
       }
+
+      // An async write may have applied a newer revision while this join awaited: the
+      // joining member starts from that account's in-memory state (the read is fallback).
+      const appliedEconomyRevision = economyRevisions.get(accountId) ?? 0;
+      if (appliedEconomyRevision > loadedEconomyRevision) {
+        loadedEconomy = economyOfAccountMember(accountId) ?? loadedEconomy;
+        loadedEconomyRevision = appliedEconomyRevision;
+      }
+      const appliedUpgradeRevision = upgradeRevisions.get(accountId) ?? 0;
+      if (appliedUpgradeRevision > loadedUpgradesRevision) {
+        loadedUpgrades = upgradesOfAccountMember(accountId) ?? loadedUpgrades;
+        loadedUpgradesRevision = appliedUpgradeRevision;
+      }
     }
+
+    // Boundary: pending removals for the server reach existing members before this join's
+    // `welcome`/`memberJoined` (AC-11).
+    flushRemovalBatches();
 
     playerCounter += 1;
     const record = createPlayerRecord(playerCounter);
@@ -661,14 +848,11 @@ export function createGameHub(deps: HubDeps): GameHub {
     members.set(member.playerId, member);
     tokens.set(member.token, member.playerId);
     connection.playerId = member.playerId;
-    // Update in-memory members + broadcast economyUpdate when credited (F11).
-    if (isAccount && accountId !== null && economyRepo !== null && touched && creditedCoins > 0) {
-      for (const m of members.values()) {
-        if (m.accountId === accountId) {
-          m.economy = loadedEconomy;
-        }
-      }
-      broadcastEconomyUpdate(accountId, loadedEconomy);
+    // Join-time idle credit keeps today's immediate pre-`welcome` economyUpdate (AC-21);
+    // the forced flush also cancels that account's automatic window.
+    if (accountId !== null && idleSnapshot !== null) {
+      queueEconomy(accountId, idleSnapshot);
+      economyCoalescer.flush(accountId);
     }
     send(connection, welcomeMessage(placementFor(member)));
     broadcast(assignment.serverId, memberJoinedMessage(memberState(member)), member.playerId);
@@ -712,6 +896,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       sendError(connection, 'resume_failed');
       return;
     }
+    // Boundary: pending removals go out before this resume's authoritative `welcome`.
+    flushRemovalBatches();
     grace.cancel(member.playerId);
     clearGraceTimer(member.playerId);
     member.connection = connection;
@@ -748,7 +934,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     member.cube.removedIds.add(id);
     const location = locationOf(member.playerId)!;
-    broadcast(location.serverId, miniCubeRemovedMessage(member.playerId, id));
+    // Authority first: the removed id is recorded synchronously above; only the
+    // notification is coalesced into the 40 ms window (AC-8/AC-9).
+    removalBatcher.enqueue(location.serverId, member.playerId, id);
 
     // Face-clear detection: all N² ids of that face now removed.
     const face = id.split(':')[0] as string;
@@ -771,47 +959,99 @@ export function createGameHub(deps: HubDeps): GameHub {
         clicks: 1,
         facesDestroyed: faceCleared ? 1 : 0,
       };
-      void economyRepo
-        .credit(accountId, delta)
-        .then((result) => {
-          for (const m of members.values()) {
-            if (m.accountId === accountId) {
-              m.economy = result;
-            }
-          }
-          broadcastEconomyUpdate(accountId, result);
-        });
+      void economyRepo.creditWithRevision(accountId, delta).then((snapshot) => {
+        if (closed) {
+          return;
+        }
+        if (applyEconomySnapshot(accountId, snapshot)) {
+          queueEconomy(accountId, snapshot);
+        }
+      });
     }
+  }
+
+  /** One account member's current economy (the join fallback when its read is older). */
+  function economyOfAccountMember(accountId: string): EconomyState | null {
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        return m.economy;
+      }
+    }
+    return null;
+  }
+
+  /** One account member's current upgrades (the join fallback when its read is older). */
+  function upgradesOfAccountMember(accountId: string): UpgradeState | null {
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        return m.upgrades;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Applies an absolute economy snapshot only when its write revision is newer.
+   *
+   * The returned boolean tells the caller whether the update was accepted, so an older
+   * async result can never overwrite newer totals nor be queued (AC-29).
+   */
+  function applyEconomySnapshot(accountId: string, snapshot: EconomySnapshot): boolean {
+    if (closed) {
+      return false;
+    }
+    const last = economyRevisions.get(accountId) ?? 0;
+    if (snapshot.revision <= last) {
+      return false;
+    }
+    economyRevisions.set(accountId, snapshot.revision);
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.economy = snapshot.economy;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Applies an absolute upgrade map only when its purchase revision is newer.
+   *
+   * This guard is separate from the economy revision: a newer credit must not suppress a
+   * newest purchase's upgrades, and a late older purchase must never overwrite the newer
+   * map that later credit multipliers read (AC-29).
+   */
+  function applyUpgradeSnapshot(
+    accountId: string,
+    revision: number,
+    upgrades: UpgradeState,
+  ): boolean {
+    if (closed) {
+      return false;
+    }
+    const last = upgradeRevisions.get(accountId) ?? 0;
+    if (revision <= last) {
+      return false;
+    }
+    upgradeRevisions.set(accountId, revision);
+    for (const m of members.values()) {
+      if (m.accountId === accountId) {
+        m.upgrades = upgrades;
+      }
+    }
+    return true;
+  }
+
+  /** Queues an accepted snapshot for the 250 ms cadence (absolute totals, AC-19/AC-20). */
+  function queueEconomy(accountId: string, snapshot: EconomySnapshot): void {
+    economyCoalescer.queue(accountId, snapshot.revision, snapshot.economy);
   }
 
   function broadcastEconomyUpdate(userId: string, economy: EconomyState): void {
-    for (const connection of connections) {
-      if (connection.playerId === null) {
-        continue;
-      }
-      if (connection.accountSession?.userId !== userId) {
-        continue;
-      }
-      if (!connection.peer.isOpen()) {
-        continue;
-      }
-      send(connection, economyUpdateMessage(economy));
-    }
+    broadcastAccount(userId, economyUpdateMessage(economy));
   }
 
   function broadcastUpgradesUpdate(userId: string, upgrades: UpgradeState): void {
-    for (const connection of connections) {
-      if (connection.playerId === null) {
-        continue;
-      }
-      if (connection.accountSession?.userId !== userId) {
-        continue;
-      }
-      if (!connection.peer.isOpen()) {
-        continue;
-      }
-      send(connection, upgradesUpdateMessage(upgrades));
-    }
+    broadcastAccount(userId, upgradesUpdateMessage(upgrades));
   }
 
   /** Mirrors one account's customization onto every member (tab) of that account. */
@@ -824,18 +1064,7 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   function broadcastCustomizationUpdate(userId: string, customization: CustomizationState): void {
-    for (const connection of connections) {
-      if (connection.playerId === null) {
-        continue;
-      }
-      if (connection.accountSession?.userId !== userId) {
-        continue;
-      }
-      if (!connection.peer.isOpen()) {
-        continue;
-      }
-      send(connection, customizationUpdateMessage(customization));
-    }
+    broadcastAccount(userId, customizationUpdateMessage(customization));
   }
 
 
@@ -845,6 +1074,9 @@ export function createGameHub(deps: HubDeps): GameHub {
       sendSync(connection, member);
       return;
     }
+    // Boundary: pending removals for this level reach every recipient before the cube is
+    // replaced and before `levelAdvanced`/`worldEntered`/membership messages (AC-11).
+    flushRemovalBatches();
     // Speed bonus uses the previous cube's gridSize and the server clock, before reset.
     const previousGridSize = member.cube.gridSize;
     const elapsedMs = deps.now() - member.cubeStartedAtMs;
@@ -866,27 +1098,26 @@ export function createGameHub(deps: HubDeps): GameHub {
     if (member.accountId !== null && economyRepo !== null) {
       const accountId = member.accountId;
       const coins = roundCoins(COINS_PER_CUBE * cubeMultiplier(member.upgrades) * (bonus ? 2 : 1));
-      void economyRepo
-        .credit(accountId, { coins, cubesDestroyed: 1 })
-        .then((result) => {
-          for (const m of members.values()) {
-            if (m.accountId === accountId) {
-              m.economy = result;
-            }
-          }
-          broadcastEconomyUpdate(accountId, result);
-        });
+      void economyRepo.creditWithRevision(accountId, { coins, cubesDestroyed: 1 }).then((snapshot) => {
+        if (closed) {
+          return;
+        }
+        if (applyEconomySnapshot(accountId, snapshot)) {
+          queueEconomy(accountId, snapshot);
+        }
+      });
     }
 
     // Account customization grant (fire-and-forget): +1 lootbox +1 key on cube completion.
     if (member.accountId !== null && economyRepo !== null) {
       const accountId = member.accountId;
-      void economyRepo
-        .grantCustomization(accountId, { lootboxes: 1, keys: 1 })
-        .then((result) => {
-          updateMembersCustomization(accountId, result);
-          broadcastCustomizationUpdate(accountId, result);
-        });
+      void economyRepo.grantCustomization(accountId, { lootboxes: 1, keys: 1 }).then((result) => {
+        if (closed) {
+          return;
+        }
+        updateMembersCustomization(accountId, result);
+        broadcastCustomizationUpdate(accountId, result);
+      });
     }
 
     if (moved === null) {
@@ -911,6 +1142,9 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   async function handlePurchaseUpgrade(member: Member, connection: Connection, upgradeId: string): Promise<void> {
+    if (closed) {
+      return;
+    }
     // Guests never trigger a DB write or broadcast (silent no-op).
     if (member.accountId === null) {
       return;
@@ -921,6 +1155,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     // Reload upgrades from the repository first, then derive cost/currentLevel from DB value.
     const loaded = await economyRepo.findUpgradesByUserId(accountId);
+    if (closed) {
+      return;
+    }
 
     // Validate catalog.
     if (!isValidUpgradeId(upgradeId)) {
@@ -936,19 +1173,32 @@ export function createGameHub(deps: HubDeps): GameHub {
 
     const cost = upgradeCost(upgradeId, currentLevel);
     const result = await economyRepo.purchaseUpgrade(accountId, upgradeId, cost, currentLevel);
+    if (closed) {
+      return;
+    }
     if (result === null) {
       sendError(connection, 'insufficient_funds');
       return;
     }
-    // Update all members with same accountId.
-    for (const m of members.values()) {
-      if (m.accountId === accountId) {
-        m.economy = result.economy;
-        m.upgrades = result.upgrades;
-      }
+    const economySnapshot: EconomySnapshot = {
+      economy: result.economy,
+      revision: result.revision,
+    };
+    // Economy and upgrades are guarded independently. The economy result is applied and
+    // flushed first (the accepted pre-feature frame order); an older result never regresses
+    // the totals, and does not suppress the newest purchase's upgrades below.
+    if (applyEconomySnapshot(accountId, economySnapshot)) {
+      // Explicit action: queue and flush now (the forced flush cancels the automatic window
+      // and sends the post-purchase absolute totals exactly once).
+      queueEconomy(accountId, economySnapshot);
+      economyCoalescer.flush(accountId);
     }
-    broadcastEconomyUpdate(accountId, result.economy);
-    broadcastUpgradesUpdate(accountId, result.upgrades);
+    // Upgrades apply and broadcast only when this purchase is newer than the last applied
+    // purchase; an older purchase resolving late is dropped before it can overwrite the
+    // newer map or reach the wire.
+    if (applyUpgradeSnapshot(accountId, result.revision, result.upgrades)) {
+      broadcastUpgradesUpdate(accountId, result.upgrades);
+    }
   }
 
   async function handleOpenLootbox(member: Member, connection: Connection): Promise<void> {
@@ -971,6 +1221,9 @@ export function createGameHub(deps: HubDeps): GameHub {
         throw new Error(`selectLootPart returned a standard part: ${partId}`);
       }
       const result = await economyRepo.applyLootboxOpenV2(accountId, partId);
+      if (closed) {
+        return;
+      }
       if ('reason' in result) {
         sendError(connection, result.reason);
         return;
@@ -1010,6 +1263,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     const accountId = member.accountId;
     const current = await economyRepo.findCustomizationByUserId(accountId);
+    if (closed) {
+      return;
+    }
     // All-or-nothing ownership (AC-28): a legacy multi-slot id needs both v2 parts owned.
     if (!targets.every((target) => ownsPart(current, target.partId))) {
       sendError(connection, 'not_owned');
@@ -1023,6 +1279,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     let state = current;
     for (const target of pending) {
       state = await economyRepo.setSlotAppearance(accountId, target.slot, target.partId);
+      if (closed) {
+        return;
+      }
     }
     updateMembersCustomization(accountId, state);
     broadcastCustomizationUpdate(accountId, state);
@@ -1042,12 +1301,18 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     const accountId = member.accountId;
     const current = await economyRepo.findCustomizationByUserId(accountId);
+    if (closed) {
+      return;
+    }
     const equipped = current.appearance[slotId];
     // A missing slot and a slot resolving to its standard part are already at the default.
     if (equipped === undefined || equipped === defaultPartForSlot(slotId)) {
       return;
     }
     const state = await economyRepo.setSlotAppearance(accountId, slotId, null);
+    if (closed) {
+      return;
+    }
     updateMembersCustomization(accountId, state);
     broadcastCustomizationUpdate(accountId, state);
   }
@@ -1074,6 +1339,10 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   function handleMessage(connection: Connection, raw: unknown): void {
+    // A late frame after shutdown is inert before decoding or touching rate-limit state.
+    if (closed) {
+      return;
+    }
     const frame = frameOf(raw);
     // Oversized frames are dropped before decoding (AC-20), even when they would parse.
     if (frame === null || frame.bytes > config.maxMessageBytes) {
@@ -1135,6 +1404,12 @@ export function createGameHub(deps: HubDeps): GameHub {
     },
 
     attach(peer: Peer, accountSession: AccountSession | null = null): void {
+      // A socket attached after shutdown is closed immediately; no listener or timer is
+      // created for it (AC-30).
+      if (closed) {
+        peer.close();
+        return;
+      }
       // Backstop for direct hub users (the route checks `hasCapacity` before hello): a socket
       // beyond the cap is closed before any state is created for it.
       if (connections.size >= config.maxConnections) {
@@ -1166,7 +1441,19 @@ export function createGameHub(deps: HubDeps): GameHub {
       return connections.size;
     },
 
+    revisionStateForTesting(): { economyRevisions: number; upgradeRevisions: number } {
+      return {
+        economyRevisions: economyRevisions.size,
+        upgradeRevisions: upgradeRevisions.size,
+      };
+    },
+
     close(): void {
+      // Flip the guard first: every late frame, continuation, enqueue and send is inert from
+      // this point (AC-30).
+      closed = true;
+      removalBatcher.discard();
+      economyCoalescer.discard();
       for (const connection of connections) {
         if (connection.heartbeat !== null) {
           timers.clearInterval(connection.heartbeat);
@@ -1178,6 +1465,11 @@ export function createGameHub(deps: HubDeps): GameHub {
         timers.clearTimeout(handle);
       }
       graceTimers.clear();
+      members.clear();
+      tokens.clear();
+      openingMembers.clear();
+      economyRevisions.clear();
+      upgradeRevisions.clear();
     },
   };
 }
