@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AuthError,
@@ -10,6 +10,10 @@ import {
   me,
   default as defaultApi,
 } from './api';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): {
   ok: boolean;
@@ -300,6 +304,55 @@ describe('auth api client', () => {
     await api.me();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/auth/me', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      body: undefined,
+    });
+  });
+
+  it('resolves the absolute API base from VITE_API_URL and keeps credentialed fetches', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://api.example.test');
+    vi.stubEnv('VITE_CLOUD_DEPLOY', undefined);
+    const user = { id: 'u1', username: 'alice', email: 'a@x.com', verified: false };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { user }));
+    const api = createAuthApi({ fetch: fetchMock });
+
+    await api.login({ username: 'alice', password: 'password1234' });
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.example.test/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: 'password1234' }),
+    });
+  });
+
+  it('removes trailing slashes from a configured VITE_API_URL', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://api.example.test//');
+    const user = { id: 'u1', username: 'alice', email: 'a@x.com', verified: true };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { user }));
+    const api = createAuthApi({ fetch: fetchMock });
+
+    await api.me();
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.example.test/auth/me', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      body: undefined,
+    });
+  });
+
+  it('keeps same-origin relative paths when no API URL is configured', async () => {
+    vi.stubEnv('VITE_API_URL', undefined);
+    const user = { id: 'u1', username: 'alice', email: 'a@x.com', verified: true };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { user }));
+    const api = createAuthApi({ fetch: fetchMock });
+
+    await api.me();
+
+    expect(fetchMock).toHaveBeenCalledWith('/auth/me', {
       method: 'GET',
       credentials: 'include',
       headers: { Accept: 'application/json' },

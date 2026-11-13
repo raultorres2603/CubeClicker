@@ -38,6 +38,11 @@
  * **Send.** Client messages are encoded with `encodeClientMessage` and written only while a
  * socket is open; before the first open, between attempts and after `close()` a `send` is a
  * no-op (the session gates gameplay on the status anyway).
+ *
+ * **URL.** The default socket URL comes from {@link resolveFrontendConfig}: the same
+ * resolver the auth client uses, so `VITE_WS_URL` wins verbatim and an API-only cloud
+ * build derives `wss://<api-host>/ws` from `VITE_API_URL`. An explicit `url` option still
+ * wins and no second default constant exists here.
  */
 
 import {
@@ -47,6 +52,7 @@ import {
   type ServerMessage,
 } from './protocol';
 import { createConnection, type ConnectionStatus } from '../ws/connection';
+import { resolveFrontendConfig } from '../config';
 
 /** The status the connection banner renders (spec § 9; `exhausted` = retries spent). */
 export type TransportStatus = 'connecting' | 'connected' | 'disconnected' | 'exhausted';
@@ -69,7 +75,7 @@ export interface Transport {
 
 /** Construction options; `url` and the socket factory are both injectable. */
 export interface TransportOptions {
-  /** WebSocket URL; defaults to `VITE_WS_URL` (via `import.meta.env`), else the pinned dev URL. */
+  /** WebSocket URL; defaults to the resolved runtime config (`VITE_WS_URL`, else the `VITE_API_URL`-derived URL, else the pinned local URL). */
   url?: string;
   /** Injected in tests / non-browser hosts; defaults to `(url) => new WebSocket(url)`. */
   socketFactory?: (url: string) => WebSocket;
@@ -83,9 +89,6 @@ export interface TransportOptions {
   maxDelayMs?: number;
 }
 
-/** Pinned default: the backend's published dev port (`README.md` configuration table). */
-const DEFAULT_WS_URL = 'ws://localhost:8080/ws';
-
 /**
  * Defaults mirrored from `ws/connection.ts` (its constants are private). The retry cap must
  * be identical on both sides: the connection decides when to stop retrying, the transport
@@ -95,10 +98,11 @@ const DEFAULT_MAX_ATTEMPTS = 10;
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 5000;
 
-/** `VITE_WS_URL` when configured, else the pinned local URL (the same default as `vite.config.ts`). */
+/** The default socket URL from the shared runtime-config resolver (no second default here). */
 function resolveWsUrl(): string {
-  const configured = import.meta.env.VITE_WS_URL;
-  return typeof configured === 'string' && configured.length > 0 ? configured : DEFAULT_WS_URL;
+  return resolveFrontendConfig(import.meta.env, {
+    cloud: import.meta.env.VITE_CLOUD_DEPLOY === 'true',
+  }).wsUrl;
 }
 
 /** The ambient browser socket factory (the only host global the transport touches). */

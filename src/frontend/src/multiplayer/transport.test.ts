@@ -338,7 +338,7 @@ describe('createTransport — connection, status and send (unit)', () => {
     h.transport.close();
   });
 
-  it('uses the ambient WebSocket global and resolves VITE_WS_URL with the pinned default', () => {
+  it('uses the ambient WebSocket global and resolves the socket URL through the config resolver', () => {
     class RecordingGlobalSocket {
       static opened: string[] = [];
 
@@ -359,6 +359,8 @@ describe('createTransport — connection, status and send (unit)', () => {
     RecordingGlobalSocket.opened = [];
     vi.stubGlobal('WebSocket', RecordingGlobalSocket);
 
+    vi.stubEnv('VITE_API_URL', undefined);
+    vi.stubEnv('VITE_CLOUD_DEPLOY', undefined);
     vi.stubEnv('VITE_WS_URL', undefined);
     const defaulted = createTransport();
     defaulted.connect();
@@ -374,10 +376,19 @@ describe('createTransport — connection, status and send (unit)', () => {
     blank.connect();
     blank.close();
 
+    // API-only cloud build: the resolver derives the effective wss:// URL.
+    vi.stubEnv('VITE_WS_URL', undefined);
+    vi.stubEnv('VITE_CLOUD_DEPLOY', 'true');
+    vi.stubEnv('VITE_API_URL', 'https://api.example.test');
+    const cloudApiOnly = createTransport();
+    cloudApiOnly.connect();
+    cloudApiOnly.close();
+
     expect(RecordingGlobalSocket.opened).toEqual([
       'ws://localhost:8080/ws',
       'wss://mp.example.test/ws',
       'ws://localhost:8080/ws',
+      'wss://api.example.test/ws',
     ]);
   });
 

@@ -6,7 +6,13 @@
  * parse JSON responses, and throw typed {@link AuthError}s on non-2xx
  * responses. No state is held here — callers (the auth store, components) own
  * the lifecycle.
+ *
+ * The default request base comes from {@link resolveFrontendConfig}: same-origin relative
+ * paths locally (`''`), the absolute `VITE_API_URL` in a cloud build. An explicit
+ * `baseUrl` option still wins, so tests and embedders can target any origin.
  */
+
+import { resolveFrontendConfig } from '../config';
 
 export interface AuthUser {
   id: string;
@@ -48,6 +54,7 @@ export interface MeResult {
 }
 
 export interface AuthApiOptions {
+  /** Request base; defaults to the resolved `VITE_API_URL` (`''` = same origin). */
   baseUrl?: string;
   fetch?: (...args: unknown[]) => unknown;
   credentials?: RequestCredentials;
@@ -164,7 +171,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 export function createAuthApi(options: AuthApiOptions = {}): AuthApi {
-  const baseUrl = normalizeBaseUrl(options.baseUrl);
+  const configuredBaseUrl =
+    options.baseUrl !== undefined
+      ? options.baseUrl
+      : resolveFrontendConfig(import.meta.env, {
+          cloud: import.meta.env.VITE_CLOUD_DEPLOY === 'true',
+        }).apiBaseUrl;
+  const baseUrl = normalizeBaseUrl(configuredBaseUrl);
   const fetchImpl = options.fetch ?? null;
   const credentials = options.credentials ?? 'include';
 

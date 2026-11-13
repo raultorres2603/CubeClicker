@@ -1,13 +1,31 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+import { resolveFrontendConfig } from './src/config';
+
 // This is the only Node-side file of the frontend workspace; `types: ["vite/client"]`
 // (tsconfig) keeps the browser bundle's global type surface free of Node globals, so the
 // single Node global read here is declared narrowly instead of pulling in @types/node.
 declare const process: { env: Record<string, string | undefined> };
 
-/** Pinned default: the backend's published dev port (README configuration table). */
-const DEFAULT_WS_URL = 'ws://localhost:8080/ws';
+/**
+ * The per-environment runtime config bridged into the bundle by `define`. The values are
+ * baked at build time (Vite's model): local/Docker builds leave the API base empty and the
+ * WS URL unset, so the app resolves its same-origin defaults; the Vercel build sets
+ * `VITE_CLOUD_DEPLOY=true` plus the absolute `VITE_API_URL` (and optionally `VITE_WS_URL`).
+ */
+const runtimeEnv = {
+  VITE_API_URL: process.env.VITE_API_URL ?? '',
+  VITE_WS_URL: process.env.VITE_WS_URL ?? '',
+  VITE_CLOUD_DEPLOY: process.env.VITE_CLOUD_DEPLOY ?? 'false',
+};
+
+// Cloud builds must fail before `vite build` when the resolved config would produce a
+// mixed-content API or WebSocket URL (missing/relative API, explicit ws:// socket). The
+// check runs on the *resolved* config, so an API-only cloud build is valid.
+if (runtimeEnv.VITE_CLOUD_DEPLOY === 'true') {
+  resolveFrontendConfig(runtimeEnv, { cloud: true });
+}
 
 /**
  * Split the stable vendor set out of the app chunks: `three` is a single shared
@@ -66,6 +84,8 @@ export default defineConfig({
     },
   },
   define: {
-    'import.meta.env.VITE_WS_URL': JSON.stringify(process.env.VITE_WS_URL ?? DEFAULT_WS_URL),
+    'import.meta.env.VITE_API_URL': JSON.stringify(runtimeEnv.VITE_API_URL),
+    'import.meta.env.VITE_WS_URL': JSON.stringify(runtimeEnv.VITE_WS_URL),
+    'import.meta.env.VITE_CLOUD_DEPLOY': JSON.stringify(runtimeEnv.VITE_CLOUD_DEPLOY),
   },
 });
