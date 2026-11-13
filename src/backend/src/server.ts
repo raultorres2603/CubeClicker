@@ -1,24 +1,24 @@
 import { buildApp } from './app.js';
 import { loadAuthConfig } from './auth/config.js';
 import { createPool, closePool } from './db/pool.js';
-import { runMigrations } from './db/migrate.js';
+import { runStartupMigrations } from './db/migrate-runner.js';
 
 const HOST = process.env.HOST ?? '0.0.0.0';
 const PORT = Number(process.env.PORT ?? 8080);
 
-// Run pending migrations against the configured database before serving traffic.
-// A failure aborts startup so a half-migrated database is never served (AC-30).
+// Apply pending migrations on a dedicated connection before serving traffic.
+// No database configured (neither DIRECT_DATABASE_URL nor DATABASE_URL) returns
+// null and keeps the in-memory repositories; a real failure aborts startup so a
+// half-migrated database is never served (AC-10/AC-20).
 const authConfig = loadAuthConfig(process.env);
 const pool = createPool(authConfig.databaseUrl);
 
-if (pool !== null) {
-  try {
-    await runMigrations(pool);
-  } catch (error) {
-    await closePool(pool).catch(() => undefined);
-    console.error('Failed to apply database migrations; aborting startup.', error);
-    process.exit(1);
-  }
+try {
+  await runStartupMigrations(process.env);
+} catch (error) {
+  await closePool(pool).catch(() => undefined);
+  console.error('Failed to apply database migrations; aborting startup.', error);
+  process.exit(1);
 }
 
 const app = buildApp(process.env, pool !== null ? { auth: { pool } } : {});

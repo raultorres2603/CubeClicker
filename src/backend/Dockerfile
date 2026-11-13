@@ -62,6 +62,7 @@ WORKDIR /app/src/backend
 COPY --from=prod-deps /app/node_modules /app/node_modules
 COPY --from=build /app/src/backend/package.json ./package.json
 COPY --from=build /app/src/backend/dist ./dist
+COPY --from=build /app/src/backend/src/db/migrations ./dist/db/migrations
 
 EXPOSE 8080
 
