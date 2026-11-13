@@ -13,6 +13,13 @@
  * SET ... = user_economy.<col> + $delta), never read-modify-write, so that
  * concurrent multi-tab credits accumulate without lost updates (F5).
  *
+ * Every economy write also bumps the monotonic per-account `economy_revision`
+ * (migration 007) inside that same atomic statement and returns it with the
+ * absolute post-write totals (`creditWithRevision`, `purchaseUpgrade`). Promise
+ * resolution order is not write order, so the revision is the only ordering
+ * signal a consumer can trust; `credit` and `findUpgradesByUserId` remain
+ * wrappers for existing callers.
+ *
  * `purchaseUpgrade` MUST perform only the conditional UPDATE (no insert/upsert)
  * with a level guard, returning `null` on insufficient funds / stale level /
  * no row, so concurrent multi-tab purchases cannot overdraw or clobber a level
@@ -50,6 +57,13 @@ export interface CustomizationState {
 
 export type EconomyDelta = Partial<EconomyState>;
 
+export interface EconomySnapshot {
+  /** Absolute post-write totals for this write. */
+  economy: EconomyState;
+  /** Monotonic per-account write revision (1, 2, 3, ...; 0 before the first write). */
+  revision: number;
+}
+
 export interface EconomyDb {
   query(
     text: string,
@@ -59,14 +73,20 @@ export interface EconomyDb {
 
 export interface EconomyRepository {
   findByUserId(userId: string): Promise<EconomyState | null>;
+  /** Absolute totals plus the current revision, for seeding a join baseline. */
+  findEconomySnapshot(userId: string): Promise<EconomySnapshot | null>;
+  /** One atomic write that bumps `economy_revision` and returns the absolute result. */
+  creditWithRevision(userId: string, delta: EconomyDelta): Promise<EconomySnapshot>;
   credit(userId: string, delta: EconomyDelta): Promise<EconomyState>;
   findUpgradesByUserId(userId: string): Promise<UpgradeState>;
+  /** The upgrade levels and the revision of the same row in one atomic read. */
+  findUpgradesSnapshot(userId: string): Promise<{ upgrades: UpgradeState; revision: number }>;
   purchaseUpgrade(
     userId: string,
     upgradeId: UpgradeId,
     cost: number,
     currentLevel: number,
-  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null>;
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState; revision: number } | null>;
   findLastSeenAt(userId: string): Promise<number | null>;
   touchLastSeen(userId: string, nowMs: number, expectedMs?: number | null): Promise<boolean>;
   findCustomizationByUserId(userId: string): Promise<CustomizationState>;
@@ -124,6 +144,8 @@ interface StoredRow {
   upgrades: UpgradeState;
   customization: CustomizationState;
   lastSeenAt: number | null;
+  /** Monotonic per-account write revision; bumped only by credit/purchase. */
+  revision: number;
 }
 
 function copyCustomization(state: CustomizationState): CustomizationState {
@@ -166,7 +188,12 @@ export class InMemoryEconomyRepository implements EconomyRepository {
     return row ? { ...row.economy } : null;
   }
 
-  async credit(userId: string, delta: EconomyDelta): Promise<EconomyState> {
+  async findEconomySnapshot(userId: string): Promise<EconomySnapshot | null> {
+    const row = this.store.get(userId);
+    return row ? { economy: { ...row.economy }, revision: row.revision } : null;
+  }
+
+  async creditWithRevision(userId: string, delta: EconomyDelta): Promise<EconomySnapshot> {
     const existing = this.store.get(userId);
     const base = existing?.economy ?? { ...ZERO };
     const next: EconomyState = {
@@ -180,13 +207,29 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       ? copyCustomization(existing.customization)
       : { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} };
     const lastSeenAt = existing ? existing.lastSeenAt : null;
-    this.store.set(userId, { economy: next, upgrades, customization, lastSeenAt });
-    return { ...next };
+    const revision = (existing?.revision ?? 0) + 1;
+    this.store.set(userId, { economy: next, upgrades, customization, lastSeenAt, revision });
+    return { economy: { ...next }, revision };
+  }
+
+  async credit(userId: string, delta: EconomyDelta): Promise<EconomyState> {
+    const snapshot = await this.creditWithRevision(userId, delta);
+    return snapshot.economy;
   }
 
   async findUpgradesByUserId(userId: string): Promise<UpgradeState> {
+    const snapshot = await this.findUpgradesSnapshot(userId);
+    return snapshot.upgrades;
+  }
+
+  async findUpgradesSnapshot(
+    userId: string,
+  ): Promise<{ upgrades: UpgradeState; revision: number }> {
     const row = this.store.get(userId);
-    return row ? { ...row.upgrades } : {};
+    return {
+      upgrades: row ? { ...row.upgrades } : {},
+      revision: row?.revision ?? 0,
+    };
   }
 
   async purchaseUpgrade(
@@ -194,7 +237,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
     upgradeId: UpgradeId,
     cost: number,
     currentLevel: number,
-  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null> {
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState; revision: number } | null> {
     const row = this.store.get(userId);
     if (!row) return null;
     const economy = row.economy;
@@ -209,13 +252,15 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       coins: roundCoins(economy.coins - cost),
     };
     const nextUpgrades: UpgradeState = { ...row.upgrades, [upgradeId]: currentLevel + 1 };
+    const revision = row.revision + 1;
     this.store.set(userId, {
       economy: nextEconomy,
       upgrades: nextUpgrades,
       customization: copyCustomization(row.customization),
       lastSeenAt: row.lastSeenAt,
+      revision,
     });
-    return { economy: { ...nextEconomy }, upgrades: { ...nextUpgrades } };
+    return { economy: { ...nextEconomy }, upgrades: { ...nextUpgrades }, revision };
   }
 
   async findLastSeenAt(userId: string): Promise<number | null> {
@@ -231,12 +276,14 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: {},
         customization: { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} },
         lastSeenAt: null,
+        revision: 0,
       };
       this.store.set(userId, {
         economy: { ...base.economy },
         upgrades: { ...base.upgrades },
         customization: copyCustomization(base.customization),
         lastSeenAt: nowMs,
+        revision: base.revision,
       });
       return true;
     }
@@ -247,6 +294,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
           upgrades: {},
           customization: { ...ZERO_CUSTOMIZATION, parts: {}, appearance: {} },
           lastSeenAt: nowMs,
+          revision: 0,
         });
         return true;
       }
@@ -258,6 +306,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: { ...row.upgrades },
         customization: copyCustomization(row.customization),
         lastSeenAt: nowMs,
+        revision: row.revision,
       });
       return true;
     }
@@ -289,6 +338,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: { ...existing.upgrades },
         customization: copyCustomization(nextCustom),
         lastSeenAt: existing.lastSeenAt,
+        revision: existing.revision,
       });
     } else {
       this.store.set(userId, {
@@ -296,6 +346,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: {},
         customization: copyCustomization(nextCustom),
         lastSeenAt: null,
+        revision: 0,
       });
     }
     return normalizeRead(nextCustom);
@@ -329,6 +380,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: { ...existing.upgrades },
         customization: copyCustomization(nextCustom),
         lastSeenAt: existing.lastSeenAt,
+        revision: existing.revision,
       });
     } else {
       this.store.set(userId, {
@@ -336,6 +388,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: {},
         customization: copyCustomization(nextCustom),
         lastSeenAt: null,
+        revision: 0,
       });
     }
     return { state: normalizeRead(nextCustom) };
@@ -361,6 +414,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: { ...existing.upgrades },
         customization: copyCustomization(nextCustom),
         lastSeenAt: existing.lastSeenAt,
+        revision: existing.revision,
       });
     } else {
       this.store.set(userId, {
@@ -368,6 +422,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
         upgrades: {},
         customization: copyCustomization(nextCustom),
         lastSeenAt: null,
+        revision: 0,
       });
     }
     return normalizeRead(nextCustom);
@@ -401,6 +456,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       upgrades: existing ? { ...existing.upgrades } : {},
       customization: copyCustomization(nextCustom),
       lastSeenAt: existing ? existing.lastSeenAt : null,
+      revision: existing ? existing.revision : 0,
     });
     return { state: normalizeRead(nextCustom), duplicate };
   }
@@ -431,6 +487,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
       upgrades: existing ? { ...existing.upgrades } : {},
       customization: copyCustomization(nextCustom),
       lastSeenAt: existing ? existing.lastSeenAt : null,
+      revision: existing ? existing.revision : 0,
     });
     return normalizeRead(nextCustom);
   }
@@ -447,6 +504,11 @@ function rowToEconomy(row: Record<string, unknown>): EconomyState {
     facesDestroyed: Number(row.faces_destroyed ?? 0),
     cubesDestroyed: Number(row.cubes_destroyed ?? 0),
   };
+}
+
+/** BIGINT columns arrive as strings from `pg`; 0 when the projection omits the column. */
+function rowToRevision(row: Record<string, unknown>): number {
+  return Number(row.economy_revision ?? 0);
 }
 
 function parseUpgrades(raw: unknown): UpgradeState {
@@ -548,37 +610,61 @@ export class PgEconomyRepository implements EconomyRepository {
     return row ? rowToEconomy(row) : null;
   }
 
-  async credit(userId: string, delta: EconomyDelta): Promise<EconomyState> {
+  async findEconomySnapshot(userId: string): Promise<EconomySnapshot | null> {
+    const result = await this.db.query(
+      `SELECT coins, clicks, faces_destroyed, cubes_destroyed, economy_revision
+       FROM user_economy WHERE user_id = $1`,
+      [userId],
+    );
+    const row = result.rows[0];
+    return row ? { economy: rowToEconomy(row), revision: rowToRevision(row) } : null;
+  }
+
+  async creditWithRevision(userId: string, delta: EconomyDelta): Promise<EconomySnapshot> {
     const coinsDelta = delta.coins ?? 0;
     const clicksDelta = delta.clicks ?? 0;
     const facesDelta = delta.facesDestroyed ?? 0;
     const cubesDelta = delta.cubesDestroyed ?? 0;
     const result = await this.db.query(
-      `INSERT INTO user_economy (user_id, coins, clicks, faces_destroyed, cubes_destroyed)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO user_economy (user_id, coins, clicks, faces_destroyed, cubes_destroyed, economy_revision)
+       VALUES ($1, $2, $3, $4, $5, 1)
        ON CONFLICT (user_id) DO UPDATE SET
          coins = user_economy.coins + EXCLUDED.coins,
          clicks = user_economy.clicks + EXCLUDED.clicks,
          faces_destroyed = user_economy.faces_destroyed + EXCLUDED.faces_destroyed,
          cubes_destroyed = user_economy.cubes_destroyed + EXCLUDED.cubes_destroyed,
+         economy_revision = user_economy.economy_revision + 1,
          updated_at = now()
-       RETURNING coins, clicks, faces_destroyed, cubes_destroyed`,
+       RETURNING coins, clicks, faces_destroyed, cubes_destroyed, economy_revision`,
       [userId, coinsDelta, clicksDelta, facesDelta, cubesDelta],
     );
     const row = result.rows[0];
     if (!row) {
       throw new Error('INSERT/UPDATE returned no row');
     }
-    return rowToEconomy(row);
+    return { economy: rowToEconomy(row), revision: rowToRevision(row) };
+  }
+
+  async credit(userId: string, delta: EconomyDelta): Promise<EconomyState> {
+    const snapshot = await this.creditWithRevision(userId, delta);
+    return snapshot.economy;
   }
 
   async findUpgradesByUserId(userId: string): Promise<UpgradeState> {
+    const snapshot = await this.findUpgradesSnapshot(userId);
+    return snapshot.upgrades;
+  }
+
+  async findUpgradesSnapshot(
+    userId: string,
+  ): Promise<{ upgrades: UpgradeState; revision: number }> {
     const result = await this.db.query(
-      'SELECT upgrades FROM user_economy WHERE user_id = $1',
+      'SELECT upgrades, economy_revision FROM user_economy WHERE user_id = $1',
       [userId],
     );
     const row = result.rows[0];
-    return row ? parseUpgrades(row.upgrades) : {};
+    if (!row) return { upgrades: {}, revision: 0 };
+    return { upgrades: parseUpgrades(row.upgrades), revision: rowToRevision(row) };
   }
 
   async purchaseUpgrade(
@@ -586,17 +672,18 @@ export class PgEconomyRepository implements EconomyRepository {
     upgradeId: UpgradeId,
     cost: number,
     currentLevel: number,
-  ): Promise<{ economy: EconomyState; upgrades: UpgradeState } | null> {
+  ): Promise<{ economy: EconomyState; upgrades: UpgradeState; revision: number } | null> {
     const path = [upgradeId];
     const result = await this.db.query(
       `UPDATE user_economy
        SET coins = coins - $2,
            upgrades = jsonb_set(upgrades, $3::text[], to_jsonb(($4 + 1)::int)),
+           economy_revision = economy_revision + 1,
            updated_at = now()
        WHERE user_id = $1
          AND coins >= $2
          AND COALESCE((upgrades->>'${upgradeId}')::int, 0) = $4
-       RETURNING coins, clicks, faces_destroyed, cubes_destroyed, upgrades`,
+       RETURNING coins, clicks, faces_destroyed, cubes_destroyed, upgrades, economy_revision`,
       [userId, cost, path, currentLevel],
     );
     const row = result.rows[0];
@@ -604,6 +691,7 @@ export class PgEconomyRepository implements EconomyRepository {
     return {
       economy: rowToEconomy(row),
       upgrades: parseUpgrades(row.upgrades),
+      revision: rowToRevision(row),
     };
   }
 

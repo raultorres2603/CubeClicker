@@ -300,6 +300,7 @@ describe('InMemoryEconomyRepository upgrades', () => {
     expect(result).toEqual({
       economy: { coins: 10, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       upgrades: { mini_cube_value: 1 },
+      revision: 2,
     });
     const found = await repo.findByUserId(FIXED_USER);
     expect(found?.coins).toBe(10);
@@ -419,20 +420,26 @@ describe('PgEconomyRepository upgrades', () => {
   it('purchaseUpgrade issues conditional UPDATE with level guard and returns parsed row', async () => {
     const state = sampleState();
     const ups: UpgradeState = { mini_cube_value: 1 };
-    const db = makeDb(() => ({ rows: [rowWith(state, ups)], rowCount: 1 }));
+    const db = makeDb(() => ({
+      rows: [{ ...rowWith(state, ups), economy_revision: '7' }],
+      rowCount: 1,
+    }));
     const repo = new PgEconomyRepository(db);
     const result = await repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0);
-    expect(result).toEqual({ economy: state, upgrades: ups });
+    expect(result).toEqual({ economy: state, upgrades: ups, revision: 7 });
     expect(db.calls).toHaveLength(1);
     const call = db.calls[0];
     expect(call.text).toContain('UPDATE user_economy');
     expect(call.text).toContain('SET coins = coins -');
     expect(call.text).toContain('jsonb_set(upgrades');
+    expect(call.text).toContain('economy_revision = economy_revision + 1');
     expect(call.text).toContain('updated_at = now()');
     expect(call.text).toContain('WHERE user_id = $1');
     expect(call.text).toContain('coins >=');
     expect(call.text).toContain("COALESCE((upgrades->>'mini_cube_value')::int, 0)");
-    expect(call.text).toContain('RETURNING');
+    expect(call.text).toContain(
+      'RETURNING coins, clicks, faces_destroyed, cubes_destroyed, upgrades, economy_revision',
+    );
     expect(call.values).toEqual([FIXED_USER, 10, ['mini_cube_value'], 0]);
   });
 
@@ -451,6 +458,7 @@ describe('PgEconomyRepository upgrades', () => {
           faces_destroyed: '3',
           cubes_destroyed: '2',
           upgrades: { mini_cube_value: 1 },
+          economy_revision: '3',
         },
       ],
       rowCount: 1,
@@ -460,6 +468,7 @@ describe('PgEconomyRepository upgrades', () => {
     expect(result).toEqual({
       economy: { coins: 12.34, clicks: 7, facesDestroyed: 3, cubesDestroyed: 2 },
       upgrades: { mini_cube_value: 1 },
+      revision: 3,
     });
   });
 
@@ -1394,6 +1403,276 @@ describe('PgEconomyRepository v2 lootbox/appearance', () => {
     await expect(repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).rejects.toThrow(
       'INSERT/UPDATE returned no row',
     );
+  });
+});
+
+describe('EconomySnapshot revisions', () => {
+  function makeDb(handler: (text: string, values?: unknown[]) => unknown): EconomyDb & {
+    calls: Array<{ text: string; values?: unknown[] }>;
+  } {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const db = {
+      calls,
+      async query(text: string, values?: unknown[]) {
+        calls.push({ text, values });
+        const result = handler(text, values);
+        if (result instanceof Error) throw result;
+        return result as { rows: Array<Record<string, unknown>>; rowCount?: number | null };
+      },
+    };
+    return db;
+  }
+
+  function revisionRow(
+    economy: EconomyState,
+    revision: string,
+  ): Record<string, unknown> {
+    return { ...rowFor(economy), economy_revision: revision };
+  }
+
+  it('creditWithRevision starts at revision 1 and increments on every write', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.creditWithRevision(FIXED_USER, { coins: 1, clicks: 1 })).toEqual({
+      economy: { coins: 1, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 1,
+    });
+    expect(await repo.creditWithRevision(FIXED_USER, { coins: 1, clicks: 2 })).toEqual({
+      economy: { coins: 2, clicks: 3, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 2,
+    });
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({
+      economy: { coins: 2, clicks: 3, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 2,
+    });
+  });
+
+  it('findEconomySnapshot returns null for an unknown user', async () => {
+    const repo = new InMemoryEconomyRepository();
+    expect(await repo.findEconomySnapshot('nope')).toBeNull();
+  });
+
+  it('findEconomySnapshot returns a copy, not the internal reference', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision(FIXED_USER, { coins: 1, clicks: 1 });
+    const snapshot = await repo.findEconomySnapshot(FIXED_USER);
+    if (!snapshot) throw new Error('expected a snapshot');
+    snapshot.economy.coins = 999;
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({
+      economy: { coins: 1, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 1,
+    });
+  });
+
+  it('credit stays a wrapper that returns only the economy state and still bumps the revision', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const result = await repo.credit(FIXED_USER, { coins: 2, clicks: 1 });
+    expect(result).toEqual({ coins: 2, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 });
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({
+      economy: { coins: 2, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 1,
+    });
+  });
+
+  it('findUpgradesByUserId stays a wrapper over the atomic upgrade snapshot', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision(FIXED_USER, { coins: 20 });
+    await repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0);
+    expect(await repo.findUpgradesByUserId(FIXED_USER)).toEqual({ mini_cube_value: 1 });
+    expect(await repo.findUpgradesSnapshot(FIXED_USER)).toEqual({
+      upgrades: { mini_cube_value: 1 },
+      revision: 2,
+    });
+  });
+
+  it('purchaseUpgrade bumps the shared revision and a later credit continues it', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.credit(FIXED_USER, { coins: 20 });
+    expect(await repo.purchaseUpgrade(FIXED_USER, 'mini_cube_value', 10, 0)).toEqual({
+      economy: { coins: 10, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
+      upgrades: { mini_cube_value: 1 },
+      revision: 2,
+    });
+    expect(await repo.creditWithRevision(FIXED_USER, { coins: 1, clicks: 1 })).toEqual({
+      economy: { coins: 11, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 3,
+    });
+    expect(await repo.findUpgradesSnapshot(FIXED_USER)).toEqual({
+      upgrades: { mini_cube_value: 1 },
+      revision: 3,
+    });
+  });
+
+  it('preserves the revision through last-seen and customization writes', async () => {
+    const NOW = 1_700_000_000_000;
+    const repo = new InMemoryEconomyRepository();
+    const first = await repo.creditWithRevision(FIXED_USER, { clicks: 1 });
+    await repo.touchLastSeen(FIXED_USER, NOW);
+    await repo.touchLastSeen(FIXED_USER, NOW + 1000, NOW);
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 2 });
+    await repo.applyLootboxOpen(FIXED_USER, 'nose-crimson');
+    await repo.applyLootboxOpenV2(FIXED_USER, 'hull-gold');
+    await repo.setAppearance(FIXED_USER, { hull: 'hull-gold' });
+    await repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold');
+    expect(first.revision).toBe(1);
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({
+      economy: { coins: 0, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 1,
+    });
+    expect(await repo.findUpgradesSnapshot(FIXED_USER)).toEqual({ upgrades: {}, revision: 1 });
+  });
+
+  it('starts a last-seen-only row at revision 0 and the first credit bumps it to 1', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.touchLastSeen(FIXED_USER, 1_700_000_000_000);
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({
+      economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 0,
+    });
+    expect((await repo.creditWithRevision(FIXED_USER, { clicks: 1 })).revision).toBe(1);
+  });
+
+  it('keeps write order when async credit results resolve out of order', async () => {
+    const pending: Array<(result: { rows: Array<Record<string, unknown>> }) => void> = [];
+    const db: EconomyDb = {
+      query() {
+        return new Promise((resolve) => {
+          pending.push(resolve as (result: { rows: Array<Record<string, unknown>> }) => void);
+        });
+      },
+    };
+    const repo = new PgEconomyRepository(db);
+    const firstPromise = repo.creditWithRevision(FIXED_USER, { clicks: 1 });
+    const secondPromise = repo.creditWithRevision(FIXED_USER, { clicks: 1 });
+    expect(pending).toHaveLength(2);
+
+    // The newer write's promise settles first; the older write's result arrives late.
+    pending[1]({
+      rows: [
+        revisionRow(
+          { coins: 0, clicks: 2, facesDestroyed: 0, cubesDestroyed: 0 },
+          '2',
+        ),
+      ],
+    });
+    const second = await secondPromise;
+    pending[0]({
+      rows: [
+        revisionRow(
+          { coins: 0, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+          '1',
+        ),
+      ],
+    });
+    const first = await firstPromise;
+
+    expect(first).toEqual({
+      economy: { coins: 0, clicks: 1, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 1,
+    });
+    expect(second).toEqual({
+      economy: { coins: 0, clicks: 2, facesDestroyed: 0, cubesDestroyed: 0 },
+      revision: 2,
+    });
+    let applied = second;
+    if (first.revision > applied.revision) applied = first;
+    expect(applied).toEqual(second);
+  });
+
+  it('Pg creditWithRevision inserts revision 1 and increments it on conflict', async () => {
+    const economy: EconomyState = {
+      coins: 2.5,
+      clicks: 3,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+    };
+    const db = makeDb(() => ({ rows: [revisionRow(economy, '4')], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.creditWithRevision(FIXED_USER, { coins: 0.5, clicks: 1 })).toEqual({
+      economy,
+      revision: 4,
+    });
+    expect(db.calls).toHaveLength(1);
+    const call = db.calls[0];
+    expect(call.text).toContain(
+      'INSERT INTO user_economy (user_id, coins, clicks, faces_destroyed, cubes_destroyed, economy_revision)',
+    );
+    expect(call.text).toContain('VALUES ($1, $2, $3, $4, $5, 1)');
+    expect(call.text).toContain('ON CONFLICT (user_id) DO UPDATE SET');
+    expect(call.text).toContain('economy_revision = user_economy.economy_revision + 1');
+    expect(call.text).toContain(
+      'RETURNING coins, clicks, faces_destroyed, cubes_destroyed, economy_revision',
+    );
+    expect(call.values).toEqual([FIXED_USER, 0.5, 1, 0, 0]);
+  });
+
+  it('Pg creditWithRevision throws when the upsert returns no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    await expect(repo.creditWithRevision(FIXED_USER, { coins: 1 })).rejects.toThrow(
+      'INSERT/UPDATE returned no row',
+    );
+  });
+
+  it('Pg credit stays a wrapper over the revision upsert', async () => {
+    const economy = sampleState({ coins: 7, clicks: 2 });
+    const db = makeDb(() => ({ rows: [revisionRow(economy, '9')], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.credit(FIXED_USER, { coins: 7, clicks: 2 })).toEqual(economy);
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('economy_revision');
+  });
+
+  it('Pg findEconomySnapshot selects the four totals plus the revision', async () => {
+    const economy = sampleState({ coins: 12.34, clicks: 7 });
+    const db = makeDb(() => ({ rows: [revisionRow(economy, '5')], rowCount: 1 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findEconomySnapshot(FIXED_USER)).toEqual({ economy, revision: 5 });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain(
+      'SELECT coins, clicks, faces_destroyed, cubes_destroyed, economy_revision',
+    );
+    expect(db.calls[0].text).toContain('FROM user_economy');
+    expect(db.calls[0].text).toContain('WHERE user_id = $1');
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('Pg findEconomySnapshot returns null when no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findEconomySnapshot('missing')).toBeNull();
+  });
+
+  it('Pg findUpgradesSnapshot reads the upgrades and the same row revision in one query', async () => {
+    const db = makeDb(() => ({
+      rows: [{ upgrades: '{"cube_value":2}', economy_revision: '6' }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findUpgradesSnapshot(FIXED_USER)).toEqual({
+      upgrades: { cube_value: 2 },
+      revision: 6,
+    });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('SELECT upgrades, economy_revision');
+    expect(db.calls[0].text).toContain('WHERE user_id = $1');
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('Pg findUpgradesSnapshot returns revision 0 when no row', async () => {
+    const db = makeDb(() => ({ rows: [], rowCount: 0 }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findUpgradesSnapshot('missing')).toEqual({ upgrades: {}, revision: 0 });
+  });
+
+  it('Pg findUpgradesByUserId stays a wrapper over the atomic snapshot query', async () => {
+    const db = makeDb(() => ({
+      rows: [{ upgrades: { mini_cube_value: 1 }, economy_revision: '2' }],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+    expect(await repo.findUpgradesByUserId(FIXED_USER)).toEqual({ mini_cube_value: 1 });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain('economy_revision');
   });
 });
 

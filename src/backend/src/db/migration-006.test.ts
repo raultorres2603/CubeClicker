@@ -266,8 +266,13 @@ dbDescribe('migration 006 against PostgreSQL', () => {
     await client.query('CREATE SCHEMA public');
 
     const allMigrations = loadMigrations();
+    // Pin the pre-006 universe so a later migration (e.g. 007) cannot leak into this suite.
+    const beforeOrAtSix = new Set<string>([...PREVIOUS_MIGRATIONS, MIGRATION_NAME]);
+    const pinnedMigrations = allMigrations.filter((migration) =>
+      beforeOrAtSix.has(migration.name),
+    );
     appliedInitial = await runMigrations(client, {
-      migrations: allMigrations.filter((migration) => migration.name !== MIGRATION_NAME),
+      migrations: pinnedMigrations.filter((migration) => migration.name !== MIGRATION_NAME),
     });
 
     await seedUser(client, FIXTURE_USER, 1, FIXTURE_PARTS, FIXTURE_APPEARANCE);
@@ -291,7 +296,9 @@ dbDescribe('migration 006 against PostgreSQL', () => {
 
     preMigrationRows = await readLegacyRows(client);
 
-    appliedSix = await runMigrations(client);
+    appliedSix = await runMigrations(client, {
+      migrations: pinnedMigrations.filter((migration) => migration.name === MIGRATION_NAME),
+    });
     postMigrationRows = await readRows(client);
 
     const meta = await client.query<ColumnMeta>(
@@ -322,7 +329,7 @@ dbDescribe('migration 006 against PostgreSQL', () => {
     rowsBeforeRerun = await readRows(client);
     await client.query(migrationSql);
     rerunRows = await readRows(client);
-    appliedAgain = await runMigrations(client);
+    appliedAgain = await runMigrations(client, { migrations: pinnedMigrations });
   }, 120_000);
 
   afterAll(async () => {
