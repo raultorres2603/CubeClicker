@@ -19,14 +19,14 @@ Decided 2026-10-17 per direct user direction (recorded in `docs/architecture/sta
 ## Deployment neutrality
 
 - Images must run on any container platform with no provider-specific lock-in; the container images remain provider-neutral deployables.
-- The deploy target was selected by this feature per the user's 2026-10-31 request: AWS via ECS Fargate + ALB + RDS + ECR, defined in Terraform (see `docs/architecture/deployment.md`). That selection does not make the images provider-specific — a cloud port swaps the IaC resources, not the images.
-- Provider portability of the Terraform modules is an aspiration of the module layout, never a claim in artifacts; this document makes no provider claim of its own.
+- The deployment target is **Vercel (static frontend) + Fly.io (backend container) + Neon (PostgreSQL)**, selected by the user on 2026-11-13 and superseding the earlier AWS target (see `docs/architecture/deployment.md`). That selection does not make the images provider-specific — a platform port swaps deployment artifacts and configuration, not the images.
+- Provider portability of the deployment layout is an aspiration, never a claim in artifacts; this document makes no provider claim of its own.
 
 ## Real-time (WebSocket) requirement
 
 - The backend container exposes the WebSocket endpoint required by `docs/architecture/stack.md` § Hard constraints — concretely the `GET /ws` WebSocket upgrade on the backend listen port 8080.
 - Local and deployed container environments must preserve WebSocket connections end-to-end: no proxy or load balancer may strip connection upgrades.
-- Proxy/load-balancer handling is resolved by the deployment target: the AWS ALB passes WebSocket upgrades through with `idle_timeout = 90` and no request policy stripping `Upgrade`/`Connection` (see `docs/architecture/deployment.md`). This document contains no proxy configuration.
+- Proxy/load-balancer handling is resolved by the deployment target: the Fly.io proxy terminates TLS and passes WebSocket upgrades through without extra configuration (see `docs/architecture/deployment.md`). This document contains no proxy configuration.
 
 ## Container conventions (settled at stack selection, 2026-10-17)
 
@@ -34,15 +34,15 @@ Every item the previous revision left to stack selection is resolved; these valu
 
 - **Listen ports and environment-variable names.** Backend: `HOST` (default `0.0.0.0`) and `PORT` (default `8080`) — HTTP health and WebSocket on that port. Frontend dev server: 5173 (Vite, strict port). Host mappings are loopback-bound and interpolated: `127.0.0.1:${BACKEND_PORT:-8080}:8080` and `127.0.0.1:${FRONTEND_PORT:-5173}:5173` (`BACKEND_PORT` default 8080, `FRONTEND_PORT` default 5173). The frontend's WebSocket target is `VITE_WS_URL`, default `ws://localhost:8080/ws`.
 - **Health signal.** Backend: `GET /healthz` → `200` with body `{"status":"ok"}`; frontend: `GET /` serving the app. Each image declares its own `HEALTHCHECK` (interval 10s, timeout 3s, retries 5, start-period 15s); the compose files declare no duplicate healthcheck.
-- **Image naming/tagging.** `cubeclicker-backend` and `cubeclicker-frontend`; the local (compose-built, `target: dev`) tag is `:dev`. Release tagging = commit SHA (`github.sha`) in the deploy pipeline (see `docs/architecture/deployment.md`); no mutable `:latest` in task definitions.
+- **Image naming/tagging.** `cubeclicker-backend` and `cubeclicker-frontend`; the local (compose-built, `target: dev`) tag is `:dev`. The deployed commit SHA (`github.sha`) is the release identity; Fly keeps prior release images for rollback, and no mutable `:latest` is deployed (see `docs/architecture/deployment.md`).
 - **Compose file and Dockerfile locations.** `compose.yaml` at the repository root (project name `cubeclicker`; services `backend`, `frontend`), `compose.smoke.yaml` at the root (services `smoke` and the smoke-only `frontend-prod`; opt-in, never part of a plain `podman compose up`), and one multi-stage Dockerfile per workspace: `src/backend/Dockerfile`, `src/frontend/Dockerfile` (targets `dev` and `prod`).
 - **Dev-mode behavior.** Hot reload: backend `tsx watch` and frontend Vite HMR, over bind mounts of each workspace's sources. Dependency or manifest changes require a rebuild (`podman compose up --build`).
 - **Local-run command and its README home.** `podman compose up` starts the full local environment; it is documented in `README.md` at the repository root and mirrored in `AGENTS.md` § Commands (as `npm run dev`). The containerized smoke test runs with `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (`npm run smoke`).
-- **Resolved by the deployment target (this feature).** Proxy/load-balancer upgrade handling → ALB WebSocket passthrough (`docs/architecture/deployment.md`); release image tagging → commit SHA (`github.sha`) in the deploy pipeline; production runtime-config injection for the frontend → build-time bake of `PUBLIC_WS_URL` via the Dockerfile `ARG VITE_WS_URL` + `ENV VITE_WS_URL` bridge (`docs/architecture/deployment.md`). The local-dev path and image neutrality are unchanged.
+- **Resolved by the deployment target (this feature).** Proxy/load-balancer upgrade handling → Fly.io proxy WebSocket passthrough (`docs/architecture/deployment.md`); release identity → the deployed commit SHA (`github.sha`) recorded by the pipeline; production runtime-config injection for the frontend → build-time Vercel build values (`VITE_CLOUD_DEPLOY=true`, `VITE_API_URL`, optional `VITE_WS_URL`) while the nginx image keeps the local/smoke contract (`docs/architecture/vercel-fly-neon.md`). The local-dev path and image neutrality are unchanged.
 
 ## Frontend static delivery
 
-The production frontend image serves the Vite static build with `nginxinc/nginx-unprivileged:1.27-alpine` on port 8080; its delivery contract is pinned in `src/frontend/nginx.conf` and proven on the wire by the containerized smoke test. The frontend build splits the bundle (a Three.js-free entry plus lazy game-runtime and customization chunks) and enforces the gzip bundle budget, so a budget or initial-graph regression fails the image's `build` stage.
+The production frontend image serves the Vite static build with `nginxinc/nginx-unprivileged:1.27-alpine` on port 8080; its delivery contract is pinned in `src/frontend/nginx.conf` and proven on the wire by the containerized smoke test. In the cloud, Vercel serves the same SPA build directly from `src/frontend`, with `src/frontend/vercel.json` replicating the hashed-asset immutability, app-shell `no-cache`, SPA fallback and real `/assets/*` 404 semantics; the nginx `prod` image remains for local/smoke/portability but is no longer the cloud frontend (see `docs/architecture/vercel-fly-neon.md`). The frontend build splits the bundle (a Three.js-free entry plus lazy game-runtime and customization chunks) and enforces the gzip bundle budget, so a budget or initial-graph regression fails the image's `build` stage.
 
 | Request | Served | `Content-Encoding` | `Cache-Control` |
 | --- | --- | --- | --- |

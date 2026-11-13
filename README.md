@@ -98,7 +98,7 @@ podman build --format docker --target prod -f src/frontend/Dockerfile .
 
 The `--format docker` form keeps the image `HEALTHCHECK`, which Podman 5's default OCI build format would drop.
 
-Both images are provider-neutral and are the deployable artifacts. Release tagging = commit SHA in the deploy pipeline (see the Deployment section above).
+Both images are provider-neutral deployables: Fly.io builds and runs the backend `prod` image, while Vercel builds the static SPA directly from `src/frontend`; the frontend nginx `prod` image remains for local runs, the containerized smoke suite and portability. The deployed commit SHA is the release identity (see the Deployment section below).
 
 The frontend image serves the code-split production build through nginx: the auth/menu entry is Three.js-free (the game runtime and the customization preview are lazy chunks), responses are gzip-compressed (`gzip_comp_level 6`), hashed `/assets/*` files carry `Cache-Control: public, max-age=31536000, immutable`, and the app shell (`/`, `/index.html`, and the SPA fallback) carries `Cache-Control: no-cache` so a deploy is picked up without stale JavaScript. `npm run smoke` includes the production static-delivery checks: it starts the smoke-only `frontend-prod` service (prod target, no published host port; the compose provider builds the image on first use) and asserts the wire headers, gzip encoding, and the served chunk graph from `/bundle-report.json`. Brotli is not enabled: the `nginxinc/nginx-unprivileged:1.27-alpine` base image has no `ngx_brotli` module, and a custom nginx build is out of scope.
 
@@ -112,42 +112,42 @@ TypeScript (strict) on Node.js 24 LTS: a Fastify backend (HTTP health at `GET /h
 
 ## Deployment
 
-CubeClicker deploys to AWS from the existing container images through Terraform-defined infrastructure and a GitHub Actions pipeline. The local development path above is unchanged; deployment is a separate, cloud-side concern. See `docs/architecture/deployment.md` for the full conventions.
+CubeClicker deploys to **Vercel + Fly.io + Neon**, driven by GitHub Actions with two GitHub Environments. The local development path above is unchanged. Full conventions: [`docs/architecture/deployment.md`](docs/architecture/deployment.md); architecture, exact environment catalog, runbook, rollback, local-vs-cloud and cost/limits: [`docs/architecture/vercel-fly-neon.md`](docs/architecture/vercel-fly-neon.md).
+
+| Surface | Platform |
+| --- | --- |
+| Frontend (static SPA) | Vercel, built from `src/frontend` |
+| Backend (`/auth/*`, `/healthz`, `/ws`) | Fly.io, one always-on 512 MB machine |
+| PostgreSQL | Neon, one project with `development` and `production` branches |
+
+- `development` deploys from `develop` and uses the Neon `development` branch, the development Fly app and the stable development Vercel alias.
+- `production` deploys from `main` behind the `production` environment's required reviewers and uses the Neon `production` branch.
+- The backend keeps all in-memory game/room state; one machine is deliberate. Vercel hosts only the static frontend (no functions, no serverless WebSocket).
 
 ### What the pipelines run
 
-- `ci.yml` (reusable; runs on pull requests, pushes to `main`, and via `workflow_call`):
+- `ci.yml` (reusable; runs on pull requests, pushes to `main`/`develop`, and via `workflow_call`):
   - `verify-app`: `npm ci` → `npm run lint` → `npm run typecheck` → `npm test` → `npm run coverage` → `npm run build`.
   - `smoke-e2e`: pre-start Mailpit (`docker compose -f compose.yaml -f compose.smoke.yaml up -d mailpit`) **before** `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (the one-shot run never starts Mailpit and fails 9/12; pre-started passes 12/12).
-  - `verify-infra`: containerized `terraform fmt -check -recursive`, `terraform init -backend=false`, `terraform validate` (no AWS credentials).
-- `deploy.yml` (manual, via `workflow_dispatch`): calls `ci.yml` via `workflow_call` (gates re-run on the selected ref by design), then builds and pushes both images to ECR tagged with the commit SHA (frontend bakes `VITE_WS_URL` from `PUBLIC_WS_URL`), assumes the deploy role via OIDC, runs `terraform init`/`plan`/`apply`, then deploys both ECS services and waits for stability. Wrapped in a `deploy-production` concurrency group.
+  - `verify-workflows`: pinned `rhysd/actionlint:1.7.12` over both workflows, a `node -e` JSON parse of `src/frontend/vercel.json`, and the `fly.config.toml` anchors.
+- `deploy.yml` (push to `develop`/`main`, or `workflow_dispatch` with an environment choice): calls `ci.yml` via `workflow_call`, then one environment-gated `deploy` job: Neon migration with the direct URL → Fly secrets/deploy + `/healthz` → Vercel build/deploy/alias → deployed smoke. Runs for the same environment are serialized (`cancel-in-progress: false`).
 
 ### Deploy flow
 
-1. Trigger manually via `workflow_dispatch` (Actions → Deploy → Run workflow), selecting the ref to deploy (typically the merge commit on `main`, only after a feature is accepted and merged).
-2. `verify` job re-runs all three gates.
-3. `build-and-push` builds/pushes `cubeclicker-backend` and `cubeclicker-frontend` to ECR tagged with `github.sha`.
-4. `infra` runs `terraform plan` (with the SHA-tagged image URIs) then `terraform apply`.
-5. `deploy-services` renders and deploys both task definitions with `wait-for-service-stability: true`.
+1. Merge to `develop` (development) or `main` (production), or dispatch the workflow with the target environment.
+2. `verify` re-runs all CI gates.
+3. The migration step applies pending Neon migrations with `DIRECT_DATABASE_URL`.
+4. Fly stages runtime configuration as secrets, deploys the backend and asserts `{"status":"ok"}` on `/healthz`.
+5. Vercel builds from `src/frontend` with `VITE_CLOUD_DEPLOY=true` and the environment's API/WS URLs, deploys the prebuilt output, and aliases development to the stable `FRONTEND_ORIGIN` host.
+6. `node tests/e2e/deployed-smoke.mjs` proves health, CORS preflight, SPA fallback, a real `/assets/*` 404 and a WebSocket hello/join/click.
 
-Note: continuous deployment (CD) is manual because only the `production` environment exists; automatic deploy is deferred until a staging environment is added.
+Rollback, migrations, DNS/cookies and the single-machine trade-off are documented in [`docs/architecture/deployment.md`](docs/architecture/deployment.md); the architecture and runbook are in [`docs/architecture/vercel-fly-neon.md`](docs/architecture/vercel-fly-neon.md).
 
 ### User-side asset checklist (one-time, performed by the repository owner)
 
-Repository variables (Settings → Secrets and variables → Actions → Variables):
+Create the GitHub Environments `development` and `production` with the exact secrets/variables catalogued in [`docs/architecture/vercel-fly-neon.md`](docs/architecture/vercel-fly-neon.md) § Environment catalog:
 
-- `AWS_REGION` — target region (default `us-east-1`).
-- `AWS_DEPLOY_ROLE_ARN` — ARN of `GitHubActionsCubeDeploy`.
-- `AWS_PLAN_ROLE_ARN` — ARN of `GitHubActionsCubeCI` (provisioned for the plan-on-PR follow-up; consumed by no workflow today).
-- `TF_STATE_BUCKET` — name of the one-time bootstrap-created state bucket.
-- `PUBLIC_WS_URL` — public WebSocket URL baked into the frontend image at build time.
+- Secrets: `VERCEL_TOKEN`, `FLY_API_TOKEN`, `DATABASE_URL`, `DIRECT_DATABASE_URL`, `SMTP_PASS`.
+- Variables: `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FLY_APP_NAME`, `FLY_REGION`, `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE`, `MAX_USERS_PER_SERVER`.
 
-GitHub environment:
-
-- Protected `production` environment (required reviewers / branch protection as desired). The workflow's `environment: production` and the deploy role's `environment:production` trust condition both depend on it.
-
-One-time bootstrap apply (local, by the owner):
-
-- Apply `infra/terraform/bootstrap/` once to create the shared state bucket; record its name in `TF_STATE_BUCKET`. See `infra/README.md`.
-
-No long-lived AWS keys are stored anywhere; all authentication uses GitHub OIDC. Images remain provider-neutral deployables; only the infrastructure target is AWS.
+Also required: a Vercel project whose Root Directory is `src/frontend`, one Fly app per environment, one Neon project with `development`/`production` branches (production branch protected), and the stable frontend hostname per environment. Production requires at least one reviewer and `main`-only deployments. No secret value is committed; the archived AWS tree is not deployed.
