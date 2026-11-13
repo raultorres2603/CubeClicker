@@ -1,10 +1,19 @@
 name: Deploy
 
 on:
-  workflow_dispatch
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment to deploy
+        type: choice
+        required: true
+        default: development
+        options: [development, production]
 
 concurrency:
-  group: deploy-production
+  group: deploy-${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
   cancel-in-progress: false
 
 permissions:
@@ -15,104 +24,156 @@ jobs:
     name: verify
     uses: ./.github/workflows/ci.yml
 
-  build-and-push:
-    name: build-and-push
+  deploy:
+    name: deploy
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    environment: production
-    outputs:
-      backend_image: ${{ steps.build-backend.outputs.image }}
-      frontend_image: ${{ steps.build-frontend.outputs.image }}
+    timeout-minutes: 45
+    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+    env:
+      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+      FLY_APP_NAME: ${{ vars.FLY_APP_NAME }}
+      FLY_REGION: ${{ vars.FLY_REGION }}
+      FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+      VITE_API_URL: ${{ vars.VITE_API_URL }}
+      VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+      SMTP_HOST: ${{ vars.SMTP_HOST }}
+      SMTP_PORT: ${{ vars.SMTP_PORT }}
+      SMTP_USER: ${{ vars.SMTP_USER }}
+      SMTP_FROM: ${{ vars.SMTP_FROM }}
+      SESSION_COOKIE_SECURE: ${{ vars.SESSION_COOKIE_SECURE }}
+      SESSION_COOKIE_SAMESITE: ${{ vars.SESSION_COOKIE_SAMESITE }}
+      MAX_USERS_PER_SERVER: ${{ vars.MAX_USERS_PER_SERVER }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
-      - name: Build and push backend image
-        id: build-backend
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          IMAGE="$ECR_REGISTRY/cubeclicker-backend:$IMAGE_TAG"
-          docker build -f src/backend/Dockerfile -t "$IMAGE" .
-          docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-      - name: Build and push frontend image
-        id: build-frontend
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          IMAGE="$ECR_REGISTRY/cubeclicker-frontend:$IMAGE_TAG"
-          docker build -f src/frontend/Dockerfile --build-arg VITE_WS_URL="${{ vars.PUBLIC_WS_URL }}" -t "$IMAGE" .
-          docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
 
-  infra:
-    name: infra
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    environment: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: "1.15.9"
-          terraform_wrapper: false
-      - name: Terraform fmt
-        working-directory: infra/terraform
-        run: terraform fmt -check -recursive
-      - name: Terraform init
-        working-directory: infra/terraform
-        run: terraform init -backend-config bucket=${{ vars.TF_STATE_BUCKET }} -backend-config region=${{ vars.AWS_REGION }}
-      - name: Terraform validate
-        working-directory: infra/terraform
-        run: terraform validate
-      - name: Terraform plan
-        working-directory: infra/terraform
-        run: terraform plan -var-file=envs/production.tfvars -var image_uri_backend=${{ needs.build-and-push.outputs.backend_image }} -var image_uri_frontend=${{ needs.build-and-push.outputs.frontend_image }} -out=tfplan
-      - name: Terraform apply
-        working-directory: infra/terraform
-        run: terraform apply -input=false tfplan
+      - name: Migrate Neon database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: npx --no-install tsx src/backend/src/db/migrate-cli.ts
 
-  deploy-services:
-    name: deploy-services
-    needs: [build-and-push, infra]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    environment: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Note
-        run: echo "ECS task definitions and services are updated by terraform apply in the infra job (image URI vars); no separate render/deploy step is required."
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # v1.5
+      - name: Stage Fly runtime configuration
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: |
+          flyctl secrets set --stage --app "$FLY_APP_NAME" \
+            "DATABASE_URL=$DATABASE_URL" \
+            "DIRECT_DATABASE_URL=$DIRECT_DATABASE_URL" \
+            "CORS_ORIGIN=$FRONTEND_ORIGIN" \
+            "ALLOWED_ORIGIN=$FRONTEND_ORIGIN" \
+            "APP_BASE_URL=$FRONTEND_ORIGIN" \
+            "SMTP_HOST=$SMTP_HOST" \
+            "SMTP_PORT=$SMTP_PORT" \
+            "SMTP_USER=$SMTP_USER" \
+            "SMTP_PASS=$SMTP_PASS" \
+            "SMTP_FROM=$SMTP_FROM" \
+            "SESSION_COOKIE_SECURE=$SESSION_COOKIE_SECURE" \
+            "SESSION_COOKIE_SAMESITE=$SESSION_COOKIE_SAMESITE" \
+            "MAX_USERS_PER_SERVER=$MAX_USERS_PER_SERVER" \
+            "NODE_ENV=production" \
+            "HOST=0.0.0.0" \
+            "PORT=8080"
+      - name: Deploy Fly backend
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --config fly.config.toml --app "$FLY_APP_NAME" --primary-region "$FLY_REGION" --strategy rolling
+      - name: Verify Fly backend health
+        run: |
+          attempt=0
+          body=""
+          while [ "$attempt" -lt 12 ]; do
+            body=$(curl -fsS "$VITE_API_URL/healthz" || true)
+            if [ "$body" = '{"status":"ok"}' ]; then
+              echo "healthz OK: $body"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            sleep 5
+          done
+          echo "healthz check failed; last response: $body" >&2
+          exit 1
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@65.15.0
+      - name: Pull Vercel project settings
+        working-directory: src/frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
+            vercel pull --yes --environment=production
+          else
+            vercel pull --yes --environment=preview
+          fi
+      - name: Build Vercel frontend
+        working-directory: src/frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VITE_CLOUD_DEPLOY: "true"
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+        run: |
+          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
+            vercel build --prod
+          else
+            vercel build
+          fi
+      - name: Deploy Vercel frontend
+        id: vercel_deploy
+        working-directory: src/frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
+            deploy_output=$(vercel deploy --prebuilt --prod --yes)
+          else
+            deploy_output=$(vercel deploy --prebuilt --yes)
+          fi
+          printf '%s\n' "$deploy_output"
+          deployment_url=$(printf '%s\n' "$deploy_output" | tail -n 1)
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+      - name: Alias development deployment
+        if: env.TARGET_ENVIRONMENT != 'production'
+        working-directory: src/frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          DEPLOYMENT_URL: ${{ steps.vercel_deploy.outputs.deployment_url }}
+        run: |
+          frontend_host="${FRONTEND_ORIGIN#https://}"
+          frontend_host="${frontend_host%/}"
+          vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
+
+      - name: Run deployed smoke
+        env:
+          SMOKE_FRONTEND_URL: ${{ vars.FRONTEND_ORIGIN }}
+          SMOKE_API_URL: ${{ vars.VITE_API_URL }}
+          SMOKE_WS_URL: ${{ vars.VITE_WS_URL }}
+          SMOKE_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+        run: |
+          if [ -z "$SMOKE_WS_URL" ]; then
+            SMOKE_WS_URL="${SMOKE_API_URL/https:/wss:}/ws"
+            export SMOKE_WS_URL
+          fi
+          node tests/e2e/deployed-smoke.mjs

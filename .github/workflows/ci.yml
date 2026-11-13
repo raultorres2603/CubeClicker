@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop]
   workflow_call:
 
 permissions:
@@ -50,24 +50,22 @@ jobs:
         if: always()
         run: docker compose -f compose.yaml -f compose.smoke.yaml down -v
 
-  verify-infra:
-    name: verify-infra
+  verify-workflows:
+    name: verify-workflows
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: "1.15.9"
-          terraform_wrapper: false
-      - name: Terraform fmt
-        working-directory: infra/terraform
-        run: terraform fmt -check -recursive
-      - name: Terraform init
-        working-directory: infra/terraform
-        run: terraform init -backend=false
-      - name: Terraform validate
-        working-directory: infra/terraform
-        run: terraform validate
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm -v "$PWD:/repo" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+      - name: Validate Vercel config
+        run: |
+          node -e "JSON.parse(require('node:fs').readFileSync('src/frontend/vercel.json', 'utf8')); console.log('vercel.json: valid JSON')"
+      - name: Check Fly config anchors
+        run: |
+          grep -nE 'internal_port = 8080|force_https = true|auto_stop_machines = "off"|auto_start_machines = false|min_machines_running = 1|path = "/healthz"|type = "connections"|memory = "512mb"' fly.config.toml
+          if grep -nE 'primary_region' fly.config.toml; then
+            echo "fly.config.toml must not pin primary_region; FLY_REGION is the only region source" >&2
+            exit 1
+          fi
