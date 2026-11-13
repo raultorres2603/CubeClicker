@@ -49,6 +49,15 @@ Both ports are bound to loopback (`127.0.0.1`) only.
 | `npm run dev` | start the full local environment with hot reload (equivalent to `podman compose up`) |
 | `npm run smoke` | containerized end-to-end smoke test, including the production static-delivery checks (equivalent to `podman compose -f compose.yaml -f compose.smoke.yaml run --rm smoke`) |
 
+### Performance benchmark
+
+```bash
+node --import tsx tests/bench/realtime-broadcast.mjs --mode in-process --json
+node tests/bench/realtime-broadcast.mjs --mode wire --json
+```
+
+Both commands produce reproducible evidence recorded in the feature build logs; they are not a CI gate.
+
 ## Configuration
 
 | Variable | Default | Purpose |
