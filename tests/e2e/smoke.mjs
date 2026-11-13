@@ -17,6 +17,9 @@
 //   5. a third client `join`s → its `welcome.serverId` is the run's first server id + 1
 //      (overflow with X = 2)
 //   6. A's valid `explode` → `miniCubeRemoved` on A (ack) and B (broadcast)
+//   6b. A's two `explode` frames in one event-loop turn (`front:0:1`, `front:0:2`) → exactly
+//       one `miniCubesRemoved` with both ids in order on A and B, and neither id in a single
+//       `miniCubeRemoved` frame on either client (AC-26)
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
 //   8. prod frontend readiness: a bounded poll of `PROD_FRONTEND_URL/` (`READY_TIMEOUT_MS`,
 //      500 ms interval) runs before any prod header assertion and records its own PASS line
@@ -61,6 +64,8 @@ const MULTIPLAYER_TIMEOUT_MS = 5000;
 const MEMBER_LEFT_TIMEOUT_MS = 5000;
 /** Lower bound proving the leave went through the grace window instead of firing instantly. */
 const GRACE_LOWER_BOUND_MS = 900;
+/** Settle after the batch arrives before the negative single-frame assertion (AC-26). */
+const BURST_SETTLE_MS = 100;
 /**
  * End-of-run drain: the smoke backend's pinned grace window is 1000 ms, so waiting past it lets
  * this run's members expire before the script exits. The next run then starts from an empty
@@ -621,6 +626,10 @@ const OVERFLOW_CHECK_LABEL =
   'multiplayer overflow: the third client lands on the next server id (X = 2)';
 const EXPLODE_CHECK_LABEL =
   "multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B (broadcast)";
+const BURST_CHECK_LABEL =
+  'multiplayer batching: two explodes in one turn yield one miniCubesRemoved [front:0:1, front:0:2] on A (ack) and B (broadcast)';
+const BURST_SINGLE_FRAME_CHECK_LABEL =
+  'multiplayer batching: front:0:1 and front:0:2 never arrive as single miniCubeRemoved frames on A or B';
 const LEAVE_CHECK_LABEL =
   "multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window";
 
@@ -631,6 +640,7 @@ const LEAVE_CHECK_LABEL =
 class SmokeSocket {
   #queue = [];
   #waiters = [];
+  #history = [];
   #closed = false;
 
   constructor(label, url) {
@@ -715,6 +725,11 @@ class SmokeSocket {
     this.socket.send(JSON.stringify(message));
   }
 
+  /** Every parsed frame received on this socket, in arrival order (negative assertions). */
+  get history() {
+    return this.#history;
+  }
+
   close() {
     try {
       this.socket?.close();
@@ -730,6 +745,7 @@ class SmokeSocket {
     } catch {
       message = { type: '__unparseable__', raw: String(data) };
     }
+    this.#history.push(message);
     const waiter = this.#waiters.shift();
     if (waiter === undefined) {
       this.#queue.push(message);
@@ -902,8 +918,10 @@ async function checkMultiplayerFlow() {
       record(problem === null, OVERFLOW_CHECK_LABEL, problem ?? `server ${overflowServerId}`);
     }
 
+    let explodeProblem = null;
     if (!setupComplete) {
-      record(false, EXPLODE_CHECK_LABEL, 'not run — the two-client join failed');
+      explodeProblem = 'not run — the two-client join failed';
+      record(false, EXPLODE_CHECK_LABEL, explodeProblem);
     } else {
       const id = 'front:0:0';
       const level = welcomeA.self.levelIndex;
@@ -933,7 +951,82 @@ async function checkMultiplayerFlow() {
       } catch (error) {
         problem = problemText(error);
       }
+      explodeProblem = problem;
       record(problem === null, EXPLODE_CHECK_LABEL, problem ?? '');
+    }
+
+    if (explodeProblem !== null) {
+      record(false, BURST_CHECK_LABEL, 'not run — the single-click explode check failed');
+      record(false, BURST_SINGLE_FRAME_CHECK_LABEL, 'not run — the single-click explode check failed');
+    } else {
+      // Both explodes leave in one event-loop turn, so the hub's 40 ms window must carry both
+      // ids in acceptance order as one batch frame (AC-26).
+      const burstIds = ['front:0:1', 'front:0:2'];
+      const level = welcomeA.self.levelIndex;
+      const matchesBurst = (message) =>
+        message?.type === 'miniCubesRemoved' &&
+        message.playerId === welcomeA.playerId &&
+        Array.isArray(message.ids) &&
+        message.ids.length === 2 &&
+        message.ids[0] === burstIds[0] &&
+        message.ids[1] === burstIds[1];
+      let problem = null;
+      try {
+        clientA.send({ type: 'explode', id: burstIds[0], level });
+        clientA.send({ type: 'explode', id: burstIds[1], level });
+        await Promise.all([
+          waitForMessage(
+            clientA,
+            matchesBurst,
+            MULTIPLAYER_TIMEOUT_MS,
+            `miniCubesRemoved [${burstIds.join(', ')}] on A (ack)`,
+          ),
+          waitForMessage(
+            clientB,
+            matchesBurst,
+            MULTIPLAYER_TIMEOUT_MS,
+            `miniCubesRemoved [${burstIds.join(', ')}] on B (broadcast)`,
+          ),
+        ]);
+      } catch (error) {
+        problem = problemText(error);
+      }
+
+      // Give a hypothetically split flush time to land, then pin exactly one batch per client.
+      await delay(BURST_SETTLE_MS);
+      const batchProblems = [];
+      if (problem !== null) {
+        batchProblems.push(problem);
+      }
+      for (const [socketLabel, client] of [
+        ['A', clientA],
+        ['B', clientB],
+      ]) {
+        const batches = client.history.filter(matchesBurst);
+        if (batches.length !== 1) {
+          batchProblems.push(
+            `${socketLabel}: expected exactly one matching miniCubesRemoved, got ${batches.length}`,
+          );
+        }
+      }
+      record(batchProblems.length === 0, BURST_CHECK_LABEL, batchProblems.join('; '));
+
+      const singleProblems = [];
+      for (const [socketLabel, client] of [
+        ['A', clientA],
+        ['B', clientB],
+      ]) {
+        for (const message of client.history) {
+          if (message?.type === 'miniCubeRemoved' && burstIds.includes(message.id)) {
+            singleProblems.push(`${socketLabel}: ${JSON.stringify(message)}`);
+          }
+        }
+      }
+      record(
+        singleProblems.length === 0,
+        BURST_SINGLE_FRAME_CHECK_LABEL,
+        singleProblems.join('; '),
+      );
     }
 
     if (!setupComplete) {
