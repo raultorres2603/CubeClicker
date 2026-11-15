@@ -905,3 +905,111 @@ $ git commit -m "docs: verify project-only skills"
 ## Deviations from spec
 
 - None in scope. Bookkeeping only: the commit message follows the orchestrator brief (`docs: verify project-only skills`) instead of `tasks.md`'s earlier wording `docs: project-only-skills verification evidence`; no content impact.
+
+## Post-commit evidence addendum (code-review F1)
+
+Added 2026-11-15 at acceptance to close code-review r1 F1 (evidence bookkeeping only; no content change). This section records the post-commit results that the T1/T2/T3 logs deferred to the Subagent Report.
+
+### 1. Commit SHAs and `git show --stat --oneline`
+
+| Task | Full SHA | Subject |
+| --- | --- | --- |
+| T1 | `18d50100a718b13af3af2152f0495467a4d8dae6` | `chore: remove imported skill packs and lockfile` |
+| T2 | `7491db3e9edc0ecd43beecefcebcadd0708ae5e4` | `docs: limit skills to the project pipeline` |
+| T3 | `95d93f867cd8f9a4d9998439d2adef8cc27ebe0c` | `docs: verify project-only skills` |
+
+```text
+$ git show --stat --oneline 18d5010
+18d5010 chore: remove imported skill packs and lockfile
+ ... 79 `.agents/skills/**` deletion lines elided (full `--name-status` in `build-log-T1.md` § 4) ...
+ docs/features/project-only-skills/build-log-T1.md  | 1010 ++++++++++++++++++++
+ skills-lock.json                                   |  203 ----
+ 81 files changed, 1010 insertions(+), 16837 deletions(-)
+
+$ git show --name-status --format= 18d5010 | grep -c '^D'
+80
+$ git show --name-status --format= 18d5010 | grep -v '^D'
+A	docs/features/project-only-skills/build-log-T1.md
+
+$ git show --stat --oneline 7491db3
+7491db3 docs: limit skills to the project pipeline
+ .opencode/agents/builder.md                       |  49 --
+ .opencode/agents/planner.md                       |   4 -
+ .opencode/agents/reviewer.md                      |   7 -
+ AGENTS.md                                         |   3 +-
+ README.md                                         |   2 +-
+ docs/architecture/skills.md                       | 136 +---
+ docs/features/project-only-skills/build-log-T2.md | 747 ++++++++++++++++++++++
+ 7 files changed, 784 insertions(+), 164 deletions(-)
+
+$ git show --stat --oneline 95d93f8
+95d93f8 docs: verify project-only skills
+ docs/features/project-only-skills/build-log-T3.md  | 907 +++++++++++++++++++++
+ docs/features/project-only-skills/plan.md          | 144 ++++
+ .../project-only-skills/reviews/spec-review-r1.md  |  61 ++
+ .../project-only-skills/reviews/spec-review-r2.md  |  68 ++
+ docs/features/project-only-skills/spec.md          | 147 ++++
+ docs/features/project-only-skills/status.md        |  35 +
+ docs/features/project-only-skills/tasks.md         | 300 +++++++
+ 7 files changed, 1662 insertions(+)
+```
+
+### 2. Post-commit `git status --porcelain` and scoped clean check (T3)
+
+Run in a detached worktree at the T3 commit so the output is the committed tree (the main worktree's only extra entry at that point was the pre-existing Vercel `M`, recorded below):
+
+```text
+$ git worktree add --detach /tmp/opencode/t3-postcommit-95d93f8 95d93f8
+Preparing worktree (detached HEAD 95d93f8)
+HEAD is now at 95d93f8 docs: verify project-only skills
+$ git rev-parse HEAD
+95d93f867cd8f9a4d9998439d2adef8cc27ebe0c
+$ git status --porcelain
+status-lines=0
+$ git status --porcelain -- docs/features/project-only-skills .opencode .agents skills-lock.json AGENTS.md README.md docs/architecture
+scoped-status-lines=0
+$ test -z "$(git status --porcelain -- docs/features/project-only-skills .opencode .agents skills-lock.json AGENTS.md README.md docs/architecture)"
+scoped-test-exit=0
+$ test -z "$(git status --porcelain -- .agents skills-lock.json)"
+t1-test-exit=0
+$ test -z "$(git status --porcelain -- .opencode/agents docs/architecture AGENTS.md README.md)"
+t2-test-exit=0
+$ git log --oneline 7b87cbb..HEAD
+95d93f8 docs: verify project-only skills
+7491db3 docs: limit skills to the project pipeline
+18d5010 chore: remove imported skill packs and lockfile
+$ git log --oneline 7b87cbb..HEAD -- docs/features/vercel-fly-neon-deployment/status.md
+vercel-commit-count=0
+$ test ! -e .agents
+agents-absent-exit=0
+$ test ! -e skills-lock.json
+lock-absent-exit=0
+```
+
+Main worktree at acceptance time (before staging the acceptance commit):
+
+```text
+$ git status --porcelain
+ M docs/features/README.md
+ M docs/features/project-only-skills/status.md
+ M docs/features/vercel-fly-neon-deployment/status.md
+?? docs/features/project-only-skills/reviews/code-review-r1.md
+
+$ git status --porcelain -- docs/features/vercel-fly-neon-deployment/status.md
+ M docs/features/vercel-fly-neon-deployment/status.md
+
+$ git log --oneline -3
+95d93f8 docs: verify project-only skills
+7491db3 docs: limit skills to the project pipeline
+18d5010 chore: remove imported skill packs and lockfile
+```
+
+`docs/features/README.md`, `docs/features/project-only-skills/status.md`, and `docs/features/project-only-skills/reviews/code-review-r1.md` are the orchestrator's acceptance edits; the acceptance commit stages exactly those three plus this log. `docs/features/vercel-fly-neon-deployment/status.md` is the pre-existing modification from the blocked Vercel feature: it is excluded from every scoped clean check, was never staged (the T3 staged-path check `test -z "$(git diff --cached --name-only -- docs/features/vercel-fly-neon-deployment/status.md)"` exited 0), and `git log 7b87cbb..95d93f8 -- docs/features/vercel-fly-neon-deployment/status.md` lists no commit. The acceptance commit's own post-commit status is in the Subagent Report.
+
+### 3. AC-11 result
+
+**AC-11 → met.** T3 commit `95d93f8` contains exactly the seven feature artifacts (spec, plan, tasks, status, the two spec reviews, and `build-log-T3.md`); the committed tree has no `.agents` or `skills-lock.json` (`test ! -e` both exit 0); and the post-commit `git status --porcelain` and scoped clean check above are empty/exit 0. The pre-existing Vercel `M` was excluded and never staged or committed. Code-review F1's evidence debit is closed by this addendum (the T1/T2 post-commit assertions are also included above).
+
+### 4. T1 pre-commit `test -z` ordering note (future tasks)
+
+`tasks.md` § T1 verify places `test -z "$(git status --porcelain -- .agents skills-lock.json)"` **before** the commit, while `git rm` has already staged the deletions; `git status --porcelain` therefore prints staged `D ` entries and the assertion exits 1 by construction — not a content failure. For future deletion tasks, run the assertion after the commit, or allow staged deletions pre-commit (e.g. `test -z "$(git status --porcelain -- .agents skills-lock.json | grep -v '^D ')"`), or assert the staged set with `git diff --cached --name-status --diff-filter=D`. The post-commit form runs above and exits 0 (`t1-test-exit=0`).
