@@ -1,16 +1,16 @@
 ---
 feature: runtime-observability
-state: code_review
-spec_review_round: 2
+state: accepted
+spec_review_round: 3
 build_round: 2
 created: 2026-11-13
-updated: 2026-11-13
+updated: 2026-11-15
 ---
 # Status — Runtime Observability
 
 ## Summary
 
-Next feature of the approved audit queue: the backend has no structured logging, metrics endpoint or counters, so production connection counts, room occupancy, message rates, rate-limit drops, heartbeat terminations, DB latency and the post-batching removal/economy flush depth are invisible. This feature adds Fastify/Pino JSON logs with redaction and request correlation, a fixed 30-metric Prometheus catalog, an internal-only `GET /metrics` on the existing backend port 8080 (not ALB-routed), DB pool/query instrumentation, graceful-shutdown metrics, and a dev-only frontend overlay behind `VITE_PERF_OVERLAY`. No new service, image, port, dependency, backend stack or public exposure is added. Raw request: "Please, find any kind of performance optimizations we can do on project and, also, find new skills we added and provide some new features you think are good to have" followed by "Proceed with all of them, one by one".
+Next feature of the approved audit queue: the backend has no structured logging, metrics endpoint or counters, so production connection counts, room occupancy, message rates, rate-limit drops, heartbeat terminations, DB latency and the post-batching removal/economy flush depth are invisible. This feature adds Fastify/Pino JSON logs with redaction and request correlation, a fixed 30-metric Prometheus catalog, an internal-only `GET /metrics` (deployed Fly environments default `METRICS_ENABLED=false`; local compose remains true on loopback; `/metrics` is excluded from CORS), DB pool/query instrumentation, graceful-shutdown metrics, and a dev-only frontend overlay behind `VITE_PERF_OVERLAY`. No new service, image, port, dependency, backend stack or public exposure is added. Raw request: "Please, find any kind of performance optimizations we can do on project and, also, find new skills we added and provide some new features you think are good to have" followed by "Proceed with all of them, one by one".
 
 ## Task board
 
@@ -38,6 +38,8 @@ Next feature of the approved audit queue: the backend has no structured logging,
 - 2026-11-15 — building T5 completed — docs + compose pass-throughs + smoke metrics; commit `d7f9bfe`; full suite 3,039 tests; coverage backend 95.88/89.03/99.54/95.88, frontend 96.54/96.21/97.74/96.54; smoke 22/22 — `build-log-T5.md`
 - 2026-11-15 — building → code_review — all T1-T5 verified; acceptance body pending — `build-log-T5.md`
 - 2026-11-15 — code review r1 → changes_requested (1 blocker: /metrics public on Fly; 2 major: docs/spec ALB claims); targeted spec correction + implementation fix pending — `reviews/code-review-r1.md`
+- 2026-11-15 — r1 fixes applied — Fly `METRICS_ENABLED=false`, `/metrics` CORS exclusion, docs truth; commit `04a0e69`; backend 1143 tests, coverage 95.89/89.07/99.54/95.89 — `build-log-T6.md`
+- 2026-11-15 — code_review → accepted — code review r2 approved (0 blockers); AC-1..AC-26 met; deployed metrics default false, local compose true — `reviews/code-review-r2.md`
 
 ## Blockers / open questions
 

@@ -54,5 +54,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | frontend-delivery-hardening | Frontend Delivery Hardening (gate-deferred three.js chunk, bundle budget, nginx gzip/immutable assets, prod smoke) | accepted | 2026-11-13 |
 | realtime-broadcast-batching | Real-Time Broadcast Batching (encode-once fan-out, registry index, 40 ms removal batches, 4 Hz economy coalescing) | accepted | 2026-11-13 |
 | project-only-skills | Project-Only Skills (removed 33 imported packs; kept six pipeline skills; Context7 for library docs) | accepted | 2026-11-15 |
+| runtime-observability | Runtime Observability (structured logs, internal Prometheus metrics, DB latency, dev-only perf overlay) | accepted | 2026-11-15 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
