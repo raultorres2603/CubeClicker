@@ -1976,20 +1976,62 @@ describe('observability wiring (T3)', () => {
   });
 
   it('does not register /metrics when METRICS_ENABLED=false (AC-8)', async () => {
-    const app = buildApp({ METRICS_ENABLED: 'false' });
+    const app = buildApp({ METRICS_ENABLED: 'false', CORS_ORIGIN: 'https://app.example.test' });
 
     try {
-      const metricsResponse = await app.inject({ method: 'GET', url: '/metrics' });
+      const metricsResponse = await app.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { origin: 'https://app.example.test' },
+      });
       expect(metricsResponse.statusCode).toBe(404);
       expect(metricsResponse.json()).toEqual({
         message: 'Route GET:/metrics not found',
         error: 'Not Found',
         statusCode: 404,
       });
+      expect(metricsResponse.headers['access-control-allow-origin']).toBeUndefined();
+      expect(metricsResponse.headers['access-control-allow-credentials']).toBeUndefined();
 
       const health = await app.inject({ method: 'GET', url: '/healthz' });
       expect(health.statusCode).toBe(200);
       expect(health.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('serves /metrics locally but never grants it to the frontend origin (AC-8)', async () => {
+    const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
+
+    try {
+      const scrape = await app.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { origin: 'https://app.example.test' },
+      });
+      expect(scrape.statusCode).toBe(200);
+      expect(scrape.headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8');
+      expect(scrape.headers['access-control-allow-origin']).toBeUndefined();
+      expect(scrape.headers['access-control-allow-credentials']).toBeUndefined();
+
+      const preflight = await app.inject({
+        method: 'OPTIONS',
+        url: '/metrics',
+        headers: {
+          origin: 'https://app.example.test',
+          'access-control-request-method': 'GET',
+        },
+      });
+      expect(preflight.statusCode).toBe(404);
+      expect(preflight.json()).toEqual({
+        message: 'Route OPTIONS:/metrics not found',
+        error: 'Not Found',
+        statusCode: 404,
+      });
+      expect(preflight.headers['access-control-allow-origin']).toBeUndefined();
+      expect(preflight.headers['access-control-allow-credentials']).toBeUndefined();
+      expect(preflight.headers['access-control-allow-methods']).toBeUndefined();
     } finally {
       await app.close();
     }

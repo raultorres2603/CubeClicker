@@ -10,6 +10,10 @@
   NODE_ENV = "production"
   HOST = "0.0.0.0"
   PORT = "8080"
+  # Fly serves the whole app on one public host with no path filter. `/metrics`
+  # stays a 404 unless a temporary internal enablement sets a METRICS_ENABLED
+  # secret to true (local compose keeps its own true default on the loopback).
+  METRICS_ENABLED = "false"
 
 [http_service]
   internal_port = 8080

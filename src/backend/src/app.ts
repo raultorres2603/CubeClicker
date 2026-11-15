@@ -326,8 +326,10 @@ export function buildApp(
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
-  // Internal-only Prometheus scrape on the existing port (AC-8). The route is not
-  // registered at all when `METRICS_ENABLED=false`; pool gauges are sampled at scrape.
+  // Prometheus scrape on the existing port (AC-8). The route is not registered at
+  // all when `METRICS_ENABLED=false`: deployed Fly sets false on its one public host
+  // (no path filter), local compose keeps true on the loopback, and the CORS hook
+  // never grants `/metrics`. Pool gauges are sampled at scrape.
   app.register(metricsRoutes, {
     metrics,
     enabled: observability.metricsEnabled,

@@ -1,8 +1,8 @@
 ---
 feature: runtime-observability
-state: building
+state: code_review
 spec_review_round: 2
-build_round: 1
+build_round: 2
 created: 2026-11-13
 updated: 2026-11-13
 ---
@@ -18,7 +18,7 @@ Next feature of the approved audit queue: the backend has no structured logging,
 - [x] T2 — Hub instrumentation and diagnostic ping/pong `[seq]`
 - [x] T3 — Backend wiring, `/metrics`, DB metrics, shutdown `[seq]`
 - [x] T4 — Frontend dev overlay, session stats and WS RTT `[seq]`
-- [ ] T5 — Documentation and final verification `[seq]`
+- [x] T5 — Documentation and final verification `[seq]`
 
 ## Loop log
 
@@ -35,6 +35,9 @@ Next feature of the approved audit queue: the backend has no structured logging,
 - 2026-11-15 — blocked → building — resumed T3 (backend wiring, `/metrics`, DB metrics, shutdown) — user directive "proceed with all remaining states"
 - 2026-11-15 — building T3 completed — internal `/metrics`, DB metrics, shutdown; commit `ccd149a`; backend 1137 tests, coverage 95.88/89.03/99.54/95.88; container `/healthz` + `/metrics` + pg metrics green — `build-log-T3.md`
 - 2026-11-15 — building T4 completed — dev-only perf overlay + session stats/RTT; commit `7299289`; frontend 1902 tests, coverage 96.54/96.21/97.74/96.54 — `build-log-T4.md`
+- 2026-11-15 — building T5 completed — docs + compose pass-throughs + smoke metrics; commit `d7f9bfe`; full suite 3,039 tests; coverage backend 95.88/89.03/99.54/95.88, frontend 96.54/96.21/97.74/96.54; smoke 22/22 — `build-log-T5.md`
+- 2026-11-15 — building → code_review — all T1-T5 verified; acceptance body pending — `build-log-T5.md`
+- 2026-11-15 — code review r1 → changes_requested (1 blocker: /metrics public on Fly; 2 major: docs/spec ALB claims); targeted spec correction + implementation fix pending — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 

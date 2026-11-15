@@ -6,6 +6,9 @@
  * `ALLOWED_ORIGIN` (the single CSRF origin), which keeps the local same-origin
  * development path unchanged. No wildcard is ever emitted and an origin is never
  * reflected unless it matches an allowlist entry exactly.
+ *
+ * `/metrics` is special-cased (AC-8): the hook returns before adding an
+ * allow-origin, credentials or a preflight grant for that path.
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -67,6 +70,25 @@ export interface CorsOptions {
   allowedOrigins: readonly string[];
 }
 
+/** The diagnostics path that never receives a CORS grant (AC-8). */
+export const METRICS_PATH = '/metrics';
+
+/** Strips the query string from an origin-form request URL. */
+function requestPathname(url: string): string {
+  const queryStart = url.indexOf('?');
+  return queryStart === -1 ? url : url.slice(0, queryStart);
+}
+
+/**
+ * True for the `/metrics` path, with or without a trailing slash or query string.
+ * The CORS hook withholds every grant for it, so a browser on the frontend
+ * origin cannot read the endpoint even when it is temporarily enabled.
+ */
+export function isMetricsPath(url: string): boolean {
+  const pathname = requestPathname(url);
+  return pathname === METRICS_PATH || pathname === `${METRICS_PATH}/`;
+}
+
 function isPreflight(request: FastifyRequest): boolean {
   return (
     request.method === 'OPTIONS' &&
@@ -80,6 +102,12 @@ function isPreflight(request: FastifyRequest): boolean {
  */
 export function registerCors(app: FastifyInstance, options: CorsOptions): void {
   app.addHook('onRequest', async (request, reply) => {
+    // `/metrics` is never CORS-readable (AC-8): no allow-origin, no credentials and
+    // no preflight grant, so the frontend origin cannot scrape it even during a
+    // temporary enablement on a deployed host.
+    if (isMetricsPath(request.url)) {
+      return;
+    }
     const origin = request.headers.origin;
     if (typeof origin !== 'string' || origin.length === 0) {
       return;

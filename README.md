@@ -83,7 +83,7 @@ Both commands produce reproducible evidence recorded in the feature build logs; 
 | `ALLOWED_ORIGIN` | `http://localhost:5173` | allowed Origin for state-changing auth requests (CSRF) |
 | `SESSION_COOKIE_SECURE` | `false` | set the session cookie `Secure` flag (enable in production over HTTPS) |
 | `LOG_LEVEL` | `debug` | backend Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`); the compose backend passes it with default `debug` |
-| `METRICS_ENABLED` | `true` | serve the internal-only `GET /metrics` route; `false` removes it (the path returns `404`) |
+| `METRICS_ENABLED` | `true` | serve the `GET /metrics` route; compose defaults `true` on the loopback, deployed Fly defaults `false` (public host, no path filter); `false` removes the route (the path returns `404`) |
 | `VITE_PERF_OVERLAY` | `false` | dev-only performance overlay; only the exact value `true` enables it (frontend build-time variable) |
 
 The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
@@ -100,13 +100,13 @@ Structured JSON logs go to stdout and are read from the backend container with:
 podman compose logs backend
 ```
 
-The backend serves an internal-only Prometheus-text metrics endpoint on its existing port; scrape it from the host with:
+The backend serves a Prometheus-text metrics endpoint on its existing port. Locally it is enabled by default and reachable only through the loopback mapping; scrape it from the host with:
 
 ```bash
 curl http://localhost:8080/metrics
 ```
 
-`/metrics` is internal-only: it is served on the backend's existing port, no public route is added for it, and `METRICS_ENABLED=false` removes the route entirely (the path then returns `404`). Metrics are per-process aggregates and reset when the backend restarts. The full log-event, redaction, catalog and retention reference is [`docs/architecture/observability.md`](docs/architecture/observability.md).
+Deployed Fly environments default `METRICS_ENABLED=false` (`fly.config.toml` `[env]` plus the deploy workflow), so `GET /metrics` returns `404` on the public API host. Fly serves the whole backend on one public host with no path filter, and `/metrics` is excluded from the CORS grant, so the frontend origin cannot read it. To scrape a deployed app deliberately, set the Fly secret `METRICS_ENABLED=true` for that app, scrape through `fly proxy 8080:8080` or `fly ssh console`, then unset the secret so the committed `false` default applies again; because Fly has no path filter, treat that short window as an audited exception, not an internal-network guarantee. Metrics are per-process aggregates and reset when the backend restarts. The full log-event, redaction, catalog and retention reference is [`docs/architecture/observability.md`](docs/architecture/observability.md).
 
 The compose backend passes `LOG_LEVEL` (default `debug`) and `METRICS_ENABLED` (default `true`), and the frontend passes `VITE_PERF_OVERLAY` (default `false`). Override them from the shell:
 

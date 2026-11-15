@@ -6,8 +6,10 @@ import {
   CORS_ALLOW_METHODS,
   CORS_MAX_AGE_SECONDS,
   DEFAULT_CORS_ORIGIN,
+  isMetricsPath,
   isOriginAllowed,
   isWebSocketOriginAllowed,
+  METRICS_PATH,
   resolveCorsOrigins,
 } from './cors.js';
 
@@ -87,6 +89,18 @@ describe('isWebSocketOriginAllowed', () => {
     expect(isWebSocketOriginAllowed('https://app.example.test', allowed)).toBe(true);
     expect(isWebSocketOriginAllowed('https://evil.example', allowed)).toBe(false);
     expect(isWebSocketOriginAllowed('', allowed)).toBe(false);
+  });
+});
+
+describe('isMetricsPath', () => {
+  it('matches only the metrics path, with an optional query string or trailing slash', () => {
+    expect(METRICS_PATH).toBe('/metrics');
+    expect(isMetricsPath('/metrics')).toBe(true);
+    expect(isMetricsPath('/metrics?debug=1')).toBe(true);
+    expect(isMetricsPath('/metrics/')).toBe(true);
+    expect(isMetricsPath('/metrics/extra')).toBe(false);
+    expect(isMetricsPath('/metricsx')).toBe(false);
+    expect(isMetricsPath('/healthz?next=/metrics')).toBe(false);
   });
 });
 
@@ -239,6 +253,77 @@ describe('CORS hook integration (AC-5)', () => {
         headers: { origin: 'https://evil.example' },
       });
       expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+    });
+  });
+});
+
+describe('/metrics CORS exclusion (AC-8)', () => {
+  it('serves the loopback metrics route without a grant for the allowed origin', async () => {
+    await withApp({ CORS_ORIGIN: CLOUD_ORIGIN }, async (app) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { origin: CLOUD_ORIGIN },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8');
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+    });
+  });
+
+  it('keeps the exclusion when the request carries a query string', async () => {
+    await withApp({ CORS_ORIGIN: CLOUD_ORIGIN }, async (app) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/metrics?debug=1',
+        headers: { origin: CLOUD_ORIGIN },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+    });
+  });
+
+  it('answers a metrics preflight with no grant and no 204', async () => {
+    await withApp({ CORS_ORIGIN: CLOUD_ORIGIN }, async (app) => {
+      const response = await app.inject({
+        method: 'OPTIONS',
+        url: '/metrics',
+        headers: { origin: CLOUD_ORIGIN, ...PREFLIGHT_HEADERS },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        message: 'Route OPTIONS:/metrics not found',
+        error: 'Not Found',
+        statusCode: 404,
+      });
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+      expect(response.headers['access-control-allow-methods']).toBeUndefined();
+      expect(response.headers['access-control-max-age']).toBeUndefined();
+    });
+  });
+
+  it('returns 404 for /metrics with no CORS grant when metrics are disabled', async () => {
+    await withApp({ CORS_ORIGIN: CLOUD_ORIGIN, METRICS_ENABLED: 'false' }, async (app) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { origin: CLOUD_ORIGIN },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        message: 'Route GET:/metrics not found',
+        error: 'Not Found',
+        statusCode: 404,
+      });
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
     });
   });
 });

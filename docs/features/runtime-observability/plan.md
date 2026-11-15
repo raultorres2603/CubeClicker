@@ -1,6 +1,6 @@
 ---
 feature: runtime-observability
-revision: 2
+revision: 3
 ---
 # Plan — Runtime Observability
 
@@ -17,7 +17,8 @@ Four layers, all inside the existing single-process backend unless noted:
    - The diagnostic `ping`/`pong` pair lives in both protocol mirrors. The hub answers a `ping` with `pongMessage(t)` at most once per 1000 ms per connection; later pings are dropped and counted. No member/game state is read or written by this path.
 3. **Backend wiring and exposure (composition root).**
    - `app.ts` creates the metrics registry, builds Fastify with the logger options, creates the hub with the metrics registry and `createLogSink(app.log)`, instruments the runtime pool, registers the internal `/metrics` route, logs WS open/close/rejection with `req.id`, and increments the HTTP limiter drop metric via the rate limiter's optional `onDenied`.
-   - `observability/metrics-route.ts` renders the registry after a `collect()` hook samples the pool gauges; it registers only when `METRICS_ENABLED` is true, sets `cache-control: no-store`, and never changes the ALB or port.
+   - `observability/metrics-route.ts` renders the registry after a `collect()` hook samples the pool gauges; it registers only when `METRICS_ENABLED` is true, sets `cache-control: no-store`, and adds no port or Fly path route. `src/backend/src/cors.ts` excludes `/metrics` from every CORS grant (GET and OPTIONS), so the Vercel frontend origin cannot read it even if it is temporarily enabled.
+   - Deployment exposure is explicit: `fly.config.toml` `[env]` sets `METRICS_ENABLED = "false"` for both Fly apps and `.github/workflows/deploy.yml` stages `METRICS_ENABLED=false` in the Fly runtime configuration; local `compose.yaml` keeps `METRICS_ENABLED: "${METRICS_ENABLED:-true}"` on the loopback. Temporary internal scraping sets a Fly secret/env true, uses `fly proxy`/`fly ssh`, then unsets it; no Fly route/rewrite is added.
    - `observability/db-metrics.ts` wraps the promise-returning `query` of the structural `Queryable` pool surface (duration/outcome only, original `this` preserved with `apply`) and samples `totalCount`/`idleCount`/`waitingCount` on scrape.
    - `observability/shutdown.ts` installs one-shot `SIGTERM`/`SIGINT` handlers that log through the same `LogSink`, count, close the app and exit; `server.ts` installs them after `listen`.
 4. **Frontend dev overlay (client-local).**
@@ -189,8 +190,12 @@ export function isPerfOverlayEnabled(env?: Record<string, unknown>): boolean;
 | `src/backend/src/auth/rate-limit.ts` | Edit | Optional `onDenied` callback. |
 | `src/backend/src/auth/rate-limit.test.ts` | Edit | Callback and unchanged allow behavior. |
 | `src/backend/src/app.ts` | Edit | Logger, metrics instance, `/metrics`, hub/pool wiring, WS logs, HTTP limiter metric. |
-| `src/backend/src/app.test.ts` | Edit | Captured-log privacy, endpoint, correlation, metrics integration. |
+| `src/backend/src/app.test.ts` | Edit | Captured-log privacy, endpoint, correlation, metrics integration; CORS exclusion on `/metrics`. |
 | `src/backend/src/server.ts` | Edit | Graceful shutdown installation; default dev `NODE_ENV` for logging. |
+| `src/backend/src/cors.ts` | Edit | Skip CORS grant and preflight grant for the `/metrics` path. |
+| `src/backend/src/cors.test.ts` | Edit | No ACAO/credentials for `/metrics` GET/OPTIONS; existing CORS tests unchanged. |
+| `fly.config.toml` | Edit | Add `METRICS_ENABLED = "false"` to `[env]` for both Fly environments. |
+| `.github/workflows/deploy.yml` | Edit | Stage explicit `METRICS_ENABLED=false` in the Fly runtime configuration. |
 | `tests/e2e/smoke.mjs` | Edit | Containerized `/metrics` check. |
 | `src/frontend/src/multiplayer/protocol.ts` | Edit | Frontend ping/pong mirror. |
 | `src/frontend/src/multiplayer/protocol.test.ts` | Edit | Mirror validation and parity. |
@@ -207,19 +212,19 @@ export function isPerfOverlayEnabled(env?: Record<string, unknown>): boolean;
 | `README.md` | Edit | `## Operations`, log/metrics/overlay configuration table rows. |
 | `compose.yaml` | Edit | Backend `LOG_LEVEL`/`METRICS_ENABLED` and frontend `VITE_PERF_OVERLAY` environment pass-throughs with safe defaults (no service/port change). |
 | `docs/architecture/observability.md` | New | Canonical logging/metrics/exposure/overlay documentation. |
-| `docs/architecture/deployment.md` | Edit | One sentence: `/metrics` is not ALB-routed. |
+| `docs/architecture/deployment.md` | Edit | Current Fly public-host exposure model; deployed `METRICS_ENABLED=false`, CORS exclusion, historical AWS clearly historical. |
 | `docs/features/runtime-observability/build-log-T5.md` | New | Final verification evidence. |
 
-No change: `compose.smoke.yaml`, both Dockerfiles, `infra/terraform/**`, `.github/**`, `package.json`, `package-lock.json`, `docs/features/README.md` (orchestrator-owned). `compose.yaml` changes only the three environment pass-through entries described above. The smoke script is edited in T5 (after T4), not in T3.
+No change: `compose.smoke.yaml`, both Dockerfiles, `infra/terraform/**` (archived historical infrastructure), `package.json`, `package-lock.json`, `docs/features/README.md` (orchestrator-owned). `compose.yaml` changes only the three environment pass-through entries; `fly.config.toml` adds only `METRICS_ENABLED = "false"`; `.github/workflows/deploy.yml` adds only the explicit `METRICS_ENABLED=false` Fly staging value. The smoke script is edited in T5 (after T4), not in T3.
 
 ## Key decisions
 
 | # | Decision | Rationale | Alternatives considered |
 | --- | --- | --- | --- |
 | 1 | Prometheus text format, self-implemented | De-facto standard, zero dependency, easy to grep; a fixed catalog keeps the renderer small. | JSON endpoint (no ecosystem support); `prom-client` dependency (forbidden by task). |
-| 2 | Internal-only `/metrics` on port 8080 | The ALB does not route it; no new port/service; `METRICS_ENABLED` is a kill switch. | Public ALB route with auth (user-owned infra); separate metrics port (new port). |
+| 2 | Deployed-private `/metrics` on port 8080 | Fly serves one public host with no path filter, so deployed environments set `METRICS_ENABLED=false` in `fly.config.toml`/deploy workflow and local compose keeps `true` on loopback; no new port/service. | Permanent public route (rejected by Q-2); separate metrics port (new port); ALB/Terraform route (superseded). |
 | 3 | Fixed label allow-list in the registry | Makes PII/high-cardinality leaks impossible at the API boundary, not just by convention. | Code review only; runtime string labels (unsafe). |
-| 4 | Fastify's built-in Pino | Already present via Fastify; no new dependency; JSON to stdout is captured by the existing `awslogs` path. | `pino-pretty` transport (new dependency, dev-only noise); custom logger (more code). |
+| 4 | Fastify's built-in Pino | Already present via Fastify; no new dependency; JSON to stdout is captured by Fly's log stream. | `pino-pretty` transport (new dependency, dev-only noise); custom logger (more code). |
 | 5 | Custom `req`/`res`/`err` serializers + redaction | Default serializers can include headers/IPs; custom ones log only method/path/host/status and error type/code. | Default Fastify serializers + redaction only (IP/query leakage risk). |
 | 6 | Cycle-level error serializer `{type, code?}` | Error messages can contain user input (emails, SQL fragments); metrics/logs stay safe. | Log message only in debug (new switch, not requested). |
 | 7 | Per-process counters/gauges | Single-process architecture; no Redis/DB metrics store; resets documented. | Durable metrics store (new infra). |
@@ -227,14 +232,15 @@ No change: `compose.smoke.yaml`, both Dockerfiles, `infra/terraform/**`, `.githu
 | 9 | `renderer.info.autoReset = false` + per-frame reset | Makes draw-call/triangle counts a full frame total including composer passes. | Read `info` as-is (last pass only); GPU timer queries (new API/complexity). |
 | 10 | Overlay as a small static component | Flag false renders nothing; tiny bundle cost; no new dependency; no Three.js import. | Lazy chunk (extra loading state for a dev tool); imperative DOM (off-pattern). |
 | 11 | Graceful shutdown via `app.close()` | Reuses existing `onClose` hub/pool teardown and closes WS clients through the plugin; logs the event. | No signal handler (current console-only behavior); custom socket close loop. |
-| 12 | Reuse existing CloudWatch `awslogs` + 30-day retention | Already configured in Terraform; no new observability stack or docs drift. | New log shipper/retention config (new infra). |
+| 12 | Reuse stdout + Fly's log stream | No new observability stack or docs drift; CloudWatch `awslogs`/30-day retention remains historical AWS material. | New log shipper/retention config (new infra). |
 | 13 | Event-first `LogSink` adapter, Pino object-first inside | The hub/shutdown call `info(event, fields)`; `createLogSink` calls `logger.info(fields, event)`, so fields are never dropped and both surfaces share one contract. | Passing `app.log` directly (drops fields); Pino order everywhere (more error-prone call sites). |
+| 14 | CORS excludes `/metrics` | Even a temporary enablement on the public Fly host cannot be read by the Vercel frontend origin; no new auth token or route. | Rely on default-off only (browser-readable during a temporary enablement); metrics auth token (new contract). |
 
 ## Risks & mitigations
 
 - **A new log call leaks a body/header/token** → serializers exclude them, redaction is defense-in-depth, and `app.test.ts` asserts exact absent values after a real login/WS flow; review checks every added log call.
 - **A metric label grows unbounded** → registry rejects undeclared labels and out-of-list values; the catalog is the single source; the AC-18 parser checks every emitted sample.
-- **`/metrics` becomes public** → no Terraform/ALB change, grep proof, docs state the rule, `METRICS_ENABLED` can disable the route.
+- **`/metrics` exposed on the public Fly host** → deployed `METRICS_ENABLED=false` in `fly.config.toml`/deploy workflow, CORS excludes `/metrics` (GET + OPTIONS), tests assert no ACAO, and docs require unsetting the temporary secret; no route/rewrite is added. The default-off value is the primary control; CORS is defense-in-depth for the browser origin.
 - **Hot-path overhead** → map increments and gauges only; no per-recipient labels; the encode-once path, batching windows and DB writes are unchanged.
 - **DB wrapper changes failure semantics** → it preserves the original promise/throw, rethrows the same error, and is unit-tested for resolve/reject/sync throw.
 - **Shutdown hangs with open sockets** → `app.close()` runs the existing `@fastify/websocket` close path; the platform stop timeout bounds it. A custom timeout is out of scope and would be a separate hardening feature.
@@ -242,29 +248,32 @@ No change: `compose.smoke.yaml`, both Dockerfiles, `infra/terraform/**`, `.githu
 - **Ping spam** → 1 Hz per connection, dropped pings counted, no state/identity; frame is capped by the existing 1024-byte message limit.
 - **Real renderer info differs from mocks** → `webgl.test.ts` pins calls/triangles and reset count with a fake renderer; the real adapter calls the documented Three.js `info` API only.
 - **Repeated logging config on every test app** → `buildApp({})`/`NODE_ENV=test` defaults to logging off, so existing suites stay quiet; tests that need logs pass a captured stream explicitly.
-- **Log volume/cost** → production logs one request/response pair per HTTP request at `info` (including the 10-second `/healthz` probe and `/metrics` scrapes) plus one lifecycle line per WebSocket connection; the volume is bounded and the 30-day CloudWatch retention is unchanged. No sampling or shipper is added; a future level/health-suppression change would be a separate follow-up.
-- **Compose pass-throughs accidentally enabled in production** → the compose defaults are dev-safe (`LOG_LEVEL=debug`, `METRICS_ENABLED=true`, `VITE_PERF_OVERLAY=false`); the deployed image does not use compose, production remains `NODE_ENV=production`/`info`, and the production frontend build has no `VITE_PERF_OVERLAY` arg.
+- **Log volume/cost** → production logs one request/response pair per HTTP request at `info` (including the 15-second Fly `/healthz` probe and `/metrics` scrapes when enabled) plus one lifecycle line per WebSocket connection; Fly's log stream is reused and the volume is bounded. CloudWatch `awslogs`/30-day retention is historical only. No sampling or shipper is added; a future level/health-suppression change would be a separate follow-up.
+- **Compose pass-throughs accidentally enabled in production** → the compose defaults are dev-safe (`LOG_LEVEL=debug`, `METRICS_ENABLED=true`, `VITE_PERF_OVERLAY=false`); the deployed image does not use compose, Fly's `[env]`/staged secret sets `METRICS_ENABLED=false`, and the production frontend build has no `VITE_PERF_OVERLAY` arg.
 
 ## Rollback
 
 - **Logging**: remove/revert the `logger` option in `app.ts`; the default `Fastify()` behavior returns. No data/schema impact.
-- **Metrics**: set `METRICS_ENABLED=false` to remove the route; revert the observability modules and hub/app increments. Counters are in-memory, so rollback loses only diagnostic data.
+- **Metrics**: deployed Fly default `METRICS_ENABLED=false`; local `METRICS_ENABLED=false` removes the route; revert the observability modules, hub/app increments, Fly `[env]` false, deploy staging line and CORS exclusion. Counters are in-memory, so rollback loses only diagnostic data.
 - **Overlay**: leave `VITE_PERF_OVERLAY` unset (default) or revert the `App.tsx` conditional/component; no production behavior change.
-- **Compose pass-throughs**: remove the three `LOG_LEVEL`/`METRICS_ENABLED`/`VITE_PERF_OVERLAY` environment lines; the code defaults still apply.
+- **Compose pass-throughs**: remove the three `LOG_LEVEL`/`METRICS_ENABLED`/`VITE_PERF_OVERLAY` environment lines; the code defaults still apply locally.
+- **Deployment exposure**: remove `METRICS_ENABLED = "false"` from `fly.config.toml` and the explicit staging value from `deploy.yml` only as part of a user-approved exposure change; never leave the deployed default true.
 - **Ping/pong**: revert the additive protocol frames and the session RTT method; no client/server game message changes, so mixed-version exposure is limited to the dev overlay (which is off by default).
 - **Shutdown**: remove the `installShutdownHandlers` call in `server.ts`; the prior console-only shutdown behavior returns.
 - There is no schema migration, no persistent state and no container/infrastructure change to roll back.
 
 ## Containerization impact
 
-- No new service, image, deployable, port, host mapping or healthcheck. `/metrics` is an HTTP route on the existing backend container port 8080; the ALB continues to route only `/ws`, `/auth*` and `/healthz`.
+- No new service, image, deployable, port, host mapping or healthcheck. `/metrics` is an HTTP route on the existing backend container port 8080; Fly serves the whole app on one public host with no path filter, so the deployed exposure control is `METRICS_ENABLED=false` in `fly.config.toml` `[env]` and the deploy workflow, while local compose keeps `METRICS_ENABLED=true` on loopback.
 - `compose.yaml` adds three environment pass-throughs: backend `LOG_LEVEL: "${LOG_LEVEL:-debug}"` and `METRICS_ENABLED: "${METRICS_ENABLED:-true}"`, frontend `VITE_PERF_OVERLAY: "${VITE_PERF_OVERLAY:-false}"`. `LOG_LEVEL=warn podman compose up`, `METRICS_ENABLED=false podman compose up` and `VITE_PERF_OVERLAY=true podman compose up` therefore work; no service, port or image is added. `compose.smoke.yaml`, `src/backend/Dockerfile` and `src/frontend/Dockerfile` are unchanged; `podman compose up` remains the single local command.
+- `cors.ts` excludes `/metrics` from the CORS grant/preflight, so the Vercel frontend origin cannot read it; the local loopback probe remains available to a developer/curl.
 - Local proof: `podman compose up -d --build backend`, then `curl -fsS http://localhost:8080/metrics`; `podman compose logs --no-color backend` shows JSON lines.
 - Containerized proof (T5, after T4): `podman compose -f compose.yaml -f compose.smoke.yaml build frontend-prod` then `npm run smoke`; `tests/e2e/smoke.mjs` opens a dedicated joined client and fetches `http://backend:8080/metrics` while it is joined, asserting `connections_open >= 1` and `servers_active >= 1` before closing it and settling. The current `assets/index-*.js` entry hash is recorded in the T5 build log.
-- Configuration is environment-based with safe defaults: `LOG_LEVEL` (default by `NODE_ENV`), `METRICS_ENABLED` (default `true`), `VITE_PERF_OVERLAY` (default `false`, dev-only). No secret is added.
-- Log volume remains bounded by request traffic plus one lifecycle line per WebSocket connection; the existing `awslogs` driver and 30-day retention are reused, with no sampling or shipper.
-- Deployment: the existing `awslogs` driver and `/ecs/cubeclicker-production/backend` log group with 30-day retention are reused; no Terraform change.
+- Deployed exposure: `METRICS_ENABLED=false` in `fly.config.toml`/`deploy.yml`; a temporary Fly secret/env true plus `fly proxy`/`fly ssh` is the only enablement path and is unset immediately. There is no committed Fly route, rewrite or CORS grant.
+- Configuration is environment-based with safe defaults: `LOG_LEVEL` (default by `NODE_ENV`), `METRICS_ENABLED` (compose `true`, deployed Fly `false`), `VITE_PERF_OVERLAY` (default `false`, dev-only). No secret is added.
+- Log volume remains bounded by request traffic plus one lifecycle line per WebSocket connection; stdout is captured by Fly's log stream (`fly logs`/`fly status`), with no sampling or shipper. The CloudWatch `awslogs`/30-day-retention configuration is historical AWS material only.
+- Deployment: Fly runtime configuration (`fly.config.toml` + deploy workflow) carries the explicit `METRICS_ENABLED=false`; no Terraform change.
 
 ## Open questions
 
-See `spec.md` § Open questions. The three approval items are Q-1 (Prometheus text), Q-2 (internal-only exposure) and Q-3 (dev overlay + ping/pong RTT); all other choices are builder defaults recorded in the plan's key decisions.
+See `spec.md` § Open questions. The three approval items are Q-1 (Prometheus text), Q-2 (deployed-default-off + local-on + CORS-excluded exposure) and Q-3 (dev overlay + ping/pong RTT); all other choices are builder defaults recorded in the plan's key decisions.

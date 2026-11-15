@@ -1,10 +1,11 @@
 /**
- * Internal `GET /metrics` route (T3, AC-6, AC-8).
+ * `GET /metrics` route (T3, AC-6, AC-8).
  *
  * Prometheus text on the existing backend port. The route is registered only when
- * `METRICS_ENABLED` is true; otherwise the path is a plain 404. There is no
- * authentication by design: exposure relies on the network boundary (the ALB does
- * not route `/metrics`), and `METRICS_ENABLED=false` removes the surface entirely.
+ * `METRICS_ENABLED` is true; otherwise the path is a plain 404. Deployed Fly
+ * environments set `METRICS_ENABLED=false` because Fly serves the whole app on one
+ * public host with no path filter; local compose keeps it true on the loopback and
+ * the CORS hook never grants `/metrics`. There is no authentication token by design.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
