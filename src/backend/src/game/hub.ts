@@ -62,6 +62,7 @@ import {
   type GraceTracker,
 } from './players.js';
 import {
+  activityEventMessage,
   encodeServerMessage,
   errorMessage,
   levelAdvancedMessage,
@@ -101,6 +102,11 @@ import {
   createEconomyCoalescer,
   createRemovalBatcher,
 } from './broadcast.js';
+import {
+  ACTIVITY_MILESTONE_EVERY,
+  createActivityFeed,
+  type ActivityEventInput,
+} from './activity.js';
 import type {
   EconomyRepository,
   EconomySnapshot,
@@ -393,6 +399,8 @@ export function createGameHub(deps: HubDeps): GameHub {
   const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Member ids with an `openLootbox` awaiting the repository (per-member in-flight guard). */
   const openingMembers = new Set<string>();
+  /** The one per-server activity feed (feature `live-activity-feed`); timered by nothing. */
+  const activity = createActivityFeed({ now: deps.now });
   let playerCounter = 0;
   let movePlan = new Map<string, number>();
 
@@ -594,6 +602,42 @@ export function createGameHub(deps: HubDeps): GameHub {
   }
 
   /**
+   * Offers one validated-transition candidate to the per-server feed.
+   *
+   * The feed assigns `id`/`at`/`serverId` and applies the 1/s gate; only an accepted candidate
+   * is broadcast, through the same encode-once fan-out as every other server message (the
+   * frame is serialized once for all recipients). `except` is used only for the fresh-join
+   * frame (`memberJoined`), which excludes the joining member but stays in the ring (AC-5).
+   */
+  function recordActivity(
+    serverId: number,
+    input: ActivityEventInput,
+    except?: string,
+  ): void {
+    if (closed) {
+      return;
+    }
+    const event = activity.record(serverId, input);
+    if (event === null) {
+      return;
+    }
+    broadcast(serverId, activityEventMessage(event), except);
+  }
+
+  /**
+   * Whether a server still has at least one member after a move (the old-server `memberLeft`
+   * candidate probe). `registry.forEachMember` visits nothing for an unknown/destroyed server,
+   * so this needs no registry interface change (AC-7).
+   */
+  function serverHasMembers(serverId: number): boolean {
+    let hasMembers = false;
+    registry.forEachMember(serverId, () => {
+      hasMembers = true;
+    });
+    return hasMembers;
+  }
+
+  /**
    * The member's current placement from the registry's O(1) index (never cached).
    *
    * The visitor/index is the registry's derived view of the slot table, so a vacated slot
@@ -660,6 +704,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       position: positionOf(location.slot),
       self: cubeState(member),
       roster: rosterFor(location.serverId),
+      activity: activity.snapshot(location.serverId),
       identity,
       economy: member.economy,
       ...(member.accountId !== null
@@ -734,6 +779,16 @@ export function createGameHub(deps: HubDeps): GameHub {
     tokens.delete(member.token);
     if (removal.left && location !== null) {
       broadcast(location.serverId, memberLeftMessage(playerId, 'left'));
+      // A destroyed server keeps no feed: its buffer is deleted with the room (AC-6/AC-11).
+      if (removal.serverDestroyed) {
+        activity.dropServer(location.serverId);
+      } else {
+        recordActivity(location.serverId, {
+          type: 'memberLeft',
+          playerId,
+          name: member.name,
+        });
+      }
     }
     recomputePlan();
     refreshRoomGauges();
@@ -980,6 +1035,13 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     send(connection, welcomeMessage(placementFor(member)));
     broadcast(assignment.serverId, memberJoinedMessage(memberState(member)), member.playerId);
+    // The fresh-join candidate excludes the joiner from the live frame but stays in the ring
+    // for later joiners/reconnects (AC-5). A move-in join records no activity (AC-7).
+    recordActivity(
+      assignment.serverId,
+      { type: 'memberJoined', playerId: member.playerId, name: member.name },
+      member.playerId,
+    );
     recomputePlan();
     refreshRoomGauges();
   }
@@ -1219,6 +1281,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       elapsedMs <= (thresholdSeconds(previousGridSize) + speedWindowSeconds(member.upgrades)) * 1000;
 
     const previous = locationOf(member.playerId)!;
+    // The completed cube's 1-based number, captured before the next cube replaces it.
+    const completedLevel = member.cube.levelIndex + 1;
     const next = createNextCube(member.cube, styleForLevel, random);
     const target = movePlan.get(member.playerId);
     // The registry re-validates the target (exists, free slot, strictly lower); `null` means
@@ -1264,6 +1328,8 @@ export function createGameHub(deps: HubDeps): GameHub {
         position: positionOf(previous.slot),
       };
       broadcast(previous.serverId, levelAdvancedMessage(advance));
+      // One candidate per completion, after the protocol broadcast (AC-1/AC-2/AC-3).
+      recordCompletion(previous.serverId, member, completedLevel, elapsedMs, bonus);
       refreshRoomGauges();
       return;
     }
@@ -1274,8 +1340,62 @@ export function createGameHub(deps: HubDeps): GameHub {
     const location = locationOf(member.playerId)!;
     send(connection, worldEnteredMessage(placementFor(member)));
     broadcast(previous.serverId, memberLeftMessage(member.playerId, 'moved'));
+    // The old server's leave is its own candidate, gated on that server's window; a server
+    // destroyed by the move loses its buffer instead (AC-7).
+    if (serverHasMembers(previous.serverId)) {
+      recordActivity(previous.serverId, {
+        type: 'memberLeft',
+        playerId: member.playerId,
+        name: member.name,
+      });
+    } else {
+      activity.dropServer(previous.serverId);
+    }
     broadcast(location.serverId, memberJoinedMessage(memberState(member)), member.playerId);
+    // The completion is the sole new-server activity candidate for this move (the move-in
+    // join is suppressed), recorded after the target server's protocol messages (AC-7/AC-14).
+    recordCompletion(location.serverId, member, completedLevel, elapsedMs, bonus);
     refreshRoomGauges();
+  }
+
+  /**
+   * Records the one completion candidate: `levelMilestone` > `fastClear` > `cubeCleared`.
+   *
+   * The fast-clear predicate is the same boolean that doubles the completion's coins, so the
+   * feed and the economy cannot disagree about what a fast clear is (AC-2/AC-3).
+   */
+  function recordCompletion(
+    serverId: number,
+    member: Member,
+    completedLevel: number,
+    elapsedMs: number,
+    bonus: boolean,
+  ): void {
+    if (completedLevel % ACTIVITY_MILESTONE_EVERY === 0) {
+      recordActivity(serverId, {
+        type: 'levelMilestone',
+        playerId: member.playerId,
+        name: member.name,
+        level: completedLevel,
+      });
+      return;
+    }
+    if (bonus) {
+      recordActivity(serverId, {
+        type: 'fastClear',
+        playerId: member.playerId,
+        name: member.name,
+        level: completedLevel,
+        elapsedMs,
+      });
+      return;
+    }
+    recordActivity(serverId, {
+      type: 'cubeCleared',
+      playerId: member.playerId,
+      name: member.name,
+      level: completedLevel,
+    });
   }
 
   async function handlePurchaseUpgrade(member: Member, connection: Connection, upgradeId: string): Promise<void> {
@@ -1381,6 +1501,19 @@ export function createGameHub(deps: HubDeps): GameHub {
           appearance: state.appearance,
         }),
       );
+      // Only a drawn epic is a server activity candidate (rare/standard/failed/guest never);
+      // the member's current server owns it (AC-4).
+      if (definition.rarity === 'epic') {
+        const location = locationOf(member.playerId);
+        if (location !== null) {
+          recordActivity(location.serverId, {
+            type: 'epicLoot',
+            playerId: member.playerId,
+            name: member.name,
+            partId,
+          });
+        }
+      }
     } catch {
       // A repository/protocol failure releases the guard in `finally` and sends nothing:
       // retrying is the client's decision (the transport performs no automatic retry, AC-20).
@@ -1674,6 +1807,9 @@ export function createGameHub(deps: HubDeps): GameHub {
       openingMembers.clear();
       economyRevisions.clear();
       upgradeRevisions.clear();
+      // Terminal feed teardown: after this no record/snapshot/drop can produce state or a frame
+      // (AC-11/AC-25).
+      activity.clear();
       // Metrics-only shutdown reset (AC-13); the registry object is not cleared, so other
       // counters keep their process totals and no registry equality is asserted after close.
       metrics?.set('cubeclicker_removal_batch_pending_groups', 0);

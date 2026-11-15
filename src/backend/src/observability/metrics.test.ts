@@ -114,6 +114,7 @@ describe('metrics catalog', () => {
         'upgradesUpdate',
         'customizationUpdate',
         'lootboxOpened',
+        'activityEvent',
         'error',
         'pong',
       ],
@@ -134,6 +135,7 @@ describe('metrics catalog', () => {
         'upgradesUpdate',
         'customizationUpdate',
         'lootboxOpened',
+        'activityEvent',
         'error',
         'pong',
       ],
@@ -525,6 +527,21 @@ describe('metrics validation', () => {
         'Metric "cubeclicker_rate_limit_drops_total" label "scope" has invalid value "account"',
       ),
     );
+  });
+
+  it('accepts the activityEvent type on both outbound counters and creates their series', () => {
+    const metrics = createMetrics();
+    metrics.inc('cubeclicker_ws_messages_encoded_total', { type: 'activityEvent' });
+    metrics.inc('cubeclicker_ws_frames_sent_total', { type: 'activityEvent' }, 3);
+
+    const rendered = metrics.render();
+    expect(
+      metricBlock(rendered, 'cubeclicker_ws_messages_encoded_total'),
+    ).toContain('cubeclicker_ws_messages_encoded_total{type="activityEvent"} 1');
+    expect(metricBlock(rendered, 'cubeclicker_ws_frames_sent_total')).toContain(
+      'cubeclicker_ws_frames_sent_total{type="activityEvent"} 3',
+    );
+    expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
   });
 
   it('rejects a non-finite inc value', () => {

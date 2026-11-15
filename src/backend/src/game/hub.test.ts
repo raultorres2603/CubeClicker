@@ -376,6 +376,75 @@ function sentTextsOfType(peer: FakePeer, type: ServerMessage['type']): string[] 
   return peer.sent.filter((text) => (JSON.parse(text) as ServerMessage).type === type);
 }
 
+type ActivityEventFrame = Extract<ServerMessage, { type: 'activityEvent' }>;
+
+/** An exact `activityEvent` frame for a member transition (join/leave). */
+function transitionActivity(
+  id: number,
+  at: number,
+  serverId: number,
+  type: 'memberJoined' | 'memberLeft',
+  playerId: string,
+  name: string,
+): ActivityEventFrame {
+  return { type: 'activityEvent', event: { id, at, serverId, type, playerId, name } };
+}
+
+/** An exact `activityEvent` frame for a non-fast, non-milestone completion. */
+function clearedActivity(
+  id: number,
+  at: number,
+  serverId: number,
+  playerId: string,
+  name: string,
+  level: number,
+): ActivityEventFrame {
+  return { type: 'activityEvent', event: { id, at, serverId, type: 'cubeCleared', playerId, name, level } };
+}
+
+/** An exact `activityEvent` frame for a fast completion. */
+function fastActivity(
+  id: number,
+  at: number,
+  serverId: number,
+  playerId: string,
+  name: string,
+  level: number,
+  elapsedMs: number,
+): ActivityEventFrame {
+  return {
+    type: 'activityEvent',
+    event: { id, at, serverId, type: 'fastClear', playerId, name, level, elapsedMs },
+  };
+}
+
+/** An exact `activityEvent` frame for a milestone completion. */
+function milestoneActivity(
+  id: number,
+  at: number,
+  serverId: number,
+  playerId: string,
+  name: string,
+  level: number,
+): ActivityEventFrame {
+  return {
+    type: 'activityEvent',
+    event: { id, at, serverId, type: 'levelMilestone', playerId, name, level },
+  };
+}
+
+/** An exact `activityEvent` frame for an epic loot draw. */
+function epicActivity(
+  id: number,
+  at: number,
+  serverId: number,
+  playerId: string,
+  name: string,
+  partId: string,
+): ActivityEventFrame {
+  return { type: 'activityEvent', event: { id, at, serverId, type: 'epicLoot', playerId, name, partId } };
+}
+
 /** One cube's wire state; `LEVEL_0` is the first cube of every member (draw 0 → N = 3). */
 interface CubeFields {
   levelIndex: number;
@@ -623,6 +692,7 @@ describe('reconnect grace', () => {
     harness.advance(1);
     expect(second.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
 
     // p1's slot 1 is reusable; p2 keeps slot 2 (positions never shuffle).
@@ -718,10 +788,11 @@ describe('reconnect grace', () => {
     expect(late.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
     expect(second.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
     // The pending grace timer was cleared: no second memberLeft.
     harness.advanceTimersOnly(harness.config.reconnectGraceMs);
-    expect(second.messages()).toHaveLength(1);
+    expect(second.messages()).toHaveLength(2);
   });
 
   it('reschedules a grace timer that fires before the deadline instead of dropping the member', () => {
@@ -742,6 +813,7 @@ describe('reconnect grace', () => {
     harness.advanceTimersOnly(harness.config.reconnectGraceMs);
     expect(second.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
   });
 
@@ -1096,6 +1168,7 @@ describe('cube completion', () => {
         position: X2_SLOT_1,
         removedIds: [],
       },
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
     ] as const;
     expect(first.messages()).toEqual(expected);
     expect(second.messages()).toEqual(expected);
@@ -1169,6 +1242,7 @@ describe('cube completion', () => {
     harness.advance(harness.config.reconnectGraceMs);
     expect(second.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
     expect(third.messages()).toEqual([]);
 
@@ -1205,12 +1279,19 @@ describe('cube completion', () => {
         },
         // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
         roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
-        activity: [],
+        activity: [
+          transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
+          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+        ],
         identity: { kind: 'guest', playerId: 'p3' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
+      clearedActivity(3, 31_000, 1, 'p3', 'Player 3', 1),
     ]);
-    expect(second.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
+    expect(second.messages()).toEqual([
+      { type: 'memberJoined', member: moved },
+      clearedActivity(3, 31_000, 1, 'p3', 'Player 3', 1),
+    ]);
 
     // Server 2 was destroyed and its id is never reused: the next join creates server 3.
     const fourth = harness.connect();
@@ -1247,9 +1328,11 @@ describe('cube completion', () => {
     harness.advance(harness.config.reconnectGraceMs);
     expect(first.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
     expect(third.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
     expect(fourth.messages()).toEqual([]);
     expect(fifth.messages()).toEqual([]);
@@ -1312,16 +1395,27 @@ describe('cube completion', () => {
           moved,
           memberOf('p3', 'Player 3', X3_SLOT_3),
         ],
-        activity: [],
+        activity: [
+          transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2').event,
+          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+        ],
         identity: { kind: 'guest', playerId: 'p4' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
+      clearedActivity(3, 31_000, 1, 'p4', 'Player 4', 1),
     ]);
     expect(fifth.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p4', reason: 'moved' },
+      transitionActivity(2, 31_000, 2, 'memberLeft', 'p4', 'Player 4'),
     ]);
-    expect(first.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
-    expect(third.messages()).toEqual([{ type: 'memberJoined', member: moved }]);
+    expect(first.messages()).toEqual([
+      { type: 'memberJoined', member: moved },
+      clearedActivity(3, 31_000, 1, 'p4', 'Player 4', 1),
+    ]);
+    expect(third.messages()).toEqual([
+      { type: 'memberJoined', member: moved },
+      clearedActivity(3, 31_000, 1, 'p4', 'Player 4', 1),
+    ]);
   });
 
   it('re-plans after every executed move so three servers pack completely (X = 2, AC-10, F3)', () => {
@@ -1358,7 +1452,10 @@ describe('cube completion', () => {
     fourth.clear();
     fifth.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(second.messages()).toEqual([{ type: 'memberLeft', playerId: 'p1', reason: 'left' }]);
+    expect(second.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
+    ]);
     expect(third.messages()).toEqual([]);
     expect(fourth.messages()).toEqual([]);
     expect(fifth.messages()).toEqual([]);
@@ -1397,14 +1494,22 @@ describe('cube completion', () => {
           pitchSteps: 0,
         },
         roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
-        activity: [],
+        activity: [
+          transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
+          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+        ],
         identity: { kind: 'guest', playerId: 'p3' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
+      clearedActivity(3, 31_000, 1, 'p3', 'Player 3', 1),
     ]);
-    expect(second.messages()).toEqual([{ type: 'memberJoined', member: movedThird }]);
+    expect(second.messages()).toEqual([
+      { type: 'memberJoined', member: movedThird },
+      clearedActivity(3, 31_000, 1, 'p3', 'Player 3', 1),
+    ]);
     expect(fourth.messages()).toEqual([
       { type: 'memberLeft', playerId: 'p3', reason: 'moved' },
+      transitionActivity(2, 31_000, 2, 'memberLeft', 'p3', 'Player 3'),
     ]);
     expect(fifth.messages()).toEqual([]);
 
@@ -1443,12 +1548,19 @@ describe('cube completion', () => {
           pitchSteps: 0,
         },
         roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
-        activity: [],
+        activity: [
+          transitionActivity(2, 31_000, 2, 'memberLeft', 'p3', 'Player 3').event,
+          transitionActivity(1, 0, 2, 'memberJoined', 'p3', 'Player 3').event,
+        ],
         identity: { kind: 'guest', playerId: 'p5' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
+      clearedActivity(3, 32_000, 2, 'p5', 'Player 5', 1),
     ]);
-    expect(fourth.messages()).toEqual([{ type: 'memberJoined', member: movedFifth }]);
+    expect(fourth.messages()).toEqual([
+      { type: 'memberJoined', member: movedFifth },
+      clearedActivity(3, 32_000, 2, 'p5', 'Player 5', 1),
+    ]);
     // Server-scoped: the server-1 members hear nothing about the server-2 move.
     expect(second.messages()).toEqual([]);
     expect(third.messages()).toEqual([]);
@@ -1481,8 +1593,14 @@ describe('stable slots (T1b)', () => {
     first.clear();
     third.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(first.messages()).toEqual([{ type: 'memberLeft', playerId: 'p2', reason: 'left' }]);
-    expect(third.messages()).toEqual([{ type: 'memberLeft', playerId: 'p2', reason: 'left' }]);
+    expect(first.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
+    ]);
+    expect(third.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
+    ]);
 
     // p3 completes: their position is still slot 3 — the vacated slot 2 did not shift them.
     removeLevel(harness, third, allIds(3));
@@ -1500,6 +1618,7 @@ describe('stable slots (T1b)', () => {
         position: X4_SLOT_3,
         removedIds: [],
       },
+      clearedActivity(3, 31_000, 1, 'p3', 'Player 3', 1),
     ] as const;
     expect(first.messages()).toEqual(expected);
     expect(third.messages()).toEqual(expected);
@@ -2954,8 +3073,10 @@ describe('encode-once fan-out (T3-B)', () => {
 
     expect(encodeCallsFor(stringify, 'memberLeft')).toHaveLength(1);
     const expectedText = '{"type":"memberLeft","playerId":"p1","reason":"left"}';
+    const expectedActivity =
+      '{"type":"activityEvent","event":{"id":2,"at":30000,"serverId":1,"type":"memberLeft","playerId":"p1","name":"Player 1"}}';
     for (const peer of peers.slice(1)) {
-      expect(peer.sent).toEqual([expectedText]);
+      expect(peer.sent).toEqual([expectedText, expectedActivity]);
     }
     expect(peers[0]!.sent).toEqual([]);
   });
@@ -3170,8 +3291,16 @@ describe('removal batching (T3-B)', () => {
       position: X2_SLOT_1,
       removedIds: [],
     };
-    expect(first.messages()).toEqual([removal, advanced]);
-    expect(second.messages()).toEqual([removal, advanced]);
+    expect(first.messages()).toEqual([
+      removal,
+      advanced,
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ]);
+    expect(second.messages()).toEqual([
+      removal,
+      advanced,
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ]);
   });
 
   it('flushes pending removals before memberJoined on a join boundary', () => {
@@ -3213,6 +3342,7 @@ describe('removal batching (T3-B)', () => {
     expect(first.messages()).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
     expect(late.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
   });
@@ -3242,6 +3372,7 @@ describe('removal batching (T3-B)', () => {
     expect(third.messages().map((message) => message.type)).toEqual([
       'miniCubeRemoved',
       'worldEntered',
+      'activityEvent',
     ]);
     expect(onlyType(third, 'miniCubeRemoved')).toEqual({
       type: 'miniCubeRemoved',
@@ -3249,7 +3380,10 @@ describe('removal batching (T3-B)', () => {
       id: ids[ids.length - 1]!,
     });
     expect(onlyType(third, 'worldEntered').serverId).toBe(1);
-    expect(second.messages().map((message) => message.type)).toEqual(['memberJoined']);
+    expect(second.messages().map((message) => message.type)).toEqual([
+      'memberJoined',
+      'activityEvent',
+    ]);
   });
 
   it('does not flush on rotate; a missed batch is recovered from the rejoin welcome (AC-13)', () => {
@@ -4075,9 +4209,10 @@ describe('runtime observability (T2)', () => {
       h.join(second);
 
       // Baseline after the second join's `memberJoined` broadcast settled: the first join
-      // broadcast had no recipients, the second had one.
-      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(2);
-      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(2);
+      // broadcast had no recipients, the second had one; the first join's accepted activity
+      // candidate is one more server broadcast with no recipients (the joiner is excepted).
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(3);
       expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(1);
       expect(
         sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="join"}'),
@@ -4092,12 +4227,18 @@ describe('runtime observability (T2)', () => {
         2,
       );
       expect(sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="welcome"}')).toBe(2);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="activityEvent"}'),
+      ).toBe(1);
+      expect(
+        sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="activityEvent"}'),
+      ).toBeNull();
 
       explode(first, 'front:0:0');
       flushRemovals(h);
 
-      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(3);
-      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(3);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(4);
+      expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(4);
       expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(3);
       expect(
         sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="miniCubeRemoved"}'),
@@ -4356,5 +4497,1151 @@ describe('runtime observability (T2)', () => {
       expect(serialized).not.toContain('front:0:0');
       expect(serialized).not.toContain('u1');
     });
+  });
+});
+
+describe('server activity feed (live-activity-feed)', () => {
+  interface FeedHarnessOptions {
+    overrides?: Partial<GameConfig>;
+    /** The inner RNG draw (defaults to 0 → every cube is 3×3). */
+    draw?: () => number;
+    economy?: InMemoryEconomyRepository;
+    wrapRegistry?: (inner: ServerRegistry) => ServerRegistry;
+  }
+
+  /** A hub with a manual clock, a metrics registry and an optional economy repository. */
+  function createFeedHarness(options: FeedHarnessOptions = {}) {
+    const config: GameConfig = { ...loadGameConfig({}), ...options.overrides };
+    const metrics = createMetrics();
+    let clock = 0;
+    const innerRegistry = createServerRegistry(config.maxUsersPerServer);
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => options.draw ?? (() => 0),
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      metrics,
+      ...(options.economy === undefined ? {} : { economy: options.economy }),
+      ...(options.wrapRegistry === undefined
+        ? {}
+        : { registry: options.wrapRegistry(innerRegistry) }),
+    });
+    return {
+      config,
+      hub,
+      metrics,
+      setNow: (ms: number) => {
+        clock = ms;
+      },
+      advanceTimersOnly: (ms: number) => {
+        vi.advanceTimersByTime(ms);
+      },
+      connect: (session: AccountSession | null = null) => {
+        const peer = new FakePeer();
+        hub.attach(peer, session);
+        return peer;
+      },
+      join: (peer: FakePeer) => {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+      flush: async () => {
+        for (let i = 0; i < 50; i += 1) {
+          await Promise.resolve();
+        }
+      },
+    };
+  }
+
+  /** The numeric value of one exact rendered sample (`name` or `name{labels}`), or `null`. */
+  function sampleValue(metrics: Metrics, sample: string): number | null {
+    const line = metrics
+      .render()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${sample} `));
+    if (line === undefined) {
+      return null;
+    }
+    return Number(line.slice(sample.length + 1));
+  }
+
+  /** Every `activityEvent` frame on `peer`, in arrival order. */
+  function activityFrames(peer: FakePeer): ActivityEventFrame[] {
+    return peer
+      .messages()
+      .filter((message): message is ActivityEventFrame => message.type === 'activityEvent');
+  }
+
+  /** Removes one whole level without moving the hub clock (the pinned click limit is raised). */
+  function clearLevel(peer: FakePeer, level: number): void {
+    for (const id of allIds(3)) {
+      explode(peer, id, level);
+    }
+  }
+
+  /** A registry that reports a no-op removal for one player while still removing them. */
+  class NoOpReportingRegistry implements ServerRegistry {
+    constructor(
+      private readonly inner: ServerRegistry,
+      private readonly playerId: string,
+    ) {}
+
+    serverCount(): number {
+      return this.inner.serverCount();
+    }
+
+    servers() {
+      return this.inner.servers();
+    }
+
+    locationOf(playerId: string) {
+      return this.inner.locationOf(playerId);
+    }
+
+    forEachMember(serverId: number, visit: (playerId: string, slot: number) => void): void {
+      this.inner.forEachMember(serverId, visit);
+    }
+
+    assign(joining: string) {
+      return this.inner.assign(joining);
+    }
+
+    removeMember(playerId: string) {
+      const removal = this.inner.removeMember(playerId);
+      if (playerId === this.playerId && removal.left) {
+        return { left: false, serverDestroyed: false };
+      }
+      return removal;
+    }
+
+    moveMember(playerId: string, targetServerId: number) {
+      return this.inner.moveMember(playerId, targetServerId);
+    }
+
+    plan() {
+      return this.inner.plan();
+    }
+  }
+
+  /** A repository that can hold the next loot open after the draw, before the write. */
+  class HoldingLootRepository extends InMemoryEconomyRepository {
+    private gate: Promise<void> | null = null;
+    private release: (() => void) | null = null;
+    openCalls = 0;
+
+    holdNextOpen(): void {
+      this.gate = new Promise<void>((resolve) => {
+        this.release = resolve;
+      });
+    }
+
+    releaseOpen(): void {
+      this.release?.();
+      this.release = null;
+      this.gate = null;
+    }
+
+    override async applyLootboxOpenV2(
+      userId: string,
+      partId: PartIdV2,
+    ): Promise<
+      | { state: CustomizationState; duplicate: boolean }
+      | { reason: 'no_lootbox' }
+      | { reason: 'no_key' }
+    > {
+      this.openCalls += 1;
+      const gate = this.gate;
+      if (gate !== null) {
+        await gate;
+      }
+      return super.applyLootboxOpenV2(userId, partId);
+    }
+  }
+
+  it('records a fresh join once and excludes the joiner from its own live frame (AC-5)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.setNow(1000);
+    h.join(second);
+
+    // The joiner's own welcome carries the pre-join ring and no live frame.
+    expect(welcomeOf(second).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+    expect(activityFrames(second)).toEqual([]);
+    // The existing member hears the protocol broadcast and the accepted activity frame.
+    expect(first.messages().slice(1)).toEqual([
+      { type: 'memberJoined', member: memberOf('p2', 'Player 2', X3_SLOT_2) },
+      transitionActivity(2, 1000, 1, 'memberJoined', 'p2', 'Player 2'),
+    ]);
+  });
+
+  it('records a fastClear with the hub-measured completion time (AC-2)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+
+    clearLevel(first, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const expected = [
+      {
+        type: 'levelAdvanced',
+        playerId: 'p1',
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'crimson-alloy',
+        position: X3_SLOT_1,
+        removedIds: [],
+      },
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ];
+    expect(first.messages()).toEqual(expected);
+    expect(second.messages()).toEqual(expected);
+  });
+
+  it('records a cubeCleared for a slow completion (AC-1)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+
+    clearLevel(first, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    // 20 s > thresholdSeconds(3) = 15 s: no speed bonus.
+    h.setNow(20_000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const expected = [
+      {
+        type: 'levelAdvanced',
+        playerId: 'p1',
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'crimson-alloy',
+        position: X3_SLOT_1,
+        removedIds: [],
+      },
+      clearedActivity(2, 20_000, 1, 'p1', 'Player 1', 1),
+    ];
+    expect(first.messages()).toEqual(expected);
+    expect(second.messages()).toEqual(expected);
+  });
+
+  it('prefers levelMilestone over a fast 5th completion and never emits two events (AC-3)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const peer = h.connect();
+    h.join(peer);
+    peer.clear();
+
+    for (let level = 0; level < 4; level += 1) {
+      clearLevel(peer, level);
+      h.setNow((level + 1) * 1000);
+      peer.receive(JSON.stringify({ type: 'cubeCompleted', level }));
+    }
+    // The 5th completion is fast (elapsed 1 s) yet must be a milestone, not a fastClear.
+    clearLevel(peer, 4);
+    h.setNow(5000);
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 4 }));
+
+    expect(activityFrames(peer)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+      fastActivity(3, 2000, 1, 'p1', 'Player 1', 2, 1000),
+      fastActivity(4, 3000, 1, 'p1', 'Player 1', 3, 1000),
+      fastActivity(5, 4000, 1, 'p1', 'Player 1', 4, 1000),
+      milestoneActivity(6, 5000, 1, 'p1', 'Player 1', 5),
+    ]);
+  });
+
+  it('records an epicLoot for new and duplicate epics (AC-4)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const draws = [0, 0.999999, 0.999999];
+    let drawIndex = 0;
+    const h = createFeedHarness({
+      economy: repo,
+      draw: () => draws[drawIndex++] ?? 0,
+    });
+    const peer = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    h.setNow(1000);
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    h.setNow(2000);
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    const reveals = peer
+      .messages()
+      .filter((message): message is Extract<ServerMessage, { type: 'lootboxOpened' }> => {
+        return message.type === 'lootboxOpened';
+      });
+    expect(reveals.map((reveal) => [reveal.partId, reveal.rarity, reveal.duplicate])).toEqual([
+      ['tail-fin-comet', 'epic', false],
+      ['tail-fin-comet', 'epic', true],
+    ]);
+    expect(activityFrames(peer)).toEqual([
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet'),
+      epicActivity(3, 2000, 1, 'p1', 'alice', 'tail-fin-comet'),
+    ]);
+  });
+
+  it('records a final grace-expiry leave after the protocol broadcast (AC-6)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    second.drop();
+    h.setNow(30_000);
+    h.advanceTimersOnly(30_000);
+
+    expect(first.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p2', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
+    ]);
+    expect(second.messages()).toEqual([]);
+  });
+
+  it('drops a 999 ms memberJoined candidate without consuming an id (AC-9)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 4 } });
+    const first = h.connect();
+    h.join(first);
+    first.clear();
+    const second = h.connect();
+    h.setNow(999);
+    h.join(second);
+
+    expect(activityFrames(second)).toEqual([]);
+    expect(welcomeOf(second).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+    // A third join at the same instant is dropped too; its welcome shows the same ring/id.
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+    expect(activityFrames(first)).toEqual([]);
+  });
+
+  it('drops a 999 ms cubeCleared candidate without consuming an id (AC-9)', () => {
+    const h = createFeedHarness({
+      overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    clearLevel(first, 0);
+    flushRemovals(h);
+    h.setNow(16_000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    first.clear();
+    second.clear();
+
+    clearLevel(second, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    h.setNow(16_999);
+    second.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(first.messages()).toEqual([
+      {
+        type: 'levelAdvanced',
+        playerId: 'p2',
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'crimson-alloy',
+        position: X3_SLOT_2,
+        removedIds: [],
+      },
+    ]);
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      clearedActivity(2, 16_000, 1, 'p1', 'Player 1', 1).event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+  });
+
+  it('drops a 999 ms fastClear candidate without consuming an id (AC-9)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    clearLevel(first, 0);
+    flushRemovals(h);
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    first.clear();
+    second.clear();
+
+    clearLevel(second, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    h.setNow(1999);
+    second.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(first.messages()).toEqual([
+      {
+        type: 'levelAdvanced',
+        playerId: 'p2',
+        levelIndex: 1,
+        gridSize: 3,
+        styleId: 'crimson-alloy',
+        position: X3_SLOT_2,
+        removedIds: [],
+      },
+    ]);
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000).event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+  });
+
+  it('drops a 999 ms levelMilestone candidate without consuming an id (AC-9)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const peer = h.connect();
+    h.join(peer);
+    for (let level = 0; level < 4; level += 1) {
+      clearLevel(peer, level);
+      h.setNow((level + 1) * 1000);
+      peer.receive(JSON.stringify({ type: 'cubeCompleted', level }));
+    }
+    peer.clear();
+
+    // The 5th completion lands 999 ms after the 4th acceptance: the milestone is dropped.
+    clearLevel(peer, 4);
+    h.setNow(4999);
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 4 }));
+    expect(activityFrames(peer)).toEqual([]);
+
+    // The next accepted completion takes id 6, proving the dropped candidate consumed none.
+    clearLevel(peer, 5);
+    h.setNow(5000);
+    peer.receive(JSON.stringify({ type: 'cubeCompleted', level: 5 }));
+    expect(activityFrames(peer)).toEqual([
+      fastActivity(6, 5000, 1, 'p1', 'Player 1', 6, 1),
+    ]);
+  });
+
+  it('drops a 999 ms epicLoot candidate without consuming an id (AC-9)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    const draws = [0, 0.999999, 0.999999];
+    let drawIndex = 0;
+    const h = createFeedHarness({ economy: repo, draw: () => draws[drawIndex++] ?? 0 });
+    const peer = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+
+    h.setNow(1000);
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    peer.clear();
+    h.setNow(1999);
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    expect(peer.messages().filter((message) => message.type === 'lootboxOpened')).toHaveLength(1);
+    expect(activityFrames(peer)).toEqual([]);
+
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet').event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'alice').event,
+    ]);
+  });
+
+  it('drops a 999 ms memberLeft candidate without consuming an id (AC-9)', () => {
+    const h = createFeedHarness({
+      overrides: { maxUsersPerServer: 3, reconnectGraceMs: 1000, clickRateLimitPerSecond: 1000 },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const secondToken = welcomeOf(second).token;
+
+    clearLevel(first, 0);
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    // The leave's deadline is 2000; a fresh join at the same instant is an accepted event, so
+    // the leave candidate at 2000 is 0 ms after the acceptance and must be dropped.
+    second.drop();
+    const third = h.connect();
+    h.setNow(2000);
+    h.join(third);
+    expect(activityFrames(first)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+      transitionActivity(3, 2000, 1, 'memberJoined', 'p3', 'Player 3'),
+    ]);
+    first.clear();
+
+    const late = h.connect();
+    late.receive(JSON.stringify({ type: 'rejoin', token: secondToken }));
+    expect(late.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
+    expect(first.messages()).toEqual([{ type: 'memberLeft', playerId: 'p2', reason: 'left' }]);
+
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      transitionActivity(3, 2000, 1, 'memberJoined', 'p3', 'Player 3').event,
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000).event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+  });
+
+  it('accepts exactly at the inclusive 1000 ms boundary across event types (AC-9)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 4, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    clearLevel(first, 0);
+    flushRemovals(h);
+    first.clear();
+
+    // 999 ms after the join is dropped.
+    const second = h.connect();
+    h.setNow(999);
+    h.join(second);
+
+    // Exactly 1000 ms after the join is accepted.
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(activityFrames(first)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ]);
+
+    // 999 ms after the completion is dropped; exactly 1000 ms is accepted.
+    const third = h.connect();
+    h.setNow(1999);
+    h.join(third);
+    expect(activityFrames(first)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ]);
+    const fourth = h.connect();
+    h.setNow(2000);
+    h.join(fourth);
+    expect(activityFrames(first)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+      transitionActivity(3, 2000, 1, 'memberJoined', 'p4', 'Player 4'),
+    ]);
+    // The dropped 999 ms join stayed out of the ring.
+    expect(welcomeOf(second).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+    expect(welcomeOf(third).activity).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000).event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+  });
+
+  it('creates no candidate for an invalid completion (AC-1)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    first.clear();
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(first.messages()).toEqual([
+      { type: 'error', code: 'invalid_completion' },
+      {
+        type: 'stateSync',
+        playerId: 'p1',
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: ['front:0:0'],
+        yawSteps: 0,
+        pitchSteps: 0,
+      },
+    ]);
+    expect(second.messages()).toEqual([]);
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+  });
+
+  it('creates no epicLoot for rare, failed or guest opens (AC-4)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    // Both joins draw 0 for their cubes; the open draws 0 → rare hull-obsidian.
+    const draws = [0, 0, 0];
+    let drawIndex = 0;
+    const h = createFeedHarness({ economy: repo, draw: () => draws[drawIndex++] ?? 0 });
+    const account = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(account);
+    await h.flush();
+    const guest = h.connect();
+    h.join(guest);
+    await h.flush();
+    account.clear();
+    guest.clear();
+
+    h.setNow(1000);
+    account.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(onlyType(account, 'lootboxOpened').rarity).toBe('rare');
+
+    // Guest local opens are not server events.
+    guest.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    // Both failed opens (no_lootbox then no_key) create no candidate.
+    account.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    account.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    expect(activityFrames(account)).toEqual([]);
+    expect(activityFrames(guest)).toEqual([]);
+
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'alice').event,
+    ]);
+  });
+
+  it('drops an in-flight duplicate open before any draw or candidate (AC-4)', async () => {
+    const repo = new HoldingLootRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    // One epic draw is consumed; a second (unguarded) draw would return 0.5 → hull-gold.
+    const draws = [0, 0.999999, 0.5];
+    let drawIndex = 0;
+    const h = createFeedHarness({ economy: repo, draw: () => draws[drawIndex++] ?? 0 });
+    const peer = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    repo.holdNextOpen();
+    h.setNow(1000);
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    repo.releaseOpen();
+    await h.flush();
+
+    expect(repo.openCalls).toBe(1);
+    expect(peer.messages().filter((message) => message.type === 'lootboxOpened')).toHaveLength(1);
+    expect(activityFrames(peer)).toEqual([
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet'),
+    ]);
+  });
+
+  it('records no event on rejoin and carries the current ring (AC-5/AC-13)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connect();
+    h.join(first);
+    const token = welcomeOf(first).token;
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    first.drop();
+    h.setNow(500);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+
+    expect(welcomeOf(resumed).activity).toEqual([
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+    expect(activityFrames(resumed)).toEqual([]);
+    expect(activityFrames(second)).toEqual([]);
+  });
+
+  it('drops the buffer when the leave destroys the server (AC-6/AC-11)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connect();
+    h.join(first);
+    expect(welcomeOf(first).serverId).toBe(1);
+
+    first.drop();
+    h.setNow(30_000);
+    h.advanceTimersOnly(30_000);
+
+    // No leave frame at all (the server is gone) and the next server starts empty.
+    const second = h.connect();
+    h.join(second);
+    const welcome = welcomeOf(second);
+    expect(welcome.serverId).toBe(2);
+    expect(welcome.activity).toEqual([]);
+  });
+
+  it('records nothing for a reported no-op removal (AC-6)', () => {
+    const h = createFeedHarness({
+      overrides: { maxUsersPerServer: 2, reconnectGraceMs: 1000 },
+      wrapRegistry: (inner) => new NoOpReportingRegistry(inner, 'p2'),
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    second.drop();
+    h.setNow(1000);
+    h.advanceTimersOnly(1000);
+
+    expect(first.messages()).toEqual([]);
+    expect(activityFrames(first)).toEqual([]);
+  });
+
+  it('move: the accepted completion is the sole new-server event and the leave follows the protocol frame (AC-7/AC-14)', () => {
+    const h = createFeedHarness({
+      overrides: { maxUsersPerServer: 2, reconnectGraceMs: 1000, clickRateLimitPerSecond: 1000 },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const third = h.connect();
+    h.join(third);
+    expect(welcomeOf(third).serverId).toBe(2);
+    const thirdToken = welcomeOf(third).token;
+
+    // p1's grace expires exactly at 1000 ms; the leave is accepted on server 1.
+    first.drop();
+    second.clear();
+    third.clear();
+    h.setNow(1000);
+    h.advanceTimersOnly(1000);
+    expect(second.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 1000, 1, 'memberLeft', 'p1', 'Player 1'),
+    ]);
+    second.clear();
+
+    // p3 completes at 2000 ms: the move destroys server 2 (no old-server leave) and the
+    // completion is the sole new-server candidate (the move-in join is suppressed).
+    clearLevel(third, 0);
+    flushRemovals(h);
+    third.clear();
+    second.clear();
+    h.setNow(2000);
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(third.messages()).toEqual([
+      {
+        type: 'worldEntered',
+        playerId: 'p3',
+        name: 'Player 3',
+        token: thirdToken,
+        serverId: 1,
+        maxUsers: 2,
+        position: X2_SLOT_1,
+        self: {
+          levelIndex: 1,
+          gridSize: 3,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
+        },
+        roster: [
+          memberOf('p3', 'Player 3', X2_SLOT_1, {
+            levelIndex: 1,
+            gridSize: 3,
+            styleId: 'crimson-alloy',
+            removedIds: [],
+            yawSteps: 0,
+            pitchSteps: 0,
+          }),
+          memberOf('p2', 'Player 2', X2_SLOT_2),
+        ],
+        activity: [
+          transitionActivity(2, 1000, 1, 'memberLeft', 'p1', 'Player 1').event,
+          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+        ],
+        identity: { kind: 'guest', playerId: 'p3' },
+        economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
+      },
+      fastActivity(3, 2000, 1, 'p3', 'Player 3', 1, 2000),
+    ]);
+    expect(second.messages()).toEqual([
+      {
+        type: 'memberJoined',
+        member: memberOf('p3', 'Player 3', X2_SLOT_1, {
+          levelIndex: 1,
+          gridSize: 3,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+        }),
+      },
+      fastActivity(3, 2000, 1, 'p3', 'Player 3', 1, 2000),
+    ]);
+  });
+
+  it('move: a dropped completion adds no new-server event and suppresses the move-in join (AC-7/AC-25)', () => {
+    const h = createFeedHarness({
+      overrides: { maxUsersPerServer: 2, reconnectGraceMs: 1000, clickRateLimitPerSecond: 1000 },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const third = h.connect();
+    h.join(third);
+    first.clear();
+    second.clear();
+    third.clear();
+
+    // p1's close starts the 1000 ms grace before p4 joins (server 1 is still full).
+    first.drop();
+    const fourth = h.connect();
+    h.setNow(500);
+    h.join(fourth);
+    expect(welcomeOf(fourth).serverId).toBe(2);
+    third.clear();
+    fourth.clear();
+
+    // p1's leave is accepted on server 1 at 1000 ms.
+    h.setNow(1000);
+    h.advanceTimersOnly(1000);
+    second.clear();
+
+    // p4's fast completion is accepted on server 2 at 1000 ms.
+    clearLevel(fourth, 0);
+    flushRemovals(h);
+    fourth.clear();
+    third.clear();
+    fourth.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(activityFrames(third)).toEqual([
+      fastActivity(2, 1000, 2, 'p4', 'Player 4', 1, 500),
+    ]);
+    third.clear();
+    fourth.clear();
+
+    // p3 completes at 1999 ms: both the old-server leave and the new-server completion are
+    // 999 ms after an acceptance on their server, so neither is emitted and the move adds no
+    // new-server activity at all.
+    clearLevel(third, 0);
+    flushRemovals(h);
+    third.clear();
+    fourth.clear();
+    h.setNow(1999);
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(fourth.messages()).toEqual([
+      { type: 'memberLeft', playerId: 'p3', reason: 'moved' },
+    ]);
+    expect(second.messages()).toEqual([
+      {
+        type: 'memberJoined',
+        member: memberOf('p3', 'Player 3', X2_SLOT_1, {
+          levelIndex: 1,
+          gridSize: 3,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+        }),
+      },
+    ]);
+    expect(activityFrames(second)).toEqual([]);
+
+    // The old server's ring still has exactly p3's join and p4's completion (no leave id).
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity).toEqual([
+      fastActivity(2, 1000, 2, 'p4', 'Player 4', 1, 500).event,
+      transitionActivity(1, 0, 2, 'memberJoined', 'p3', 'Player 3').event,
+    ]);
+  });
+
+  it('keeps a 20-event newest-first ring and serves it on reconnect with eviction (AC-10/AC-13)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 10, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const token = welcomeOf(first).token;
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    // p1 is away while p2 accepts 25 completions, one per second.
+    first.drop();
+    for (let level = 0; level < 25; level += 1) {
+      clearLevel(second, level);
+      h.setNow((level + 1) * 1000);
+      second.receive(JSON.stringify({ type: 'cubeCompleted', level }));
+    }
+
+    h.setNow(25_000);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+    const welcome = welcomeOf(resumed);
+    expect(welcome.activity.map((event) => event.id)).toEqual([
+      26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+    ]);
+    expect(welcome.activity[0]).toEqual(
+      milestoneActivity(26, 25_000, 1, 'p2', 'Player 2', 25).event,
+    );
+    expect(welcome.activity[19]).toEqual(
+      fastActivity(7, 6000, 1, 'p2', 'Player 2', 6, 1000).event,
+    );
+
+    // The rejoin itself records nothing: a fresh join at the same instant sees the same ring.
+    const verifier = h.connect();
+    h.join(verifier);
+    expect(welcomeOf(verifier).activity.map((event) => event.id)).toEqual([
+      26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+    ]);
+  });
+
+  it('isolates two servers: buffers, ids and fan-out (AC-23)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 1, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    expect(welcomeOf(first).serverId).toBe(1);
+    expect(welcomeOf(second).serverId).toBe(2);
+    expect(welcomeOf(first).activity).toEqual([]);
+    expect(welcomeOf(second).activity).toEqual([]);
+    first.clear();
+    second.clear();
+
+    clearLevel(first, 0);
+    clearLevel(second, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    second.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(activityFrames(first)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'Player 1', 1, 1000),
+    ]);
+    expect(activityFrames(second)).toEqual([
+      fastActivity(2, 1000, 2, 'p2', 'Player 2', 1, 1000),
+    ]);
+    expect(first.messages().map((message) => message.type)).toEqual([
+      'levelAdvanced',
+      'activityEvent',
+    ]);
+    expect(second.messages().map((message) => message.type)).toEqual([
+      'levelAdvanced',
+      'activityEvent',
+    ]);
+  });
+
+  it('encodes an accepted event once and fans the identical text to every member (AC-14)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    clearLevel(first, 0);
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    const stringify = vi.spyOn(JSON, 'stringify');
+    h.setNow(1000);
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(encodeCallsFor(stringify, 'activityEvent')).toHaveLength(1);
+    const expected =
+      '{"type":"activityEvent","event":{"id":2,"at":1000,"serverId":1,"type":"fastClear","playerId":"p1","name":"Player 1","level":1,"elapsedMs":1000}}';
+    expect(sentTextsOfType(first, 'activityEvent')).toEqual([expected]);
+    expect(sentTextsOfType(second, 'activityEvent')).toEqual([expected]);
+  });
+
+  it('increments both metrics with the activityEvent type only (AC-12)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+
+    // p1's join: the protocol broadcast (0 recipients) plus its accepted activity broadcast
+    // (also 0, the joiner is excepted).
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(2);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(2);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(0);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="activityEvent"}'),
+    ).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="activityEvent"}'),
+    ).toBeNull();
+
+    // A join at exactly +1000 ms is accepted: protocol + activity, one recipient each.
+    const second = h.connect();
+    h.setNow(1000);
+    h.join(second);
+
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcasts_total')).toBe(4);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_count')).toBe(4);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_broadcast_fanout_sum')).toBe(2);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="activityEvent"}'),
+    ).toBe(2);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="activityEvent"}')).toBe(
+      1,
+    );
+  });
+
+  it('keeps the activity frame and welcome snapshot privacy-clean (AC-24)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const draws = [0, 0, 0.999999];
+    let drawIndex = 0;
+    const h = createFeedHarness({ economy: repo, draw: () => draws[drawIndex++] ?? 0 });
+    const account = h.connect({ userId: 'account-9', username: 'alice', verified: true });
+    h.join(account);
+    await h.flush();
+    const guest = h.connect();
+    h.setNow(1000);
+    h.join(guest);
+    await h.flush();
+
+    h.setNow(2000);
+    account.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+
+    const token = welcomeOf(account).token;
+    expect(token).toMatch(/^[0-9a-f]{32}$/);
+    const events = [...activityFrames(account), ...activityFrames(guest)].map(
+      (frame) => frame.event,
+    );
+    const activityPayloads = [
+      ...events,
+      ...(welcomeOf(account).activity ?? []),
+      ...(welcomeOf(guest).activity ?? []),
+    ];
+    expect(activityPayloads.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(activityPayloads);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain('account-9');
+    expect(serialized).not.toContain('"token"');
+    expect(serialized).not.toContain('accountId');
+    expect(serialized).not.toContain('email');
+    // The account id/token stay in the exempt welcome envelope, unchanged by the feed.
+    expect(welcomeOf(account).identity).toEqual({
+      kind: 'account',
+      accountId: 'account-9',
+      username: 'alice',
+    });
+  });
+
+  it('leaves the 40 ms removal batching and 250 ms economy cadence unchanged (AC-14)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createFeedHarness({
+      economy: repo,
+      overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 },
+    });
+    const account = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(account);
+    await h.flush();
+    const guest = h.connect();
+    h.join(guest);
+    await h.flush();
+    account.clear();
+    guest.clear();
+
+    explode(account, 'front:0:0', 0);
+    h.advanceTimersOnly(39);
+    expect(guest.messages()).toEqual([]);
+    h.advanceTimersOnly(1);
+    expect(guest.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+    ]);
+    guest.clear();
+
+    // The accepted completion at 1000 ms flushes nothing pending and emits one activity event.
+    for (const id of allIds(3).slice(1)) {
+      explode(account, id, 0);
+    }
+    h.setNow(1000);
+    account.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(activityFrames(account)).toEqual([
+      fastActivity(2, 1000, 1, 'p1', 'alice', 1, 1000),
+    ]);
+    await h.flush();
+
+    // The 250 ms economy coalescing still needs the full window after the activity event.
+    account.clear();
+    h.advanceTimersOnly(249);
+    expect(account.messages().some((message) => message.type === 'economyUpdate')).toBe(false);
+    h.advanceTimersOnly(1);
+    expect(account.messages().filter((message) => message.type === 'economyUpdate')).toHaveLength(
+      1,
+    );
+
+    // A removal enqueued after the activity still waits its own 40 ms window.
+    guest.clear();
+    explode(account, 'front:0:0', 1);
+    h.advanceTimersOnly(39);
+    expect(guest.messages()).toEqual([]);
+    h.advanceTimersOnly(1);
+    expect(guest.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+    ]);
+  });
+
+  it('sends nothing after close and leaves the feed inert (AC-11/AC-25)', () => {
+    const h = createFeedHarness({ overrides: { maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    h.hub.close();
+    expect(h.hub.connectionCount()).toBe(0);
+
+    first.receive(JSON.stringify({ type: 'join' }));
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    second.drop();
+    h.advanceTimersOnly(30_000);
+    h.hub.close();
+
+    expect(first.messages()).toEqual([]);
+    expect(second.messages()).toEqual([]);
+    expect(activityFrames(first)).toEqual([]);
+    expect(activityFrames(second)).toEqual([]);
   });
 });

@@ -380,10 +380,15 @@ describe('GET /ws', () => {
   });
 
   it('packs three servers after each completion over live sockets (X = 2, AC-10, F3)', async () => {
+    // A pinned hub clock keeps the additive activity feed deterministic: all five joins share
+    // one timestamp, and the post-close advance lands the grace-expiry leave exactly on the
+    // inclusive 1 s acceptance boundary (so its event is accepted and the immediate moves'
+    // completion candidates are dropped).
+    let clock = 1_000_000;
     const app = buildApp(
       { MAX_USERS_PER_SERVER: '2', RECONNECT_GRACE_MS: '1000' },
       // Pin N = 3 (54-tile levels) and keep the bursts clear of the separately pinned limiter.
-      { config: { clickRateLimitPerSecond: 100 }, random: () => () => 0 },
+      { config: { clickRateLimitPerSecond: 100 }, random: () => () => 0, now: () => clock },
     );
     await app.listen({ host: '127.0.0.1', port: 0 });
     const url = `ws://127.0.0.1:${listenPort(app)}/ws`;
@@ -464,7 +469,24 @@ describe('GET /ws', () => {
 
       // p1's grace expires; only p2 (server 1) hears about it.
       first.close();
+      // Let the server observe the close and begin the grace window before pinning the
+      // deadline (the closed-socket callback is asynchronous).
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      // The pinned clock reaches the grace deadline, so the expiry timer finalises p1 and the
+      // leave candidate (1000 ms after p1's accepted join) passes the inclusive gate.
+      clock = 1_001_000;
       expect(await second.next()).toEqual({ type: 'memberLeft', playerId: 'p1', reason: 'left' });
+      expect(await second.next()).toEqual({
+        type: 'activityEvent',
+        event: {
+          id: 2,
+          at: 1_001_000,
+          serverId: 1,
+          type: 'memberLeft',
+          playerId: 'p1',
+          name: 'Player 1',
+        },
+      });
 
       // p3 completes: the planned move executes into server 1's freed slot.
       const thirdIds = allIds(thirdWelcome.self.gridSize);
@@ -527,6 +549,19 @@ describe('GET /ws', () => {
         type: 'memberLeft',
         playerId: 'p3',
         reason: 'moved',
+      });
+      // The old server's leave is its own candidate: server 2 last accepted p3's join 1000 ms
+      // earlier (the inclusive boundary), so p4 receives exactly one leave event.
+      expect(await fourth.next()).toEqual({
+        type: 'activityEvent',
+        event: {
+          id: 2,
+          at: 1_001_000,
+          serverId: 2,
+          type: 'memberLeft',
+          playerId: 'p3',
+          name: 'Player 3',
+        },
       });
 
       // p5 completes: the re-planned move executes into server 2's hole.
