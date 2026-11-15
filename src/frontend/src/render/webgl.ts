@@ -47,7 +47,19 @@ function buildBaseRenderer(canvas: CanvasLike): WebGLRenderer {
     antialias: true,
   });
   configureBaseRenderer(renderer);
+  // The adapter owns the reset point (start of every adapter render), so a post-processing
+  // pass list accumulates into one full-frame total instead of reporting only the last pass
+  // (AC-21). Three's default auto-reset would clear `info` on every inner `render` call.
+  renderer.info.autoReset = false;
   return renderer;
+}
+
+/** The renderer's per-frame draw stats, read through the adapter (AC-21). */
+function rendererStats(renderer: WebGLRenderer): { calls: number; triangles: number } {
+  return {
+    calls: renderer.info.render.calls,
+    triangles: renderer.info.render.triangles,
+  };
 }
 
 /**
@@ -67,7 +79,11 @@ export function createWebGLRenderer(canvas: CanvasLike): RendererAdapter {
       // The plain renderer has no post-processing or shadow policy of its own.
     },
     render(scene: Scene, camera: PerspectiveCamera): void {
+      renderer.info.reset();
       renderer.render(scene, camera);
+    },
+    stats(): { calls: number; triangles: number } {
+      return rendererStats(renderer);
     },
     dispose(): void {
       renderer.dispose();
@@ -131,6 +147,7 @@ export function createRealisticRenderer(canvas: CanvasLike): RendererAdapter {
       if (disposed) {
         return;
       }
+      renderer.info.reset();
       if (tier === 'low') {
         // Defensive: `setQuality` already released the composer on the transition.
         disposeComposer();
@@ -147,6 +164,9 @@ export function createRealisticRenderer(canvas: CanvasLike): RendererAdapter {
         }
       }
       composer.render();
+    },
+    stats(): { calls: number; triangles: number } {
+      return rendererStats(renderer);
     },
     dispose(): void {
       disposeComposer();

@@ -15,6 +15,8 @@ import { DeferredSpaceshipCustomizationPanel } from './ui/DeferredSpaceshipCusto
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud, type HudCoinPop } from './ui/Hud';
 import { LevelCompleteBanner } from './ui/LevelCompleteBanner';
+import { PerfOverlay } from './ui/PerfOverlay';
+import { isPerfOverlayEnabled } from './perf/overlay';
 import { UpgradesPanel } from './ui/UpgradesPanel';
 import { UserPanel } from './ui/UserPanel';
 import { AuthMenu } from './ui/AuthMenu';
@@ -534,6 +536,7 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   return (
     <main data-customization-open={customizationOpen ? 'true' : 'false'}>
       <GameCanvas session={session} active={gateState.view === 'closed'} />
+      {isPerfOverlayEnabled() ? <PerfOverlay session={session} /> : null}
       {welcomed ? (
         <Hud
           stats={snapshot.stats}

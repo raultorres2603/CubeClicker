@@ -18,6 +18,7 @@ import {
   parseClientMessage,
   parseLootboxOpened,
   parseServerMessage,
+  pongMessage,
   purchaseUpgradeMessage,
   upgradesUpdateMessage,
 } from './protocol';
@@ -1295,5 +1296,72 @@ describe('miniCubesRemovedMessage', () => {
     expect(encodeServerMessage(miniCubesRemovedMessage('p1', ['front:0:0', 'front:0:1']))).toBe(
       '{"type":"miniCubesRemoved","playerId":"p1","ids":["front:0:0","front:0:1"]}',
     );
+  });
+});
+
+describe('diagnostic ping/pong (AC-23)', () => {
+  // Fixture set copied verbatim from `src/backend/src/game/protocol.test.ts`; both codecs
+  // accept and reject exactly the same frames, and the pong echo is byte-identical.
+  it('decodes a ping with a finite numeric t and drops unknown extra fields', () => {
+    expect(parseClientMessage('{"type":"ping","t":123}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: 123 },
+    });
+    expect(parseClientMessage('{"type":"ping","t":0}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: 0 },
+    });
+    expect(parseClientMessage('{"type":"ping","t":-4.5,"extra":true}')).toEqual({
+      ok: true,
+      message: { type: 'ping', t: -4.5 },
+    });
+  });
+
+  it('rejects a missing, null, string, boolean, NaN or Infinity t', () => {
+    const invalidFrames: readonly string[] = [
+      '{"type":"ping"}',
+      '{"type":"ping","t":null}',
+      '{"type":"ping","t":"123"}',
+      '{"type":"ping","t":true}',
+      // JSON has no NaN literal: this frame fails to parse and is still bad_message.
+      '{"type":"ping","t":NaN}',
+      // 1e999 parses to Infinity, which must not reach the hub.
+      '{"type":"ping","t":1e999}',
+    ];
+    for (const frame of invalidFrames) {
+      expect(parseClientMessage(frame)).toEqual({ ok: false, error: 'bad_message' });
+    }
+  });
+
+  it('decodes a pong with a finite numeric t and rejects malformed echoes', () => {
+    expect(parseServerMessage('{"type":"pong","t":123}')).toEqual({
+      ok: true,
+      message: { type: 'pong', t: 123 },
+    });
+    expect(parseServerMessage('{"type":"pong","t":0,"extra":true}')).toEqual({
+      ok: true,
+      message: { type: 'pong', t: 0 },
+    });
+
+    const invalidFrames: readonly string[] = [
+      '{"type":"pong"}',
+      '{"type":"pong","t":null}',
+      '{"type":"pong","t":"123"}',
+      '{"type":"pong","t":false}',
+      '{"type":"pong","t":1e999}',
+    ];
+    for (const frame of invalidFrames) {
+      expect(parseServerMessage(frame)).toEqual({ ok: false, error: 'bad_message' });
+    }
+  });
+
+  it('builds the exact pong echo and encodes it as one JSON frame', () => {
+    expect(pongMessage(123)).toEqual({ type: 'pong', t: 123 });
+    expect(encodeServerMessage(pongMessage(123))).toBe('{"type":"pong","t":123}');
+    expect(pongMessage(0)).toEqual({ type: 'pong', t: 0 });
+  });
+
+  it('encodes exactly one ping frame from the client', () => {
+    expect(encodeClientMessage({ type: 'ping', t: 123 })).toBe('{"type":"ping","t":123}');
   });
 });

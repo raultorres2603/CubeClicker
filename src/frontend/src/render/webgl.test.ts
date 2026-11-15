@@ -24,6 +24,11 @@ interface FakeThreeRenderer {
   toneMappingExposure: number;
   outputColorSpace: string;
   shadowMap: { enabled: boolean; type: number };
+  info: {
+    autoReset: boolean;
+    render: { calls: number; triangles: number };
+    reset: ReturnType<typeof vi.fn>;
+  };
   setSize: ReturnType<typeof vi.fn>;
   setPixelRatio: ReturnType<typeof vi.fn>;
   render: ReturnType<typeof vi.fn>;
@@ -42,6 +47,7 @@ vi.mock('three', () => ({
     toneMappingExposure = 0;
     outputColorSpace = '';
     shadowMap = { enabled: false, type: 0 };
+    info = { autoReset: true, render: { calls: 0, triangles: 0 }, reset: vi.fn() };
     setSize = vi.fn();
     setPixelRatio = vi.fn();
     render = vi.fn();
@@ -106,7 +112,14 @@ describe('createWebGLRenderer', () => {
 
     expect(threeMock.instances).toHaveLength(1);
     expect(threeMock.instances[0]!.options).toEqual({ canvas, antialias: true });
-    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'setQuality', 'render', 'dispose']);
+    expect(Object.keys(adapter)).toEqual([
+      'setSize',
+      'setPixelRatio',
+      'setQuality',
+      'render',
+      'stats',
+      'dispose',
+    ]);
   });
 
   it('configures tone mapping, color space, shadow type and enabled (AC-1)', () => {
@@ -118,6 +131,36 @@ describe('createWebGLRenderer', () => {
     expect(renderer.outputColorSpace).toBe(SRGBColorSpace);
     expect(renderer.shadowMap.type).toBe(PCFSoftShadowMap);
     expect(renderer.shadowMap.enabled).toBe(true);
+  });
+
+  it('disables info.autoReset and resets info once per adapter render (AC-21)', () => {
+    const adapter = createWebGLRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    expect(renderer.info.autoReset).toBe(false);
+    expect(renderer.info.reset).not.toHaveBeenCalled();
+
+    adapter.render(scene, camera);
+    expect(renderer.info.reset).toHaveBeenCalledTimes(1);
+
+    adapter.render(scene, camera);
+    expect(renderer.info.reset).toHaveBeenCalledTimes(2);
+  });
+
+  it('exposes renderer.info render stats as { calls, triangles } (AC-21)', () => {
+    const adapter = createWebGLRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+
+    renderer.info.render.calls = 7;
+    renderer.info.render.triangles = 700;
+
+    expect(adapter.stats?.()).toEqual({ calls: 7, triangles: 700 });
+
+    renderer.info.render.calls = 9;
+    renderer.info.render.triangles = 900;
+    expect(adapter.stats?.()).toEqual({ calls: 9, triangles: 900 });
   });
 
   it('forwards each adapter call to the renderer with the exact arguments', () => {
@@ -173,7 +216,14 @@ describe('createRealisticRenderer', () => {
 
     expect(threeMock.instances).toHaveLength(1);
     expect(postprocessingMock.createPostprocessing).not.toHaveBeenCalled();
-    expect(Object.keys(adapter)).toEqual(['setSize', 'setPixelRatio', 'setQuality', 'render', 'dispose']);
+    expect(Object.keys(adapter)).toEqual([
+      'setSize',
+      'setPixelRatio',
+      'setQuality',
+      'render',
+      'stats',
+      'dispose',
+    ]);
   });
 
   it('configures the base renderer (AC-1)', () => {
@@ -185,6 +235,26 @@ describe('createRealisticRenderer', () => {
     expect(renderer.outputColorSpace).toBe(SRGBColorSpace);
     expect(renderer.shadowMap.type).toBe(PCFSoftShadowMap);
     expect(renderer.shadowMap.enabled).toBe(true);
+  });
+
+  it('resets info once per composed frame and exposes the accumulated stats (AC-21)', () => {
+    const adapter = createRealisticRenderer(canvas);
+    const renderer = threeMock.instances[0]!;
+    const scene = { isScene: true } as unknown as Scene;
+    const camera = { isCamera: true } as unknown as PerspectiveCamera;
+
+    expect(renderer.info.autoReset).toBe(false);
+    expect(renderer.info.reset).not.toHaveBeenCalled();
+
+    renderer.info.render.calls = 12;
+    renderer.info.render.triangles = 1200;
+    expect(adapter.stats?.()).toEqual({ calls: 12, triangles: 1200 });
+
+    adapter.render(scene, camera);
+    adapter.render(scene, camera);
+
+    expect(renderer.info.reset).toHaveBeenCalledTimes(2);
+    expect(composers[0]!.render).toHaveBeenCalledTimes(2);
   });
 
   it('constructs the composer lazily on first render using that call scene/camera', () => {

@@ -20,7 +20,10 @@
  *   non-empty player and a non-empty list of non-empty ids and returns a copied array; the
  *   parity builder validates and copies the same way the backend does, and the legacy
  *   one-id `miniCubeRemoved` shape stays unchanged (AC-9);
- * - `encodeClientMessage` serialises one client message into the single JSON text frame.
+ * - `encodeClientMessage` serialises one client message into the single JSON text frame;
+ * - the diagnostic `ping`/`pong` pair is additive and mirrors the backend exactly: a
+ *   `ping` is accepted only with a finite numeric `t`, a `pong` echo is decoded the same
+ *   way, and `pongMessage(t)` builds the exact `{"type":"pong","t":…}` frame (AC-23).
  *
  * Field validation is presence + type only, exactly like the backend: an unknown `type`,
  * a non-JSON frame, a non-object frame, a missing required field or a field of the wrong
@@ -125,7 +128,8 @@ export type ClientMessage =
   | { type: 'purchaseUpgrade'; upgradeId: string }
   | { type: 'openLootbox' }
   | { type: 'equipPart'; partId: string }
-  | { type: 'unequipPart'; slotId: string };
+  | { type: 'unequipPart'; slotId: string }
+  | { type: 'ping'; t: number };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -188,7 +192,8 @@ export type ServerMessage =
   | { type: 'upgradesUpdate'; upgrades: UpgradeState }
   | { type: 'customizationUpdate'; lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> }
   | ({ type: 'lootboxOpened' } & LootboxOpened)
-  | { type: 'error'; code: ErrorCode; detail?: string };
+  | { type: 'error'; code: ErrorCode; detail?: string }
+  | { type: 'pong'; t: number };
 
 /** A decoded client frame: either the validated message or the pinned decode failure. */
 export type ClientMessageParseResult =
@@ -250,6 +255,11 @@ function isNonEmptyString(value: unknown): value is string {
 /** A required numeric field (JSON numbers are always finite once parsed). */
 function isNumber(value: unknown): value is number {
   return typeof value === 'number';
+}
+
+/** A finite numeric field: the diagnostic ping's `t` never accepts NaN or Infinity. */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 /** A required integer field (rejects booleans, floats and non-numbers). */
@@ -378,6 +388,14 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         return badClientMessage();
       }
       return { ok: true, message: { type: 'unequipPart', slotId: frame.slotId } };
+
+    case 'ping':
+      // Diagnostic RTT echo: one finite number, nothing else (AC-23 parity with the
+      // backend decoder). A missing, string, boolean or non-finite `t` is bad_message.
+      if (!isFiniteNumber(frame.t)) {
+        return badClientMessage();
+      }
+      return { ok: true, message: { type: 'ping', t: frame.t } };
 
     default:
       return badClientMessage();
@@ -928,6 +946,13 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
       return { ok: true, message: { type: 'error', code, detail: frame.detail } };
     }
 
+    case 'pong':
+      // The diagnostic echo: the server repeats the client's finite `t` unchanged (AC-23).
+      if (!isFiniteNumber(frame.t)) {
+        return badServerMessage();
+      }
+      return { ok: true, message: { type: 'pong', t: frame.t } };
+
     default:
       return badServerMessage();
   }
@@ -1046,6 +1071,16 @@ export function encodeClientMessage(message: ClientMessage): string {
 /** Serialises one server message into the single JSON text frame (parity helper). */
 export function encodeServerMessage(message: ServerMessage): string {
   return JSON.stringify(message);
+}
+
+/**
+ * Builds the diagnostic `pong` echo: the client's `t` repeated unchanged (AC-23).
+ *
+ * Mirrors `src/backend/src/game/protocol.ts` `pongMessage` exactly; the backend sends it
+ * at most once per second per connection and it carries no identity, room or game state.
+ */
+export function pongMessage(t: number): ServerMessage {
+  return { type: 'pong', t };
 }
 
 /** Builds a client `rotate` message (orientation report). */

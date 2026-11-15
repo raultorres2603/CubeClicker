@@ -105,6 +105,7 @@ import type { HoverPick } from '../render/picking';
 import { QUALITY_PIXEL_RATIO_CAPS } from '../render/quality';
 import type { QualityTier } from '../render/quality';
 import type { SceneView, SceneViewOptions } from '../render/scene';
+import type { PerfStats } from '../perf/overlay';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
@@ -155,6 +156,11 @@ export interface RendererAdapter {
   /** Applies the tier's GPU budget (composer passes, shadow pass); idempotent per tier. */
   setQuality(tier: QualityTier): void;
   render(scene: Scene, camera: PerspectiveCamera): void;
+  /**
+   * The renderer's per-frame draw stats (`renderer.info.render`). Optional so existing
+   * adapters keep type-checking; the session reports zeroes when it is absent.
+   */
+  stats?(): { calls: number; triangles: number };
   dispose(): void;
 }
 
@@ -254,6 +260,24 @@ export interface GameSession {
    * fakes; {@link createGameSession} always implements it.
    */
   subscribeRuntime?(listener: () => void): () => void;
+  /**
+   * The latest completed frame's stats (frame time, quality tier and the renderer
+   * adapter's draw calls/triangles), or `null` before the first frame and after dispose.
+   *
+   * Optional in the shared UI contract for source compatibility with existing session
+   * fakes; {@link createGameSession} always implements it. The dev overlay is the only
+   * reader, and `App` gates the call on `VITE_PERF_OVERLAY`.
+   */
+  getPerfStats?(): PerfStats | null;
+  /**
+   * Measures one WebSocket round trip with the additive diagnostic `ping`/`pong` pair.
+   *
+   * Resolves the elapsed milliseconds on the matching `pong`, or `null` when the
+   * transport is not connected, the 2000 ms timeout elapses, the transport leaves
+   * `connected`, or the session is disposed. Flag-agnostic: the overlay gate lives in
+   * `App` (AC-19/AC-22).
+   */
+  measureRtt?(): Promise<number | null>;
 }
 
 /**
@@ -344,6 +368,21 @@ export interface GameSessionOptions {
  */
 const RESIZE_DEBOUNCE_MS = 16;
 
+/**
+ * Diagnostic ping timeout: an unanswered `pong` resolves `null` after exactly this many
+ * milliseconds (AC-22). The overlay polls once per second, so a timed-out measurement is
+ * replaced by the next one.
+ */
+export const RTT_TIMEOUT_MS = 2000;
+
+/** One in-flight RTT measurement, matched by the echoed `t` and settled exactly once. */
+interface PendingRtt {
+  t: number;
+  sentAtMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  resolve(value: number | null): void;
+}
+
 /** One press, in client coordinates (the canvas origin is subtracted when it is classified). */
 interface PressPosition {
   x: number;
@@ -408,6 +447,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let activeScene: SceneView | null = null;
   /** The environment of the live attach cycle (the owned engine's replacement random). */
   let activeEnv: SessionEnvironment | null = null;
+  /** The latest completed frame's stats; `null` before the first frame and after dispose. */
+  let latestPerf: PerfStats | null = null;
+  /** Every in-flight RTT measurement, settled by pong/timeout/status change/dispose. */
+  const pendingRtt: PendingRtt[] = [];
 
   /** True between a successful `attach` and its `dispose`. */
   let active = false;
@@ -516,6 +559,61 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       return 0;
     }
     return env.now();
+  }
+
+  /** Settles one measurement exactly once: clears its timer and removes it from the list. */
+  function settlePendingRtt(pending: PendingRtt, value: number | null): void {
+    const index = pendingRtt.indexOf(pending);
+    if (index === -1) {
+      return;
+    }
+    pendingRtt.splice(index, 1);
+    if (pending.timer !== null) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    pending.resolve(value);
+  }
+
+  /** Resolves every in-flight measurement with `null` (disconnect / dispose / teardown). */
+  function clearPendingRtt(): void {
+    for (const pending of [...pendingRtt]) {
+      settlePendingRtt(pending, null);
+    }
+  }
+
+  /** Resolves the measurement whose echoed `t` matches; an unknown echo is ignored. */
+  function resolvePendingRtt(t: number): void {
+    const pending = pendingRtt.find((candidate) => candidate.t === t);
+    if (pending === undefined) {
+      return;
+    }
+    settlePendingRtt(pending, Math.max(0, currentNow() - pending.sentAtMs));
+  }
+
+  /**
+   * One diagnostic round trip (AC-22): sends `{ type: 'ping', t }` only while the
+   * transport is connected and resolves on the matching `pong`. The session never gates
+   * this on the overlay flag — `App` owns that gate.
+   */
+  function measureRtt(): Promise<number | null> {
+    if (transport === undefined || status !== 'connected') {
+      return Promise.resolve(null);
+    }
+    const t = Math.round(currentNow());
+    return new Promise<number | null>((resolve) => {
+      const pending: PendingRtt = { t, sentAtMs: currentNow(), timer: null, resolve };
+      pending.timer = setTimeout(() => {
+        settlePendingRtt(pending, null);
+      }, RTT_TIMEOUT_MS);
+      pendingRtt.push(pending);
+      transport.send({ type: 'ping', t });
+    });
+  }
+
+  /** The latest frame stats; `null` before the first frame and after dispose (AC-21). */
+  function getPerfStats(): PerfStats | null {
+    return latestPerf;
   }
 
   function clearRotateTimer(): void {
@@ -884,6 +982,11 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
 
   /** Reduces one decoded server frame into the world and applies its engine/scene effects. */
   function handleServerMessage(message: ServerMessage): void {
+    if (message.type === 'pong') {
+      // Diagnostic echo: connection-local, never reduced into the world or the scene (AC-22).
+      resolvePendingRtt(message.t);
+      return;
+    }
     const previousSelfId = world.self.playerId;
     world = reduceWorldState(world, message);
     switch (message.type) {
@@ -939,6 +1042,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     status = next;
     if (next !== 'connected') {
       welcomed = false;
+      // A dropped socket can never deliver the pong: settle every in-flight measurement.
+      clearPendingRtt();
     }
     // A transport status change abandons any in-flight account open (AC-29).
     pendingLootboxOpen = false;
@@ -1051,6 +1156,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     status = 'connecting';
     welcomed = false;
+    // The retry closes the socket: a pending measurement can no longer receive its pong.
+    clearPendingRtt();
     publishMultiplayer();
     if (!active) {
       // Detached (pre-attach login): the attach-time `connect()` opens the socket with the
@@ -1279,6 +1386,14 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         applyViewport();
       }
       adapter.render(view.scene, view.camera);
+      // The frame is complete: record what this frame cost for the dev overlay (AC-21).
+      const frameStats = adapter.stats?.();
+      latestPerf = {
+        frameMs: dtMs,
+        tier,
+        drawCalls: frameStats?.calls ?? 0,
+        triangles: frameStats?.triangles ?? 0,
+      };
       publish(snapshot);
       publishMultiplayer();
       scheduleFrame();
@@ -1494,6 +1609,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       lastBroadcastOrientation = null;
       pendingOrientation = null;
       lastSendMs = 0;
+      latestPerf = null;
       spectate.reset();
       engine.setSpectating?.(false);
       publishMultiplayer();
@@ -1556,6 +1672,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     },
 
     dispose(): void {
+      // A pending measurement can exist while detached (a connected transport before the
+      // first attach), so settle it before the early return: no timer may outlive dispose.
+      clearPendingRtt();
+      latestPerf = null;
       if (!active) {
         return;
       }
@@ -1609,5 +1729,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     unequipPart,
     dismissLootboxReveal,
     setPointerTarget,
+    getPerfStats,
+    measureRtt,
   };
 }

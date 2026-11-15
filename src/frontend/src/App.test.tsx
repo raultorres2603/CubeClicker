@@ -18,6 +18,7 @@ import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
 });
 
 /**
@@ -1557,5 +1558,44 @@ describe('App — level banner and upgrade pulse (AC-40, AC-43)', () => {
       vi.advanceTimersByTime(1);
     });
     expect(row()?.getAttribute('data-purchased')).toBeNull();
+  });
+
+  it('renders no perf overlay and never polls the session when VITE_PERF_OVERLAY is unset (AC-19)', () => {
+    const getPerfStats = vi.fn(() => ({ frameMs: 16.7, tier: 'high' as const, drawCalls: 42, triangles: 1000 }));
+    const measureRtt = vi.fn(() => Promise.resolve(24));
+    const session = sessionFor(snapshotFor('playing'), multiplayerFor(), {
+      getPerfStats,
+      measureRtt,
+    });
+
+    render(<App hasChosen session={session} />);
+
+    expect(screen.queryByTestId('perf-overlay')).toBeNull();
+    expect(getPerfStats).not.toHaveBeenCalled();
+    expect(measureRtt).not.toHaveBeenCalled();
+  });
+
+  it('renders the dev overlay with its exact labels when VITE_PERF_OVERLAY is true (AC-20)', async () => {
+    vi.stubEnv('VITE_PERF_OVERLAY', 'true');
+    const getPerfStats = vi.fn(() => ({ frameMs: 16.7, tier: 'high' as const, drawCalls: 42, triangles: 1000 }));
+    const measureRtt = vi.fn(() => Promise.resolve(24));
+    const session = sessionFor(snapshotFor('playing'), multiplayerFor(), {
+      getPerfStats,
+      measureRtt,
+    });
+
+    render(<App hasChosen session={session} />);
+
+    const overlay = await screen.findByTestId('perf-overlay');
+    await waitFor(() => {
+      expect(overlay.textContent).toBe(
+        'Frame 16.7 ms' + 'Quality high' + 'Draw calls 42' + 'Triangles 1000' + 'WS RTT 24 ms',
+      );
+    });
+
+    expect(overlay.tagName).toBe('ASIDE');
+    expect(overlay.getAttribute('aria-live')).toBe('off');
+    expect(getPerfStats).toHaveBeenCalledTimes(1);
+    expect(measureRtt).toHaveBeenCalledTimes(1);
   });
 });

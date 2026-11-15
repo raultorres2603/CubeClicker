@@ -367,7 +367,9 @@ function createFakeOrientation(): FakeOrientation {
   };
 }
 
-function createFakeRendererFactory(): FakeRendererFactory {
+function createFakeRendererFactory(
+  stats?: { calls: number; triangles: number },
+): FakeRendererFactory {
   const canvases: CanvasLike[] = [];
   const calls: string[] = [];
   const order: string[] = [];
@@ -398,6 +400,11 @@ function createFakeRendererFactory(): FakeRendererFactory {
           renders.push({ scene, camera });
           order.push('render');
         },
+        ...(stats === undefined
+          ? {}
+          : {
+              stats: () => ({ calls: stats.calls, triangles: stats.triangles }),
+            }),
         dispose() {
           disposals += 1;
           order.push('dispose');
@@ -422,6 +429,7 @@ function createFakeEnv(
     reducedMotion?: boolean;
     hidden?: boolean;
     random?: () => number;
+    stats?: { calls: number; triangles: number };
   } = {},
 ): FakeEnv {
   const canvas = createFakeCanvas(options.rect ?? { left: 0, top: 0, width: 800, height: 800 });
@@ -431,7 +439,7 @@ function createFakeEnv(
   const visibility = createFakeVisibility(options.hidden ?? false);
   const resize = createFakeResize();
   const orientation = createFakeOrientation();
-  const renderer = createFakeRendererFactory();
+  const renderer = createFakeRendererFactory(options.stats);
   const clock = { now: 0 };
   return {
     env: {
@@ -1067,6 +1075,195 @@ describe('attach', () => {
       'setSize:800:800',
       'render',
     ]);
+  });
+});
+
+describe('performance stats (AC-21)', () => {
+  it('reports the frame time, the current tier and the adapter stats after one 16 ms frame', () => {
+    const fake = createFakeEnv({ stats: { calls: 7, triangles: 700 } });
+    const session = attachSession(fake);
+
+    expect(session.getPerfStats?.()).toBeNull();
+
+    fake.scheduler.tick(0);
+    fake.scheduler.tick(16);
+
+    expect(session.getPerfStats?.()).toEqual({
+      frameMs: 16,
+      tier: 'high',
+      drawCalls: 7,
+      triangles: 700,
+    });
+  });
+
+  it('reflects the tier change on the frame that applies it', () => {
+    const fake = createFakeEnv({ stats: { calls: 3, triangles: 30 }, dpr: 2 });
+    const session = attachSession(fake);
+
+    fake.scheduler.tick(0);
+    expect(session.getPerfStats?.()).toEqual({
+      frameMs: 0,
+      tier: 'high',
+      drawCalls: 3,
+      triangles: 30,
+    });
+
+    // 60 accepted 30 ms frames trigger the pinned high→medium downgrade (AC-10/AC-52).
+    tickFrames(fake, 60, 30);
+
+    expect(fake.renderer.qualities).toEqual(['high', 'medium']);
+    expect(session.getPerfStats?.()).toEqual({
+      frameMs: 30,
+      tier: 'medium',
+      drawCalls: 3,
+      triangles: 30,
+    });
+  });
+
+  it('reports zero draw stats when the adapter exposes no stats()', () => {
+    const fake = createFakeEnv();
+    const session = attachSession(fake);
+
+    fake.scheduler.tick(0);
+    fake.scheduler.tick(16);
+
+    expect(session.getPerfStats?.()).toEqual({
+      frameMs: 16,
+      tier: 'high',
+      drawCalls: 0,
+      triangles: 0,
+    });
+  });
+
+  it('returns null after dispose and stays null until the next frame', () => {
+    const fake = createFakeEnv({ stats: { calls: 7, triangles: 700 } });
+    const session = attachSession(fake);
+    fake.scheduler.tick(0);
+    fake.scheduler.tick(16);
+
+    expect(session.getPerfStats?.()).toEqual({
+      frameMs: 16,
+      tier: 'high',
+      drawCalls: 7,
+      triangles: 700,
+    });
+
+    session.dispose();
+
+    expect(session.getPerfStats?.()).toBeNull();
+  });
+});
+
+describe('diagnostic WebSocket RTT (AC-22)', () => {
+  it('sends exactly one rounded ping and resolves the elapsed milliseconds on the matching pong', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    fake.clock.now = 1234.6;
+    const pending = session.measureRtt!();
+
+    expect(wire.sent).toEqual([{ type: 'ping', t: 1235 }]);
+
+    fake.clock.now = 1258.6;
+    wire.emit({ type: 'pong', t: 1235 });
+
+    await expect(pending).resolves.toBe(24);
+    expect(wire.sent).toEqual([{ type: 'ping', t: 1235 }]);
+  });
+
+  it('ignores a pong whose t does not match the pending ping', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    fake.clock.now = 500;
+    const pending = session.measureRtt!();
+    const settled: Array<number | null> = [];
+    void pending.then((value) => settled.push(value));
+
+    wire.emit({ type: 'pong', t: 499 });
+    await Promise.resolve();
+    expect(settled).toEqual([]);
+
+    fake.clock.now = 507;
+    wire.emit({ type: 'pong', t: 500 });
+    await expect(pending).resolves.toBe(7);
+    expect(settled).toEqual([7]);
+  });
+
+  it('resolves null after exactly 2000 ms without a pong and sends no second ping', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    const pending = session.measureRtt!();
+    const settled: Array<number | null> = [];
+    void pending.then((value) => settled.push(value));
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(settled).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toEqual([null]);
+    expect(wire.sent).toEqual([{ type: 'ping', t: 0 }]);
+  });
+
+  it('resolves null without sending when the transport is not connected', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+
+    await expect(session.measureRtt!()).resolves.toBeNull();
+    expect(wire.sent).toEqual([]);
+
+    const offline = attachSession(createFakeEnv());
+    await expect(offline.measureRtt!()).resolves.toBeNull();
+  });
+
+  it('resolves every pending measurement with null when the transport leaves connected', async () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    const first = session.measureRtt!();
+    const second = session.measureRtt!();
+    expect(wire.sent).toEqual([
+      { type: 'ping', t: 0 },
+      { type: 'ping', t: 0 },
+    ]);
+
+    wire.emitStatus('disconnected');
+
+    await expect(first).resolves.toBeNull();
+    await expect(second).resolves.toBeNull();
+  });
+
+  it('dispose clears the pending timer and resolves pending calls with null', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    const pending = session.measureRtt!();
+    expect(vi.getTimerCount()).toBe(1);
+
+    session.dispose();
+
+    await expect(pending).resolves.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
