@@ -18,6 +18,7 @@ The application itself is unchanged: game logic, server authority, in-memory roo
 
 - **Game state stays on Fly.** Rooms are in-memory, server-authoritative and per process. One machine is the pinned topology; two or more machines would split the room registry. See § Single-machine trade-off. Neon is never used for game/room state, and Vercel owns no application state.
 - **Data flow.** Browser → Vercel for HTML/JS/CSS; browser → Fly for `/auth/*` (`fetch`, `credentials: 'include'`) and `/ws` (`wss://`). The session cookie is host-only for the Fly API host and is attached on both requests and the WebSocket upgrade; the backend resolves the account from the upgrade cookie exactly as locally.
+- **Internal metrics route.** The backend also serves `GET /metrics` (Prometheus text) on its existing port 8080 for diagnostics. It is intentionally **not routed** by the public edge: the historical ALB routing table contained only `/ws`, `/auth*` and `/healthz` and never a `/metrics` listener rule, and the current Vercel + Fly layout adds no Vercel route or Fly route for it. `METRICS_ENABLED=false` removes the route; exposure is a network-boundary rule (see `observability.md` § Exposure and retention).
 - **Deploy flow.** GitHub Actions runs `verify` (the reusable `ci.yml` gates) and then one environment-gated `deploy` job: Neon migration (direct URL) → Fly secrets + deploy + `/healthz` → Vercel pull/build/deploy/alias → deployed smoke. Backend before frontend, because the frontend build bakes the API/WS URLs and should only point at a live, migrated backend.
 
 ## Environments and triggers
@@ -125,7 +126,7 @@ The authoritative ledger is `../features/vercel-fly-neon-deployment/spec.md` § 
 - `manual-deploy-trigger` — **superseded** (trigger policy); replaced by branch-driven environments with the production reviewer gate.
 - `workflow-hygiene` — **still in force**; the canonical scoped credential audit and SHA pinning are retained above and in the workflows.
 - `frontend-delivery-hardening` — **partially superseded** (cloud edge only): Vercel replaces nginx as the cloud frontend; the hashed-asset immutability, app-shell `no-cache`, SPA fallback and real `/assets/*` 404 semantics are replicated in `src/frontend/vercel.json`, and the nginx image remains for local/smoke/portability.
-- `runtime-observability` — **paused, assumptions stale**; its ALB/CloudWatch assumptions do not describe this target, and its artifacts are not edited by this feature.
+- `runtime-observability` — **resumed on this target**; the shipped logging/metrics/overlay surface is documented in `observability.md`, `/metrics` is internal-only, and the ALB/CloudWatch notes are historical context only. No public metrics route is added.
 - `infra/terraform/**` — **archived, not deleted**; see `../../infra/README.md`.
 
 ## See also

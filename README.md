@@ -82,12 +82,41 @@ Both commands produce reproducible evidence recorded in the feature build logs; 
 | `APP_BASE_URL` | `http://localhost:5173` | base URL used to build verification links |
 | `ALLOWED_ORIGIN` | `http://localhost:5173` | allowed Origin for state-changing auth requests (CSRF) |
 | `SESSION_COOKIE_SECURE` | `false` | set the session cookie `Secure` flag (enable in production over HTTPS) |
+| `LOG_LEVEL` | `debug` | backend Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`); the compose backend passes it with default `debug` |
+| `METRICS_ENABLED` | `true` | serve the internal-only `GET /metrics` route; `false` removes it (the path returns `404`) |
+| `VITE_PERF_OVERLAY` | `false` | dev-only performance overlay; only the exact value `true` enables it (frontend build-time variable) |
 
 The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
 
 ### Vite dev proxy (host-only runs)
 
 The frontend talks to the backend through same-origin relative paths (`/auth/*`) so the `HttpOnly` session cookie stays on the page origin and the backend's CSRF check (which compares `Origin`) succeeds. In the compose stack Vite proxies `/auth` to the `backend` service with `changeOrigin: false`, keeping the browser's page origin (`http://localhost:5173`) as the forwarded `Origin` header — this must match the backend's `ALLOWED_ORIGIN` (`http://localhost:5173` by default). For host-only development (running Vite on the host against a host backend), point the proxy at the host backend with `BACKEND_URL=http://localhost:8080`; the page origin is still `http://localhost:5173`, so `ALLOWED_ORIGIN` must remain `http://localhost:5173` (or you must run via `podman compose`, which sets both consistently).
+
+## Operations
+
+Structured JSON logs go to stdout and are read from the backend container with:
+
+```bash
+podman compose logs backend
+```
+
+The backend serves an internal-only Prometheus-text metrics endpoint on its existing port; scrape it from the host with:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+`/metrics` is internal-only: it is served on the backend's existing port, no public route is added for it, and `METRICS_ENABLED=false` removes the route entirely (the path then returns `404`). Metrics are per-process aggregates and reset when the backend restarts. The full log-event, redaction, catalog and retention reference is [`docs/architecture/observability.md`](docs/architecture/observability.md).
+
+The compose backend passes `LOG_LEVEL` (default `debug`) and `METRICS_ENABLED` (default `true`), and the frontend passes `VITE_PERF_OVERLAY` (default `false`). Override them from the shell:
+
+```bash
+LOG_LEVEL=warn podman compose up
+METRICS_ENABLED=false podman compose up
+VITE_PERF_OVERLAY=true podman compose up
+```
+
+`VITE_PERF_OVERLAY=true` shows the dev-only performance overlay (frame time, quality tier, draw calls, triangles and WebSocket RTT). It is a build-time Vite variable: a running dev server must be restarted to pick it up, and production builds leave it unset.
 
 ## Production images
 

@@ -1,0 +1,139 @@
+# Runtime Observability
+
+CubeClicker exposes runtime observability without adding infrastructure: Fastify/Pino structured JSON logs with strict redaction and request/connection correlation; a fixed, low-cardinality in-process Prometheus metrics registry; an internal-only `GET /metrics` route on the backend's existing port `8080`; Postgres pool/query instrumentation; graceful-shutdown accounting; and a dev-only frontend performance overlay behind `VITE_PERF_OVERLAY`. There is no Prometheus, Grafana, Loki, OpenTelemetry or external SaaS, no new service or listen port, and no historical metric store: every metric is a per-process aggregate that resets on restart.
+
+The application stack is decided in [stack](stack.md), the delivery path in [containerization](containerization.md), the deployment target in [deployment](deployment.md), the outbound WebSocket path in [realtime](realtime.md), and the full contract with acceptance criteria in the [runtime-observability feature spec](../features/runtime-observability/spec.md).
+
+## Structured logging
+
+Fastify is configured with its built-in Pino logger and writes one JSON object per line to stdout; there is no pretty-printing transport. `LOG_LEVEL` overrides the `NODE_ENV` default and accepts exactly `fatal|error|warn|info|debug|trace|silent`; an invalid value fails startup with an error naming `LOG_LEVEL`.
+
+| Environment | Default level |
+| --- | --- |
+| `NODE_ENV=production` | `info` |
+| `NODE_ENV=development` | `debug` |
+| `NODE_ENV=test` | disabled unless `LOG_LEVEL` is set |
+| unset `NODE_ENV` | disabled unless `LOG_LEVEL` is set |
+
+The event and field contract is fixed. Log lines never contain request/response bodies, query strings, cookies, authorization headers, passwords, emails, verification/session tokens, SQL text, remote IPs, player ids, account ids or usernames.
+
+| Event / log | Fields | Level |
+| --- | --- | --- |
+| Fastify request/response | `reqId`, `req.method`, `req.url` (path only, query stripped), `req.host`, `res.statusCode`, `responseTime` | info |
+| `ws_connection_opened` | `connectionId` | info |
+| `ws_connection_closed` | `connectionId`, `reason` (`client`/`heartbeat`/`error`/`server`), `durationMs`, `wasJoined` | info |
+| `ws_heartbeat_timeout` | `connectionId`, `wasJoined` | warn |
+| `ws_connection_rejected` | `connectionId`, `reason: 'capacity'` | warn |
+| `hub_closed` | `connections`, `members`, `servers` | info |
+| `shutdown_started` / `shutdown_complete` | `signal` | info |
+| `shutdown_failed` | `signal`, `errorType` | error |
+| Error object (`err`) | `type`, optional string `code` only | error |
+
+- **Correlation.** The `/ws` upgrade passes the Fastify request id to the hub as `connectionId`, so `ws_connection_opened` and `ws_connection_closed` correlate with the matching HTTP upgrade request log.
+- **Redaction.** Pino redacts the top-level `email`, `password`, `pass`, `token`, `sessionToken`, `verificationToken`, `cookie` and `authorization` paths; the request/response paths `req.headers.cookie`, `req.headers.authorization`, `req.headers['x-api-key']`, `res.headers['set-cookie']`, `req.body.email`, `req.body.password`, `req.body.pass`, `req.body.token`, `req.body.sessionToken` and `req.body.verificationToken`; and the wildcard forms `*.email`, `*.password`, `*.pass`, `*.token`, `*.sessionToken`, `*.verificationToken`, `*.cookie` and `*.authorization`. Every redacted value is replaced with `[REDACTED]`.
+- **No bodies or headers.** Custom serializers reduce a request to `{ method, url, host }` (query string stripped), a response to `{ statusCode }`, and an error to `{ type, code? }` (`code` only when it is a string). Bodies, headers, IPs, messages and stacks never reach a log line.
+- **Adapter.** The hub and shutdown code log through the event-first `LogSink` (`info(event, fields)`, `warn(event, fields)`, `error(event, fields)`); `createLogSink` calls Pino object-first (`logger.info(fields, event)`), so the structured fields are emitted instead of dropped.
+- **Local access.** `podman compose logs backend` reads the JSON lines from the backend container; on the current Fly target `fly logs --app "$FLY_APP_NAME"` reads the same stdout stream. The superseded AWS target used the ECS `awslogs` driver into CloudWatch with 30-day retention (see [Exposure and retention](#exposure-and-retention)).
+
+## Metrics catalog
+
+The registry defines exactly the 30 metrics below. The object key is the metric name and each definition carries its type, help text, label names and **allowed values per label**. `inc`/`set`/`observe` throw for an unknown metric, an undeclared label, a missing declared label or a label value outside its allow-list, so user-controlled strings can never become a Prometheus series. There is no catalog label named `playerId`, `userId`, `accountId`, `email`, `token`, `ip`, `remoteAddress` or `serverId`.
+
+All names are prefixed `cubeclicker_`. Catalog-declared label names are only `reason`, `type`, `scope`, `result` and `signal`. Histogram `_bucket` samples additionally carry the renderer-reserved `le` label, whose bucket bounds are generated from the definition and are exempt from the catalog allow-list. The renderer sorts metric names and label names, escapes label values (backslash, double quote and newline), renders cumulative `_bucket`/`_sum`/`_count` samples with a `+Inf` bucket, and ends the body with exactly one newline.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `cubeclicker_ws_connections_open` | gauge | — | Currently attached WebSocket connections. |
+| `cubeclicker_ws_connections_capacity` | gauge | — | Configured maximum concurrent connections (`config.maxConnections`, 200). |
+| `cubeclicker_ws_connections_total` | counter | — | WebSocket connections attached since process start. |
+| `cubeclicker_ws_connections_closed_total` | counter | `reason`: `client` `heartbeat` `error` `server` | Connections closed, by reason. |
+| `cubeclicker_ws_connections_rejected_total` | counter | `reason`: `capacity` | Upgrade attempts rejected before a connection was created. |
+| `cubeclicker_ws_heartbeat_timeouts_total` | counter | — | Connections terminated for missing pongs. |
+| `cubeclicker_ws_messages_received_total` | counter | `type`: `join`, `rejoin`, `explode`, `cubeCompleted`, `rotate`, `purchaseUpgrade`, `openLootbox`, `equipPart`, `unequipPart`, `ping`, `invalid`, `oversized` | Client frames received, by decoded type (or invalid/oversized). |
+| `cubeclicker_ws_messages_encoded_total` | counter | `type`: `hello`, `welcome`, `worldEntered`, `memberJoined`, `memberLeft`, `cubeRotated`, `miniCubeRemoved`, `miniCubesRemoved`, `levelAdvanced`, `stateSync`, `economyUpdate`, `upgradesUpdate`, `customizationUpdate`, `lootboxOpened`, `error`, `pong` | Server messages encoded once, by type. |
+| `cubeclicker_ws_frames_sent_total` | counter | same as encoded | Successful per-recipient frame deliveries. |
+| `cubeclicker_ws_broadcasts_total` | counter | — | Server broadcasts (one encode per broadcast). |
+| `cubeclicker_ws_broadcast_fanout` | histogram | — | Recipients per server broadcast; buckets `1,2,5,10,25,50,100,200`. |
+| `cubeclicker_ws_connection_duration_seconds` | histogram | — | Connection lifetime; buckets `1,5,15,30,60,120,300,600,1800,3600`. |
+| `cubeclicker_servers_active` | gauge | — | Live servers/rooms. |
+| `cubeclicker_members_active` | gauge | — | Joined members (including grace-window members). |
+| `cubeclicker_server_capacity` | gauge | — | Configured members per server (`config.maxUsersPerServer`). |
+| `cubeclicker_removal_batch_pending_groups` | gauge | — | Removal batcher groups waiting for the 40 ms window. |
+| `cubeclicker_removal_flushes_total` | counter | — | Removal flushes (timer or boundary). |
+| `cubeclicker_removal_ids_total` | counter | — | Mini-cube ids flushed. |
+| `cubeclicker_removal_batch_size` | histogram | — | Ids per flushed player group; buckets `1,2,5,10,20,30`. |
+| `cubeclicker_economy_pending_accounts` | gauge | — | Accounts with a pending coalesced economy snapshot. |
+| `cubeclicker_economy_flushes_total` | counter | — | Economy coalescer flushes. |
+| `cubeclicker_rate_limit_drops_total` | counter | `scope`: `explode`, `rotate`, `ping`, `http` | Dropped frames or requests, by limiter. |
+| `cubeclicker_economy_revision_rejections_total` | counter | — | Economy snapshots rejected as stale. |
+| `cubeclicker_upgrade_revision_rejections_total` | counter | — | Purchase/upgrade snapshots rejected as stale. |
+| `cubeclicker_db_pool_total` | gauge | — | Postgres pool total connections at scrape. |
+| `cubeclicker_db_pool_idle` | gauge | — | Postgres pool idle connections at scrape. |
+| `cubeclicker_db_pool_waiting` | gauge | — | Postgres pool waiting requests at scrape. |
+| `cubeclicker_db_queries_total` | counter | `result`: `ok`, `error` | Runtime pool queries, by outcome. |
+| `cubeclicker_db_query_duration_seconds` | histogram | — | Runtime pool query duration; buckets `0.001,0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5`. |
+| `cubeclicker_shutdown_total` | counter | `signal`: `SIGTERM`, `SIGINT` | Graceful shutdowns initiated. |
+
+The four histograms render cumulative bucket counters plus `_sum` and `_count`. Example scrape lines are `cubeclicker_ws_connections_open 2`, `cubeclicker_ws_messages_received_total{type="join"} 2` and `cubeclicker_db_query_duration_seconds_bucket{le="0.025"} 0`.
+
+Metrics are **per process** and reset on restart; there is no aggregation across restarts, instances, deploys or environments. The DB pool gauges are sampled at scrape time (and report `0` when the backend runs on the in-memory repositories), while query counters and duration are recorded by the runtime pool wrapper (duration and outcome only — never SQL text or parameters).
+
+## Exposure and retention
+
+`GET /metrics` is served by the existing backend on port `8080`, next to `GET /healthz` and the `GET /ws` upgrade. A scrape returns `200` with content type exactly `text/plain; version=0.0.4; charset=utf-8` and `cache-control: no-store`; the body is the deterministic Prometheus text described above, with no JSON or ANSI wrapper. The route runs the pool-gauge collection hook before rendering.
+
+- **Kill switch.** `METRICS_ENABLED` defaults to `true`; `false` (or `0`) registers no route, so `GET /metrics` is a plain `404` while `/healthz` keeps serving `{"status":"ok"}`. An invalid value fails startup naming `METRICS_ENABLED`.
+- **No new exposure surface.** The route is on the existing port and image: no new listen port, host mapping, compose service, Dockerfile, healthcheck, ALB listener rule, Terraform resource or Vercel route is added. The image health check remains `GET /healthz`.
+- **Internal-only.** The endpoint has no authentication token by design. It is intentionally **not routed** by the public edge: the historical ALB routing table contained only `/ws`, `/auth*` and `/healthz` and never a `/metrics` rule (`infra/terraform` is archived and contains no `/metrics` path), and the current Vercel + Fly.io layout adds no public route or rewrite for it. Treat the backend host as the network boundary: if it is reachable from outside, keep `/metrics` off that boundary or set `METRICS_ENABLED=false`. See [deployment](deployment.md) § Platform split and state ownership.
+- **Local access.** The compose backend publishes `127.0.0.1:8080:8080`, so `curl http://localhost:8080/metrics` reaches the route. Inside the compose network (and the smoke run) the address is `http://backend:8080/metrics`.
+- **Log retention.** Locally, JSON goes to stdout and is read with `podman compose logs backend`. On the current Fly target the same stdout stream is read with `fly logs --app "$FLY_APP_NAME"`. On the superseded AWS target, the ECS `awslogs` driver shipped stdout to the CloudWatch log group `/ecs/cubeclicker-production/backend` with **30-day retention**. This feature adds no log shipper, rotation, retention setting, dashboard, alarm or Terraform resource; deployed retention is the platform's setting.
+- **No metric persistence.** Metrics exist only in the backend process memory: a restart resets every counter, gauge and histogram, and there is no historical store or cross-instance aggregation. A Prometheus/Grafana stack is out of scope.
+
+## Frontend performance overlay
+
+The overlay is a development-only diagnostic surface. It is enabled by the build-time Vite variable `VITE_PERF_OVERLAY` and is strict: only the exact string `'true'` enables it; unset, empty, `'1'`, `'TRUE'` and `'yes'` all keep it off. Vite inlines the value at build/dev-server start, so enabling or disabling it requires a restart, not a runtime toggle.
+
+```bash
+VITE_PERF_OVERLAY=true podman compose up
+```
+
+With the flag on, `<PerfOverlay>` renders an `<aside data-testid="perf-overlay" aria-live="off">` in the corner with five rows:
+
+| Row | Meaning |
+| --- | --- |
+| `Frame <n> ms` | The latest frame delta measured by the session loop. |
+| `Quality <tier>` | The current adaptive quality tier (`high`, `medium` or `low`). |
+| `Draw calls <n>` | `renderer.info.render.calls` for the frame, including composer passes. |
+| `Triangles <n>` | `renderer.info.render.triangles` for the frame. |
+| `WS RTT <n> ms` | Round-trip time of the diagnostic WebSocket `ping`/`pong`; `—` when unavailable. |
+
+- **Polling.** Stats refresh every 250 ms; RTT refreshes every 1000 ms (one diagnostic ping per second, matching the server limit). Both intervals and any in-flight measurement are cleaned up on unmount.
+- **RTT protocol.** The client sends the additive diagnostic frame `{ "type": "ping", "t": <rounded clock> }` only while the transport is `connected`; the server echoes the same finite numeric `t` as `{ "type": "pong", "t": … }`. A missing pong times out to `—` after 2000 ms. A second ping within 1000 ms per connection is dropped and counted in `cubeclicker_rate_limit_drops_total{scope="ping"}`. The pair is connection-local diagnostics: it changes no membership, board, economy or other game state.
+- **No production UI.** With the flag unset the component never mounts, no polling runs and no diagnostic ping is sent. The production frontend build leaves `VITE_PERF_OVERLAY` unset. The overlay adds no dependency and imports no Three.js; it stays inside the pinned bundle budget, so there is no production UI or bundle regression.
+- **Renderer accounting.** The WebGL adapter sets `renderer.info.autoReset = false` and resets `renderer.info` once at the start of every adapter frame (both plain and realistic adapters), so draw calls and triangles accumulate across composer passes into one frame total without changing rendered output.
+
+## Verification
+
+The feature's gates are the repository commands:
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run coverage
+npm run build
+podman compose -f compose.yaml -f compose.smoke.yaml build frontend-prod
+npm run smoke
+```
+
+`npm run coverage` enforces Vitest V8 thresholds of at least 80% statements, branches, functions and lines per workspace. `npm run build` enforces the frontend gzip bundle budget (150,000 B initial, 165,000 B Three.js, 300,000 B total).
+
+Container probes:
+
+```bash
+podman compose up -d --build backend
+curl -fsS http://localhost:8080/metrics
+podman compose logs --no-color backend
+```
+
+The containerized smoke (`npm run smoke`) adds a joined-state metrics check: it opens one WebSocket client, reads `hello`, sends `join`, waits for `welcome`, and while the client is still joined fetches `http://backend:8080/metrics`. The check asserts `200`, the exact Prometheus content type, the `# TYPE cubeclicker_ws_connections_open gauge` line, `cubeclicker_ws_connections_open >= 1`, `cubeclicker_servers_active >= 1`, `cubeclicker_ws_connections_total >= 3`, `cubeclicker_ws_messages_received_total{type="join"} >= 3` and `cubeclicker_ws_frames_sent_total{type="hello"} >= 3`; the client then closes and the run settles. The raw evidence for this feature is in [`build-log-T5.md`](../features/runtime-observability/build-log-T5.md).

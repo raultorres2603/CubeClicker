@@ -1,6 +1,6 @@
 ---
 feature: runtime-observability
-state: blocked
+state: building
 spec_review_round: 2
 build_round: 1
 created: 2026-11-13
@@ -16,8 +16,8 @@ Next feature of the approved audit queue: the backend has no structured logging,
 
 - [x] T1 — Observability core: metrics registry, config, logging/redaction `[seq]`
 - [x] T2 — Hub instrumentation and diagnostic ping/pong `[seq]`
-- [ ] T3 — Backend wiring, `/metrics`, DB metrics, shutdown `[seq]`
-- [ ] T4 — Frontend dev overlay, session stats and WS RTT `[seq]`
+- [x] T3 — Backend wiring, `/metrics`, DB metrics, shutdown `[seq]`
+- [x] T4 — Frontend dev overlay, session stats and WS RTT `[seq]`
 - [ ] T5 — Documentation and final verification `[seq]`
 
 ## Loop log
@@ -32,15 +32,18 @@ Next feature of the approved audit queue: the backend has no structured logging,
 - 2026-11-13 — building T1 completed — 30-metric registry, config, LogSink/redaction; commit `b5d5869`; backend 1041 tests, coverage 95.1/87.84/99.5/95.1 — `build-log-T1.md`
 - 2026-11-13 — building T2 completed — hub instrumentation + ping/pong; commit `c0796f3`; backend 1061 tests, coverage 95.13/88.21/99.51/95.13 — `build-log-T2.md`
 - 2026-11-13 — building → blocked — paused for `vercel-deployment` migration; T1/T2 committed, T3-T5 pending — user directive
+- 2026-11-15 — blocked → building — resumed T3 (backend wiring, `/metrics`, DB metrics, shutdown) — user directive "proceed with all remaining states"
+- 2026-11-15 — building T3 completed — internal `/metrics`, DB metrics, shutdown; commit `ccd149a`; backend 1137 tests, coverage 95.88/89.03/99.54/95.88; container `/healthz` + `/metrics` + pg metrics green — `build-log-T3.md`
+- 2026-11-15 — building T4 completed — dev-only perf overlay + session stats/RTT; commit `7299289`; frontend 1902 tests, coverage 96.54/96.21/97.74/96.54 — `build-log-T4.md`
 
 ## Blockers / open questions
 
-- Q-1 — metrics format: recommended Prometheus text; approval pending.
-- Q-2 — exposure: recommended internal-only on port 8080, no ALB/Terraform route; approval pending.
-- Q-3 — frontend overlay + ping/pong RTT: recommended include behind `VITE_PERF_OVERLAY=true`, 1 Hz ping limit; approval pending.
+- Q-1 — metrics format: approved Prometheus text.
+- Q-2 — exposure: approved internal-only `/metrics` on 8080; no ALB/Terraform route.
+- Q-3 — frontend overlay + ping/pong RTT: approved `VITE_PERF_OVERLAY=true`, 1 Hz ping limit.
 - Q-4 — metric retention: per-process only, reset on restart; builder default.
 - Q-5 — log retention/access: reuse stdout + existing `awslogs` 30-day CloudWatch retention; builder default.
 - Q-6 — HTTP limiter drops: include via optional `onDenied` callback; builder default.
 - Q-7 — error details: `{type, code?}` only, never message/stack; builder default.
 - Q-8 — docs home: new `docs/architecture/observability.md` + README `## Operations`; builder default.
-- **Paused:** `vercel-deployment` migration takes priority. T3-T5 resume after the frontend/backend deployment split is accepted.
+- T1/T2 committed; T3-T5 resumed 2026-11-15.

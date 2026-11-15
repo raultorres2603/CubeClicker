@@ -21,19 +21,25 @@
 //       one `miniCubesRemoved` with both ids in order on A and B, and neither id in a single
 //       `miniCubeRemoved` frame on either client (AC-26)
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
-//   8. prod frontend readiness: a bounded poll of `PROD_FRONTEND_URL/` (`READY_TIMEOUT_MS`,
+//   8. joined-state metrics: one client opens, reads `hello`, sends `join`, waits for
+//      `welcome`, and while it is still joined a scrape of `BACKEND_URL/metrics` asserts the
+//      Prometheus content type, the `# TYPE cubeclicker_ws_connections_open gauge` line, and
+//      live samples (`connections_open` and `servers_active` >= 1, plus
+//      `connections_total`, `messages_received_total{type="join"}` and
+//      `frames_sent_total{type="hello"}` >= 3); the client then closes and the run settles
+//   9. prod frontend readiness: a bounded poll of `PROD_FRONTEND_URL/` (`READY_TIMEOUT_MS`,
 //      500 ms interval) runs before any prod header assertion and records its own PASS line
-//   9. prod `/`: 200 + `text/html`, `cache-control: no-cache`, gzip + `vary: Accept-Encoding`,
+//  10. prod `/`: 200 + `text/html`, `cache-control: no-cache`, gzip + `vary: Accept-Encoding`,
 //      gzip magic bytes, and exactly one module script pointing at the report entry
-//  10. prod `/bundle-report.json`: 200, `no-cache`, gzip, with a lazy `three` chunk outside
+//  11. prod `/bundle-report.json`: 200, `no-cache`, gzip, with a lazy `three` chunk outside
 //      `initial.files`, the pinned 150000/165000/300000 B budgets, and every measurement
 //      within its budget (AC-1/AC-9 served-graph proof; the report is names/sizes only, Q-7)
-//  11. prod entry and `three` chunks: 200, immutable cache, gzip, and the gunzipped bytes
+//  12. prod entry and `three` chunks: 200, immutable cache, gzip, and the gunzipped bytes
 //      match the report's raw byte counts
-//  12. prod `/assets/missing.js` → 404 (never the shell); prod `/missing/route` → the gzip
+//  13. prod `/assets/missing.js` → 404 (never the shell); prod `/missing/route` → the gzip
 //      SPA shell with `cache-control: no-cache`
 //
-// Checks 4–7 exercise the multiplayer hub. `compose.smoke.yaml` pins
+// Checks 4–8 exercise the multiplayer hub. `compose.smoke.yaml` pins
 // `MAX_USERS_PER_SERVER=2` and `RECONNECT_GRACE_MS=1000` for the smoke-run backend so the
 // overflow and leave checks finish inside the smoke budget.
 //
@@ -170,6 +176,24 @@ function headerValue(headers, name) {
     return value.join(', ');
   }
   return value ?? '';
+}
+
+/**
+ * Reads one exact Prometheus sample from the scrape body. `sample` is the complete
+ * name-plus-label key (for example `cubeclicker_servers_active` or
+ * `cubeclicker_ws_messages_received_total{type="join"}`); the line must start with it
+ * followed by a single space, so a longer metric name can never match. Returns the
+ * numeric value, or `null` when the sample is absent or non-numeric.
+ */
+function readMetricSample(body, sample) {
+  const prefix = `${sample} `;
+  for (const line of body.split('\n')) {
+    if (line.startsWith(prefix)) {
+      const value = Number(line.slice(prefix.length));
+      return Number.isFinite(value) ? value : null;
+    }
+  }
+  return null;
 }
 
 /** True when `bytes` starts with the gzip magic number. */
@@ -632,6 +656,8 @@ const BURST_SINGLE_FRAME_CHECK_LABEL =
   'multiplayer batching: front:0:1 and front:0:2 never arrive as single miniCubeRemoved frames on A or B';
 const LEAVE_CHECK_LABEL =
   "multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window";
+const METRICS_CHECK_LABEL =
+  'metrics: a joined client sees the Prometheus endpoint with connections_open and servers_active >= 1 and live frame/join counters';
 
 /**
  * One WebSocket connection with a small message queue, so a check can wait for one specific
@@ -1243,6 +1269,73 @@ async function checkAuthFlow() {
   }
 }
 
+/**
+ * AC-9 joined-state scrape: one client joins, and while it is still a member the script
+ * fetches the internal Prometheus endpoint over the compose network. The assertions are
+ * the live values a joined client produces (the earlier checks already supplied the
+ * cumulative connections/joins/hello frames), and the client closes and settles so the
+ * registry drains before the run exits.
+ */
+async function checkMetrics() {
+  const client = new SmokeSocket('metrics client', WS_URL);
+  let problem = null;
+  try {
+    await client.open();
+    const hello = await client.next(HELLO_TIMEOUT_MS);
+    if (hello?.type !== 'hello' || !isParseableTimestamp(hello.serverTime)) {
+      throw new Error(`expected the pinned hello first, got ${JSON.stringify(hello)}`);
+    }
+    client.send({ type: 'join' });
+    await waitForMessage(
+      client,
+      (message) => message.type === 'welcome',
+      MULTIPLAYER_TIMEOUT_MS,
+      'welcome',
+    );
+
+    const response = await rawGet(BACKEND_URL + '/metrics');
+    const problems = [];
+    if (response.status !== 200) {
+      problems.push(`expected 200, got ${response.status}`);
+    }
+    const contentType = headerValue(response.headers, 'content-type');
+    if (contentType !== 'text/plain; version=0.0.4; charset=utf-8') {
+      problems.push(`expected the Prometheus content type, got ${JSON.stringify(contentType)}`);
+    }
+    const body = response.body.toString('utf8');
+    if (!body.split('\n').includes('# TYPE cubeclicker_ws_connections_open gauge')) {
+      problems.push('expected the "# TYPE cubeclicker_ws_connections_open gauge" line');
+    }
+
+    const expectedSamples = [
+      ['cubeclicker_ws_connections_open', 1],
+      ['cubeclicker_servers_active', 1],
+      ['cubeclicker_ws_connections_total', 3],
+      ['cubeclicker_ws_messages_received_total{type="join"}', 3],
+      ['cubeclicker_ws_frames_sent_total{type="hello"}', 3],
+    ];
+    const samples = [];
+    for (const [sample, minimum] of expectedSamples) {
+      const value = readMetricSample(body, sample);
+      samples.push(`${sample}=${value === null ? 'missing' : value}`);
+      if (value === null) {
+        problems.push(`sample ${sample} is missing`);
+      } else if (value < minimum) {
+        problems.push(`${sample} expected >= ${minimum}, got ${value}`);
+      }
+    }
+
+    problem = problems.length === 0 ? null : problems.join('; ');
+    record(problems.length === 0, METRICS_CHECK_LABEL, problem ?? samples.join(' '));
+  } catch (error) {
+    problem = problemText(error);
+    record(false, METRICS_CHECK_LABEL, problem);
+  } finally {
+    client.close();
+    await delay(SMOKE_SETTLE_MS);
+  }
+}
+
 async function main() {
   console.log(
     `smoke: backend=${BACKEND_URL} frontend=${FRONTEND_URL} prodFrontend=${PROD_FRONTEND_URL} ws=${WS_URL} readyTimeoutMs=${READY_TIMEOUT_MS}`,
@@ -1253,6 +1346,7 @@ async function main() {
   await checkConcurrentWebSocketClients();
   await checkMultiplayerFlow();
   await checkAuthFlow();
+  await checkMetrics();
   await checkProdDelivery();
 
   const failures = results.filter((result) => !result.ok).length;
