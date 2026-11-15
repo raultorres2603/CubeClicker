@@ -20,6 +20,12 @@
  *   non-empty player and a non-empty list of non-empty ids and returns a copied array; the
  *   parity builder validates and copies the same way the backend does, and the legacy
  *   one-id `miniCubeRemoved` shape stays unchanged (AC-9);
+ * - `activityEvent` is the additive server-only feed frame (`live-activity-feed`):
+ *   `parseActivityEvent` enforces the shared validation matrix and returns the pinned shape,
+ *   `activityEventMessage` re-validates and copies (throwing `TypeError` on an invalid
+ *   payload), and `parsePlacement` decodes the optional `activity` ring on
+ *   `welcome`/`worldEntered` (absent → `[]`, over 20 or an invalid entry → `bad_message`).
+ *   The client catalog is unchanged, so a client `activityEvent` frame is `bad_message`;
  * - `encodeClientMessage` serialises one client message into the single JSON text frame;
  * - the diagnostic `ping`/`pong` pair is additive and mirrors the backend exactly: a
  *   `ping` is accepted only with a finite numeric `t`, a `pong` echo is decoded the same
@@ -54,6 +60,12 @@ export const MAX_STEPS = 3;
 /** Size cap applied to a `rotate` frame; identical to the global frame cap. */
 export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
 
+/**
+ * Pinned per-server activity ring size (`live-activity-feed`), mirrored from
+ * `game/protocol.ts`: at most 20 accepted events, newest first (`index 0` is the newest).
+ */
+export const ACTIVITY_FEED_LIMIT = 20;
+
 /** A world-plane point (`z = 0`), exactly as it travels on the wire. */
 export interface Position {
   x: number;
@@ -82,6 +94,70 @@ export interface MemberState {
   yawSteps: number;
   pitchSteps: number;
 }
+
+/**
+ * One accepted per-server activity event (`live-activity-feed`), mirrored from the backend.
+ *
+ * The envelope is always `id`, `at`, `serverId`, `type`, `playerId`, `name` (in that
+ * construction order, which pins the encoded frame) plus the type-specific fields:
+ * `level` for the three cube-completion types, `elapsedMs` for `fastClear` and `partId`
+ * for `epicLoot`. No field is client-supplied: the decoder validates the shared matrix and
+ * drops unknown extra fields.
+ */
+export type ActivityEvent =
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'cubeCleared';
+      playerId: string;
+      name: string;
+      level: number;
+    }
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'fastClear';
+      playerId: string;
+      name: string;
+      level: number;
+      elapsedMs: number;
+    }
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'levelMilestone';
+      playerId: string;
+      name: string;
+      level: number;
+    }
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'epicLoot';
+      playerId: string;
+      name: string;
+      partId: string;
+    }
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'memberJoined';
+      playerId: string;
+      name: string;
+    }
+  | {
+      id: number;
+      at: number;
+      serverId: number;
+      type: 'memberLeft';
+      playerId: string;
+      name: string;
+    };
 
 /**
  * The opener-only lootbox grant (AC-24): what the opening connection needs to play the
@@ -144,6 +220,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      activity?: ActivityEvent[];
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
@@ -159,6 +236,7 @@ export type ServerMessage =
       position: Position;
       self: CubeState;
       roster: MemberState[];
+      activity?: ActivityEvent[];
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
@@ -166,6 +244,7 @@ export type ServerMessage =
     }
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
+  | { type: 'activityEvent'; event: ActivityEvent }
   | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
   | { type: 'miniCubesRemoved'; playerId: string; ids: MiniCubeId[] }
@@ -222,6 +301,7 @@ export interface Placement {
   position: Position;
   self: CubeState;
   roster: MemberState[];
+  activity?: ActivityEvent[];
   identity: Identity;
   economy?: EconomyState;
   upgrades?: UpgradeState;
@@ -267,6 +347,16 @@ function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value);
 }
 
+/** A positive integer wire field: `0`, negatives, floats and non-numbers are invalid. */
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/** A finite number `>= 0` wire field (event times and durations). */
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
 /** An array of strings (the wire `removedIds` shape); `[]` passes. */
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
@@ -303,6 +393,161 @@ function badClientMessage(): ClientMessageParseResult {
 
 function badServerMessage(): ServerMessageParseResult {
   return { ok: false, error: 'bad_message' };
+}
+
+/**
+ * Decodes one `ActivityEvent` payload (the shared validation matrix from the spec).
+ *
+ * Returns the pinned shape with exactly the documented fields (unknown extras are dropped)
+ * or `null` when any rule fails: positive-integer `id`/`serverId`/`level`, finite
+ * non-negative `at`/`elapsedMs`, non-empty `playerId`/`name`/`partId`, the closed six-type
+ * union and the type-specific required fields. Every returned object is a fresh value; the
+ * key order is the pinned wire order (`id`, `at`, `serverId`, `type`, `playerId`, `name`,
+ * then `level` / `elapsedMs` / `partId`).
+ */
+export function parseActivityEvent(value: unknown): ActivityEvent | null {
+  const frame = asJsonObject(value);
+  if (frame === null) {
+    return null;
+  }
+
+  const { id, at, serverId, type, playerId, name } = frame;
+  if (!isPositiveInteger(id) || !isNonNegativeFiniteNumber(at) || !isPositiveInteger(serverId)) {
+    return null;
+  }
+  if (!isNonEmptyString(playerId) || !isNonEmptyString(name)) {
+    return null;
+  }
+
+  switch (type) {
+    case 'cubeCleared':
+    case 'levelMilestone': {
+      const level = frame.level;
+      if (!isPositiveInteger(level)) {
+        return null;
+      }
+      if (type === 'cubeCleared') {
+        return { id, at, serverId, type: 'cubeCleared', playerId, name, level };
+      }
+      return { id, at, serverId, type: 'levelMilestone', playerId, name, level };
+    }
+
+    case 'fastClear': {
+      const level = frame.level;
+      const elapsedMs = frame.elapsedMs;
+      if (!isPositiveInteger(level) || !isNonNegativeFiniteNumber(elapsedMs)) {
+        return null;
+      }
+      return { id, at, serverId, type: 'fastClear', playerId, name, level, elapsedMs };
+    }
+
+    case 'epicLoot': {
+      const partId = frame.partId;
+      if (!isNonEmptyString(partId)) {
+        return null;
+      }
+      return { id, at, serverId, type: 'epicLoot', playerId, name, partId };
+    }
+
+    case 'memberJoined':
+      return { id, at, serverId, type: 'memberJoined', playerId, name };
+
+    case 'memberLeft':
+      return { id, at, serverId, type: 'memberLeft', playerId, name };
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Defensive copy of one activity event with the pinned wire key order.
+ *
+ * The input is expected to be a valid `ActivityEvent`; the exhaustive switch keeps the
+ * key order identical to the backend's `copyActivityEvent` and the parser's output.
+ */
+export function copyActivityEvent(event: ActivityEvent): ActivityEvent {
+  switch (event.type) {
+    case 'cubeCleared':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'cubeCleared',
+        playerId: event.playerId,
+        name: event.name,
+        level: event.level,
+      };
+
+    case 'fastClear':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'fastClear',
+        playerId: event.playerId,
+        name: event.name,
+        level: event.level,
+        elapsedMs: event.elapsedMs,
+      };
+
+    case 'levelMilestone':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'levelMilestone',
+        playerId: event.playerId,
+        name: event.name,
+        level: event.level,
+      };
+
+    case 'epicLoot':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'epicLoot',
+        playerId: event.playerId,
+        name: event.name,
+        partId: event.partId,
+      };
+
+    case 'memberJoined':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'memberJoined',
+        playerId: event.playerId,
+        name: event.name,
+      };
+
+    case 'memberLeft':
+      return {
+        id: event.id,
+        at: event.at,
+        serverId: event.serverId,
+        type: 'memberLeft',
+        playerId: event.playerId,
+        name: event.name,
+      };
+  }
+}
+
+/**
+ * Builds the server-only `activityEvent` frame (parity helper with the backend builder).
+ *
+ * The event is re-validated through {@link parseActivityEvent} and copied, so an invalid
+ * payload (despite the static type) throws `TypeError` instead of being encoded. The client
+ * catalog has no matching message: a client `activityEvent` frame is `bad_message`.
+ */
+export function activityEventMessage(event: ActivityEvent): ServerMessage {
+  const parsed = parseActivityEvent(event);
+  if (parsed === null) {
+    throw new TypeError('invalid activityEvent payload');
+  }
+  return { type: 'activityEvent', event: parsed };
 }
 
 /**
@@ -678,6 +923,21 @@ function parsePlacement(frame: JsonObject): Placement | null {
     }
     roster.push(member);
   }
+  // The activity ring is optional in the wire type (legacy/mixed versions) and always
+  // decoded to an array: absent → `[]`, non-array/over-long/invalid entry → bad_message.
+  const activity: ActivityEvent[] = [];
+  if (frame.activity !== undefined) {
+    if (!Array.isArray(frame.activity) || frame.activity.length > ACTIVITY_FEED_LIMIT) {
+      return null;
+    }
+    for (const entry of frame.activity) {
+      const event = parseActivityEvent(entry);
+      if (event === null) {
+        return null;
+      }
+      activity.push(event);
+    }
+  }
   let economy: EconomyState | undefined;
   if (frame.economy !== undefined) {
     const parsedEconomy = parseEconomyState(frame.economy);
@@ -711,6 +971,7 @@ function parsePlacement(frame: JsonObject): Placement | null {
     position,
     self,
     roster,
+    activity,
     identity,
     ...(economy !== undefined ? { economy } : {}),
     ...(upgrades !== undefined ? { upgrades } : {}),
@@ -773,6 +1034,16 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
         return badServerMessage();
       }
       return { ok: true, message: { type: 'memberLeft', playerId: frame.playerId, reason: frame.reason } };
+
+    case 'activityEvent': {
+      // Additive server-only feed frame: the event is validated through the shared matrix
+      // and copied; any malformed payload is the pinned `bad_message` with no state change.
+      const event = parseActivityEvent(frame.event);
+      if (event === null) {
+        return badServerMessage();
+      }
+      return { ok: true, message: { type: 'activityEvent', event } };
+    }
 
     case 'cubeRotated':
       if (

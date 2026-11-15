@@ -9,7 +9,7 @@ import {
 } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
+import type { ActivityEvent, ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
 import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import type { QualityTier } from '../render/quality';
 import { createSceneView, type SceneView, type SceneWorld } from '../render/scene';
@@ -865,6 +865,7 @@ function welcomeMessage(options: {
   roster?: MemberState[];
   serverId?: number;
   maxUsers?: number;
+  activity?: ActivityEvent[];
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
   customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
@@ -890,6 +891,7 @@ function welcomeMessage(options: {
         member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
       ],
     identity: { kind: 'guest', playerId },
+    ...(options.activity === undefined ? {} : { activity: options.activity }),
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
     ...(options.customization === undefined ? {} : { customization: options.customization }),
@@ -905,6 +907,7 @@ function worldEnteredMessage(options: {
   roster?: MemberState[];
   serverId?: number;
   maxUsers?: number;
+  activity?: ActivityEvent[];
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
   customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
@@ -927,6 +930,7 @@ function worldEnteredMessage(options: {
         member({ playerId: 'p1', name: 'Player 1', position, levelIndex, gridSize, styleId }),
       ],
     identity: { kind: 'guest', playerId: 'p1' },
+    ...(options.activity === undefined ? {} : { activity: options.activity }),
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
     ...(options.customization === undefined ? {} : { customization: options.customization }),
@@ -2657,6 +2661,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           pitchSteps: 0,
         },
       ],
+      activity: [],
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
 
@@ -2930,6 +2935,190 @@ describe('batched mini-cube removals (AC-17, AC-18)', () => {
     expect(session.getMultiplayerSnapshot()).toBe(unknownCheck);
     expect(worldView.particles.activeCount()).toBe(48);
     expect(recording.events).toHaveLength(2);
+
+    session.dispose();
+  });
+});
+
+describe('activity feed over the wire (AC-16, AC-17, AC-18)', () => {
+  /** The browser WebSocket surface the real transport drives (same shape as above). */
+  class FakeActivitySocket {
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+
+    readonly sent: string[] = [];
+
+    constructor(readonly url: string) {}
+
+    send(text: string): void {
+      this.sent.push(text);
+    }
+
+    close(): void {}
+
+    emitOpen(): void {
+      this.onopen?.();
+    }
+
+    emitMessage(data: unknown): void {
+      this.onmessage?.({ data });
+    }
+  }
+
+  const JOIN_EVENT: ActivityEvent = {
+    id: 1,
+    at: 1000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p2',
+    name: 'Player 2',
+  };
+
+  const CLEARED_EVENT: ActivityEvent = {
+    id: 2,
+    at: 2000,
+    serverId: 1,
+    type: 'cubeCleared',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 3,
+  };
+
+  const LOOT_EVENT: ActivityEvent = {
+    id: 3,
+    at: 3000,
+    serverId: 1,
+    type: 'epicLoot',
+    playerId: 'p2',
+    name: 'Player 2',
+    partId: 'crown-epic',
+  };
+
+  const TARGET_JOIN_EVENT: ActivityEvent = {
+    id: 1,
+    at: 4000,
+    serverId: 2,
+    type: 'memberJoined',
+    playerId: 'p3',
+    name: 'Player 3',
+  };
+
+  const TARGET_CLEARED_EVENT: ActivityEvent = {
+    id: 2,
+    at: 5000,
+    serverId: 2,
+    type: 'cubeCleared',
+    playerId: 'p3',
+    name: 'Player 3',
+    level: 6,
+  };
+
+  it('passes the exact welcome.activity and activityEvent frames through the real decoder and reducer', () => {
+    const fake = createFakeEnv();
+    const sockets: FakeActivitySocket[] = [];
+    const transport = createTransport({
+      url: 'ws://test.local/ws',
+      socketFactory: (url) => {
+        const socket = new FakeActivitySocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+    const session = createGameSession({ env: fake.env, transport });
+    session.attach(fake.canvas.surface);
+
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    session.join('guest');
+    socket.emitMessage('{"type":"hello","serverTime":"2026-11-15T00:00:00.000Z"}');
+    socket.emitMessage(
+      JSON.stringify(
+        welcomeMessage({ roster: [selfMember(), member()], activity: [CLEARED_EVENT, JOIN_EVENT] }),
+      ),
+    );
+
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([
+      CLEARED_EVENT,
+      JOIN_EVENT,
+    ]);
+
+    // The exact backend frame (AC-12) prepends a fresh copy, newest first.
+    socket.emitMessage(
+      '{"type":"activityEvent","event":{"id":3,"at":3000,"serverId":1,"type":"epicLoot","playerId":"p2","name":"Player 2","partId":"crown-epic"}}',
+    );
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([
+      LOOT_EVENT,
+      CLEARED_EVENT,
+      JOIN_EVENT,
+    ]);
+
+    // A malformed frame is dropped by the real decoder with no state change.
+    const stable = session.getMultiplayerSnapshot();
+    socket.emitMessage(
+      '{"type":"activityEvent","event":{"id":0,"at":4000,"serverId":1,"type":"memberJoined","playerId":"p9","name":"Player 9"}}',
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+
+    // Another server's event is rejected by the reducer with no state change (AC-23).
+    socket.emitMessage(
+      '{"type":"activityEvent","event":{"id":9,"at":4000,"serverId":9,"type":"memberJoined","playerId":"p9","name":"Player 9"}}',
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+
+    session.dispose();
+  });
+
+  it('updates the pending feed during travel and applies it at the midpoint swap', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [JOIN_EVENT] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(416);
+    expect(session.getSnapshot().phase).toBe('travel');
+
+    wire.emit(
+      worldEnteredMessage({
+        activity: [TARGET_JOIN_EVENT],
+        roster: [
+          selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }),
+          member({ playerId: 'p3', name: 'Player 3', position: { x: 24, y: 0 } }),
+        ],
+      }),
+    );
+
+    // The target event arrives before the travel midpoint: it joins the pending feed only.
+    wire.emit({ type: 'activityEvent', event: TARGET_CLEARED_EVENT });
+    const duringTravel = session.getMultiplayerSnapshot().world;
+    expect(duringTravel.activity).toEqual([JOIN_EVENT]);
+    expect(duringTravel.pendingWorldSwap!.activity).toEqual([
+      TARGET_CLEARED_EVENT,
+      TARGET_JOIN_EVENT,
+    ]);
+
+    fake.scheduler.tick(1666); // midpoint: the pending world (and its feed) becomes current
+    const swapped = session.getMultiplayerSnapshot().world;
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.activity).toEqual([TARGET_CLEARED_EVENT, TARGET_JOIN_EVENT]);
+    expect(swapped.pendingWorldSwap).toBeNull();
 
     session.dispose();
   });

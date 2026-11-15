@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MemberState, ServerMessage } from './protocol';
+import type { ActivityEvent, MemberState, ServerMessage } from './protocol';
 import { applyWorldSwap, createWorldState, reduceWorldState, type WorldState } from './server-state';
 
 /**
@@ -65,7 +65,7 @@ const MOVED_SELF_MEMBER: MemberState = {
 /** p2 as seen on server 2, where it holds slot 1 (the ring restarts per server). */
 const P2_MEMBER_SERVER_2: MemberState = { ...P2_MEMBER, position: SLOT_1 };
 
-const WELCOME: ServerMessage = {
+const WELCOME: Extract<ServerMessage, { type: 'welcome' }> = {
   type: 'welcome',
   playerId: 'p1',
   name: 'Player 1',
@@ -86,7 +86,7 @@ const WELCOME: ServerMessage = {
 };
 
 /** The mover's placement on server 2: p2 already in slot 1, the mover filling slot 2. */
-const WORLD_ENTERED: ServerMessage = {
+const WORLD_ENTERED: Extract<ServerMessage, { type: 'worldEntered' }> = {
   type: 'worldEntered',
   playerId: 'p1',
   name: 'Player 1',
@@ -125,6 +125,7 @@ const SEEDED: WorldState = {
     economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
   },
   members: [P2_MEMBER, P3_MEMBER],
+  activity: [],
   pendingWorldSwap: null,
 };
 
@@ -145,6 +146,7 @@ describe('createWorldState', () => {
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
       members: [],
+      activity: [],
       pendingWorldSwap: null,
     });
   });
@@ -551,6 +553,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
       position: SLOT_2,
       self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
+      activity: [],
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
     expect(pending.serverId).toBe(1);
@@ -584,6 +587,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
       members: [P2_MEMBER_SERVER_2],
+      activity: [],
       pendingWorldSwap: null,
     });
     // The swap is consumed exactly once: a second call is a no-op.
@@ -602,6 +606,211 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
     expect(after.members).toEqual([P3_MEMBER]);
     expect(after.serverId).toBe(1);
     expect(after.pendingWorldSwap).toBeNull();
+  });
+});
+
+describe('reduceWorldState — activity feed (AC-16, AC-17, AC-23)', () => {
+  const JOIN_EVENT: ActivityEvent = {
+    id: 1,
+    at: 1000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p2',
+    name: 'Player 2',
+  };
+
+  const CLEARED_EVENT: ActivityEvent = {
+    id: 2,
+    at: 2000,
+    serverId: 1,
+    type: 'cubeCleared',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 3,
+  };
+
+  const FAST_EVENT: ActivityEvent = {
+    id: 3,
+    at: 3000,
+    serverId: 1,
+    type: 'fastClear',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 4,
+    elapsedMs: 2500,
+  };
+
+  const TARGET_JOIN_EVENT: ActivityEvent = {
+    id: 1,
+    at: 4000,
+    serverId: 2,
+    type: 'memberJoined',
+    playerId: 'p3',
+    name: 'Player 3',
+  };
+
+  const TARGET_CLEARED_EVENT: ActivityEvent = {
+    id: 2,
+    at: 5000,
+    serverId: 2,
+    type: 'cubeCleared',
+    playerId: 'p3',
+    name: 'Player 3',
+    level: 5,
+  };
+
+  it('welcome seeds a copied, newest-first feed and clears any pending swap', () => {
+    const activity = [{ ...CLEARED_EVENT }, { ...JOIN_EVENT }];
+    const state = reduceWorldState(createWorldState(), { ...WELCOME, activity });
+
+    expect(state.activity).toEqual([CLEARED_EVENT, JOIN_EVENT]);
+    expect(state.activity).not.toBe(activity);
+    expect(state.activity[0]).not.toBe(activity[0]);
+    expect(state.pendingWorldSwap).toBeNull();
+  });
+
+  it('welcome replaces a previous feed and an absent ring becomes an empty feed', () => {
+    const withFeed = reduceWorldState(seeded(), { type: 'activityEvent', event: FAST_EVENT });
+    expect(withFeed.activity).toEqual([FAST_EVENT]);
+
+    expect(reduceWorldState(withFeed, WELCOME).activity).toEqual([]);
+    expect(
+      reduceWorldState(withFeed, { ...WELCOME, activity: [JOIN_EVENT] }).activity,
+    ).toEqual([JOIN_EVENT]);
+  });
+
+  it('prepends a copied event to the current feed and keeps self/members identity', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, { type: 'activityEvent', event: CLEARED_EVENT });
+
+    expect(next.activity).toEqual([CLEARED_EVENT]);
+    expect(next.activity[0]).not.toBe(CLEARED_EVENT);
+    expect(next.self).toBe(state.self);
+    expect(next.members).toBe(state.members);
+
+    const older = reduceWorldState(next, { type: 'activityEvent', event: JOIN_EVENT });
+    expect(older.activity).toEqual([JOIN_EVENT, CLEARED_EVENT]);
+    expect(older.activity[1]).toBe(next.activity[0]);
+  });
+
+  it('copies the event so a later caller mutation cannot leak into the feed', () => {
+    const source: ActivityEvent = { ...CLEARED_EVENT };
+    const state = reduceWorldState(seeded(), { type: 'activityEvent', event: source });
+
+    source.name = 'Mallory';
+    source.level = 9;
+    expect(state.activity).toEqual([CLEARED_EVENT]);
+  });
+
+  it('trims the current feed to the 20 newest events', () => {
+    let state = seeded();
+    for (let id = 1; id <= 21; id += 1) {
+      state = reduceWorldState(state, {
+        type: 'activityEvent',
+        event: { id, at: id * 1000, serverId: 1, type: 'cubeCleared', playerId: 'p2', name: 'Player 2', level: id },
+      });
+    }
+
+    expect(state.activity).toHaveLength(20);
+    expect(state.activity.map((event) => event.id)).toEqual([
+      21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
+    ]);
+  });
+
+  it('ignores a duplicate id against the destination feed', () => {
+    const state = reduceWorldState(seeded(), { type: 'activityEvent', event: CLEARED_EVENT });
+
+    expect(
+      reduceWorldState(state, { type: 'activityEvent', event: { ...CLEARED_EVENT, at: 9000 } }),
+    ).toBe(state);
+    expect(
+      reduceWorldState(state, { type: 'activityEvent', event: { ...JOIN_EVENT, id: CLEARED_EVENT.id } }),
+    ).toBe(state);
+  });
+
+  it('ignores an event whose serverId matches neither the current nor the pending server', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, { type: 'activityEvent', event: { ...CLEARED_EVENT, serverId: 99 } }),
+    ).toBe(state);
+
+    const travelling = reduceWorldState(state, { ...WORLD_ENTERED, activity: [TARGET_JOIN_EVENT] });
+    expect(
+      reduceWorldState(travelling, { type: 'activityEvent', event: { ...CLEARED_EVENT, serverId: 99 } }),
+    ).toBe(travelling);
+  });
+
+  it('worldEntered stores the target ring in the pending swap without changing the feed', () => {
+    const state = reduceWorldState(seeded(), { type: 'activityEvent', event: CLEARED_EVENT });
+    const feed = state.activity;
+    const activity = [{ ...TARGET_CLEARED_EVENT }, { ...TARGET_JOIN_EVENT }];
+    const travelling = reduceWorldState(state, { ...WORLD_ENTERED, activity });
+
+    expect(travelling.activity).toBe(feed);
+    expect(travelling.pendingWorldSwap!.activity).toEqual([TARGET_CLEARED_EVENT, TARGET_JOIN_EVENT]);
+    expect(travelling.pendingWorldSwap!.activity).not.toBe(activity);
+    expect(travelling.pendingWorldSwap!.activity[0]).not.toBe(activity[0]);
+  });
+
+  it('routes a target-server event into the pending feed and leaves the feed untouched', () => {
+    const state = reduceWorldState(seeded(), { ...WORLD_ENTERED, activity: [TARGET_JOIN_EVENT] });
+    const feed = state.activity;
+    const next = reduceWorldState(state, { type: 'activityEvent', event: TARGET_CLEARED_EVENT });
+
+    expect(next.activity).toBe(feed);
+    expect(next.pendingWorldSwap!.activity).toEqual([TARGET_CLEARED_EVENT, TARGET_JOIN_EVENT]);
+    expect(next.self).toBe(state.self);
+    expect(next.members).toBe(state.members);
+  });
+
+  it('applies a target event received between worldEntered and applyWorldSwap at the swap', () => {
+    const travelling = reduceWorldState(seeded(), { ...WORLD_ENTERED, activity: [TARGET_JOIN_EVENT] });
+    const updated = reduceWorldState(travelling, { type: 'activityEvent', event: TARGET_CLEARED_EVENT });
+    const swapped = applyWorldSwap(updated);
+
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.activity).toEqual([TARGET_CLEARED_EVENT, TARGET_JOIN_EVENT]);
+    expect(swapped.pendingWorldSwap).toBeNull();
+  });
+
+  it('never folds an old-server event into the pending feed during travel', () => {
+    const travelling = reduceWorldState(seeded(), { ...WORLD_ENTERED, activity: [TARGET_JOIN_EVENT] });
+    const withOld = reduceWorldState(travelling, { type: 'activityEvent', event: CLEARED_EVENT });
+
+    expect(withOld.activity).toEqual([CLEARED_EVENT]);
+    expect(withOld.pendingWorldSwap!.activity).toEqual([TARGET_JOIN_EVENT]);
+
+    const swapped = applyWorldSwap(withOld);
+    expect(swapped.activity).toEqual([TARGET_JOIN_EVENT]);
+  });
+
+  it('checks duplicate ids against the pending destination independently of the feed', () => {
+    const travelling = reduceWorldState(seeded(), { ...WORLD_ENTERED, activity: [TARGET_JOIN_EVENT] });
+
+    expect(
+      reduceWorldState(travelling, { type: 'activityEvent', event: { ...TARGET_JOIN_EVENT, at: 9000 } }),
+    ).toBe(travelling);
+
+    const next = reduceWorldState(travelling, { type: 'activityEvent', event: { ...CLEARED_EVENT, id: 1 } });
+    expect(next.activity.map((event) => event.id)).toEqual([1]);
+    expect(next.pendingWorldSwap!.activity.map((event) => event.id)).toEqual([1]);
+  });
+
+  it('trims the pending feed to the 20 newest target events', () => {
+    let state = reduceWorldState(seeded(), WORLD_ENTERED);
+    for (let id = 1; id <= 21; id += 1) {
+      state = reduceWorldState(state, {
+        type: 'activityEvent',
+        event: { id, at: id * 1000, serverId: 2, type: 'cubeCleared', playerId: 'p3', name: 'Player 3', level: id },
+      });
+    }
+
+    expect(state.activity).toEqual([]);
+    expect(state.pendingWorldSwap!.activity).toHaveLength(20);
+    expect(state.pendingWorldSwap!.activity.map((event) => event.id)).toEqual([
+      21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
+    ]);
   });
 });
 

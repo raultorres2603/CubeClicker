@@ -25,9 +25,10 @@
  * change position, so the order is stable for the life of a membership.
  */
 
-import type { CubeState, EconomyState, MemberState, Position, ServerMessage } from './protocol';
+import type { ActivityEvent, CubeState, EconomyState, MemberState, Position, ServerMessage } from './protocol';
+import { ACTIVITY_FEED_LIMIT, copyActivityEvent } from './protocol';
 
-export type { CubeState, EconomyState, MemberState, Position };
+export type { ActivityEvent, CubeState, EconomyState, MemberState, Position };
 
 /** The own identity, placement and cube as the server reported them. */
 export interface SelfState {
@@ -52,6 +53,8 @@ export interface PendingWorldSwap {
   position: Position;
   self: CubeState;
   roster: MemberState[];
+  /** The target server's activity ring at `worldEntered`, newest first (≤ 20). */
+  activity: ActivityEvent[];
   economy: EconomyState;
 }
 
@@ -64,6 +67,8 @@ export interface WorldState {
   self: SelfState;
   /** The server's other members, in arrival (slot) order; the own member is never here. */
   members: MemberState[];
+  /** The server's activity feed, newest first, at most {@link ACTIVITY_FEED_LIMIT} events. */
+  activity: ActivityEvent[];
   /** Set by `worldEntered`, cleared by the swap / a fresh `welcome`. */
   pendingWorldSwap: PendingWorldSwap | null;
 }
@@ -84,6 +89,7 @@ export function createWorldState(): WorldState {
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     },
     members: [],
+    activity: [],
     pendingWorldSwap: null,
   };
 }
@@ -114,6 +120,28 @@ function copyEconomy(economy: EconomyState): EconomyState {
     facesDestroyed: economy.facesDestroyed,
     cubesDestroyed: economy.cubesDestroyed,
   };
+}
+
+/** A defensive copy of an activity ring, newest first (each event is a fresh object). */
+function copyActivityFeed(events: readonly ActivityEvent[]): ActivityEvent[] {
+  return events.map(copyActivityEvent);
+}
+
+/**
+ * Prepends a copied event to an activity ring and trims it to the pinned limit.
+ *
+ * The duplicate-`id` check runs against the destination ring: a replayed frame returns
+ * `null`, so the caller can return the same state reference. Untouched entries keep their
+ * identity; only the new event is copied and only the array is replaced.
+ */
+function prependActivityEvent(
+  events: readonly ActivityEvent[],
+  event: ActivityEvent,
+): ActivityEvent[] | null {
+  if (events.some((current) => current.id === event.id)) {
+    return null;
+  }
+  return [copyActivityEvent(event), ...events].slice(0, ACTIVITY_FEED_LIMIT);
 }
 
 function economiesEqual(a: EconomyState, b: EconomyState): boolean {
@@ -349,11 +377,13 @@ function withRotated(state: WorldState, msg: Extract<ServerMessage, { type: 'cub
 /**
  * Reduces one decoded server message into the world state.
  *
- * Handled: `welcome` (seed identity/placement/roster, clear any pending swap),
- * `worldEntered` (record the pending swap), `memberJoined`/`memberLeft` (roster),
- * `miniCubeRemoved` (one board delta), `miniCubesRemoved` (every id of a batch, in order),
- * `levelAdvanced` (fresh cube + position), `stateSync` (authoritative board), `cubeRotated`
- * (orientation). `hello` and `error` carry no world state and return the same reference.
+ * Handled: `welcome` (seed identity/placement/roster/activity, clear any pending swap),
+ * `worldEntered` (record the pending swap and its activity ring), `memberJoined`/`memberLeft`
+ * (roster), `miniCubeRemoved` (one board delta), `miniCubesRemoved` (every id of a batch, in
+ * order), `levelAdvanced` (fresh cube + position), `stateSync` (authoritative board),
+ * `cubeRotated` (orientation) and `activityEvent` (the per-server feed, or the pending
+ * target feed while a swap is pending). `hello` and `error` carry no world state and return
+ * the same reference.
  */
 export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldState {
   switch (msg.type) {
@@ -369,6 +399,7 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
           economy: msg.economy ? copyEconomy(msg.economy) : { ...ZERO_ECONOMY },
         },
         members: othersFrom(msg.roster, msg.playerId, msg.maxUsers),
+        activity: copyActivityFeed(msg.activity ?? []),
         pendingWorldSwap: null,
       };
 
@@ -389,9 +420,36 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
           position: copyPosition(msg.position),
           self: copyCube(msg.self),
           roster: msg.roster.map(copyMember),
+          activity: copyActivityFeed(msg.activity ?? []),
           economy: pendingEconomy,
         },
       };
+    }
+
+    case 'activityEvent': {
+      const { event } = msg;
+      const pending = state.pendingWorldSwap;
+      // While a cross-server swap is pending, the target server's events belong to the
+      // pending feed; the old server's feed is untouched until the midpoint swap.
+      if (pending !== null && event.serverId === pending.serverId) {
+        const nextPendingActivity = prependActivityEvent(pending.activity, event);
+        if (nextPendingActivity === null) {
+          return state;
+        }
+        return {
+          ...state,
+          pendingWorldSwap: { ...pending, activity: nextPendingActivity },
+        };
+      }
+      if (event.serverId === state.serverId) {
+        const nextActivity = prependActivityEvent(state.activity, event);
+        if (nextActivity === null) {
+          return state;
+        }
+        return { ...state, activity: nextActivity };
+      }
+      // A different server's event can never reach this client's feed (cross-server guard).
+      return state;
     }
 
     case 'memberJoined':
@@ -446,8 +504,9 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
 /**
  * Applies the pending cross-server swap (AC-12): the mover's own placement and cube from
- * `worldEntered`, the target server's roster minus self, and the target capacity. Called at
- * the travel midpoint by the session; with no pending swap it returns the same reference.
+ * `worldEntered`, the target server's roster minus self, the target capacity and the target
+ * activity ring (including any event folded in during travel). Called at the travel
+ * midpoint by the session; with no pending swap it returns the same reference.
  */
 export function applyWorldSwap(state: WorldState): WorldState {
   const pending = state.pendingWorldSwap;
@@ -465,6 +524,7 @@ export function applyWorldSwap(state: WorldState): WorldState {
       economy: copyEconomy(pending.economy),
     },
     members: othersFrom(pending.roster, state.self.playerId, pending.maxUsers),
+    activity: copyActivityFeed(pending.activity),
     pendingWorldSwap: null,
   };
 }

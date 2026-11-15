@@ -218,6 +218,7 @@ function worldFor({
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     },
     members,
+    activity: [],
     pendingWorldSwap: null,
   };
 }
