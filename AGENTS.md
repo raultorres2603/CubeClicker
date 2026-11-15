@@ -29,7 +29,6 @@ Host tooling commands need Node.js 24 LTS + npm; running the environment itself 
 - `tests/e2e/` — containerized smoke/e2e tests
 - `docs/` — product vision, architecture, feature artifacts
 - `.opencode/` — agents, commands, and the six project pipeline skills in `.opencode/skills/` (the AI team)
-- `.agents/skills/` — 31 imported third-party skill packs (advisory), tracked with `skills-lock.json`
 
 Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.tsx`, inside each workspace).
 
@@ -48,7 +47,7 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 - Branches: `feat/<slug>` for feature work; integration happens on `develop` (the `development` deploy environment) and accepted work merges to `main` (the `production` deploy environment).
 - Tests accompany every behavior change: unit tests and integration tests with concrete expected values (no wildcard matchers), and no useless tests; coverage stays ≥ 80% (statements, branches, functions, lines) per workspace, verified with `npm run coverage`.
 - Documentation: every behavior change updates documentation in the same commit (see docs/architecture/documentation.md).
-- Skills: project pipeline skills live in `.opencode/skills/` (binding, higher precedence); imported packs live in `.agents/skills/` (advisory, installer-managed with `skills-lock.json`). Per-agent allow-lists, precedence, and pack dispositions are documented in `docs/architecture/skills.md`.
+- Skills: the six project pipeline skills live in `.opencode/skills/` and are the only skill source; per-agent allow-lists, the `skill` rule contract, and verification are documented in `docs/architecture/skills.md`. Library and platform documentation comes from Context7 MCP.
 
 ## Boundaries
 

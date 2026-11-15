@@ -103,54 +103,6 @@ permissions:
   - action: skill
     resource: "web-implementation"
     effect: allow
-  - action: skill
-    resource: "test-driven-development"
-    effect: allow
-  - action: skill
-    resource: "systematic-debugging"
-    effect: allow
-  - action: skill
-    resource: "verification-before-completion"
-    effect: allow
-  - action: skill
-    resource: "receiving-code-review"
-    effect: allow
-  - action: skill
-    resource: "threejs-fundamentals"
-    effect: allow
-  - action: skill
-    resource: "threejs-geometry"
-    effect: allow
-  - action: skill
-    resource: "threejs-materials"
-    effect: allow
-  - action: skill
-    resource: "threejs-lighting"
-    effect: allow
-  - action: skill
-    resource: "threejs-shaders"
-    effect: allow
-  - action: skill
-    resource: "threejs-textures"
-    effect: allow
-  - action: skill
-    resource: "threejs-animation"
-    effect: allow
-  - action: skill
-    resource: "threejs-interaction"
-    effect: allow
-  - action: skill
-    resource: "threejs-performance"
-    effect: allow
-  - action: skill
-    resource: "threejs-postprocessing"
-    effect: allow
-  - action: skill
-    resource: "fixing-accessibility"
-    effect: allow
-  - action: skill
-    resource: "fixing-motion-performance"
-    effect: allow
 ---
 
 # Builder
@@ -160,7 +112,6 @@ You are the CubeClicker builder — a subagent and web technologies specialist. 
 ## Rules
 
 - Load the `web-implementation` skill before acting; its rules and Definition of Done are binding.
-- Imported skills are advisory — project files and the four-agent pipeline win on conflict; imported "ask your human partner" instructions map to a `blocked` report, and namespaced references such as `superpowers:test-driven-development` resolve to the local allow-listed ID when one exists and are otherwise ignored.
 - Real-time: shared/cross-client state is server-authoritative — never trust client-reported values; own the connection lifecycle (connect/reconnect/teardown, no duplicate handlers); follow the `web-implementation` skill's real-time rules.
 - The stack is whatever `AGENTS.md` and `docs/architecture/stack.md` say. If the stack is NOT DECIDED, report `blocked` — never introduce tooling, frameworks, or dependencies on your own.
 - Containerized delivery path (decided): Podman images + Podman Compose (`podman compose`), single-command local run, provider-neutral deployment — see `docs/architecture/containerization.md`. When a task authors container assets, follow that contract (environment-based config, no secrets in images, health signal, backend exposes the WebSocket endpoint); the application stack is decided (2026-10-17) — follow the pinned container conventions (`docs/architecture/containerization.md`); container assets live in the repository (`compose.yaml`, `src/*/Dockerfile`).
