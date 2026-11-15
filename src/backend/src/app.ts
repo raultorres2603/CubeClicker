@@ -1,4 +1,7 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, {
+  type FastifyInstance,
+  type FastifyServerOptions,
+} from 'fastify';
 import websocket from '@fastify/websocket';
 import cookie from '@fastify/cookie';
 import { loadGameConfig, type GameConfig } from './game/config.js';
@@ -19,6 +22,23 @@ import {
   resolveCorsOrigins,
   WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE,
 } from './cors.js';
+import { loadObservabilityConfig } from './observability/config.js';
+import { createMetrics, type Metrics } from './observability/metrics.js';
+import { buildLoggerOptions, createLogSink } from './observability/logging.js';
+import { metricsRoutes } from './observability/metrics-route.js';
+import {
+  collectPoolMetrics,
+  instrumentPool,
+  type PoolGauges,
+  type Queryable,
+} from './observability/db-metrics.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** In-process Prometheus registry, exposed to `server.ts` (T3). */
+    metrics: Metrics;
+  }
+}
 
 /** The pinned `hello` envelope the backend sends to every client that connects. */
 export interface HelloMessage {
@@ -76,6 +96,13 @@ export interface BuildAppOptions {
   random?: () => () => number;
   /** Test seam: shared clock (ms since epoch) used by the hub and repositories (defaults to `Date.now`). */
   now?: () => number;
+  /**
+   * Test seam: Fastify/Pino logger options. Defaults to `buildLoggerOptions(env)`,
+   * which disables logging for tests/unset `NODE_ENV` and honours `LOG_LEVEL`.
+   */
+  logger?: FastifyServerOptions['logger'];
+  /** Test seam: the metrics registry (defaults to a fresh 30-metric registry). */
+  metrics?: Metrics;
   /** Test seam: auth wiring overrides. */
   auth?: {
     sessionResolver?: (cookieHeader: string | undefined) => AccountSession | null | Promise<AccountSession | null>;
@@ -129,9 +156,34 @@ export function buildApp(
     ALLOWED_ORIGIN: env.ALLOWED_ORIGIN ?? authConfig.allowedOrigin,
   });
 
+  const observability = loadObservabilityConfig(env);
+  const metrics = options.metrics ?? createMetrics();
+
+  // Fly terminates TLS at its edge proxy and forwards X-Forwarded-For/Proto to the
+  // machine. Trust those headers only in production (Fly sets NODE_ENV=production via
+  // fly.config.toml) so `request.ip` is the client for auth rate limiting and
+  // `request.protocol` reflects the public https origin; local compose keeps direct
+  // connection semantics and cannot spoof its IP into the limiter.
+  //
+  // The app is created before the hub so the hub receives an event-first `LogSink`
+  // built from the configured Pino logger (AC-3); every WS lifecycle line then shares
+  // the request logger's level, redaction and serializers.
+  const app = Fastify({
+    trustProxy: env.NODE_ENV === 'production',
+    logger: options.logger ?? buildLoggerOptions(env),
+  });
+  const log = createLogSink(app.log);
+  app.decorate('metrics', metrics);
+
   // Repositories / pool
   const pool = (options.auth?.pool as { end?: () => Promise<void> } | null | undefined) ??
     createPool(authConfig.databaseUrl);
+
+  // Exactly one instrumentation pass per runtime pool; the wrapper preserves the
+  // original result/error/`this` and only records duration and outcome (AC-16).
+  if (pool !== null) {
+    instrumentPool(pool as unknown as Queryable, metrics);
+  }
 
   const nowFn = options.now ?? (() => Date.now());
 
@@ -171,7 +223,13 @@ export function buildApp(
         })
       : new FakeEmailService());
 
-  const rateLimiter = options.auth?.rateLimiter ?? createRateLimiter(nowFn);
+  const rateLimiter =
+    options.auth?.rateLimiter ??
+    // The key (IP/email) is discarded here: only the drop is counted, never logged or
+    // labelled (AC-14).
+    createRateLimiter(nowFn, () => {
+      metrics.inc('cubeclicker_rate_limit_drops_total', { scope: 'http' });
+    });
 
   const authService =
     options.auth?.authService ??
@@ -201,14 +259,9 @@ export function buildApp(
     random: options.random ?? (() => Math.random),
     timers: { setInterval, clearInterval, setTimeout, clearTimeout },
     economy: economy as never,
+    metrics,
+    log,
   });
-
-  // Fly terminates TLS at its edge proxy and forwards X-Forwarded-For/Proto to the
-  // machine. Trust those headers only in production (Fly sets NODE_ENV=production via
-  // fly.config.toml) so `request.ip` is the client for auth rate limiting and
-  // `request.protocol` reflects the public https origin; local compose keeps direct
-  // connection semantics and cannot spoof its IP into the limiter.
-  const app = Fastify({ trustProxy: env.NODE_ENV === 'production' });
 
   // cookie support
   app.register(cookie);
@@ -273,6 +326,16 @@ export function buildApp(
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
+  // Internal-only Prometheus scrape on the existing port (AC-8). The route is not
+  // registered at all when `METRICS_ENABLED=false`; pool gauges are sampled at scrape.
+  app.register(metricsRoutes, {
+    metrics,
+    enabled: observability.metricsEnabled,
+    collect: () => {
+      collectPoolMetrics(pool as PoolGauges | null, metrics);
+    },
+  });
+
   app.register(async (instance) => {
     await instance.register(websocket);
 
@@ -285,12 +348,21 @@ export function buildApp(
         return;
       }
       if (!hub.hasCapacity()) {
+        // Pre-attach rejection: counted and logged with the Fastify request id. The hub
+        // `attach` backstop counts the same way if it is ever reached directly.
+        metrics.inc('cubeclicker_ws_connections_rejected_total', { reason: 'capacity' });
+        log.warn('ws_connection_rejected', { connectionId: req.id, reason: 'capacity' });
         socket.close();
         return;
       }
       const accountSession = await sessionResolver(req.headers.cookie as string | undefined);
       socket.send(JSON.stringify(helloMessage()));
-      hub.attach(toPeer(socket as never), accountSession);
+      // The hub does not send `hello`; the app counts the one encode and the one frame
+      // delivery here so the catalog covers the handshake frame (AC-9/AC-11).
+      metrics.inc('cubeclicker_ws_messages_encoded_total', { type: 'hello' });
+      metrics.inc('cubeclicker_ws_frames_sent_total', { type: 'hello' });
+      // `req.id` correlates the upgrade request log with the hub lifecycle logs (AC-3).
+      hub.attach(toPeer(socket as never), accountSession, req.id);
     });
   });
 

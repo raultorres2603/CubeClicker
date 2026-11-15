@@ -2,6 +2,8 @@ import { buildApp } from './app.js';
 import { loadAuthConfig } from './auth/config.js';
 import { createPool, closePool } from './db/pool.js';
 import { runStartupMigrations } from './db/migrate-runner.js';
+import { createLogSink } from './observability/logging.js';
+import { installShutdownHandlers } from './observability/shutdown.js';
 
 const HOST = process.env.HOST ?? '0.0.0.0';
 const PORT = Number(process.env.PORT ?? 8080);
@@ -21,9 +23,22 @@ try {
   process.exit(1);
 }
 
-const app = buildApp(process.env, pool !== null ? { auth: { pool } } : {});
+const app = buildApp(
+  // Host-only default: the container/Dockerfile sets NODE_ENV=development, but a bare
+  // `node dist/server.js` should still log; `buildApp({})` stays silent in tests.
+  { ...process.env, NODE_ENV: process.env.NODE_ENV ?? 'development' },
+  pool !== null ? { auth: { pool } } : {},
+);
 
 await app.listen({ host: HOST, port: PORT });
+
+// Graceful shutdown is installed after `listen` so a signal during startup cannot
+// close a half-built app; a second signal during shutdown is ignored (AC-17).
+installShutdownHandlers({
+  app,
+  metrics: app.metrics,
+  log: createLogSink(app.log),
+});
 
 console.log(
   `CubeClicker backend listening on http://${HOST}:${PORT} (WebSocket ws://${HOST}:${PORT}/ws)`,

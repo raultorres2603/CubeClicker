@@ -5,9 +5,12 @@ import { buildApp, helloMessage, toPeer } from './app.js';
 import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
+import { FakeEmailService } from './auth/email.js';
 import type { PartId } from './game/parts.js';
 import { roundCoins, idleCoins } from './game/economy.js';
 import { WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE } from './cors.js';
+import { buildLoggerOptions } from './observability/logging.js';
+import { METRIC_DEFINITIONS, type MetricDefinition } from './observability/metrics.js';
 
 interface HelloEnvelope {
   type: unknown;
@@ -706,7 +709,9 @@ describe('GET /ws Origin guard (AC-7)', () => {
 
 describe('trust proxy (Fly)', () => {
   it('trusts X-Forwarded-For/Proto in production and ignores them locally', async () => {
-    const production = buildApp({ NODE_ENV: 'production' });
+    // `logger: false` keeps the additive structured logging out of the test output;
+    // this suite asserts trust-proxy behavior only.
+    const production = buildApp({ NODE_ENV: 'production' }, { logger: false });
     production.get('/test/request-origin', async (request) => ({
       ip: request.ip,
       protocol: request.protocol,
@@ -724,7 +729,7 @@ describe('trust proxy (Fly)', () => {
       await production.close();
     }
 
-    const local = buildApp({ NODE_ENV: 'development' });
+    const local = buildApp({ NODE_ENV: 'development' }, { logger: false });
     local.get('/test/request-origin', async (request) => ({
       ip: request.ip,
       protocol: request.protocol,
@@ -1515,6 +1520,751 @@ describe('granular customization integration (T5)', () => {
       });
     } finally {
       client.close();
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observability integration (T3): logging/redaction, /metrics, DB gauges,
+// rate-limit drops, request-id correlation and the bounded label catalog.
+// ---------------------------------------------------------------------------
+
+interface CaptureStream {
+  stream: { write(line: string): void };
+  lines(): string[];
+  text(): string;
+}
+
+/** Captures the JSON lines Pino writes through the logger test seam. */
+function createCaptureStream(): CaptureStream {
+  const chunks: string[] = [];
+  return {
+    stream: {
+      write: (line: string) => {
+        chunks.push(line);
+      },
+    },
+    lines: () => chunks.flatMap((chunk) => chunk.split('\n')).filter((line) => line !== ''),
+    text: () => chunks.join(''),
+  };
+}
+
+function parseLogLines(capture: CaptureStream): Array<Record<string, unknown>> {
+  return capture.lines().map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** Returns the single log entry matching `predicate`; throws when absent. */
+function logEntryWhere(
+  capture: CaptureStream,
+  predicate: (entry: Record<string, unknown>) => boolean,
+  description: string,
+): Record<string, unknown> {
+  const entry = parseLogLines(capture).find(predicate);
+  if (entry === undefined) {
+    throw new Error(`missing log entry: ${description}`);
+  }
+  return entry;
+}
+
+function logEntry(capture: CaptureStream, message: string): Record<string, unknown> {
+  return logEntryWhere(capture, (entry) => entry['msg'] === message, message);
+}
+
+/** Waits (bounded) for a log line the server writes asynchronously on socket close. */
+async function waitForLog(
+  capture: CaptureStream,
+  message: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const entry = parseLogLines(capture).find((line) => line['msg'] === message);
+    if (entry !== undefined) {
+      return entry;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`no ${message} log within 2000ms`);
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+  }
+}
+
+/** Extracts the 64-hex session token from a `set-cookie` response header. */
+function sessionTokenOf(response: { headers: Record<string, unknown> }): string {
+  const raw = response.headers['set-cookie'];
+  const setCookie = Array.isArray(raw) ? raw.join('; ') : String(raw ?? '');
+  const match = /session=([0-9a-f]{64})/.exec(setCookie);
+  if (match === null) {
+    throw new Error('expected a session cookie');
+  }
+  return match[1]!;
+}
+
+interface RawClient {
+  nextFrame(): Promise<RawFrame>;
+  sendText(text: string): void;
+  close(): void;
+}
+
+/** Encodes one masked client text frame (small control payloads only). */
+function encodeClientTextFrame(text: string): Buffer {
+  const payload = Buffer.from(text, 'utf8');
+  if (payload.length > 125) {
+    throw new Error('test client only supports payloads up to 125 bytes');
+  }
+  const mask = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+  const masked = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]!));
+  return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+}
+
+/**
+ * Opens a raw WebSocket client with extra request headers (the session cookie) so the
+ * account-join path can be exercised end to end without a client dependency.
+ */
+function connectRawClient(options: {
+  host: string;
+  port: number;
+  headers?: Record<string, string>;
+}): Promise<RawClient> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: options.host,
+      port: options.port,
+      path: '/ws',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version': '13',
+        ...(options.headers ?? {}),
+      },
+    });
+
+    request.on('upgrade', (response, socket, head) => {
+      let buffer = Buffer.from(head);
+      const queued: RawFrame[] = [];
+      const waiters: Array<(frame: RawFrame) => void> = [];
+
+      const deliver = (frame: RawFrame): void => {
+        const waiter = waiters.shift();
+        if (waiter === undefined) {
+          queued.push(frame);
+        } else {
+          waiter(frame);
+        }
+      };
+      const drain = (): void => {
+        for (;;) {
+          const parsed = parseRawFrame(buffer);
+          if (parsed === null) {
+            return;
+          }
+          buffer = parsed.rest;
+          deliver(parsed.frame);
+        }
+      };
+
+      socket.on('data', (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        drain();
+      });
+      socket.on('error', reject);
+
+      resolve({
+        nextFrame: () =>
+          new Promise<RawFrame>((resolveFrame, rejectFrame) => {
+            const frame = queued.shift();
+            if (frame !== undefined) {
+              resolveFrame(frame);
+              return;
+            }
+            const timer = setTimeout(() => {
+              rejectFrame(new Error('no WebSocket frame within 2000ms'));
+            }, 2000);
+            waiters.push((incoming) => {
+              clearTimeout(timer);
+              resolveFrame(incoming);
+            });
+          }),
+        sendText: (text: string) => {
+          socket.write(encodeClientTextFrame(text));
+        },
+        close: () => {
+          socket.end();
+        },
+      });
+      drain();
+    });
+    request.on('response', (response) => {
+      reject(new Error(`expected a WebSocket upgrade, received HTTP ${response.statusCode}`));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function frameJson(frame: RawFrame): Record<string, unknown> {
+  return JSON.parse(frame.payload.toString('utf8')) as Record<string, unknown>;
+}
+
+interface ParsedSample {
+  name: string;
+  labels: Array<[string, string]>;
+  value: string;
+}
+
+const SAMPLE_PATTERN = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})? (\S+)$/;
+
+function parseSamples(body: string): ParsedSample[] {
+  const samples: ParsedSample[] = [];
+  for (const line of body.split('\n')) {
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    const match = SAMPLE_PATTERN.exec(line);
+    if (match === null) {
+      throw new Error(`unparseable metrics line: ${line}`);
+    }
+    const [, name, rawLabels, value] = match;
+    const labels: Array<[string, string]> = [];
+    if (rawLabels !== undefined && rawLabels !== '') {
+      for (const pair of rawLabels.split(',')) {
+        const equals = pair.indexOf('=');
+        labels.push([pair.slice(0, equals), pair.slice(equals + 2, -1)]);
+      }
+    }
+    samples.push({ name: name!, labels, value: value! });
+  }
+  return samples;
+}
+
+function baseMetricName(sampleName: string): string {
+  for (const suffix of ['_bucket', '_sum', '_count']) {
+    if (sampleName.endsWith(suffix)) {
+      return sampleName.slice(0, -suffix.length);
+    }
+  }
+  return sampleName;
+}
+
+/**
+ * Returns every catalog violation in a scraped body: unknown metrics, undeclared or
+ * missing labels, and label values outside the allow-list. `le` is accepted only on
+ * `_bucket` samples (the renderer-reserved histogram label).
+ */
+function metricViolations(body: string): string[] {
+  const violations: string[] = [];
+  for (const sample of parseSamples(body)) {
+    const definition = (METRIC_DEFINITIONS as Record<string, MetricDefinition | undefined>)[
+      baseMetricName(sample.name)
+    ];
+    if (definition === undefined) {
+      violations.push(`unknown metric ${sample.name}`);
+      continue;
+    }
+    const declared = definition.labels ?? {};
+    for (const [labelName, labelValue] of sample.labels) {
+      if (labelName === 'le') {
+        if (!sample.name.endsWith('_bucket')) {
+          violations.push(`reserved le label outside a bucket sample: ${sample.name}`);
+        }
+        continue;
+      }
+      const allowed = declared[labelName];
+      if (allowed === undefined) {
+        violations.push(`undeclared label ${labelName} on ${sample.name}`);
+      } else if (!allowed.includes(labelValue)) {
+        violations.push(`value ${labelValue} outside the allow-list for ${labelName}`);
+      }
+    }
+    for (const labelName of Object.keys(declared)) {
+      if (!sample.labels.some(([name]) => name === labelName)) {
+        violations.push(`missing label ${labelName} on ${sample.name}`);
+      }
+    }
+  }
+  return violations;
+}
+
+interface TestAccount {
+  email: string;
+  password: string;
+  username: string;
+  verificationToken: string;
+  sessionToken: string;
+  accountId: string;
+}
+
+/** Registers, logs in and resolves the session for one account through real HTTP. */
+async function createAccount(
+  app: FastifyInstance,
+  emailService: FakeEmailService,
+  username: string,
+): Promise<TestAccount> {
+  const email = `${username}@example.test`;
+  const password = `password-for-${username}`;
+  const origin = { origin: 'http://localhost:5173' };
+
+  const register = await app.inject({
+    method: 'POST',
+    url: '/auth/register',
+    headers: origin,
+    payload: { username, email, password },
+  });
+  expect(register.statusCode).toBe(202);
+  const sent = emailService.sent.at(-1);
+  if (sent === undefined) {
+    throw new Error('expected a verification email');
+  }
+  expect(sent.to).toBe(email);
+  const verificationToken = new URL(sent.verificationUrl).searchParams.get('token');
+  expect(verificationToken).toHaveLength(64);
+
+  // Verify the address so the WS join takes the account path (verified accounts).
+  const verify = await app.inject({
+    method: 'POST',
+    url: '/auth/verify',
+    headers: origin,
+    payload: { token: verificationToken },
+  });
+  expect(verify.statusCode).toBe(200);
+  expect((verify.json() as { user: { verified: boolean } }).user.verified).toBe(true);
+
+  const login = await app.inject({
+    method: 'POST',
+    url: '/auth/login',
+    headers: origin,
+    payload: { username, password },
+  });
+  expect(login.statusCode).toBe(200);
+  const sessionToken = sessionTokenOf(login);
+
+  const me = await app.inject({
+    method: 'GET',
+    url: '/auth/me',
+    headers: { cookie: `session=${sessionToken}` },
+  });
+  expect(me.statusCode).toBe(200);
+  const accountId = (me.json() as { user: { id: string } }).user.id;
+  expect(accountId).toHaveLength(36);
+
+  return {
+    email,
+    password,
+    username,
+    verificationToken: verificationToken!,
+    sessionToken,
+    accountId,
+  };
+}
+
+describe('observability wiring (T3)', () => {
+  it('resolves the logger level from NODE_ENV and stays silent without one (AC-1)', async () => {
+    const production = buildApp({ NODE_ENV: 'production' });
+    const development = buildApp({ NODE_ENV: 'development' });
+    const silent = buildApp({});
+
+    try {
+      expect(production.log.level).toBe('info');
+      expect(development.log.level).toBe('debug');
+      // A disabled Pino logger exposes no level (the noop logger has none).
+      const silentLevel: string | undefined = silent.log.level;
+      expect(silentLevel).toBe(undefined);
+      // Keep the enabled loggers from printing the hub close line during teardown.
+      production.log.level = 'silent';
+      development.log.level = 'silent';
+    } finally {
+      await Promise.all([production.close(), development.close(), silent.close()]);
+    }
+  });
+
+  it('redacts top-level and nested secrets in captured log lines (AC-2, AC-4)', async () => {
+    const capture = createCaptureStream();
+    const app = buildApp(
+      {},
+      { logger: buildLoggerOptions({ LOG_LEVEL: 'info' }, capture.stream) },
+    );
+    await app.ready();
+
+    try {
+      app.log.info(
+        {
+          email: 'alice@example.test',
+          password: 'hunter2',
+          token: 'tok-1',
+          cookie: 'session-secret',
+          authorization: 'Bearer secret',
+          body: { password: 'nested-pass', email: 'nested@example.test' },
+          headers: { cookie: 'nested-cookie', authorization: 'Bearer nested' },
+        },
+        'redaction-probe',
+      );
+      app.log.error({ err: new Error('alice@example.test') }, 'error-probe');
+      app.log.error(
+        { err: Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }) },
+        'coded-error-probe',
+      );
+
+      const probe = logEntry(capture, 'redaction-probe');
+      expect(probe['email']).toBe('[REDACTED]');
+      expect(probe['password']).toBe('[REDACTED]');
+      expect(probe['token']).toBe('[REDACTED]');
+      expect(probe['cookie']).toBe('[REDACTED]');
+      expect(probe['authorization']).toBe('[REDACTED]');
+      expect(probe['body']).toEqual({ password: '[REDACTED]', email: '[REDACTED]' });
+      expect(probe['headers']).toEqual({
+        cookie: '[REDACTED]',
+        authorization: '[REDACTED]',
+      });
+
+      const errorProbe = logEntry(capture, 'error-probe');
+      expect(errorProbe['err']).toEqual({ type: 'Error' });
+      const codedProbe = logEntry(capture, 'coded-error-probe');
+      expect(codedProbe['err']).toEqual({ type: 'Error', code: 'ECONNRESET' });
+
+      for (const secret of [
+        'alice@example.test',
+        'hunter2',
+        'tok-1',
+        'session-secret',
+        'Bearer secret',
+        'nested-pass',
+        'nested@example.test',
+        'nested-cookie',
+        'Bearer nested',
+      ]) {
+        expect(capture.text()).not.toContain(secret);
+      }
+      // The error message never reaches the line; only the serialized type/code do.
+      expect(capture.text()).not.toContain('connection reset');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('serves Prometheus text on the existing port when METRICS_ENABLED is unset (AC-6, AC-8)', async () => {
+    const app = buildApp({});
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/metrics' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8');
+      expect(response.headers['cache-control']).toBe('no-store');
+      // Sorted catalog: db_pool_idle is the first metric name.
+      expect(
+        response.body.startsWith(
+          '# HELP cubeclicker_db_pool_idle Postgres pool idle connections at scrape.\n',
+        ),
+      ).toBe(true);
+      // The scrape-time collector reported the null pool as zeroes.
+      expect(response.body).toContain('cubeclicker_db_pool_total 0');
+      expect(response.body).toContain('cubeclicker_db_pool_idle 0');
+      expect(response.body).toContain('cubeclicker_db_pool_waiting 0');
+      // The hub published the configured capacities at construction.
+      expect(response.body).toContain('cubeclicker_ws_connections_capacity 200');
+      expect(response.body).toContain('cubeclicker_ws_connections_open 0');
+      expect(response.body).toContain('cubeclicker_server_capacity 10');
+      expect(response.body).toContain('# TYPE cubeclicker_ws_connections_open gauge');
+      expect(response.body.endsWith('\n')).toBe(true);
+      expect(response.body.endsWith('\n\n')).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not register /metrics when METRICS_ENABLED=false (AC-8)', async () => {
+    const app = buildApp({ METRICS_ENABLED: 'false' });
+
+    try {
+      const metricsResponse = await app.inject({ method: 'GET', url: '/metrics' });
+      expect(metricsResponse.statusCode).toBe(404);
+      expect(metricsResponse.json()).toEqual({
+        message: 'Route GET:/metrics not found',
+        error: 'Not Found',
+        statusCode: 404,
+      });
+
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('instruments the runtime pool and samples its gauges on scrape (AC-16)', async () => {
+    const queries: unknown[][] = [];
+    const pool = {
+      totalCount: 4,
+      idleCount: 3,
+      waitingCount: 1,
+      ended: 0,
+      query(...args: unknown[]) {
+        queries.push(args);
+        return Promise.resolve({ rows: [] });
+      },
+      async end() {
+        this.ended += 1;
+      },
+    };
+    const app = buildApp({}, {
+      auth: { pool, sessionResolver: () => null },
+    });
+
+    try {
+      await app.ready();
+      await expect(pool.query('select $1', [42])).resolves.toEqual({ rows: [] });
+      expect(queries).toEqual([['select $1', [42]]]);
+
+      const scrape = await app.inject({ method: 'GET', url: '/metrics' });
+      expect(scrape.statusCode).toBe(200);
+      expect(scrape.body).toContain('cubeclicker_db_queries_total{result="ok"} 1');
+      expect(scrape.body).toContain('cubeclicker_db_query_duration_seconds_count 1');
+      expect(scrape.body).toContain('cubeclicker_db_pool_total 4');
+      expect(scrape.body).toContain('cubeclicker_db_pool_idle 3');
+      expect(scrape.body).toContain('cubeclicker_db_pool_waiting 1');
+    } finally {
+      await app.close();
+    }
+    expect(pool.ended).toBe(1);
+  });
+
+  it('counts an HTTP auth rate-limit drop without logging the key (AC-14)', async () => {
+    const app = buildApp({});
+
+    try {
+      for (let attempt = 0; attempt < 11; attempt += 1) {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/auth/login',
+          headers: { origin: 'http://localhost:5173' },
+          payload: { username: 'ghost', password: 'password1234' },
+        });
+        expect(response.statusCode).toBe(attempt < 10 ? 401 : 429);
+      }
+
+      const scrape = await app.inject({ method: 'GET', url: '/metrics' });
+      expect(scrape.body).toContain('cubeclicker_rate_limit_drops_total{scope="http"} 1');
+      // The limiter key (IP) is never a label or a log field.
+      expect(scrape.body).not.toContain('127.0.0.1');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('correlates hub lifecycle logs with the Fastify request id (AC-3)', async () => {
+    const capture = createCaptureStream();
+    const app = buildApp(
+      {},
+      { logger: buildLoggerOptions({ LOG_LEVEL: 'info' }, capture.stream) },
+    );
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const port = listenPort(app);
+    const url = `ws://127.0.0.1:${port}/ws`;
+    const client = await connectClient(url);
+
+    try {
+      expect(helloOf(await client.next()).type).toBe('hello');
+      client.send({ type: 'join' });
+      expect(welcomeOf(await client.next()).playerId).toBe('p1');
+      client.close();
+
+      const closed = await waitForLog(capture, 'ws_connection_closed');
+      const incoming = logEntry(capture, 'incoming request');
+      expect(incoming['reqId']).toBe('req-1');
+      expect(incoming['req']).toEqual({
+        method: 'GET',
+        url: '/ws',
+        host: `127.0.0.1:${port}`,
+      });
+
+      const opened = logEntry(capture, 'ws_connection_opened');
+      expect(opened['level']).toBe(30);
+      expect(opened['connectionId']).toBe(incoming['reqId']);
+      expect(closed['connectionId']).toBe('req-1');
+      expect(closed['reason']).toBe('client');
+      expect(closed['wasJoined']).toBe(true);
+      expect(closed['durationMs']).toBeGreaterThanOrEqual(0);
+      for (const entry of [opened, closed]) {
+        for (const forbidden of ['playerId', 'accountId', 'username', 'email', 'remoteAddress']) {
+          expect(forbidden in entry).toBe(false);
+        }
+      }
+
+      const scrape = await app.inject({ method: 'GET', url: '/metrics' });
+      expect(scrape.body).toContain('cubeclicker_ws_connections_total 1');
+      expect(scrape.body).toContain('cubeclicker_ws_connections_open 0');
+      expect(scrape.body).toContain('cubeclicker_ws_connections_closed_total{reason="client"} 1');
+      expect(scrape.body).toContain('cubeclicker_ws_messages_encoded_total{type="hello"} 1');
+      expect(scrape.body).toContain('cubeclicker_ws_frames_sent_total{type="hello"} 1');
+    } finally {
+      client.close();
+      await app.close();
+    }
+  });
+
+  it('logs no PII across a real login, /auth/me and a session-cookie WS join (AC-2, AC-5)', async () => {
+    const capture = createCaptureStream();
+    const emailService = new FakeEmailService();
+    const app = buildApp({}, {
+      logger: buildLoggerOptions({ LOG_LEVEL: 'info' }, capture.stream),
+      auth: { email: emailService },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const port = listenPort(app);
+
+    try {
+      const account = await createAccount(app, emailService, 'alice-observability');
+
+      // The raw client's Host header is `localhost` so the logged `req.host` cannot be
+      // confused with the socket remote address (AC-5).
+      const client = await connectRawClient({
+        host: '127.0.0.1',
+        port,
+        headers: {
+          Host: `localhost:${port}`,
+          Cookie: `session=${account.sessionToken}`,
+        },
+      });
+      try {
+        const hello = frameJson(await client.nextFrame());
+        expect(hello['type']).toBe('hello');
+        expect(isIsoDate(hello['serverTime'])).toBe(true);
+
+        client.sendText(JSON.stringify({ type: 'join' }));
+        const welcome = frameJson(await client.nextFrame());
+        expect(welcome['type']).toBe('welcome');
+        expect(welcome['playerId']).toBe('p1');
+        expect(welcome['name']).toBe('alice-observability');
+        expect(welcome['serverId']).toBe(1);
+
+        client.close();
+        const closed = await waitForLog(capture, 'ws_connection_closed');
+        expect(closed['wasJoined']).toBe(true);
+      } finally {
+        client.close();
+      }
+
+      // The login request logs method/path/host only: no body, headers or query.
+      const loginRequest = logEntryWhere(
+        capture,
+        (entry) =>
+          entry['msg'] === 'incoming request' &&
+          (entry['req'] as { url?: string }).url === '/auth/login',
+        'login request',
+      );
+      expect(loginRequest['req']).toEqual({
+        method: 'POST',
+        url: '/auth/login',
+        host: 'localhost:80',
+      });
+      expect(Object.keys(loginRequest['req'] as object)).toEqual(['method', 'url', 'host']);
+      const loginCompleted = logEntryWhere(
+        capture,
+        (entry) =>
+          entry['msg'] === 'request completed' && entry['reqId'] === loginRequest['reqId'],
+        'login completion',
+      );
+      expect(loginCompleted['res']).toEqual({ statusCode: 200 });
+
+      // Exclude only Fastify's own startup line ("Server listening at http://127.0.0.1:…"):
+      // it carries the local bind address, never a client value. Every request and WS
+      // lifecycle line stays in scope for the PII check.
+      const piiText = capture
+        .lines()
+        .filter((line) => !line.includes('"msg":"Server listening at '))
+        .join('\n');
+      for (const secret of [
+        account.email,
+        account.password,
+        account.username,
+        account.sessionToken,
+        account.verificationToken,
+        account.accountId,
+        'p1',
+        '127.0.0.1',
+      ]) {
+        expect(piiText).not.toContain(secret);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('scrapes two account joins with only allow-listed labels and no PII (AC-7, AC-18)', async () => {
+    const emailService = new FakeEmailService();
+    const app = buildApp({}, { auth: { email: emailService } });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const port = listenPort(app);
+
+    try {
+      const alice = await createAccount(app, emailService, 'alice');
+      const bob = await createAccount(app, emailService, 'bob');
+      const aliceClient = await connectRawClient({
+        host: '127.0.0.1',
+        port,
+        headers: { Cookie: `session=${alice.sessionToken}` },
+      });
+      const bobClient = await connectRawClient({
+        host: '127.0.0.1',
+        port,
+        headers: { Cookie: `session=${bob.sessionToken}` },
+      });
+
+      try {
+        expect(frameJson(await aliceClient.nextFrame())['type']).toBe('hello');
+        aliceClient.sendText(JSON.stringify({ type: 'join' }));
+        const aliceWelcome = frameJson(await aliceClient.nextFrame());
+        expect(aliceWelcome['type']).toBe('welcome');
+        expect(aliceWelcome['playerId']).toBe('p1');
+        expect(aliceWelcome['name']).toBe('alice');
+
+        expect(frameJson(await bobClient.nextFrame())['type']).toBe('hello');
+        bobClient.sendText(JSON.stringify({ type: 'join' }));
+        const bobWelcome = frameJson(await bobClient.nextFrame());
+        expect(bobWelcome['type']).toBe('welcome');
+        expect(bobWelcome['playerId']).toBe('p2');
+        expect(bobWelcome['name']).toBe('bob');
+        expect(bobWelcome['serverId']).toBe(1);
+
+        const scrape = await app.inject({ method: 'GET', url: '/metrics' });
+        expect(scrape.statusCode).toBe(200);
+        expect(scrape.body).toContain('cubeclicker_ws_connections_total 2');
+        expect(scrape.body).toContain('cubeclicker_ws_connections_open 2');
+        expect(scrape.body).toContain('cubeclicker_servers_active 1');
+        expect(scrape.body).toContain('cubeclicker_members_active 2');
+        expect(scrape.body).toContain('cubeclicker_ws_messages_received_total{type="join"} 2');
+        expect(scrape.body).toContain('cubeclicker_ws_messages_encoded_total{type="welcome"} 2');
+        expect(scrape.body).toContain('cubeclicker_ws_frames_sent_total{type="hello"} 2');
+        expect(metricViolations(scrape.body)).toEqual([]);
+
+        for (const secret of [
+          alice.email,
+          bob.email,
+          alice.username,
+          bob.username,
+          alice.password,
+          bob.password,
+          alice.sessionToken,
+          bob.sessionToken,
+          alice.verificationToken,
+          bob.verificationToken,
+          alice.accountId,
+          bob.accountId,
+          'p1',
+          'p2',
+          '127.0.0.1',
+        ]) {
+          expect(scrape.body).not.toContain(secret);
+        }
+      } finally {
+        aliceClient.close();
+        bobClient.close();
+      }
+    } finally {
       await app.close();
     }
   });
