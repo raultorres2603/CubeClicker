@@ -1,6 +1,6 @@
 ---
 feature: vercel-fly-neon-deployment
-state: building
+state: blocked
 spec_review_round: 3
 build_round: 1
 created: 2026-11-13
@@ -15,11 +15,11 @@ Replace the AWS ECS/RDS/Terraform deployment path with a provider split: Vercel 
 ## Task board
 
 - [x] T1 — Frontend per-environment runtime config `[seq]`
-- [ ] T2 — Backend cross-origin auth (CORS, SameSite, WS Origin) `[seq]`
-- [ ] T3 — Vercel/Fly configs, migration runner, image migrations `[seq]`
-- [ ] T4 — Zero-dependency deployed smoke script `[seq]`
-- [ ] T5 — CI/CD workflows (CI gates, environment-gated deploy) `[seq]`
-- [ ] T6 — Documentation, supersession, local-path preservation `[seq]`
+- [x] T2 — Backend cross-origin auth (CORS, SameSite, WS Origin) `[seq]`
+- [x] T3 — Vercel/Fly configs, migration runner, image migrations `[seq]`
+- [x] T4 — Zero-dependency deployed smoke script `[seq]`
+- [x] T5 — CI/CD workflows (CI gates, environment-gated deploy) `[seq]`
+- [x] T6 — Documentation, supersession, local-path preservation `[seq]`
 - [ ] T7 — Verify & integrate (full gates + live development proof) `[seq]`
 
 ## Loop log
@@ -34,6 +34,12 @@ Replace the AWS ECS/RDS/Terraform deployment path with a provider split: Vercel 
 - 2026-11-13 — awaiting_approval → building — user approved defaults + live proof: Vercel root src/frontend; Fly cubeclicker-development/production, iad/512 MB; Neon one project + dev/prod branches; custom app./api. domains; Terraform archived; develop/main with reviewer gate; live T7
 - 2026-11-13 — building T1 started — frontend per-environment runtime config — `tasks.md` T1
 - 2026-11-13 — building T1 completed — local/cloud URL resolver + build gate; commit `aba311d`; frontend 1873 tests, coverage 96.48/96.14/97.56/96.48 — `build-log-T1.md`
+- 2026-11-13 — building T2 completed — cross-origin CORS/cookie/WS Origin; commit `07c4ce4`; backend 1088 tests, coverage 95.22/88.7/99.52/95.22 — `build-log-T2.md`
+- 2026-11-13 — building T3 completed — vercel/fly configs + migration runner; commit `e139928`; backend 1110 tests, coverage 95.25/88.68/99.53/95.25; image migrations 7 files; no-DB startup green — `build-log-T3.md`
+- 2026-11-13 — building T4 completed — deployed smoke script; commit `307027d`; local 8/8 dry-run, live proof pending T7 — `build-log-T4.md`
+- 2026-11-13 — building T5 completed — CI/CD workflows; commit `8105bc1`; actionlint clean; no AWS; coverage 95.25/88.68/99.53/95.25 and 96.48/96.14/97.56/96.48 — `build-log-T5.md`
+- 2026-11-14 — building T6 completed — Vercel/Fly/Neon docs + supersession; commit `7b87cbb`; Terraform archived; local path retained — `build-log-T6.md`
+- 2026-11-14 — building → blocked — T7 live proof blocked by missing cloud assets (Vercel project/token/stable host, Fly apps/token, Neon development branch/URLs, GitHub `development` environment/secrets, `develop` branch, SMTP, push) — discovery report
 
 ## Blockers / open questions
 
