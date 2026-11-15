@@ -4,6 +4,8 @@ import { helloMessage } from '../app.js';
 import { loadGameConfig } from './config.js';
 import { allIds } from './cubes.js';
 import {
+  ACTIVITY_FEED_LIMIT,
+  type ActivityEvent,
   type CubeState,
   type CubeSync,
   MAX_MESSAGE_BYTES,
@@ -13,6 +15,8 @@ import {
   type MiniCubeId,
   type Placement,
   type CustomizationState,
+  activityEventMessage,
+  copyActivityEvent,
   cubeRotatedMessage,
   encodeServerMessage,
   economyUpdateMessage,
@@ -27,6 +31,7 @@ import {
   miniCubesRemovedMessage,
   type LootboxOpened,
   lootboxOpenedMessage,
+  parseActivityEvent,
   parseClientMessage,
   parseLootboxOpened,
   pongMessage,
@@ -271,6 +276,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      activity: [],
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
@@ -295,6 +301,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      activity: [],
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
@@ -318,6 +325,7 @@ describe('server-message builders', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      activity: [],
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
@@ -485,6 +493,7 @@ describe('encodeServerMessage', () => {
         pitchSteps: 0,
       },
       roster: [P1, P2],
+      activity: [],
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
@@ -1220,5 +1229,321 @@ describe('diagnostic ping/pong (AC-23)', () => {
     expect(pongMessage(123)).toEqual({ type: 'pong', t: 123 });
     expect(encodeServerMessage(pongMessage(123))).toBe('{"type":"pong","t":123}');
     expect(pongMessage(0)).toEqual({ type: 'pong', t: 0 });
+  });
+});
+
+/** The pinned representative event (AC-12); its key order is the wire order. */
+const ACTIVITY_CUBE_CLEARED: ActivityEvent = {
+  id: 1,
+  at: 1000,
+  serverId: 1,
+  type: 'cubeCleared',
+  playerId: 'p2',
+  name: 'Player 2',
+  level: 3,
+};
+
+/** One valid fixture per closed event type, each declared in the pinned wire key order. */
+const VALID_ACTIVITY_EVENTS: readonly ActivityEvent[] = [
+  ACTIVITY_CUBE_CLEARED,
+  {
+    id: 2,
+    at: 2000,
+    serverId: 1,
+    type: 'fastClear',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 4,
+    elapsedMs: 2500,
+  },
+  {
+    id: 3,
+    at: 3000,
+    serverId: 1,
+    type: 'levelMilestone',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 5,
+  },
+  {
+    id: 4,
+    at: 4000,
+    serverId: 1,
+    type: 'epicLoot',
+    playerId: 'p2',
+    name: 'Player 2',
+    partId: 'crown-epic',
+  },
+  {
+    id: 5,
+    at: 5000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p2',
+    name: 'Player 2',
+  },
+  {
+    id: 6,
+    at: 6000,
+    serverId: 1,
+    type: 'memberLeft',
+    playerId: 'p2',
+    name: 'Player 2',
+  },
+];
+
+/** The all-fields-valid `cubeCleared` payload the invalid matrix mutates. */
+const ACTIVITY_BASE: Record<string, unknown> = {
+  id: 1,
+  at: 1000,
+  serverId: 1,
+  type: 'cubeCleared',
+  playerId: 'p2',
+  name: 'Player 2',
+  level: 3,
+};
+
+/** The same payload with one field absent (a missing field, not an `undefined` value). */
+function withoutActivityField(field: string): Record<string, unknown> {
+  const copy = { ...ACTIVITY_BASE };
+  delete copy[field];
+  return copy;
+}
+
+const FAST_CLEAR_BASE: Record<string, unknown> = {
+  id: 2,
+  at: 2000,
+  serverId: 1,
+  type: 'fastClear',
+  playerId: 'p2',
+  name: 'Player 2',
+  level: 4,
+  elapsedMs: 2500,
+};
+
+const MILESTONE_BASE: Record<string, unknown> = {
+  id: 3,
+  at: 3000,
+  serverId: 1,
+  type: 'levelMilestone',
+  playerId: 'p2',
+  name: 'Player 2',
+  level: 5,
+};
+
+const EPIC_LOOT_BASE: Record<string, unknown> = {
+  id: 4,
+  at: 4000,
+  serverId: 1,
+  type: 'epicLoot',
+  playerId: 'p2',
+  name: 'Player 2',
+  partId: 'crown-epic',
+};
+
+/** Every invalid variant of the shared validation matrix (spec § Protocol validation matrix). */
+const INVALID_ACTIVITY_EVENTS: ReadonlyArray<readonly [string, unknown]> = [
+  ['a non-object null', null],
+  ['an array', [ACTIVITY_BASE]],
+  ['a bare string', 'activityEvent'],
+  ['a number', 42],
+  ['a missing id', withoutActivityField('id')],
+  ['an id of 0', { ...ACTIVITY_BASE, id: 0 }],
+  ['a negative id', { ...ACTIVITY_BASE, id: -1 }],
+  ['a fractional id', { ...ACTIVITY_BASE, id: 1.5 }],
+  ['a string id', { ...ACTIVITY_BASE, id: '1' }],
+  ['a null id', { ...ACTIVITY_BASE, id: null }],
+  ['a missing at', withoutActivityField('at')],
+  ['a negative at', { ...ACTIVITY_BASE, at: -1 }],
+  ['a NaN at', { ...ACTIVITY_BASE, at: Number.NaN }],
+  ['an Infinity at', { ...ACTIVITY_BASE, at: Number.POSITIVE_INFINITY }],
+  ['a string at', { ...ACTIVITY_BASE, at: '0' }],
+  ['a null at', { ...ACTIVITY_BASE, at: null }],
+  ['a missing serverId', withoutActivityField('serverId')],
+  ['a serverId of 0', { ...ACTIVITY_BASE, serverId: 0 }],
+  ['a negative serverId', { ...ACTIVITY_BASE, serverId: -2 }],
+  ['a fractional serverId', { ...ACTIVITY_BASE, serverId: 2.5 }],
+  ['a string serverId', { ...ACTIVITY_BASE, serverId: '1' }],
+  ['a null serverId', { ...ACTIVITY_BASE, serverId: null }],
+  ['a missing type', withoutActivityField('type')],
+  ['a type with trailing space', { ...ACTIVITY_BASE, type: 'cubeCleared ' }],
+  ['an unknown type', { ...ACTIVITY_BASE, type: 'unknown' }],
+  ['a null type', { ...ACTIVITY_BASE, type: null }],
+  ['a missing playerId', withoutActivityField('playerId')],
+  ['an empty playerId', { ...ACTIVITY_BASE, playerId: '' }],
+  ['a null playerId', { ...ACTIVITY_BASE, playerId: null }],
+  ['a numeric playerId', { ...ACTIVITY_BASE, playerId: 7 }],
+  ['a missing name', withoutActivityField('name')],
+  ['an empty name', { ...ACTIVITY_BASE, name: '' }],
+  ['a null name', { ...ACTIVITY_BASE, name: null }],
+  ['a numeric name', { ...ACTIVITY_BASE, name: 7 }],
+  ['a missing level on cubeCleared', withoutActivityField('level')],
+  ['a level of 0 on cubeCleared', { ...ACTIVITY_BASE, level: 0 }],
+  ['a negative level on cubeCleared', { ...ACTIVITY_BASE, level: -1 }],
+  ['a fractional level on cubeCleared', { ...ACTIVITY_BASE, level: 1.5 }],
+  ['a null level on cubeCleared', { ...ACTIVITY_BASE, level: null }],
+  ['a missing level on levelMilestone', { ...MILESTONE_BASE, level: undefined }],
+  ['a level of 0 on levelMilestone', { ...MILESTONE_BASE, level: 0 }],
+  ['a missing level on fastClear', { ...FAST_CLEAR_BASE, level: undefined }],
+  ['a negative level on fastClear', { ...FAST_CLEAR_BASE, level: -4 }],
+  ['a missing elapsedMs on fastClear', { ...FAST_CLEAR_BASE, elapsedMs: undefined }],
+  ['a negative elapsedMs', { ...FAST_CLEAR_BASE, elapsedMs: -1 }],
+  ['a NaN elapsedMs', { ...FAST_CLEAR_BASE, elapsedMs: Number.NaN }],
+  ['an Infinity elapsedMs', { ...FAST_CLEAR_BASE, elapsedMs: Number.POSITIVE_INFINITY }],
+  ['a null elapsedMs', { ...FAST_CLEAR_BASE, elapsedMs: null }],
+  ['a string elapsedMs', { ...FAST_CLEAR_BASE, elapsedMs: '2500' }],
+  ['a missing partId on epicLoot', { ...EPIC_LOOT_BASE, partId: undefined }],
+  ['an empty partId', { ...EPIC_LOOT_BASE, partId: '' }],
+  ['a null partId', { ...EPIC_LOOT_BASE, partId: null }],
+  ['a numeric partId', { ...EPIC_LOOT_BASE, partId: 7 }],
+];
+
+describe('activity feed wire catalog', () => {
+  it('pins the 20-event ring limit', () => {
+    expect(ACTIVITY_FEED_LIMIT).toBe(20);
+  });
+
+  it('pins the exact representative encoded frame', () => {
+    expect(encodeServerMessage(activityEventMessage(ACTIVITY_CUBE_CLEARED))).toBe(
+      '{"type":"activityEvent","event":{"id":1,"at":1000,"serverId":1,"type":"cubeCleared","playerId":"p2","name":"Player 2","level":3}}',
+    );
+  });
+
+  it('never accepts a client activityEvent frame (server-only catalog)', () => {
+    expect(
+      parseClientMessage(
+        '{"type":"activityEvent","event":{"id":1,"at":1000,"serverId":1,"type":"cubeCleared","playerId":"p2","name":"Player 2","level":3}}',
+      ),
+    ).toEqual({ ok: false, error: 'bad_message' });
+    expect(parseClientMessage('{"type":"activityEvent"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('parseActivityEvent — valid payloads', () => {
+  it.each(VALID_ACTIVITY_EVENTS)('round-trips $type through JSON', (event) => {
+    expect(parseActivityEvent(JSON.parse(JSON.stringify(event)))).toEqual(event);
+  });
+
+  it('accepts a zero/float at and a zero/float elapsedMs', () => {
+    expect(
+      parseActivityEvent({
+        ...ACTIVITY_CUBE_CLEARED,
+        id: 7,
+        at: 0,
+      }),
+    ).toEqual({ ...ACTIVITY_CUBE_CLEARED, id: 7, at: 0 });
+    expect(
+      parseActivityEvent({
+        ...FAST_CLEAR_BASE,
+        at: 999.5,
+        elapsedMs: 0,
+      }),
+    ).toEqual({ ...FAST_CLEAR_BASE, at: 999.5, elapsedMs: 0 });
+  });
+
+  it('drops unknown extra fields instead of forwarding them', () => {
+    expect(
+      parseActivityEvent({
+        ...ACTIVITY_CUBE_CLEARED,
+        accountId: 'account-1',
+        token: 'secret',
+        extra: { nested: true },
+      }),
+    ).toEqual(ACTIVITY_CUBE_CLEARED);
+    expect(parseActivityEvent({ ...EPIC_LOOT_BASE, level: 9 })).toEqual(EPIC_LOOT_BASE);
+  });
+});
+
+describe('parseActivityEvent — invalid payloads', () => {
+  it.each(INVALID_ACTIVITY_EVENTS)('rejects %s', (_label, payload) => {
+    expect(parseActivityEvent(payload)).toBeNull();
+  });
+});
+
+describe('copyActivityEvent', () => {
+  it.each(VALID_ACTIVITY_EVENTS)('copies $type as a fresh pinned-order object', (event) => {
+    const copy = copyActivityEvent(event);
+
+    expect(copy).toEqual(event);
+    expect(copy).not.toBe(event);
+    expect(Object.keys(copy)).toEqual(Object.keys(event));
+  });
+});
+
+describe('activityEventMessage', () => {
+  it.each(VALID_ACTIVITY_EVENTS)('builds and copies a valid $type event', (event) => {
+    const message = activityEventMessage(event);
+
+    expect(message).toStrictEqual({ type: 'activityEvent', event });
+    if (message.type !== 'activityEvent') {
+      throw new Error('expected an activityEvent message');
+    }
+    expect(message.event).not.toBe(event);
+  });
+
+  it('re-validates and copies instead of aliasing the caller object', () => {
+    const source: ActivityEvent = { ...ACTIVITY_CUBE_CLEARED };
+    const message = activityEventMessage(source);
+
+    source.name = 'Mallory';
+    source.level = 9;
+    expect(message).toStrictEqual({ type: 'activityEvent', event: ACTIVITY_CUBE_CLEARED });
+  });
+
+  it.each(INVALID_ACTIVITY_EVENTS)('throws TypeError for %s', (_label, payload) => {
+    expect(() => activityEventMessage(payload as ActivityEvent)).toThrow(
+      new TypeError('invalid activityEvent payload'),
+    );
+  });
+});
+
+describe('placement activity field', () => {
+  it('welcomeMessage copies the activity ring in newest-first order', () => {
+    const placement: Placement = {
+      ...PLACEMENT,
+      activity: [{ ...ACTIVITY_CUBE_CLEARED }, { ...VALID_ACTIVITY_EVENTS[1]! }],
+    };
+
+    const message = welcomeMessage(placement);
+    if (message.type !== 'welcome') {
+      throw new Error('expected a welcome message');
+    }
+    expect(message.activity).toEqual([ACTIVITY_CUBE_CLEARED, VALID_ACTIVITY_EVENTS[1]]);
+    expect(message.activity).not.toBe(placement.activity);
+    expect(message.activity![0]).not.toBe(placement.activity![0]);
+
+    placement.activity![0]!.name = 'Mallory';
+    placement.activity!.push({ ...VALID_ACTIVITY_EVENTS[2]! });
+    expect(message.activity).toEqual([ACTIVITY_CUBE_CLEARED, VALID_ACTIVITY_EVENTS[1]]);
+  });
+
+  it('worldEnteredMessage copies the activity ring', () => {
+    const placement: Placement = { ...PLACEMENT, activity: [{ ...ACTIVITY_CUBE_CLEARED }] };
+
+    const message = worldEnteredMessage(placement);
+    if (message.type !== 'worldEntered') {
+      throw new Error('expected a worldEntered message');
+    }
+    expect(message.activity).toEqual([ACTIVITY_CUBE_CLEARED]);
+
+    placement.activity![0]!.id = 99;
+    expect(message.activity).toEqual([ACTIVITY_CUBE_CLEARED]);
+  });
+
+  it('defaults an absent activity ring to an empty array', () => {
+    const welcome = welcomeMessage(PLACEMENT);
+    if (welcome.type !== 'welcome') {
+      throw new Error('expected a welcome message');
+    }
+    expect(welcome.activity).toEqual([]);
+
+    const entered = worldEnteredMessage(PLACEMENT);
+    if (entered.type !== 'worldEntered') {
+      throw new Error('expected a worldEntered message');
+    }
+    expect(entered.activity).toEqual([]);
   });
 });
