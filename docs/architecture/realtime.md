@@ -253,6 +253,148 @@ values; frontend rollback removes the component, its render and the reducer case
 to roll back operationally: the feed is process memory only, has no feature flag and no stored
 data, and a restart clears it.
 
+## Live leaderboard
+
+Added by feature `server-live-leaderboard` (2026-11-16); the full contract and acceptance criteria
+are in the [feature spec](../features/server-live-leaderboard/spec.md), and the player-facing term
+is in the [glossary](../product/glossary.md#live-leaderboard). The leaderboard is a per-server,
+session-scoped ranking on a third additive snapshot path: the hub derives three counters from
+transitions it has already validated, ranks that server's current members, and publishes one
+`leaderboardUpdate` at most once per second per server through the same encode-once fan-out
+described in § Fan-out. No client message creates, names or modifies a counter, no protocol
+version bump is made, and nothing is persisted.
+
+### Session counters
+
+Every member carries three session counters that start at zero when the member is created on
+`join`: they survive a socket close and a rejoin inside the reconnect grace window, travel with
+the member through a cross-server move, and are removed with the member on final removal (a
+process restart clears every counter). The hub increments them only after the transition it has
+already validated:
+
+| Counter | Increment point | Exact rule |
+| --- | --- | --- |
+| `clicks` | `handleExplode`, after the trailing-second rate limit admits the attempt and `validateExplode` succeeds | +1 per accepted `explode`. An `invalid_click`, a rate-limited attempt, an oversized/malformed frame and a pre-join message never increment. |
+| `facesDestroyed` | `handleExplode`, after the accepted id is added to the member's `removedIds` | +1 iff the existing face-clear predicate is true (all N² ids of the clicked face are removed). At most 6 per cube. |
+| `cubesCompleted` | `handleCompletion`, after `isComplete` succeeds and the completed 1-based cube number is captured | +1 per accepted `cubeCompleted`, including a completion that executes a cross-server move. An `invalid_completion` and an incomplete board never increment. |
+
+A click that clears a face increments both `clicks` and `facesDestroyed`; the following completion
+increments `cubesCompleted`. Coins are deliberately excluded and no account total is read: coin
+income is upgrade-scaled and only server-authoritative for accounts, while a guest's coins and
+upgrades are local and unknown to the hub, so a coin column would compare unlike values, leak a
+value that is private to each account and rank upgrades rather than play. The snapshot never reads
+`member.economy`, `user_economy`, coins, upgrades, customization or `accountId`; guests and
+accounts compete on exactly the same counters and shape.
+
+### Ranking and totals
+
+The server ranks its **current members** (every occupied slot, including members inside reconnect
+grace) with a total order: `cubesCompleted` descending, then `clicks` descending, then ascending
+server slot order (the order in which `registry.forEachMember` visits occupied slots). The first
+`LEADERBOARD_TOP_LIMIT = 5` members become the `entries` array in rank order; a server with fewer
+current members returns all of them, and an empty server returns `entries: []`. Ties at the
+top-five cutoff are resolved by the same order — never by arrival of a frame or name collation.
+
+`totals` are the sums of `cubesCompleted`, `clicks` and `facesDestroyed` over **all current
+members**, including every member outside the top five and every member in reconnect grace. A
+member outside the top five still contributes to the totals. Each flush and every `welcome` /
+`worldEntered` builds the snapshot at that moment from the live roster — no snapshot is cached —
+so a rank or total can never drift from the counters or membership. The wire shape is
+`{ serverId, at, entries, totals }`: `serverId` is the owning server (also the client's
+cross-server guard), `at` is the hub's injected clock at build time, each entry carries only the
+server-issued `playerId` and `name` plus integer `cubesCompleted`/`clicks`, and per-member
+`facesDestroyed` is aggregated into `totals` only.
+
+### Coalescing cadence
+
+A counter or membership change marks that server dirty and schedules exactly one flush at
+`LEADERBOARD_INTERVAL_MS = 1000` if no flush is already pending for that server; changes inside
+the window are included in the pending flush and do not schedule another. At the flush the hub
+builds the snapshot from the server's live members and broadcasts one `leaderboardUpdate` through
+the existing encode-once path (no `except`: the ranking is a server-wide view, so the origin is
+included). A quiet server emits no frame; a rejoin, rotate, purchase, loot open, equip or unequip
+is not a counter change and emits nothing; a socket close (grace start) emits nothing and the
+member stays ranked. A change after a flush starts a new window. The existing 40 ms removal
+batching and 250 ms economy coalescing are independent and unchanged: no per-click leaderboard
+frame, no per-client queue and no global tick is introduced.
+
+### Welcome, reconnect and `worldEntered`
+
+`welcome` (fresh join and rejoin) and `worldEntered` (cross-server move) carry the current snapshot
+as `leaderboard`, so the panel is never empty at join, reconnect or entry and no member waits for
+the next tick. A fresh join sees themselves with zero counters plus every existing member's
+current counters; a rejoin sees every counter accumulated while the socket was closed, and the
+rejoiner's own counters are unchanged. `worldEntered` carries the target server's snapshot
+including the completion that caused the move. `leaderboard` is optional in the wire type: a
+legacy placement without it decodes to `null` and renders no panel.
+
+### Grace, moves and cleanup
+
+A member in reconnect grace keeps their rank and counters (the roster already keeps them); the
+final grace-expiry removal marks the server dirty and the next flush drops the member and
+recomputes the totals. A member who moves takes their own session counters to the target server;
+the target snapshot includes them, and the old server's totals are recomputed without them. When
+a move or removal destroys the old server, its pending flush timer is dropped. `hub.close()`
+discards every pending leaderboard timer and state, so no callback or frame occurs after close.
+The number of pending flush timers never exceeds the number of live servers with a pending flush.
+
+### Isolation and client guard
+
+Snapshots and flush timers are keyed by `serverId`, and a frame is delivered only to that server's
+members through the server's existing slot visitor; no client ever receives another server's
+snapshot. The snapshot carries its `serverId`, and the frontend reducer ignores an update matching
+neither the current server nor a pending swap's target server with the same state reference.
+During travel, a target-server frame replaces the pending snapshot and an old-server frame applies
+to the current snapshot only; the travel-midpoint `applyWorldSwap` applies the pending snapshot and
+no old-server snapshot is applied after the move.
+
+### Metrics
+
+`leaderboardUpdate` is added to the closed `type` allow-lists of
+`cubeclicker_ws_messages_encoded_total` and `cubeclicker_ws_frames_sent_total` — two catalog
+values, no new metric. The allow-list entries are required, not optional instrumentation: the
+counter throws on an unlisted `type` value. One broadcast increments the encoded counter once and
+the frames-sent counter per recipient.
+
+### Client presentation and accessibility
+
+The frontend stores the snapshot in `WorldState.leaderboard` (and `pendingWorldSwap.leaderboard`
+during a travel) and renders a non-interactive `<aside class="leaderboard" aria-label="Server
+leaderboard" aria-live="off">` with an `<h2>` heading, an `<ol>` of at most the five server-ranked
+rows (rank, name, exact `2 cubes · 40 clicks` score text) and a `<p>` with the server totals. The
+component does not re-sort or recompute anything and displays no timestamp. It contributes no
+live-region semantics — no `role="status"`, `role="alert"` or `role="log"` and no live
+`aria-live` — so `.phase-announcement` stays the shell's only polite/assertive live region; the
+ranking is readable on demand as a landmark and an ordered list, and there is no focusable
+control. The panel is a `pointer-events: none` left rail below the HUD on desktop and below the
+activity feed under `max-width: 720px`, with `max-height: 40vh` (18vh on mobile, 12vh under
+`max-width: 720px` and `max-height: 600px`). New rows use a 160 ms entry animation that is
+disabled both by the session's reduced-motion preference (`data-reduced-motion="true"`) and
+independently by `@media (prefers-reduced-motion: reduce)`; reduced motion changes animation only
+and the content stays fully readable. On very short mobile viewports the lower rows may be
+visually clipped behind the upgrades panel (which paints above), while all five rows and the
+totals remain in the DOM and the accessibility tree; the existing panels' placements are
+unchanged.
+
+### Privacy and rollback
+
+Every field is server-issued or hub-derived: `serverId`, the injected-clock `at`, the
+server-issued `playerId`/`name` already published in the roster (guest `Player N` or the account
+username) and integer session counters. No frame or placement object carries `accountId`, token,
+email, IP, coins, upgrade levels, appearance, free text or any client-supplied string, and the
+client catalog still has no leaderboard message, so no client frame can create, set, add or name a
+counter.
+
+The frame is a new `ServerMessage` variant and `leaderboard` is optional in the wire type, with no
+protocol version bump, so both deploy orders are safe: an old client drops an unknown
+`leaderboardUpdate` frame and ignores the extra `leaderboard` field, and a new client against an
+old backend renders no panel. Backend rollback removes the union/parser/copier/builder, the
+`leaderboard` field from `Placement`/`placementPayload`, the leaderboard core and hub counters,
+marks and coalescer, and the two metrics allow-list values; frontend rollback removes the panel
+and its render, `WorldState.leaderboard`/`pendingWorldSwap.leaderboard` and the reducer case.
+There is nothing to roll back operationally: the leaderboard is process memory only, has no
+feature flag and no stored data, and a restart clears it.
+
 ## Benchmark
 
 The feature's before/after evidence is produced by

@@ -70,6 +70,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** A resource required to open a **lootbox**. Earned alongside a lootbox when a **cube** is completed (one key per completed cube). Keys are persisted per **account** in the `user_economy.keys` column; **guests** earn them for the session only. Spending a key together with a lootbox grants a random **part**.
 **Example:** Completing a cube awards `+1` key; opening a lootbox consumes `1` key.
 
+### live leaderboard
+
+**Definition:** A compact, per-**game server** ranking of that server's current **server members** by their session progress: cubes completed, then accepted clicks, then server slot order. The hub counts each member's accepted clicks, faces cleared and cubes completed from transitions it has already validated — never from a client-reported value — and publishes the top five entries plus server-wide totals at most once per second, coalesced per server, so a busy server never receives a frame per click. Fresh joins, reconnects and cross-server moves receive the current snapshot in the `welcome`/`worldEntered` placement. Counters are session-scoped: they follow a member who moves servers, a member in reconnect grace stays ranked until final removal, and a backend restart clears everything. The leaderboard ranks no coins and reads no persisted account totals, so **guests** and accounts compete on exactly the same basis; the panel is non-interactive, not a live region and has a reduced-motion variant.
+**Example:** A guest and an account that each completed one cube are ranked by their accepted clicks on the same game server, and the panel shows the five leaders plus `Server totals: 2 cubes · 40 clicks · 3 faces`.
+
 ### lootbox
 
 **Definition:** A closed container earned by completing (destroying) a **cube**. A lootbox requires a **key** to open; opening consumes one of each and grants exactly one random lootable **part** for one **part slot** (75% rare, 25% epic). Lootboxes are persisted per **account** in the `user_economy.lootboxes` column; **guests** earn them for the session only.
