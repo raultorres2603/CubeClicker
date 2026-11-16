@@ -1,10 +1,10 @@
 ---
 feature: vercel-fly-neon-deployment
-state: blocked
+state: building
 spec_review_round: 3
 build_round: 1
 created: 2026-11-13
-updated: 2026-11-13
+updated: 2026-11-16
 ---
 # Status — Vercel + Fly.io + Neon Deployment Migration
 
@@ -40,9 +40,15 @@ Replace the AWS ECS/RDS/Terraform deployment path with a provider split: Vercel 
 - 2026-11-13 — building T5 completed — CI/CD workflows; commit `8105bc1`; actionlint clean; no AWS; coverage 95.25/88.68/99.53/95.25 and 96.48/96.14/97.56/96.48 — `build-log-T5.md`
 - 2026-11-14 — building T6 completed — Vercel/Fly/Neon docs + supersession; commit `7b87cbb`; Terraform archived; local path retained — `build-log-T6.md`
 - 2026-11-14 — building → blocked — T7 live proof blocked by missing cloud assets (Vercel project/token/stable host, Fly apps/token, Neon development branch/URLs, GitHub `development` environment/secrets, `develop` branch, SMTP, push) — discovery report
+- 2026-11-16 — blocked → building — user authorized MCP-based development deployment on free tiers; T7 provisioning/deploy in progress — user directive
+- 2026-11-16 — T7 provisioning partial — Vercel project `cubeclicker-development` + Neon `development` branch created; Neon production protection blocked by Free plan; Fly/GitHub MCPs cannot deploy/configure; Vercel SSO protection and missing SMTP/domain remain — `build-log-T7-provision.md`
 
 ## Blockers / open questions
 
 - Q-5 — Terraform archive vs delete: user-owned decision; deleting files requires explicit approval.
-- Q-14 — live proof assets/domains: user-owned; stable frontend hostnames and Fly/Neon/Vercel credentials are required.
+- Q-14 — live proof assets/domains: Vercel project + Neon dev branch now exist; Fly backend, GitHub environments/secrets, SMTP, and stable hostnames still required.
+- **Neon Free plan:** 0 protected branches; production branch is unprotected. Accept documented deviation or upgrade.
+- **Fly MCP:** Managed Postgres-only; cannot create apps/machines, set secrets, deploy the Dockerfile, or read logs. Need `flyctl` + `FLY_API_TOKEN` (or a Machines-capable MCP).
+- **GitHub MCP:** no environment/secret/variable/workflow-dispatch tools. Need `gh` or the GitHub UI for `develop`, `development`/`production` environments, reviewers, and the secret/variable catalog.
+- **Vercel:** project exists but has SSO protection and no deployment; backend URL/WS URL not set.
 - Q-1..Q-4, Q-6..Q-13 — see `spec.md` § Open questions; recommended defaults recorded.
