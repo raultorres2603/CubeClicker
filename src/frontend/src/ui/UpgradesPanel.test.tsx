@@ -61,29 +61,48 @@ const ROW_ICONS: Record<RowId, string> = {
 interface RowFixture {
   id: RowId;
   name: string;
-  level: string;
+  level: number;
+  maxLevel: number;
   effect: string;
   cost: string;
-  enabled: boolean;
+  /** Drives both `data-affordable` and the buy button's disabled state (AC-20). */
+  affordable: boolean;
 }
 
-function row({ id, name, level, effect, cost, enabled }: RowFixture): string {
+/** The `aria-hidden` level track: exactly `maxLevel` dots, the first `level` filled. */
+function pips(maxLevel: number, level: number): string {
   return (
-    `<li class="upgrade-row" data-upgrade="${id}">` +
+    '<span class="upgrade-pips" aria-hidden="true">' +
+    Array.from(
+      { length: maxLevel },
+      (_, index) =>
+        `<span class="upgrade-pip" data-filled="${index < level ? 'true' : 'false'}"></span>`,
+    ).join('') +
+    '</span>'
+  );
+}
+
+function row({ id, name, level, maxLevel, effect, cost, affordable }: RowFixture): string {
+  return (
+    `<li class="upgrade-row" data-upgrade="${id}" data-affordable="${affordable ? 'true' : 'false'}">` +
     ROW_ICONS[id] +
     `<span data-name="true">${name}</span>` +
-    `<span data-level="true">${level}</span>` +
+    `<span data-level="true">${level}/${maxLevel}</span>` +
     `<span data-effect="true">${effect}</span>` +
     DIAMOND_ICON +
     `<span data-cost="true">${cost}</span>` +
-    `<button type="button" class="upgrade-buy" aria-label="Buy"${enabled ? '' : ' disabled=""'}></button>` +
+    pips(maxLevel, level) +
+    `<button type="button" class="upgrade-buy" aria-label="Buy"${affordable ? '' : ' disabled=""'}></button>` +
     '</li>'
   );
 }
 
-function panel(mode: 'guest' | 'account', rows: readonly RowFixture[]): string {
+function panel(mode: 'guest' | 'account', coins: number, rows: readonly RowFixture[]): string {
+  const coinsText = coins.toFixed(2);
   return (
     `<section aria-label="Upgrades" class="upgrades-panel" data-mode="${mode}">` +
+    '<h2 class="upgrades-title">Upgrades</h2>' +
+    `<p class="upgrades-balance" data-coins="${coinsText}">Coins ${coinsText}</p>` +
     `<ul>${rows.map(row).join('')}</ul>` +
     '</section>'
   );
@@ -93,47 +112,55 @@ const ZERO_ROWS: readonly RowFixture[] = [
   {
     id: 'mini_cube_value',
     name: 'Click Power',
-    level: '0/10',
+    level: 0,
+    maxLevel: 10,
     effect: '+10% coins per mini-cube',
     cost: '10',
-    enabled: false,
+    affordable: false,
   },
   {
     id: 'cube_value',
     name: 'Cube Bonus',
-    level: '0/10',
+    level: 0,
+    maxLevel: 10,
     effect: '+10% coins per cube',
     cost: '50',
-    enabled: false,
+    affordable: false,
   },
   {
     id: 'speed_window',
     name: 'Quick Hands',
-    level: '0/5',
+    level: 0,
+    maxLevel: 5,
     effect: '+2s speed-bonus window',
     cost: '25',
-    enabled: false,
+    affordable: false,
   },
 ];
 
 describe('UpgradesPanel', () => {
-  it('renders the pinned zero-state markup with row icons, cost diamonds and disabled buys', () => {
+  it('renders the pinned zero-state markup with title, balance, pips, icons and disabled buys', () => {
     const html = renderToStaticMarkup(
       <UpgradesPanel upgrades={{}} coins={0} mode="account" onPurchase={() => {}} />,
     );
 
-    expect(html).toBe(panel('account', ZERO_ROWS));
+    expect(html).toBe(panel('account', 0, ZERO_ROWS));
 
     // One decorative row icon and one decorative cost diamond per row (AC-6, AC-19).
     expect(html.match(/ data-icon="upgrade-click"/g)).toHaveLength(1);
     expect(html.match(/ data-icon="upgrade-cube"/g)).toHaveLength(1);
     expect(html.match(/ data-icon="upgrade-speed"/g)).toHaveLength(1);
     expect(html.match(/ data-icon="diamond"/g)).toHaveLength(3);
-    expect(html.match(/aria-hidden="true"/g)).toHaveLength(6);
+    expect(html.match(/aria-hidden="true"/g)).toHaveLength(9);
     expect(html.match(/focusable="false"/g)).toHaveLength(6);
+
+    // 10 + 10 + 5 pips, none filled at level 0 (AC-20).
+    expect(html.match(/class="upgrade-pip"/g)).toHaveLength(25);
+    expect(html.match(/data-filled="true"/g)).toBeNull();
+    expect(html.match(/data-affordable="false"/g)).toHaveLength(3);
   });
 
-  it('renders level/max and the level-scaled cost for every upgrade', () => {
+  it('renders level/max, the level-scaled cost and one filled pip per level', () => {
     const upgrades: UpgradeState = {
       mini_cube_value: 3,
       cube_value: 7,
@@ -144,36 +171,43 @@ describe('UpgradesPanel', () => {
     );
 
     expect(html).toBe(
-      panel('account', [
+      panel('account', 1000, [
         {
           id: 'mini_cube_value',
           name: 'Click Power',
-          level: '3/10',
+          level: 3,
+          maxLevel: 10,
           effect: '+10% coins per mini-cube',
           cost: '40', // 10 * (3 + 1)
-          enabled: true,
+          affordable: true,
         },
         {
           id: 'cube_value',
           name: 'Cube Bonus',
-          level: '7/10',
+          level: 7,
+          maxLevel: 10,
           effect: '+10% coins per cube',
           cost: '400', // 50 * (7 + 1)
-          enabled: true,
+          affordable: true,
         },
         {
           id: 'speed_window',
           name: 'Quick Hands',
-          level: '2/5',
+          level: 2,
+          maxLevel: 5,
           effect: '+2s speed-bonus window',
           cost: '75', // 25 * (2 + 1)
-          enabled: true,
+          affordable: true,
         },
       ]),
     );
+
+    // 3 + 7 + 2 filled dots across the three tracks.
+    expect(html.match(/data-filled="true"/g)).toHaveLength(12);
+    expect(html.match(/data-filled="false"/g)).toHaveLength(13);
   });
 
-  it('renders Infinity cost and a disabled buy button at max level', () => {
+  it('renders Infinity cost, full pips and a disabled buy button at max level', () => {
     const upgrades: UpgradeState = {
       mini_cube_value: 10,
       cube_value: 10,
@@ -184,33 +218,40 @@ describe('UpgradesPanel', () => {
     );
 
     expect(html).toBe(
-      panel('account', [
+      panel('account', 10000, [
         {
           id: 'mini_cube_value',
           name: 'Click Power',
-          level: '10/10',
+          level: 10,
+          maxLevel: 10,
           effect: '+10% coins per mini-cube',
           cost: 'Infinity',
-          enabled: false,
+          affordable: false,
         },
         {
           id: 'cube_value',
           name: 'Cube Bonus',
-          level: '10/10',
+          level: 10,
+          maxLevel: 10,
           effect: '+10% coins per cube',
           cost: 'Infinity',
-          enabled: false,
+          affordable: false,
         },
         {
           id: 'speed_window',
           name: 'Quick Hands',
-          level: '5/5',
+          level: 5,
+          maxLevel: 5,
           effect: '+2s speed-bonus window',
           cost: 'Infinity',
-          enabled: false,
+          affordable: false,
         },
       ]),
     );
+
+    // A maxed row is never affordable and every dot is filled.
+    expect(html.match(/data-affordable="true"/g)).toBeNull();
+    expect(html.match(/data-filled="true"/g)).toHaveLength(25);
   });
 
   it('disables buy buttons when coins are below cost', () => {
@@ -219,7 +260,7 @@ describe('UpgradesPanel', () => {
     );
 
     // Costs 10/50/25, none affordable with 5 coins.
-    expect(html).toBe(panel('account', ZERO_ROWS));
+    expect(html).toBe(panel('account', 5, ZERO_ROWS));
   });
 
   it('enables only the affordable buy button when coins are 10', () => {
@@ -228,10 +269,10 @@ describe('UpgradesPanel', () => {
     );
 
     expect(html).toBe(
-      panel('account', [
-        { ...ZERO_ROWS[0], enabled: true },
-        { ...ZERO_ROWS[1], enabled: false },
-        { ...ZERO_ROWS[2], enabled: false },
+      panel('account', 10, [
+        { ...ZERO_ROWS[0], affordable: true },
+        { ...ZERO_ROWS[1], affordable: false },
+        { ...ZERO_ROWS[2], affordable: false },
       ]),
     );
   });
@@ -242,10 +283,10 @@ describe('UpgradesPanel', () => {
     );
 
     expect(html).toBe(
-      panel('guest', [
-        { ...ZERO_ROWS[0], enabled: true },
-        { ...ZERO_ROWS[1], enabled: false },
-        { ...ZERO_ROWS[2], enabled: false },
+      panel('guest', 10, [
+        { ...ZERO_ROWS[0], affordable: true },
+        { ...ZERO_ROWS[1], affordable: false },
+        { ...ZERO_ROWS[2], affordable: false },
       ]),
     );
   });
@@ -259,11 +300,74 @@ describe('UpgradesPanel', () => {
     );
 
     expect(guest).toContain(
-      '<section aria-label="Upgrades" class="upgrades-panel" data-mode="guest">',
+      '<section aria-label="Upgrades" class="upgrades-panel" data-mode="guest">' +
+        '<h2 class="upgrades-title">Upgrades</h2>' +
+        '<p class="upgrades-balance" data-coins="0.00">Coins 0.00</p>',
     );
     expect(account).toContain(
-      '<section aria-label="Upgrades" class="upgrades-panel" data-mode="account">',
+      '<section aria-label="Upgrades" class="upgrades-panel" data-mode="account">' +
+        '<h2 class="upgrades-title">Upgrades</h2>' +
+        '<p class="upgrades-balance" data-coins="0.00">Coins 0.00</p>',
     );
+  });
+
+  it('renders the Upgrades heading and the two-decimal coin balance (AC-20, AC-29)', () => {
+    render(<UpgradesPanel upgrades={{}} coins={12.5} mode="account" onPurchase={() => {}} />);
+
+    const heading = screen.getByRole('heading', { level: 2, name: 'Upgrades' });
+    expect(heading.tagName).toBe('H2');
+    expect(heading.className).toBe('upgrades-title');
+
+    const balance = screen.getByText('Coins 12.50');
+    expect(balance.tagName).toBe('P');
+    expect(balance.className).toBe('upgrades-balance');
+    expect(balance.getAttribute('data-coins')).toBe('12.50');
+  });
+
+  it('marks exactly the rows whose cost the balance covers as data-affordable', () => {
+    const { container } = render(
+      <UpgradesPanel upgrades={{}} coins={25} mode="account" onPurchase={() => {}} />,
+    );
+    const affordable = (id: RowId): string | null | undefined =>
+      container
+        .querySelector(`li[data-upgrade="${id}"]`)
+        ?.getAttribute('data-affordable');
+
+    expect(affordable('mini_cube_value')).toBe('true');
+    expect(affordable('cube_value')).toBe('false');
+    expect(affordable('speed_window')).toBe('true');
+  });
+
+  it('renders one aria-hidden pip track per row with maxLevel dots and the level filled', () => {
+    const { container } = render(
+      <UpgradesPanel
+        upgrades={{ mini_cube_value: 3, cube_value: 0, speed_window: 5 }}
+        coins={0}
+        mode="account"
+        onPurchase={() => {}}
+      />,
+    );
+
+    const rows = container.querySelectorAll('li.upgrade-row');
+    expect(rows).toHaveLength(3);
+
+    const rowPips = (index: number): Element[] =>
+      Array.from(rows[index]!.querySelectorAll('.upgrade-pips .upgrade-pip'));
+    const filled = (dots: readonly Element[]): number =>
+      dots.filter((dot) => dot.getAttribute('data-filled') === 'true').length;
+
+    expect(rowPips(0)).toHaveLength(10);
+    expect(filled(rowPips(0))).toBe(3);
+    expect(rowPips(1)).toHaveLength(10);
+    expect(filled(rowPips(1))).toBe(0);
+    expect(rowPips(2)).toHaveLength(5);
+    expect(filled(rowPips(2))).toBe(5);
+
+    const tracks = container.querySelectorAll('.upgrade-pips');
+    expect(tracks).toHaveLength(3);
+    for (const track of tracks) {
+      expect(track.getAttribute('aria-hidden')).toBe('true');
+    }
   });
 
   it('calls onPurchase once with the upgrade id when an enabled buy control is clicked', async () => {

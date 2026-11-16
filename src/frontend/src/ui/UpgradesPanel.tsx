@@ -30,6 +30,13 @@ const ROW_ICON: Record<UpgradeId, ComponentType<IconProps>> = {
 
 const GUESTS_CAN_SPEND = true;
 
+/**
+ * The upgrade shop (plan § UI, AC-20/AC-28): `Upgrades` heading, a two-decimal coin
+ * balance (`data-coins`), one row per catalog entry with `data-affordable`, the accepted
+ * level/effect/cost text, an `aria-hidden` `maxLevel` pip track and the circular green
+ * `+` buy button. Buy/disabled/max semantics and the accepted `data-purchased` pulse are
+ * unchanged; `app.css`/`game-view.css` own the 44 px targets and focus rings.
+ */
 export function UpgradesPanel({
   upgrades,
   coins,
@@ -109,8 +116,14 @@ export function UpgradesPanel({
     };
   }, []);
 
+  const coinsText = coins.toFixed(2);
+
   return (
     <section aria-label="Upgrades" className="upgrades-panel" data-mode={mode}>
+      <h2 className="upgrades-title">Upgrades</h2>
+      <p className="upgrades-balance" data-coins={coinsText}>
+        Coins {coinsText}
+      </p>
       <ul>
         {UPGRADE_CATALOG.map((def) => {
           const level = upgradeLevel(upgrades, def.id);
@@ -123,6 +136,7 @@ export function UpgradesPanel({
             <li
               className="upgrade-row"
               data-upgrade={def.id}
+              data-affordable={affordable ? 'true' : 'false'}
               key={def.id}
               {...(purchased.has(def.id) ? { 'data-purchased': 'true' } : {})}
             >
@@ -134,6 +148,15 @@ export function UpgradesPanel({
               <span data-effect>{EFFECT_PREVIEW[def.id]}</span>
               <DiamondIcon />
               <span data-cost>{cost}</span>
+              <span className="upgrade-pips" aria-hidden="true">
+                {Array.from({ length: def.maxLevel }, (_, index) => (
+                  <span
+                    className="upgrade-pip"
+                    data-filled={index < level ? 'true' : 'false'}
+                    key={`${def.id}-pip-${index}`}
+                  />
+                ))}
+              </span>
               <button
                 type="button"
                 className="upgrade-buy"

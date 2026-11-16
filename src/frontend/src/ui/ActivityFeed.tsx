@@ -13,6 +13,8 @@ import type { ActivityEvent } from '../multiplayer/protocol';
  *
  * The copy is built from server-issued fields only and renders as text (React escapes it);
  * no timestamp is shown because the event clock is the server clock, not the client's.
+ * The title carries one decorative `gf-live-dot` (`aria-hidden`, `data-live-dot`) so the
+ * rail reads as live without adding any accessible semantics.
  * `data-reduced-motion` lets `game-view.css` disable the 160 ms entry animation for the
  * session preference independently of `prefers-reduced-motion`.
  */
@@ -63,7 +65,10 @@ export function ActivityFeed({
       aria-live="off"
       data-reduced-motion={reducedMotion ? 'true' : 'false'}
     >
-      <h2 className="activity-feed-title">Server activity</h2>
+      <h2 className="activity-feed-title">
+        <span className="gf-live-dot" data-live-dot="true" aria-hidden="true" />
+        Server activity
+      </h2>
       <ol className="activity-feed-list">
         {events.slice(0, ACTIVITY_VISIBLE_COUNT).map((event) => (
           <li key={event.id} data-event-type={event.type} data-event-id={event.id}>

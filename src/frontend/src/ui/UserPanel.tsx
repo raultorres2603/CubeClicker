@@ -8,10 +8,13 @@ import { GroupIcon } from './icons';
  *
  * Pinned markup/copy (plan § UI):
  * - toggle button `class="users-badge"`, exact label `Users on Server`, a decorative
- *   group icon (`aria-hidden`, not focusable) and `aria-expanded`;
- * - open panel: `class="users-list"`, `aria-label="Users on server"`, the disabled own row first
- *   (`{name} (You)`), then one `<button>` per other member in slot order showing
- *   `{name} · Cube {levelIndex + 1}`;
+ *   group icon, an `aria-hidden` live dot and an `aria-hidden` `.users-count` badge
+ *   (`data-count` = members + self), and `aria-expanded`;
+ * - open panel: `class="users-list"`, `aria-label="Users on server"`,
+ *   `<h2 class="users-list-title">Crew</h2>` immediately before the `<ul>`, the disabled
+ *   own row first (`{name} (You)`), then one `<button>` per other member in slot order
+ *   showing `{name} · Cube {levelIndex + 1}` with `data-level="{levelIndex + 1}"` for the
+ *   CSS level chip;
  * - `Return to my cube` rendered exactly while the session is spectating (mode
  *   `viewing`), independent of whether the panel is open.
  *
@@ -70,7 +73,11 @@ export function UserPanel({
         }}
       >
         <GroupIcon />
+        <span className="gf-live-dot" data-live-dot="true" aria-hidden="true" />
         Users on Server
+        <span className="users-count" data-count={members.length + 1} aria-hidden="true">
+          {members.length + 1}
+        </span>
       </button>
       {spectating ? (
         <button type="button" onClick={onReturn}>
@@ -79,6 +86,7 @@ export function UserPanel({
       ) : null}
       {open ? (
         <section className="users-list" aria-label="Users on server">
+          <h2 className="users-list-title">Crew</h2>
           <ul>
             <li>
               <button type="button" disabled>
@@ -89,6 +97,7 @@ export function UserPanel({
               <li key={member.playerId}>
                 <button
                   type="button"
+                  data-level={member.levelIndex + 1}
                   onClick={() => {
                     setOpen(false);
                     onSpectate(member.playerId);

@@ -36,10 +36,17 @@ afterEach(() => {
 const ARIA_LABEL =
   'Game canvas: click a mini-cube to explode it; press W, A, S, D or the arrow keys to rotate the cube';
 
-const BANNER_CONNECTING = '<div class="connection-banner">Connecting…</div>';
-const BANNER_RETRYING = '<div class="connection-banner">Connection lost — retrying…</div>';
+const BANNER_CONNECTING =
+  '<div class="connection-banner" data-status="connecting">' +
+  '<span class="connection-dot" data-connection-dot="true" aria-hidden="true"></span>' +
+  'Connecting…</div>';
+const BANNER_RETRYING =
+  '<div class="connection-banner" data-status="disconnected">' +
+  '<span class="connection-dot" data-connection-dot="true" aria-hidden="true"></span>' +
+  'Connection lost — retrying…</div>';
 const BANNER_EXHAUSTED =
-  '<div class="connection-banner">' +
+  '<div class="connection-banner" data-status="exhausted">' +
+  '<span class="connection-dot" data-connection-dot="true" aria-hidden="true"></span>' +
   '<span>Connection lost</span>' +
   '<button type="button">Retry</button>' +
   '</div>';
@@ -70,13 +77,20 @@ const COIN_ICON =
   '<circle cx="12" cy="12" r="8.75"></circle>' +
   '<path d="M12 7.4l1.12 3.06 3.25.12-2.56 2.01.89 3.13L12 13.9l-2.7 1.82.89-3.13-2.56-2.01 3.25-.12z" fill="currentColor" stroke-width="1"></path>' +
   '</svg>';
-const CUBE_LEVEL_ICON =
+const KEY_ICON =
   ICON_PREFIX +
-  'cube-level' +
+  'key' +
   ICON_SUFFIX +
-  '<path d="M9 3.6l6.4 3.3v6.9L9 17.1l-6.4-3.3V6.9z"></path>' +
-  '<path d="M2.6 6.9L9 10.2l6.4-3.3M9 10.2v6.9"></path>' +
-  '<path d="M18.2 12.2V5.4M15.4 8.2l2.8-2.8 2.8 2.8"></path>' +
+  '<circle cx="8" cy="8" r="4.2"></circle>' +
+  '<path d="M11 11l8 8M16.2 16.2l2.2-2.2M18.7 18.7l2-2"></path>' +
+  '</svg>';
+const LOOTBOX_ICON =
+  ICON_PREFIX +
+  'lootbox' +
+  ICON_SUFFIX +
+  '<path d="M3.5 8.5h17v11.2h-17z"></path>' +
+  '<path d="M3.5 8.5l2.4-4.2h12.2l2.4 4.2M10.2 8.5v11.2M13.8 8.5v11.2"></path>' +
+  '<path d="M9.4 8.5h5.2v3.1H9.4z"></path>' +
   '</svg>';
 const SERVER_ICON =
   ICON_PREFIX +
@@ -147,17 +161,30 @@ const DIAMOND_ICON =
   '<path d="M3.4 8.8h17.2M7.2 3.4L12 8.8l4.8-5.4M12 20.8V8.8"></path>' +
   '</svg>';
 
-const USERS_BADGE_CLOSED =
-  '<button type="button" class="users-badge" aria-expanded="false">' +
-  GROUP_ICON +
-  'Users on Server</button>';
+/** The `Users on Server` badge: group icon, decorative live dot, label and count (AC-24). */
+function usersBadge(count: number): string {
+  return (
+    '<button type="button" class="users-badge" aria-expanded="false">' +
+    GROUP_ICON +
+    '<span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>' +
+    'Users on Server' +
+    `<span class="users-count" data-count="${count}" aria-hidden="true">${count}</span>` +
+    '</button>'
+  );
+}
 
-const PANEL_CLOSED = '<div class="user-panel">' + USERS_BADGE_CLOSED + '</div>';
-const PANEL_CLOSED_WITH_RETURN =
-  '<div class="user-panel">' +
-  USERS_BADGE_CLOSED +
-  '<button type="button">Return to my cube</button>' +
-  '</div>';
+/** The closed user panel; `memberCount` excludes the self row (`members.length + 1`). */
+function userPanel({ memberCount = 0, returnButton = false }: {
+  memberCount?: number;
+  returnButton?: boolean;
+} = {}): string {
+  return (
+    '<div class="user-panel">' +
+    usersBadge(memberCount + 1) +
+    (returnButton ? '<button type="button">Return to my cube</button>' : '') +
+    '</div>'
+  );
+}
 
 function snapshotFor(
   phase: Phase,
@@ -344,27 +371,43 @@ function canvasElement(): HTMLCanvasElement {
   return canvas;
 }
 
-/** Exact HUD markup for the welcomed shell (T4): five icon rows, toggle last. */
+/**
+ * Exact AC-19 HUD markup for the welcomed shell: header + level chip, the three-chip
+ * `Resources` group, the three stat rows and the 24 px toggle last.
+ */
 function hudMarkup({
   clicks,
   facesDestroyed,
   coins,
   cube,
   server,
+  keys = 0,
+  lootboxes = 0,
 }: {
   clicks: number;
   facesDestroyed: number;
   coins: string;
   cube: number;
   server: number;
+  keys?: number;
+  lootboxes?: number;
 }): string {
   return (
     '<section aria-label="Game statistics" class="hud-panel">' +
+    '<div class="hud-header">' +
+    '<h2 class="hud-title">Pilot status</h2>' +
+    `<span class="hud-level" data-stat="cube">Cube ${cube}</span>` +
+    '</div>' +
+    '<div class="hud-resources" role="group" aria-label="Resources">' +
+    `<span data-resource="coins">${COIN_ICON}Coins <span class="hud-resource-value" data-stat="coins">${coins}</span></span>` +
+    `<span data-resource="keys">${KEY_ICON}Keys <span class="hud-resource-value" data-stat="keys">${keys}</span></span>` +
+    `<span data-resource="lootboxes">${LOOTBOX_ICON}Lootboxes <span class="hud-resource-value" data-stat="lootboxes">${lootboxes}</span></span>` +
+    '</div>' +
+    '<div class="hud-grid">' +
     `<p class="hud-row" data-row="clicks">${CURSOR_ICON}Clicks: <span data-stat="clicks">${clicks}</span></p>` +
     `<p class="hud-row" data-row="faces-destroyed">${CUBE_ICON}Faces destroyed: <span data-stat="faces-destroyed">${facesDestroyed}</span></p>` +
-    `<p class="hud-row" data-row="coins">${COIN_ICON}Coins <span data-stat="coins">${coins}</span></p>` +
-    `<p class="hud-row" data-row="cube">${CUBE_LEVEL_ICON}Cube <span data-stat="cube">${cube}</span></p>` +
     `<p class="hud-row" data-row="server">${SERVER_ICON}Server <span data-stat="server">${server}</span></p>` +
+    '</div>' +
     '<button type="button" aria-expanded="true" aria-label="Toggle HUD"></button>' +
     '</section>'
   );
@@ -404,29 +447,46 @@ const ZERO_UPGRADE_ROWS: readonly UpgradeRowFixture[] = [
   },
 ];
 
+const UPGRADE_MAX_LEVEL: Record<UpgradeRowId, number> = {
+  mini_cube_value: 10,
+  cube_value: 10,
+  speed_window: 5,
+};
+
 const UPGRADE_ROW_ICONS: Record<UpgradeRowId, string> = {
   mini_cube_value: UPGRADE_CLICK_ICON,
   cube_value: UPGRADE_CUBE_ICON,
   speed_window: UPGRADE_SPEED_ICON,
 };
 
-/** Exact upgrades panel markup for the zero state rendered by the shell (T6). */
+/** Exact upgrades panel markup for the zero state rendered by the shell (T9, AC-20). */
 function upgradesPanel(mode: 'guest' | 'account', coins: number): string {
   const rows = ZERO_UPGRADE_ROWS.map((row) => {
-    const enabled = coins >= row.cost;
+    const affordable = coins >= row.cost;
+    const pips =
+      '<span class="upgrade-pips" aria-hidden="true">' +
+      '<span class="upgrade-pip" data-filled="false"></span>'.repeat(UPGRADE_MAX_LEVEL[row.id]) +
+      '</span>';
     return (
-      `<li class="upgrade-row" data-upgrade="${row.id}">` +
+      `<li class="upgrade-row" data-upgrade="${row.id}" data-affordable="${affordable ? 'true' : 'false'}">` +
       UPGRADE_ROW_ICONS[row.id] +
       `<span data-name="true">${row.name}</span>` +
       `<span data-level="true">${row.level}</span>` +
       `<span data-effect="true">${row.effect}</span>` +
       DIAMOND_ICON +
       `<span data-cost="true">${row.cost}</span>` +
-      `<button type="button" class="upgrade-buy" aria-label="Buy"${enabled ? '' : ' disabled=""'}></button>` +
+      pips +
+      `<button type="button" class="upgrade-buy" aria-label="Buy"${affordable ? '' : ' disabled=""'}></button>` +
       '</li>'
     );
   }).join('');
-  return `<section aria-label="Upgrades" class="upgrades-panel" data-mode="${mode}"><ul>${rows}</ul></section>`;
+  return (
+    `<section aria-label="Upgrades" class="upgrades-panel" data-mode="${mode}">` +
+    '<h2 class="upgrades-title">Upgrades</h2>' +
+    `<p class="upgrades-balance" data-coins="${coins.toFixed(2)}">Coins ${coins.toFixed(2)}</p>` +
+    `<ul>${rows}</ul>` +
+    '</section>'
+  );
 }
 
 /** Exact CustomizationToggle markup for the welcomed shell (T7). */
@@ -443,17 +503,21 @@ function customizationToggle(open: boolean): string {
 function shellHtml({
   serverId,
   banner,
-  panel = PANEL_CLOSED,
   regionText,
   stats = { clicks: 0, facesDestroyed: 0 },
   levelIndex = 0,
+  memberCount = 0,
+  returnButton = false,
+  reducedMotion = false,
 }: {
   serverId: number;
   banner: string;
-  panel?: string;
   regionText: string;
   stats?: GameStats;
   levelIndex?: number;
+  memberCount?: number;
+  returnButton?: boolean;
+  reducedMotion?: boolean;
 }): string {
   // `serverId` doubles as the welcomed signal (F7): before the first `welcome` the shell
   // renders the stats without the server line and no users panel at all.
@@ -462,6 +526,9 @@ function shellHtml({
   return (
     '<main data-customization-open="false">' +
     `<canvas tabindex="0" aria-label="${ARIA_LABEL}" style="touch-action:none"></canvas>` +
+    '<div class="game-ambience" aria-hidden="true" data-reduced-motion="' +
+    (reducedMotion ? 'true' : 'false') +
+    '"></div>' +
     (welcomed
       ? hudMarkup({
           clicks: stats.clicks,
@@ -476,7 +543,7 @@ function shellHtml({
         `<p>Cube <span data-stat="cube">${levelIndex + 1}</span></p>` +
         '</section>') +
     banner +
-    (welcomed ? panel : '') +
+    (welcomed ? userPanel({ memberCount, returnButton }) : '') +
     (welcomed ? upgradesPanel('guest', coins) : '') +
     (welcomed ? customizationToggle(false) : '') +
     `<div class="phase-announcement" role="status" aria-live="polite">${regionText}</div>` +
@@ -564,6 +631,36 @@ describe('App', () => {
     expect(html).toContain('<p>Cube <span data-stat="cube">3</span></p>');
   });
 
+  it('keeps the accepted pre-welcome stats rows and no HUD chrome before the first welcome (AC-19)', () => {
+    const html = renderToStaticMarkup(
+      <App hasChosen
+        session={sessionFor(
+          snapshotFor('playing', { clicks: 5, facesDestroyed: 2 }, 2),
+          multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<section aria-label="Game statistics">' +
+        '<p>Clicks: <span data-stat="clicks">5</span></p>' +
+        '<p>Faces destroyed: <span data-stat="faces-destroyed">2</span></p>' +
+        '<p>Cube <span data-stat="cube">3</span></p>' +
+        '</section>',
+    );
+    expect(occurrences(html, '<p>')).toBe(3);
+    expect(html).not.toContain('hud-panel');
+    expect(html).not.toContain('hud-header');
+    expect(html).not.toContain('hud-resources');
+    expect(html).not.toContain('hud-grid');
+    expect(html).not.toContain('hud-level');
+    expect(html).not.toContain('Pilot status');
+    expect(html).not.toContain('Toggle HUD');
+    expect(occurrences(html, 'data-stat="clicks"')).toBe(1);
+    expect(occurrences(html, 'data-stat="faces-destroyed"')).toBe(1);
+    expect(occurrences(html, 'data-stat="cube"')).toBe(1);
+  });
+
   it('renders the travel phase copy in the same single live region', () => {
     const html = renderToStaticMarkup(
       <App hasChosen
@@ -603,6 +700,7 @@ describe('App', () => {
       shellHtml({
         serverId: 1,
         banner: '',
+        memberCount: 1,
         // React escapes the apostrophe in text content; the announcement itself is
         // `Traveling to Player 2's cube…`.
         regionText: 'Traveling to Player 2&#x27;s cube…',
@@ -652,13 +750,13 @@ describe('App', () => {
     );
 
     expect(html).toContain(
+      `<span class="hud-level" data-stat="cube">Cube 4</span>`,
+    );
+    expect(html).toContain(
       `<p class="hud-row" data-row="clicks">${CURSOR_ICON}Clicks: <span data-stat="clicks">12</span></p>`,
     );
     expect(html).toContain(
       `<p class="hud-row" data-row="faces-destroyed">${CUBE_ICON}Faces destroyed: <span data-stat="faces-destroyed">4</span></p>`,
-    );
-    expect(html).toContain(
-      `<p class="hud-row" data-row="cube">${CUBE_LEVEL_ICON}Cube <span data-stat="cube">4</span></p>`,
     );
     expect(html).toContain(
       `<p class="hud-row" data-row="server">${SERVER_ICON}Server <span data-stat="server">7</span></p>`,
@@ -682,7 +780,8 @@ describe('App', () => {
       shellHtml({
         serverId: 1,
         banner: '',
-        panel: PANEL_CLOSED_WITH_RETURN,
+        memberCount: 1,
+        returnButton: true,
         regionText: '',
       }),
     );
@@ -697,7 +796,7 @@ describe('App', () => {
     );
 
     expect(playing).not.toContain('Return to my cube');
-    expect(playing).toContain(USERS_BADGE_CLOSED);
+    expect(playing).toContain(usersBadge(2));
   });
 
   it('renders the pinned banner copy per transport status (AC-22)', () => {
@@ -727,16 +826,62 @@ describe('App', () => {
     expect(occurrences(exhausted, 'role="status"')).toBe(1);
   });
 
-  it('toggles the HUD minimized state from the welcomed branch (AC-6)', async () => {
+  it('toggles the HUD minimized state from the welcomed branch (AC-6, AC-19)', async () => {
     render(<App hasChosen session={sessionFor(snapshotFor('playing'), multiplayerFor())} />);
     const toggle = screen.getByRole('button', { name: 'Toggle HUD' });
     const section = screen.getByLabelText('Game statistics');
 
+    // AC-19: header + resources always stay rendered; the grid collapses via CSS only.
+    expect(section.querySelector('.hud-header .hud-title')?.textContent).toBe('Pilot status');
+    expect(screen.getByRole('group', { name: 'Resources' })).toBe(
+      section.querySelector('.hud-resources'),
+    );
+    expect(section.querySelector('.hud-grid')).not.toBeNull();
     expect(section.getAttribute('data-minimized')).toBeNull();
     await userEvent.click(toggle);
-    expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBe('true');
+    const minimized = screen.getByLabelText('Game statistics');
+    expect(minimized.getAttribute('data-minimized')).toBe('true');
+    expect(minimized.querySelector('.hud-header .hud-title')?.textContent).toBe('Pilot status');
+    expect(minimized.querySelector('.hud-resources')).not.toBeNull();
+    expect(minimized.querySelector('.hud-grid')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Toggle HUD' }).getAttribute('aria-expanded')).toBe(
+      'false',
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Toggle HUD' }));
     expect(screen.getByLabelText('Game statistics').getAttribute('data-minimized')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Toggle HUD' }).getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+  });
+
+  it('binds the HUD resource strip to snapshot.customization keys and lootboxes (AC-19)', () => {
+    const html = renderToStaticMarkup(
+      <App hasChosen
+        session={sessionFor(
+          snapshotFor('playing', { clicks: 7, facesDestroyed: 2, coins: 12.5 }, 4, {
+            customization: { lootboxes: 3, keys: 2, parts: {}, appearance: {} },
+          }),
+          multiplayerFor(),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      `<span data-resource="coins">${COIN_ICON}Coins <span class="hud-resource-value" data-stat="coins">12.50</span></span>`,
+    );
+    expect(html).toContain(
+      `<span data-resource="keys">${KEY_ICON}Keys <span class="hud-resource-value" data-stat="keys">2</span></span>`,
+    );
+    expect(html).toContain(
+      `<span data-resource="lootboxes">${LOOTBOX_ICON}Lootboxes <span class="hud-resource-value" data-stat="lootboxes">3</span></span>`,
+    );
+    expect(html).toContain('<h2 class="hud-title">Pilot status</h2>');
+    expect(html).toContain('<span class="hud-level" data-stat="cube">Cube 5</span>');
+    // No data-stat value appears twice in the HUD (AC-19).
+    expect(occurrences(html, 'data-stat="cube"')).toBe(1);
+    expect(occurrences(html, 'data-stat="coins"')).toBe(1);
+    expect(occurrences(html, 'data-stat="keys"')).toBe(1);
+    expect(occurrences(html, 'data-stat="lootboxes"')).toBe(1);
   });
 
   it('drives data-customization-open from the customization toggle (AC-7, AC-18)', async () => {
@@ -869,7 +1014,9 @@ describe('App — server activity ticker (AC-19…AC-21)', () => {
     expect(html).toContain(
       '<aside class="activity-feed" aria-label="Server activity" aria-live="off" data-reduced-motion="false">',
     );
-    expect(html).toContain('<h2 class="activity-feed-title">Server activity</h2>');
+    expect(html).toContain(
+      '<h2 class="activity-feed-title"><span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>Server activity</h2>',
+    );
     expect(html).toContain(
       '<li data-event-type="fastClear" data-event-id="5"><span class="activity-feed-text">Player 2 fast-cleared Cube 4 in 2.5s</span></li>',
     );
@@ -954,17 +1101,21 @@ describe('App — server leaderboard (AC-20, AC-21)', () => {
 
     expect(html).toContain(
       '<aside class="leaderboard" aria-label="Server leaderboard" aria-live="off" data-reduced-motion="false" data-server-id="1">' +
-        '<h2 class="leaderboard-title">Leaderboard</h2>' +
+        '<h2 class="leaderboard-title"><span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>Leaderboard</h2>' +
         '<ol class="leaderboard-list">' +
         '<li data-rank="1" data-player-id="p2">' +
+        '<span class="leaderboard-medal" data-medal="1" aria-hidden="true"></span>' +
         '<span class="leaderboard-rank">#1</span>' +
         '<span class="leaderboard-name">Player 2</span>' +
         '<span class="leaderboard-score">2 cubes · 40 clicks</span>' +
+        '<span class="leaderboard-bar" data-bar="1" aria-hidden="true"></span>' +
         '</li>' +
         '<li data-rank="2" data-player-id="p1">' +
+        '<span class="leaderboard-medal" data-medal="2" aria-hidden="true"></span>' +
         '<span class="leaderboard-rank">#2</span>' +
         '<span class="leaderboard-name">Player 1</span>' +
         '<span class="leaderboard-score">0 cubes · 3 clicks</span>' +
+        '<span class="leaderboard-bar" data-bar="2" aria-hidden="true"></span>' +
         '</li>' +
         '</ol>' +
         '<p class="leaderboard-totals">Server totals: 2 cubes · 43 clicks · 3 faces</p>' +
@@ -1520,6 +1671,273 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
     expect(equipPart).toHaveBeenCalledWith('wing-left-silver');
     expect(unequipPart).toHaveBeenCalledTimes(1);
     expect(unequipPart).toHaveBeenCalledWith('hull');
+  });
+});
+
+describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, AC-27, AC-29, AC-31)', () => {
+  const CUSTOMIZATION: CustomizationState = {
+    lootboxes: 1,
+    keys: 1,
+    parts: { 'wing-left-silver': 1 },
+    appearance: {},
+  };
+
+  const GRANT: LootboxGrant = {
+    partId: 'wing-left-silver',
+    slot: 'wing-left',
+    rarity: 'rare',
+    duplicate: false,
+    sequence: 1,
+  };
+
+  function revealSnapshot(
+    grant: LootboxGrant | null,
+    customization: CustomizationState = CUSTOMIZATION,
+  ): EngineSnapshot {
+    return snapshotFor('playing', { clicks: 0, facesDestroyed: 0, coins: 0 }, 0, {
+      customization,
+      lastLootboxGrant: grant,
+    });
+  }
+
+  /** The panel section while it is revealing; a concrete failure when it never mounts. */
+  async function revealingPanel(): Promise<HTMLElement> {
+    return waitFor(() => {
+      const element = document.querySelector<HTMLElement>('.customization-panel[data-reveal-active="true"]');
+      if (element === null) {
+        throw new Error('lootbox reveal region not rendered yet');
+      }
+      return element;
+    });
+  }
+
+  it('renders the reveal on the opener tab and never on a second tab that only adopted the parts (AC-2)', async () => {
+    const opener = render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
+      />,
+    );
+    const panel = await revealingPanel();
+    const revealRoot = document.querySelector('.lootbox-reveal');
+
+    expect(panel.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(panel.getAttribute('data-slot')).toBe('wing-left');
+    expect(panel.getAttribute('data-rarity')).toBe('rare');
+    expect(revealRoot?.getAttribute('role')).toBe('group');
+    expect(revealRoot?.getAttribute('aria-live')).toBe('off');
+    expect(revealRoot?.getAttribute('aria-label')).toBe('Lootbox reveal: Port Silver Wing');
+    expect(revealRoot?.getAttribute('data-reveal-sequence')).toBe('1');
+    expect(revealRoot?.getAttribute('data-reveal-active')).toBe('true');
+    expect(revealRoot?.textContent).toContain('Port Silver Wing');
+    opener.unmount();
+
+    // The same account's second tab receives only `customizationUpdate`: the absolute
+    // parts/appearance are adopted but `lastLootboxGrant` stays `null`, so no reveal
+    // renders even though the part is owned in that tab (AC-2).
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(null), multiplayerFor())}
+      />,
+    );
+    const open = await screen.findByRole('button', { name: 'Open lootbox' });
+    expect(open.textContent).toBe('Open lootbox');
+    expect(document.querySelector('.customization-panel')?.getAttribute('data-reveal-active')).toBe(
+      'false',
+    );
+    expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
+    expect(document.querySelectorAll('.customization-panel .customization-variant')).toHaveLength(30);
+    expect(screen.queryByRole('button', { name: 'Dismiss lootbox reveal' })).toBeNull();
+  });
+
+  it('drops a mid-reveal when the transport leaves connected: the session clears the grant and publishes the snapshot (AC-11)', async () => {
+    const { session, setSnapshot, setMultiplayer } = mutableSession(
+      revealSnapshot(GRANT),
+      multiplayerFor(),
+    );
+    render(<App hasChosen customizationOpen session={session} />);
+    await revealingPanel();
+
+    // `OnlineGameSession.handleStatus` (T4) clears the grant and publishes the engine
+    // snapshot before the status publish; the shell keeps no local grant copy, so the
+    // reveal cannot survive the status change.
+    act(() => {
+      setSnapshot(revealSnapshot(null));
+      setMultiplayer(multiplayerFor({ status: 'disconnected' }));
+    });
+
+    expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
+    expect(document.querySelector('[data-reveal-active="true"]')).toBeNull();
+    const panel = document.querySelector('.customization-panel');
+    expect(panel?.getAttribute('data-reveal-active')).toBe('false');
+    const open = await screen.findByRole('button', { name: 'Open lootbox' });
+    expect(open.textContent).toBe('Open lootbox');
+    expect(document.querySelector('.connection-banner')?.getAttribute('data-status')).toBe(
+      'disconnected',
+    );
+  });
+
+  it('treats a toggle-click close as a dismissal and never restores focus to the absent Open lootbox (AC-13)', async () => {
+    const dismissLootboxReveal = vi.fn();
+    const { session, setSnapshot } = mutableSession(revealSnapshot(GRANT), multiplayerFor());
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={{ ...session, dismissLootboxReveal }}
+      />,
+    );
+    await revealingPanel();
+    const toggle = screen.getByRole('button', { name: 'Spaceship customization' });
+    toggle.focus();
+
+    await userEvent.click(toggle);
+
+    // Panel close is a dismissal: the panel's unmount-only cleanup called it once.
+    expect(dismissLootboxReveal).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
+    expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Open lootbox' })).toBeNull();
+    // No focus restoration to the absent `Open lootbox`: the activator keeps focus.
+    expect(document.activeElement).toBe(toggle);
+
+    // The session cleared the grant on dismissal; reopening renders the normal panel.
+    act(() => {
+      setSnapshot(revealSnapshot(null));
+    });
+    await userEvent.click(toggle);
+    const open = await screen.findByRole('button', { name: 'Open lootbox' });
+    expect(open.textContent).toBe('Open lootbox');
+    expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
+    expect(
+      screen.getByRole('button', { name: 'Spaceship customization' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('renders one decorative ambience layer and keeps the reveal non-modal (AC-27)', async () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
+      />,
+    );
+    await revealingPanel();
+    const main = screen.getByRole('main');
+    const layers = Array.from(main.children).filter((child) =>
+      child.classList.contains('game-ambience'),
+    );
+    const toggle = screen.getByRole('button', { name: 'Spaceship customization' });
+
+    expect(layers).toHaveLength(1);
+    expect(layers[0].tagName).toBe('DIV');
+    expect(layers[0].getAttribute('aria-hidden')).toBe('true');
+    expect(layers[0].getAttribute('data-reduced-motion')).toBe('false');
+    // No scrim and no `data-reveal-active` on `<main>`: the game stays interactive.
+    expect(main.hasAttribute('data-reveal-active')).toBe(false);
+    expect(document.querySelectorAll('.scrim, .reveal-scrim')).toHaveLength(0);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(1);
+
+    // The toggle above the spotlight is still clickable while revealing.
+    await userEvent.click(toggle);
+    expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
+  });
+
+  it('marks the ambience reduced under the session reduced-motion preference (AC-27)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing', undefined, 0, { reducedMotion: true }),
+          multiplayerFor(),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<div class="game-ambience" aria-hidden="true" data-reduced-motion="true"></div>',
+    );
+    expect(occurrences(html, 'class="game-ambience"')).toBe(1);
+  });
+
+  it('keeps exactly one polite live region in the settled welcomed shell (AC-31)', () => {
+    render(<App hasChosen session={sessionFor(snapshotFor('playing'), multiplayerFor())} />);
+    const statuses = screen.getAllByRole('status');
+
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].getAttribute('class')).toBe('phase-announcement');
+    expect(statuses[0].getAttribute('aria-live')).toBe('polite');
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[aria-live="assertive"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[role="log"]')).toHaveLength(0);
+  });
+
+  it('keeps exactly one polite live region once the customization chunk resolves (AC-31)', async () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(null), multiplayerFor())}
+      />,
+    );
+    const open = await screen.findByRole('button', { name: 'Open lootbox' });
+
+    expect(open.textContent).toBe('Open lootbox');
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
+  });
+
+  it('adds no live region while the reveal is mounted (AC-31)', async () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
+      />,
+    );
+    await revealingPanel();
+    const revealRoot = document.querySelector('.lootbox-reveal');
+
+    expect(revealRoot?.getAttribute('role')).toBe('group');
+    expect(revealRoot?.getAttribute('aria-live')).toBe('off');
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[aria-live="assertive"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(0);
+  });
+
+  it('keeps the gameplay headings real h2 elements and the panel aria-labels (AC-29)', async () => {
+    render(
+      <App
+        hasChosen
+        customizationOpen
+        session={sessionFor(revealSnapshot(null), multiplayerFor())}
+      />,
+    );
+    await screen.findByRole('button', { name: 'Open lootbox' });
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Pilot status' }).getAttribute('class')).toBe(
+      'hud-title',
+    );
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Spaceship hangar' }).getAttribute('class'),
+    ).toBe('customization-title');
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Upgrades' }).getAttribute('class'),
+    ).toBe('upgrades-title');
+    expect(screen.getByRole('region', { name: 'Game statistics' })).toBe(
+      document.querySelector('.hud-panel'),
+    );
+    expect(document.querySelector('.customization-panel')?.getAttribute('aria-label')).toBe(
+      'Spaceship customization',
+    );
+    expect(document.querySelector('.upgrades-panel')?.getAttribute('aria-label')).toBe('Upgrades');
   });
 });
 

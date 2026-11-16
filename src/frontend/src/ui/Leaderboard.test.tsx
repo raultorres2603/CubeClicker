@@ -37,26 +37,85 @@ describe('Leaderboard', () => {
 
     expect(html).toBe(
       '<aside class="leaderboard" aria-label="Server leaderboard" aria-live="off" data-reduced-motion="false" data-server-id="1">' +
-        '<h2 class="leaderboard-title">Leaderboard</h2>' +
+        '<h2 class="leaderboard-title">' +
+        '<span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>' +
+        'Leaderboard</h2>' +
         '<ol class="leaderboard-list">' +
         '<li data-rank="1" data-player-id="p2">' +
+        '<span class="leaderboard-medal" data-medal="1" aria-hidden="true"></span>' +
         '<span class="leaderboard-rank">#1</span>' +
         '<span class="leaderboard-name">Player 2</span>' +
         '<span class="leaderboard-score">2 cubes · 40 clicks</span>' +
+        '<span class="leaderboard-bar" data-bar="1" aria-hidden="true"></span>' +
         '</li>' +
         '<li data-rank="2" data-player-id="p1">' +
+        '<span class="leaderboard-medal" data-medal="2" aria-hidden="true"></span>' +
         '<span class="leaderboard-rank">#2</span>' +
         '<span class="leaderboard-name">Player 1</span>' +
         '<span class="leaderboard-score">1 cube · 1 click</span>' +
+        '<span class="leaderboard-bar" data-bar="2" aria-hidden="true"></span>' +
         '</li>' +
         '<li data-rank="3" data-player-id="p3">' +
+        '<span class="leaderboard-medal" data-medal="3" aria-hidden="true"></span>' +
         '<span class="leaderboard-rank">#3</span>' +
         '<span class="leaderboard-name">Player 3</span>' +
         '<span class="leaderboard-score">0 cubes · 0 clicks</span>' +
+        '<span class="leaderboard-bar" data-bar="3" aria-hidden="true"></span>' +
         '</li>' +
         '</ol>' +
         '<p class="leaderboard-totals">Server totals: 3 cubes · 41 clicks · 3 faces</p>' +
         '</aside>',
+    );
+  });
+
+  it('adds one decorative medal and bar per row keyed by rank (AC-23, AC-31)', () => {
+    const five: LeaderboardSnapshot = {
+      serverId: 1,
+      at: 1000,
+      entries: Array.from({ length: 5 }, (_, index) => ({
+        playerId: `p${index + 1}`,
+        name: `Player ${index + 1}`,
+        cubesCompleted: 5 - index,
+        clicks: index,
+      })),
+      totals: { cubesCompleted: 15, clicks: 10, facesDestroyed: 0 },
+    };
+
+    const html = renderToStaticMarkup(<Leaderboard snapshot={five} />);
+
+    expect(
+      [...html.matchAll(/<span class="leaderboard-medal" data-medal="(\d)" aria-hidden="true"><\/span>/g)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(['1', '2', '3', '4', '5']);
+    expect(
+      [...html.matchAll(/<span class="leaderboard-bar" data-bar="(\d)" aria-hidden="true"><\/span>/g)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(['1', '2', '3', '4', '5']);
+    expect([...html.matchAll(/class="leaderboard-medal"/g)]).toHaveLength(5);
+    expect([...html.matchAll(/class="leaderboard-bar"/g)]).toHaveLength(5);
+  });
+
+  it('keeps the title as a real h2 with the live dot and the landmark label (AC-23, AC-29, AC-31)', () => {
+    const html = renderToStaticMarkup(<Leaderboard snapshot={SNAPSHOT} />);
+    const firstRow = html.slice(html.indexOf('<li data-rank="1"'), html.indexOf('</li>'));
+
+    expect(html).toContain(
+      '<h2 class="leaderboard-title">' +
+        '<span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>' +
+        'Leaderboard</h2>',
+    );
+    expect([...html.matchAll(/class="gf-live-dot"/g)]).toHaveLength(1);
+    expect(html).toContain('<aside class="leaderboard" aria-label="Server leaderboard" aria-live="off"');
+    // Medal leads the row and the bar trails it; the readable rank/name/score order is unchanged.
+    expect(firstRow).toBe(
+      '<li data-rank="1" data-player-id="p2">' +
+        '<span class="leaderboard-medal" data-medal="1" aria-hidden="true"></span>' +
+        '<span class="leaderboard-rank">#1</span>' +
+        '<span class="leaderboard-name">Player 2</span>' +
+        '<span class="leaderboard-score">2 cubes · 40 clicks</span>' +
+        '<span class="leaderboard-bar" data-bar="1" aria-hidden="true"></span>',
     );
   });
 

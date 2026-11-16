@@ -1,9 +1,16 @@
 /*
- * Game shell presentation (T14).
+ * Game shell presentation — Neon Forge (game-feel-overhaul T6; spec AC-17, AC-18,
+ * AC-26, AC-28, AC-29, AC-31, AC-33).
  *
- * Layout only: the scene, HUD values, connection banner, users panel and phase copy come
- * from the React tree. The colour literals mirror `ui/theme.ts`; `theme.test.ts` pins
- * their WCAG AA contrast (AC-14).
+ * This file owns the shared visual language: the `--gf-*` palette, the one chamfered
+ * graphite-glass frame (inset-only depth/glow, so it survives `clip-path`), the auth
+ * chrome, the connection/phase chrome and the AC-29 typography block. Gameplay layout
+ * specifics live in `game-view.css`, which is imported after this file. No declaration
+ * here is importance-flagged and the shared frame declares no `position`, so the
+ * accepted absolute placements below are never overridden.
+ *
+ * The colour literals mirror `ui/theme.ts`; `theme.test.ts` pins their WCAG AA contrast
+ * and `app.css.test.ts` pins the exact declarations.
  */
 
 :root {
@@ -12,31 +19,34 @@
   --accent: #7cf6ff;
   --page-background: #000000;
 
-  --frame-metal-light: #c9d8e4;
-  --frame-metal-mid: #879db0;
-  --frame-metal-dark: #3f5365;
-  --frame-metal-deep: #23323e;
-  --frame-metal: linear-gradient(
-    145deg,
-    var(--frame-metal-light) 0%,
-    var(--frame-metal-mid) 24%,
-    var(--frame-metal-light) 42%,
-    var(--frame-metal-dark) 68%,
-    var(--frame-metal-mid) 86%,
-    var(--frame-metal-deep) 100%
-  );
-  --frame-glow: rgba(124, 246, 255, 0.4);
-  --frame-glow-alert: rgba(255, 107, 107, 0.4);
-  --frame-center-top: rgba(18, 26, 36, 0.9);
-  --frame-center-bottom: rgba(6, 10, 20, 0.95);
-  --frame-center: linear-gradient(180deg, var(--frame-center-top), var(--frame-center-bottom));
-  --frame-center-alert-start: rgba(44, 18, 22, 0.92);
-  --frame-center-alert-end: rgba(20, 8, 10, 0.95);
-  --frame-center-alert: linear-gradient(
-    180deg,
-    var(--frame-center-alert-start),
-    var(--frame-center-alert-end)
-  );
+  /* Neon Forge palette (spec AC-17). Additive: the accepted `--panel-*` tokens stay. */
+  --gf-void: #04060d;
+  --gf-surface-top: rgba(10, 18, 34, 0.94);
+  --gf-surface-bottom: rgba(5, 10, 20, 0.9);
+  --gf-surface-raised: rgba(18, 30, 52, 0.94);
+  --gf-rim: rgba(124, 246, 255, 0.56);
+  --gf-rim-strong: #7cf6ff;
+  --gf-rim-warm: #ffb35c;
+  --gf-text: #e8f6ff;
+  --gf-text-muted: rgba(232, 246, 255, 0.76);
+  --gf-gold: #ffcc66;
+  --gf-amber: #ffb35c;
+  --gf-amber-deep: #ff7a1a;
+  --gf-success: #34d399;
+  --gf-danger: #ff6b6b;
+  --gf-rare: #60a5fa;
+  --gf-epic: #c084fc;
+  --gf-grid: rgba(124, 246, 255, 0.05);
+  --gf-scanline: rgba(124, 246, 255, 0.06);
+  --gf-shadow: rgba(0, 0, 0, 0.55);
+  --gf-panel-glow: rgba(124, 246, 255, 0.2);
+  --gf-radius-panel: 1rem;
+  --gf-radius-control: 0.6rem;
+  --gf-chamfer: 0.65rem;
+  --gf-chamfer-auth: 1.1rem;
+  --gf-focus: #7cf6ff;
+  --gf-cta-text: #1a1206;
+
   color-scheme: dark;
 }
 
@@ -87,7 +97,7 @@ main > canvas:focus-visible {
   outline-offset: -4px;
 }
 
-/* HUD panel — the only <section> inside <main> (ui/Hud.tsx). */
+/* HUD panel / pre-welcome stats: the only direct <section> inside <main>. */
 main > section {
   position: absolute;
   top: calc(1rem + env(safe-area-inset-top, 0px));
@@ -96,8 +106,6 @@ main > section {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.75rem 1rem;
-  -webkit-backdrop-filter: blur(8px) saturate(1.2);
-  backdrop-filter: blur(8px) saturate(1.2);
   font-size: 0.95rem;
   letter-spacing: 0.02em;
   line-height: 1.4;
@@ -126,23 +134,11 @@ main > section [data-stat] {
   bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   padding: 0.5rem 1rem;
-  color: var(--hud-text);
+  color: var(--gf-text);
   font-size: 1rem;
   letter-spacing: 0.03em;
   white-space: nowrap;
   pointer-events: none;
-}
-
-.phase-announcement:empty {
-  padding: 0;
-  border-image: none;
-  background: transparent;
-  box-shadow: none;
-  filter: none;
-}
-
-.phase-announcement:empty::before {
-  content: none;
 }
 
 /*
@@ -159,7 +155,7 @@ main > section [data-stat] {
   align-items: center;
   gap: 0.75rem;
   padding: 0.5rem 1rem;
-  color: var(--hud-text);
+  color: var(--gf-text);
   font-size: 0.95rem;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -187,35 +183,14 @@ main > section [data-stat] {
   min-width: 44px;
   min-height: 44px;
   padding: 0.45rem 0.85rem;
-  color: var(--hud-text);
+  color: var(--gf-text);
   font: inherit;
   font-size: 0.9rem;
   letter-spacing: 0.02em;
   cursor: pointer;
 }
 
-.user-panel > button:hover {
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-  filter: brightness(1.08);
-}
-
-.connection-banner button:hover {
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-  filter: brightness(1.08);
-}
-
-/* Visible keyboard focus for every shell control (AC-1). */
-.user-panel > button:focus-visible,
-.user-panel li button:focus-visible,
-.connection-banner button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-
-.user-panel section {
+.user-panel .users-list {
   width: 100%;
   padding: 0.5rem;
 }
@@ -231,11 +206,12 @@ main > section [data-stat] {
 
 .user-panel li button {
   width: 100%;
+  min-height: 44px;
   padding: 0.4rem 0.6rem;
   border: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--gf-radius-control);
   background: transparent;
-  color: var(--hud-text);
+  color: var(--gf-text);
   font: inherit;
   font-size: 0.9rem;
   text-align: left;
@@ -243,18 +219,19 @@ main > section [data-stat] {
 }
 
 .user-panel li button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-rim-strong);
 }
 
 /* The own row is informational, not a command (AC-16). */
 .user-panel li button:disabled {
-  color: rgba(232, 246, 255, 0.62);
+  color: var(--gf-text-muted);
   cursor: default;
 }
 
 /*
- * Auth overlay (AC-18, AC-20): a full-viewport backdrop above the canvas.
+ * Auth overlay (AC-18, AC-20; Neon Forge AC-26): a full-viewport scrim above the canvas.
+ * The void base carries two radial aurora pools and a procedural static scanline.
  */
 .auth-menu,
 .auth-forms {
@@ -269,8 +246,10 @@ main > section [data-stat] {
   overflow-y: auto;
   pointer-events: auto;
   background:
-    radial-gradient(circle at 50% 50%, rgba(8, 16, 32, 0.42), rgba(2, 4, 10, 0.8) 72%),
-    rgba(2, 4, 10, 0.55);
+    repeating-linear-gradient(0deg, transparent 0 2px, var(--gf-scanline) 2px 3px),
+    radial-gradient(circle at 18% 24%, rgba(124, 246, 255, 0.18), transparent 44%),
+    radial-gradient(circle at 82% 76%, rgba(255, 179, 92, 0.14), transparent 46%),
+    var(--gf-void);
   background-origin: border-box;
   -webkit-backdrop-filter: blur(6px) saturate(0.85);
   backdrop-filter: blur(6px) saturate(0.85);
@@ -278,24 +257,39 @@ main > section [data-stat] {
 
 /* The card: a vertical stack with one clear primary decision per row. */
 .auth-panel {
+  --gf-chamfer: var(--gf-chamfer-auth);
+  --gf-radius-panel: 1.25rem;
   display: flex;
+  box-sizing: border-box;
   flex-direction: column;
   gap: 1rem;
   width: min(24rem, 100%);
   padding: clamp(1.25rem, 4vw, 2rem);
 }
 
+/* Uppercase wordmark with one cyan energy bar under the title (AC-26). */
 .auth-title {
   margin: 0;
-  color: var(--hud-text);
-  font-size: clamp(1.4rem, 5vw, 1.75rem);
-  line-height: 1.15;
-  letter-spacing: 0.03em;
+  color: var(--gf-text);
+  font-size: clamp(2rem, 6vw, 2.8rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.auth-title::after {
+  content: '';
+  display: block;
+  width: 4.5rem;
+  height: 2px;
+  margin-top: 0.6rem;
+  background: linear-gradient(90deg, var(--gf-rim-strong), transparent);
 }
 
 .auth-subtitle {
   margin: 0;
-  color: rgba(232, 246, 255, 0.74);
+  color: var(--gf-text-muted);
   font-size: 0.95rem;
   line-height: 1.5;
 }
@@ -303,7 +297,7 @@ main > section [data-stat] {
 /* Visible hint for the keyboard-only intro-skip affordance (review F4). */
 .auth-skip-hint {
   margin: 0;
-  color: rgba(232, 246, 255, 0.62);
+  color: var(--gf-text-muted);
   font-size: 0.85rem;
   text-align: center;
 }
@@ -316,7 +310,7 @@ main > section [data-stat] {
   margin-top: 0.25rem;
 }
 
-/* One button treatment for the menu, forms and the verification-pending screen. */
+/* Glass secondary control; the primary variant below is the amber CTA (AC-26). */
 .auth-button,
 .verification-pending button {
   display: inline-flex;
@@ -325,11 +319,15 @@ main > section [data-stat] {
   width: 100%;
   min-height: 48px;
   padding: 0.7rem 1rem;
-  color: var(--hud-text);
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+  color: var(--gf-text);
   font: inherit;
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   cursor: pointer;
   transition:
     border-color 0.15s ease,
@@ -339,14 +337,14 @@ main > section [data-stat] {
 }
 
 .auth-button:hover {
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-rim-strong);
   filter: brightness(1.08);
 }
 
 .verification-pending button:hover:not(:disabled) {
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-rim-strong);
   filter: brightness(1.08);
 }
 
@@ -357,9 +355,9 @@ main > section [data-stat] {
 
 .auth-button:focus-visible,
 .verification-pending button:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--gf-focus);
   outline-offset: 2px;
-  box-shadow: inset 0 0 0 2px var(--accent);
+  box-shadow: inset 0 0 0 2px var(--gf-focus);
 }
 
 .auth-button:disabled,
@@ -368,21 +366,27 @@ main > section [data-stat] {
   cursor: progress;
 }
 
+/* Amber primary decision (AC-26): dark ink on the warm reward channel. */
 .auth-button-primary {
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--gf-rim-warm);
+  background: linear-gradient(180deg, var(--gf-amber), var(--gf-amber-deep));
+  color: var(--gf-cta-text);
 }
 
 .auth-button-primary:hover {
-  box-shadow: inset 0 0 0 2px var(--accent);
+  border-color: var(--gf-rim-warm);
+  color: var(--gf-cta-text);
+  box-shadow: inset 0 0 0 1px var(--gf-rim-warm);
   filter: brightness(1.12);
 }
 
 .auth-button-secondary {
-  color: rgba(232, 246, 255, 0.82);
+  color: var(--gf-text-muted);
 }
 
 .auth-button-secondary:hover {
-  color: var(--hud-text);
+  color: var(--gf-text);
+  border-color: var(--gf-rim-strong);
   filter: brightness(1.08);
 }
 
@@ -398,57 +402,37 @@ main > section [data-stat] {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  color: rgba(232, 246, 255, 0.72);
-  font-size: 0.78rem;
+  color: var(--gf-text-muted);
+  font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
+/* Inset well, not a beveled metal plate (AC-26); focus keeps the cyan ring. */
 .auth-input,
 .verification-pending input {
   box-sizing: border-box;
   width: 100%;
   min-height: 44px;
   padding: 0.6rem 0.75rem;
-  color: var(--hud-text);
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: inset 0 2px 8px var(--gf-shadow);
+  color: var(--gf-text);
   font: inherit;
   font-size: 1rem;
   letter-spacing: normal;
   text-transform: none;
-  --frame-cut: 0.25rem;
-  border: 1px solid var(--frame-metal-dark);
-  border-radius: 0;
-  background: rgba(0, 0, 0, 0.42);
-  clip-path: polygon(
-    var(--frame-cut) 0,
-    calc(100% - var(--frame-cut)) 0,
-    100% var(--frame-cut),
-    100% calc(100% - var(--frame-cut)),
-    calc(100% - var(--frame-cut)) 100%,
-    var(--frame-cut) 100%,
-    0 calc(100% - var(--frame-cut)),
-    0 var(--frame-cut)
-  );
 }
 
 .auth-input:focus,
 .verification-pending input:focus {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent);
+  border-color: var(--gf-focus);
+  outline: 2px solid var(--gf-focus);
   outline-offset: 1px;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-
-/* Inline auth failure: readable, high contrast, never a silent no-op. */
-.auth-error {
-  margin: 0;
-  padding: 0.6rem 0.75rem;
-  color: #ffb4b4;
-  --frame-center: var(--frame-center-alert);
-  --frame-glow: var(--frame-glow-alert);
-  font-size: 0.9rem;
-  line-height: 1.4;
+  box-shadow: inset 0 0 0 2px var(--gf-focus);
 }
 
 .auth-actions {
@@ -466,7 +450,7 @@ main > section [data-stat] {
 
 .verification-pending p {
   margin: 0;
-  color: rgba(232, 246, 255, 0.78);
+  color: var(--gf-text-muted);
   font-size: 0.95rem;
   line-height: 1.5;
 }
@@ -489,7 +473,7 @@ main > section [data-stat] {
 .verify-email p {
   margin: 0;
   max-width: 32rem;
-  color: var(--hud-text);
+  color: var(--gf-text);
   font-size: 1.05rem;
   line-height: 1.5;
 }
@@ -503,13 +487,13 @@ main > section [data-stat] {
 }
 
 .verify-email-continue a {
-  color: var(--accent);
+  color: var(--gf-rim-strong);
   font-size: 1rem;
   text-underline-offset: 0.2em;
 }
 
 .verify-email-continue a:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--gf-focus);
   outline-offset: 3px;
 }
 
@@ -533,7 +517,8 @@ main > section [data-stat] {
   }
 
   .auth-title {
-    font-size: 1.35rem;
+    font-size: 1.75rem;
+    letter-spacing: 0.14em;
   }
 
   .auth-button,
@@ -547,7 +532,10 @@ main > section [data-stat] {
   }
 }
 
-/* HUD minimize + overlay motion (AC-6, AC-7, AC-8). */
+/*
+ * HUD minimize + overlay motion (AC-6, AC-7, AC-8). The minimize target is the accepted
+ * 1.5rem (24 px) affordance; it is not a new 44 px control (AC-19, AC-31).
+ */
 main > section {
   transition: transform 150ms ease, opacity 150ms ease;
 }
@@ -580,132 +568,7 @@ main > section[data-minimized="true"] {
   opacity: 0.75;
 }
 
-main > section[data-minimized="true"] p {
-  max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition: max-height 150ms ease, opacity 150ms ease;
-}
-
-/* Metallic HUD frames section. */
-.user-panel section,
-.auth-panel {
-  position: relative;
-}
-
-main > section,
-.user-panel section,
-.connection-banner,
-.phase-announcement,
-.auth-panel,
-.auth-error {
-  --frame-cut: 0.75rem;
-  border: 2px solid transparent;
-  border-image: var(--frame-metal) 1;
-  border-radius: 0;
-  background: var(--frame-center);
-  box-shadow: inset 0 0 0 1px rgba(201, 216, 228, 0.22);
-  clip-path: polygon(
-    var(--frame-cut) 0,
-    calc(100% - var(--frame-cut)) 0,
-    100% var(--frame-cut),
-    100% calc(100% - var(--frame-cut)),
-    calc(100% - var(--frame-cut)) 100%,
-    var(--frame-cut) 100%,
-    0 calc(100% - var(--frame-cut)),
-    0 var(--frame-cut)
-  );
-  filter:
-    drop-shadow(0 12px 28px rgba(0, 0, 0, 0.55))
-    drop-shadow(0 0 10px var(--frame-glow))
-    drop-shadow(0 0 24px rgba(124, 246, 255, 0.16));
-}
-
-.auth-panel {
-  --frame-cut: 1rem;
-}
-
-.connection-banner,
-.phase-announcement {
-  --frame-cut: 0.5rem;
-}
-
-.auth-error {
-  --frame-center: var(--frame-center-alert);
-  --frame-glow: var(--frame-glow-alert);
-  color: #ffb4b4;
-}
-
-.user-panel > button,
-.connection-banner button,
-.auth-button,
-.verification-pending button {
-  --frame-cut: 0.375rem;
-  border: 1px solid transparent;
-  border-image: var(--frame-metal) 1;
-  border-radius: 0;
-  background: var(--frame-center);
-  clip-path: polygon(
-    var(--frame-cut) 0,
-    calc(100% - var(--frame-cut)) 0,
-    100% var(--frame-cut),
-    100% calc(100% - var(--frame-cut)),
-    calc(100% - var(--frame-cut)) 100%,
-    var(--frame-cut) 100%,
-    0 calc(100% - var(--frame-cut)),
-    0 var(--frame-cut)
-  );
-}
-
-/* Frame sheen (replaces border light). */
-@keyframes frame-sheen {
-  from {
-    background-position: -150% 0;
-  }
-  to {
-    background-position: 250% 0;
-  }
-}
-
-main > section::before,
-.user-panel section::before,
-.connection-banner::before,
-.phase-announcement::before,
-.auth-panel::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  padding: 2px;
-  pointer-events: none;
-  background: linear-gradient(115deg, transparent 30%, rgba(230, 245, 255, 0.6) 50%, transparent 70%);
-  background-size: 300% 100%;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: frame-sheen 3600ms linear infinite;
-}
-
-/* HUD scanline detailing (AC-6). */
-@keyframes hud-scanline {
-  0% {
-    transform: translateY(-100%);
-  }
-  100% {
-    transform: translateY(100%);
-  }
-}
-
-main > section::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(to bottom, transparent 0%, rgba(124, 246, 255, 0.12) 50%, transparent 100%);
-  animation: hud-scanline 4000ms linear infinite;
-}
-
-/* HUD blink (AC-4). */
+/* HUD blink (AC-4, retained). */
 @keyframes hud-blink {
   0% {
     opacity: 1;
@@ -725,31 +588,265 @@ main > section[data-blinking="true"] {
   animation: hud-blink 200ms ease;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  main > section,
-  main > section::before,
-  main > section::after,
-  main > section button,
-  main > section[data-minimized="true"] p,
-  main > section[data-blinking="true"],
-  .user-panel section,
-  .user-panel section::before,
-  .connection-banner,
-  .connection-banner::before,
-  .phase-announcement,
-  .phase-announcement::before,
-  .auth-panel,
-  .auth-panel::before,
-  .auth-button,
-  .verification-pending button,
-  .auth-input {
-    transition: none;
-    animation: none;
-  }
+/*
+ * One shared Neon Forge frame (AC-18): graphite glass with a procedural grid, a 1 px
+ * cyan rim, the top-left/bottom-right chamfer, an inner highlight and **inset-only**
+ * depth/glow. It deliberately declares no `position` (the accepted absolute placements
+ * below survive) and no `filter`/outer `box-shadow` (a `clip-path` would clip them).
+ */
+.hud-panel,
+.upgrades-panel,
+.customization-panel,
+.activity-feed,
+.leaderboard,
+.user-panel .users-list,
+.connection-banner,
+.phase-announcement,
+.auth-panel,
+.auth-error,
+main > section {
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-panel);
+  clip-path: polygon(var(--gf-chamfer) 0, 100% 0, 100% calc(100% - var(--gf-chamfer)), calc(100% - var(--gf-chamfer)) 100%, 0 100%);
+  background: repeating-linear-gradient(0deg, transparent 0 23px, var(--gf-grid) 23px 24px), linear-gradient(180deg, var(--gf-surface-top), var(--gf-surface-bottom));
+  color: var(--gf-text);
+  box-shadow: inset 0 1px 0 rgba(232, 246, 255, 0.16), inset 0 0 0 1px rgba(124, 246, 255, 0.08), inset 0 0 40px var(--gf-shadow), inset 0 0 24px var(--gf-panel-glow);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+}
 
-  main > section button:active {
-    transform: none;
-  }
+/*
+ * Pseudo-elements only have a containing block on a positioned ancestor, so the three
+ * surfaces whose accepted placement is not absolute get `position: relative` here. The
+ * shared frame still declares no `position`; `main > section` and `.hud-panel` keep
+ * their absolute placement.
+ */
+.auth-panel,
+.auth-error,
+.user-panel .users-list {
+  position: relative;
+}
+
+/* Top light edge: a cyan scan along the top of every framed surface. */
+.hud-panel::before,
+.upgrades-panel::before,
+.customization-panel::before,
+.activity-feed::before,
+.leaderboard::before,
+.user-panel .users-list::before,
+.connection-banner::before,
+.phase-announcement::before,
+.auth-panel::before,
+.auth-error::before,
+main > section::before {
+  content: '';
+  position: absolute;
+  left: var(--gf-chamfer);
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--gf-rim-strong) 50%, transparent 100%);
+  pointer-events: none;
+}
+
+/* Left status rail: a short cyan energy strip under the chamfer. */
+.hud-panel::after,
+.upgrades-panel::after,
+.customization-panel::after,
+.activity-feed::after,
+.leaderboard::after,
+.user-panel .users-list::after,
+.connection-banner::after,
+.phase-announcement::after,
+.auth-panel::after,
+.auth-error::after,
+main > section::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--gf-chamfer);
+  width: 2px;
+  height: 40%;
+  background: linear-gradient(180deg, var(--gf-rim-strong) 0%, transparent 100%);
+  box-shadow: inset -2px 0 8px var(--gf-rim-strong);
+  pointer-events: none;
+}
+
+/* Compact chrome keeps the narrow top/bottom chrome readable (AC-18). */
+.connection-banner,
+.phase-announcement {
+  --gf-chamfer: 0.45rem;
+}
+
+/* Inline auth failure: readable danger text, never a silent no-op (AC-26). */
+.auth-error {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  --gf-rim: rgba(255, 107, 107, 0.56);
+  color: var(--gf-danger);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* The empty announcement keeps no chrome at all (AC-18). */
+.phase-announcement:empty {
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  filter: none;
+  clip-path: none;
+}
+
+.phase-announcement:empty::before {
+  content: none;
+}
+
+.phase-announcement:empty::after {
+  content: none;
+}
+
+/*
+ * Controls (AC-28, AC-29). The amber primary CTA is the `Open lootbox` action; every
+ * secondary control is glass with a 1 px rim, a 44 px target and the shared focus ring.
+ */
+.gf-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--gf-rim-warm);
+  border-radius: var(--gf-radius-control);
+  background: linear-gradient(180deg, var(--gf-amber), var(--gf-amber-deep));
+  color: var(--gf-cta-text);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    filter 0.09s ease,
+    transform 0.09s ease;
+}
+
+.gf-cta:hover {
+  border-color: var(--gf-rim-warm);
+  box-shadow: inset 0 0 0 1px var(--gf-rim-warm);
+  filter: brightness(1.08);
+}
+
+.gf-cta:active {
+  transform: translateY(1px);
+}
+
+.gf-cta:focus-visible {
+  outline: 2px solid var(--gf-focus);
+  outline-offset: 2px;
+}
+
+.gf-cta:disabled {
+  opacity: 0.5;
+  box-shadow: none;
+  filter: none;
+  cursor: not-allowed;
+}
+
+/* Secondary glass controls (AC-28). */
+.user-panel > button,
+.connection-banner button,
+.customization-equip,
+.customization-unequip {
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+  color: var(--gf-text);
+  transition:
+    border-color 0.09s ease,
+    filter 0.09s ease;
+}
+
+.user-panel > button:hover,
+.connection-banner button:hover,
+.customization-equip:hover,
+.customization-unequip:hover {
+  border-color: var(--gf-rim-strong);
+  filter: brightness(1.08);
+}
+
+.user-panel > button:active,
+.connection-banner button:active,
+.customization-equip:active,
+.customization-unequip:active {
+  transform: translateY(1px);
+}
+
+.user-panel > button:focus-visible,
+.user-panel li button:focus-visible,
+.connection-banner button:focus-visible,
+.customization-equip:focus-visible,
+.customization-unequip:focus-visible {
+  outline: 2px solid var(--gf-focus);
+  outline-offset: 2px;
+  box-shadow: inset 0 0 0 2px var(--gf-focus);
+}
+
+.user-panel > button:disabled,
+.connection-banner button:disabled,
+.customization-equip:disabled,
+.customization-unequip:disabled {
+  opacity: 0.5;
+  box-shadow: none;
+  filter: none;
+  cursor: not-allowed;
+}
+
+/*
+ * AC-29 typography. The whole block lives here, including the gameplay titles, so
+ * `game-view.css` never duplicates it. Net-new markup (HUD title/level/resources,
+ * upgrades/users titles) lands in T8/T9; the declarations are pinned now.
+ */
+.hud-title,
+.upgrades-title,
+.activity-feed-title,
+.leaderboard-title,
+.customization-title,
+.users-list-title {
+  margin: 0;
+  color: var(--gf-text);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.hud-level {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hud-resource-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.gf-cta,
+.upgrade-buy,
+.customization-equip,
+.customization-unequip,
+.users-badge,
+.connection-banner button {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* Spaceship customization panel (T10, AC-12; slots T12, AC-29/AC-30). */
@@ -810,7 +907,7 @@ main > section[data-blinking="true"] {
 }
 
 .customization-equipped-name {
-  color: var(--accent);
+  color: var(--gf-rim-strong);
   font-size: 0.85rem;
 }
 
@@ -827,11 +924,11 @@ main > section[data-blinking="true"] {
 }
 
 .customization-locked {
-  color: rgba(232, 246, 255, 0.62);
+  color: var(--gf-text-muted);
   font-size: 0.8rem;
 }
 
-/* Every panel control is at least a 44x44 px pointer target (AC-30). */
+/* Every panel control is at least a 44x44 px pointer target (AC-30, AC-31). */
 .customization-open,
 .customization-equip,
 .customization-unequip,
@@ -848,7 +945,7 @@ main > section[data-blinking="true"] {
   height: 12rem;
   display: block;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--frame-metal-dark);
+  border: 1px solid var(--gf-rim);
 }
 
 /* Spaceship customization placement (bottom-left). */
@@ -870,4 +967,33 @@ main > section[data-blinking="true"] {
 /* Upgrades panel buy icon (upgrades-buy-icon): override inherited '▾' glyph. */
 .upgrades-panel button::before {
   content: '+';
+}
+
+/* Reduced motion: every new press transition and the accepted HUD motion is off. */
+@media (prefers-reduced-motion: reduce) {
+  main > section,
+  main > section button,
+  main > section[data-blinking="true"],
+  .auth-button,
+  .verification-pending button,
+  .auth-input,
+  .gf-cta,
+  .user-panel > button,
+  .connection-banner button,
+  .customization-equip,
+  .customization-unequip {
+    transition: none;
+    animation: none;
+  }
+
+  main > section button:active,
+  .gf-cta:active,
+  .auth-button:active,
+  .verification-pending button:active:not(:disabled),
+  .user-panel > button:active,
+  .connection-banner button:active,
+  .customization-equip:active,
+  .customization-unequip:active {
+    transform: none;
+  }
 }

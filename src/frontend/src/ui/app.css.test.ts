@@ -1,663 +1,833 @@
+/** @vitest-environment jsdom */
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+// jsdom rewrites `import.meta.url` to an http URL, so read from the workspace cwd
+// (the frontend package root), like the other CSS-backed component tests do.
+const rawCss = readFileSync('src/ui/app.css', 'utf8');
+const rawGameViewCss = readFileSync('src/ui/game-view.css', 'utf8');
 
-function ruleBody(selectorPattern: RegExp): string {
-  const match = css.match(selectorPattern);
-  if (match === null) {
-    throw new Error(`rule not found: ${selectorPattern}`);
-  }
-  return match[1];
+/** Selector matching must ignore commentary: only real selectors/declarations count. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
-describe('auth overlay backdrop centering (CSS guard)', () => {
-  it('keeps the auth-menu/auth-forms backdrop gradient centered at 50% 50% with border-box origin', () => {
-    const match = css.match(/\.auth-menu,\s*\n\s*\.auth-forms\s*\{([\s\S]*?)\}/);
-    if (match === null) {
-      throw new Error('auth-menu/auth-forms rule not found in app.css');
+const css = withoutComments(rawCss);
+const gameViewCss = withoutComments(rawGameViewCss);
+
+interface CssRule {
+  selector: string;
+  body: string;
+}
+
+/** Splits a stylesheet into top-level rules; `@media` bodies stay nested. */
+function topLevelRules(source: string): CssRule[] {
+  const rules: CssRule[] = [];
+  let index = 0;
+  while (index < source.length) {
+    const open = source.indexOf('{', index);
+    if (open === -1) {
+      break;
     }
-    const rule = match[1];
-    expect(rule).toContain('circle at 50% 50%');
-    expect(rule).toContain('background-origin: border-box');
-  });
-});
-
-describe('overlay motion (CSS guard, AC-7, AC-8)', () => {
-  it('grants pointer-events: auto to main > section button', () => {
-    expect(css).toContain('main > section button');
-    expect(css).toContain('pointer-events: auto');
-  });
-
-  it('applies a transition with duration <= 200ms to main > section', () => {
-    expect(css).toMatch(/main > section\s*\{[\s\S]*?transition:[^}]*150ms/);
-  });
-
-  it('applies scale(0.97) (or 0.98) on the minimize button :active', () => {
-    expect(css).toMatch(/main > section button:active\s*\{[\s\S]*?transform:\s*scale\(0\.9[78]\)/);
-  });
-
-  it('collapses stat paragraphs when data-minimized="true"', () => {
-    expect(css).toContain('main > section[data-minimized="true"]');
-    expect(css).toContain('max-height: 0');
-    expect(css).toContain('opacity: 0');
-    expect(css).toContain('overflow: hidden');
-  });
-
-  it('disables transitions under prefers-reduced-motion: reduce', () => {
-    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
-    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
-    const block = css.slice(idx);
-    expect(block).toContain('transition: none');
-    expect(block).toContain('animation: none');
-  });
-});
-
-describe('metallic frame tokens (AC-2)', () => {
-  it('declares the metal colour tokens with exact values', () => {
-    expect(css).toContain('--frame-metal-light: #c9d8e4;');
-    expect(css).toContain('--frame-metal-mid: #879db0;');
-    expect(css).toContain('--frame-metal-dark: #3f5365;');
-    expect(css).toContain('--frame-metal-deep: #23323e;');
-    expect(css).toContain('--frame-glow: rgba(124, 246, 255, 0.4);');
-    expect(css).toContain('--frame-glow-alert: rgba(255, 107, 107, 0.4);');
-    expect(css).toContain('--frame-center-top: rgba(18, 26, 36, 0.9);');
-    expect(css).toContain('--frame-center-bottom: rgba(6, 10, 20, 0.95);');
-    expect(css).toContain('--frame-center-alert-start: rgba(44, 18, 22, 0.92);');
-    expect(css).toContain('--frame-center-alert-end: rgba(20, 8, 10, 0.95);');
-  });
-
-  it('declares --frame-metal as a 145deg linear-gradient referencing all four metal tokens with >=6 stops', () => {
-    const match = css.match(/--frame-metal:\s*linear-gradient\(\s*145deg,[\s\S]*?\);/);
-    expect(match).not.toBeNull();
-    const value = match![0];
-    expect(value).toContain('var(--frame-metal-light)');
-    expect(value).toContain('var(--frame-metal-mid)');
-    expect(value).toContain('var(--frame-metal-dark)');
-    expect(value).toContain('var(--frame-metal-deep)');
-    const stops = (value.match(/%/g) || []).length;
-    expect(stops).toBeGreaterThanOrEqual(6);
-  });
-
-  it('declares --frame-center and --frame-center-alert as linear-gradients referencing the stops', () => {
-    expect(css).toMatch(/--frame-center:\s*linear-gradient\([^)]*var\(--frame-center-top\)[^)]*var\(--frame-center-bottom\)[^)]*\)/);
-    expect(css).toMatch(/--frame-center-alert:\s*linear-gradient\([\s\S]*?var\(--frame-center-alert-start\)[\s\S]*?var\(--frame-center-alert-end\)[\s\S]*?\)/);
-  });
-});
-
-describe('shared frame rule (AC-3)', () => {
-  const re = /main > section,\s*\n\s*\.user-panel section,\s*\n\s*\.connection-banner,\s*\n\s*\.phase-announcement,\s*\n\s*\.auth-panel,\s*\n\s*\.auth-error\s*\{([\s\S]*?)\}/;
-  it('exists with the ordered selector list', () => {
-    expect(css).toMatch(re);
-  });
-  it('declares the frame technique', () => {
-    const body = ruleBody(re);
-    expect(body).toContain('border: 2px solid transparent;');
-    expect(body).toContain('border-image: var(--frame-metal) 1;');
-    expect(body).toContain('border-radius: 0;');
-    expect(body).toContain('background: var(--frame-center);');
-    expect(body).toContain('box-shadow: inset 0 0 0 1px rgba(201, 216, 228, 0.22);');
-    expect(body).toContain('clip-path: polygon(');
-    expect(body).toContain('var(--frame-cut)');
-    expect(body).toContain('calc(100% - var(--frame-cut))');
-    expect(body).toMatch(/filter:\s*drop-shadow\(/);
-    expect(body).toContain('var(--frame-glow)');
-    expect(body).toContain('drop-shadow(');
-  });
-  it('phase-announcement:empty suppresses the frame', () => {
-    const m = css.match(/\.phase-announcement:empty\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('border-image: none;');
-    expect(body).toContain('background: transparent;');
-    expect(body).toContain('box-shadow: none;');
-    expect(body).toContain('filter: none;');
-    const m2 = css.match(/\.phase-announcement:empty::before\s*\{([\s\S]*?)\}/);
-    expect(m2).not.toBeNull();
-    expect(m2![1]).toContain('content: none;');
-  });
-});
-
-describe('bevel tiers (AC-4)', () => {
-  it('shared rule sets --frame-cut: 0.75rem', () => {
-    const re = /main > section,\s*\n\s*\.user-panel section,\s*\n\s*\.connection-banner,\s*\n\s*\.phase-announcement,\s*\n\s*\.auth-panel,\s*\n\s*\.auth-error\s*\{([\s\S]*?)\}/;
-    expect(ruleBody(re)).toContain('--frame-cut: 0.75rem;');
-  });
-  it('.auth-panel later sets --frame-cut: 1rem', () => {
-    const m = css.match(/\.auth-panel\s*\{\s*\n\s*--frame-cut:\s*1rem;/);
-    expect(m).not.toBeNull();
-  });
-  it('.connection-banner, .phase-announcement later sets --frame-cut: 0.5rem', () => {
-    const m = css.match(/\.connection-banner,\s*\n\s*\.phase-announcement\s*\{\s*\n\s*--frame-cut:\s*0\.5rem;/);
-    expect(m).not.toBeNull();
-  });
-});
-
-describe('framed controls (AC-5)', () => {
-  const re = /\.user-panel > button,\s*\n\s*\.connection-banner button,\s*\n\s*\.auth-button,\s*\n\s*\.verification-pending button\s*\{([\s\S]*?)\}/;
-  it('exists with ordered selector list', () => {
-    expect(css).toMatch(re);
-  });
-  it('declares control frame technique', () => {
-    const body = ruleBody(re);
-    expect(body).toContain('--frame-cut: 0.375rem;');
-    expect(body).toContain('border: 1px solid transparent;');
-    expect(body).toContain('border-image: var(--frame-metal) 1;');
-    expect(body).toContain('border-radius: 0;');
-    expect(body).toContain('background: var(--frame-center);');
-    expect(body).toContain('clip-path: polygon(');
-  });
-});
-
-describe('frame persistence across states (AC-6)', () => {
-  const rules = [
-    /\.auth-button,\s*\n\s*\.verification-pending button\s*\{([\s\S]*?)\}/,
-    /\.user-panel > button,\s*\n\s*\.connection-banner button\s*\{([\s\S]*?)\}/,
-    /\.auth-button-primary\s*\{([\s\S]*?)\}/,
-    /\.auth-button-primary:hover\s*\{([\s\S]*?)\}/,
-    /\.auth-button-secondary\s*\{([\s\S]*?)\}/,
-    /\.auth-button-secondary:hover\s*\{([\s\S]*?)\}/,
-    /\.auth-button:hover\s*\{([\s\S]*?)\}/,
-    /\.verification-pending button:hover:not\(:disabled\)\s*\{([\s\S]*?)\}/,
-    /\.user-panel > button:hover\s*\{([\s\S]*?)\}/,
-    /\.connection-banner button:hover\s*\{([\s\S]*?)\}/,
-  ];
-  for (const re of rules) {
-    it(`no background declaration in ${re}`, () => {
-      const body = ruleBody(re);
-      expect(body).not.toMatch(/background(?:-color|-image)?:/);
-    });
+    const selector = source.slice(index, open).trim();
+    let depth = 1;
+    let cursor = open + 1;
+    while (cursor < source.length && depth > 0) {
+      if (source[cursor] === '{') {
+        depth += 1;
+      } else if (source[cursor] === '}') {
+        depth -= 1;
+      }
+      cursor += 1;
+    }
+    rules.push({ selector, body: source.slice(open + 1, cursor - 1) });
+    index = cursor;
   }
-  it('.auth-button-primary declares inset accent box-shadow', () => {
-    const body = ruleBody(/\.auth-button-primary\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 1px var(--accent);');
-  });
-  it('each framed control hover changes color/filter/box-shadow', () => {
-    for (const re of [/\.user-panel > button:hover\s*\{([\s\S]*?)\}/, /\.connection-banner button:hover\s*\{([\s\S]*?)\}/, /\.auth-button:hover\s*\{([\s\S]*?)\}/]) {
-      const body = ruleBody(re);
-      expect(body.match(/color:|filter:|box-shadow:/)).not.toBeNull();
+  return rules;
+}
+
+const rules = topLevelRules(css).filter((rule) => !rule.selector.startsWith('@'));
+
+function normalizeSelector(selector: string): string {
+  return selector
+    .split(',')
+    .map((part) => part.trim().replace(/\s+/g, ' '))
+    .join(', ');
+}
+
+function findRule(selector: string): CssRule {
+  const expected = normalizeSelector(selector);
+  const matches = rules.filter((rule) => normalizeSelector(rule.selector) === expected);
+  if (matches.length !== 1) {
+    throw new Error(`expected exactly one rule for "${expected}", found ${matches.length}`);
+  }
+  return matches[0]!;
+}
+
+function ruleBody(selector: string): string {
+  return findRule(selector).body;
+}
+
+/** First rule with this selector (for surfaces that also carry a later utility rule). */
+function firstRuleBody(selector: string): string {
+  const expected = normalizeSelector(selector);
+  const match = rules.find((rule) => normalizeSelector(rule.selector) === expected);
+  if (match === undefined) {
+    throw new Error(`rule not found: "${expected}"`);
+  }
+  return match.body;
+}
+
+/** Property map of one declaration block; every value is exact (no normalisation). */
+function declarations(body: string): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const chunk of body.split(';')) {
+    const colon = chunk.indexOf(':');
+    if (colon === -1) {
+      continue;
     }
-  });
-});
-
-describe('inset wells (AC-7)', () => {
-  it('exactly one rule with selector list .auth-input, .verification-pending input', () => {
-    const matches = css.match(/\.auth-input,\s*\n\s*\.verification-pending input\s*\{([\s\S]*?)\}/g);
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBe(1);
-  });
-  it('merged rule keeps layout and well declarations', () => {
-    const body = ruleBody(/\.auth-input,\s*\n\s*\.verification-pending input\s*\{([\s\S]*?)\}/);
-    for (const d of ['box-sizing', 'width', 'min-height', 'padding', 'color', 'font', 'font-size', 'letter-spacing', 'text-transform']) {
-      expect(body).toMatch(new RegExp(d));
+    const property = chunk.slice(0, colon).trim();
+    if (property.length > 0) {
+      entries.set(property, chunk.slice(colon + 1).trim());
     }
-    expect(body).toContain('--frame-cut: 0.25rem;');
-    expect(body).toContain('border: 1px solid var(--frame-metal-dark);');
-    expect(body).toContain('border-radius: 0;');
-    expect(body).toContain('background: rgba(0, 0, 0, 0.42);');
-    expect(body).toContain('clip-path: polygon(');
-  });
-  it('focus rule keeps border-color and inset box-shadow', () => {
-    const body = ruleBody(/\.auth-input:focus,\s*\n\s*\.verification-pending input:focus\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent);');
-    expect(body).toContain('border-color: var(--accent);');
-  });
-});
+  }
+  return entries;
+}
 
-describe('focus rings (AC-8)', () => {
-  it('user/control focus-visible group has inset ring', () => {
-    const body = ruleBody(/\.user-panel > button:focus-visible,\s*\n\s*\.user-panel li button:focus-visible,\s*\n\s*\.connection-banner button:focus-visible\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent)');
-  });
-  it('auth focus-visible group has inset ring', () => {
-    const body = ruleBody(/\.auth-button:focus-visible,\s*\n\s*\.verification-pending button:focus-visible\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent)');
-  });
-  it('main > section button:focus-visible has inset ring', () => {
-    const body = ruleBody(/main > section button:focus-visible\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent)');
-  });
-  it('auth input focus has inset ring', () => {
-    const body = ruleBody(/\.auth-input:focus,\s*\n\s*\.verification-pending input:focus\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent);');
-  });
-});
+const SHARED_FRAME_SELECTORS = [
+  '.hud-panel',
+  '.upgrades-panel',
+  '.customization-panel',
+  '.activity-feed',
+  '.leaderboard',
+  '.user-panel .users-list',
+  '.connection-banner',
+  '.phase-announcement',
+  '.auth-panel',
+  '.auth-error',
+  'main > section',
+];
 
-describe('frame sheen (AC-9)', () => {
-  it('defines @keyframes frame-sheen animating background-position to one negative and one positive percentage', () => {
-    const m = css.match(/@keyframes\s+frame-sheen\s*\{([\s\S]*?)\n\}/);
-    expect(m).not.toBeNull();
-    const block = m![1];
-    expect(block).toMatch(/from\s*\{[\s\S]*?background-position:\s*-\d+%/);
-    expect(block).toMatch(/to\s*\{[\s\S]*?background-position:\s*\d+%/);
-  });
-  const re = /main > section::before,\s*\n\s*\.user-panel section::before,\s*\n\s*\.connection-banner::before,\s*\n\s*\.phase-announcement::before,\s*\n\s*\.auth-panel::before\s*\{([\s\S]*?)\}/;
-  it('sheen rule exists', () => {
-    expect(css).toMatch(re);
-  });
-  it('sheen rule declarations', () => {
-    const body = ruleBody(re);
-    expect(body).toContain("content: '';");
-    expect(body).toContain('position: absolute;');
-    expect(body).toContain('inset: 0;');
-    expect(body).toContain('padding: 2px;');
-    expect(body).toContain('pointer-events: none;');
-    expect(body).toContain('rgba(230, 245, 255, 0.6)');
-    expect(body).toContain('background-size: 300% 100%;');
-    expect(body).toContain('-webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);');
-    expect(body).toContain('-webkit-mask-composite: xor;');
-    expect(body).toContain('mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);');
-    expect(body).toContain('mask-composite: exclude;');
-    expect(body).toMatch(/animation:\s*frame-sheen\s+\d+ms\s+linear\s+infinite/);
-    const mm = body.match(/animation:\s*frame-sheen\s+(\d+)ms/);
-    const n = Number(mm![1]);
-    expect(n).toBeGreaterThanOrEqual(2000);
-    expect(n).toBeLessThanOrEqual(6000);
-    expect(body).not.toContain('inset: -2px');
-  });
-  it('mask-composite declarations follow their shorthands', () => {
-    const body = ruleBody(re);
-    const webkitMaskIdx = body.search(/^\s*-webkit-mask:/m);
-    const webkitCompIdx = body.search(/^\s*-webkit-mask-composite:/m);
-    const maskIdx = body.search(/^\s*mask:/m);
-    const compIdx = body.search(/^\s*mask-composite:/m);
-    expect(webkitCompIdx).toBeGreaterThan(webkitMaskIdx);
-    expect(compIdx).toBeGreaterThan(maskIdx);
-  });
-  it('user-panel section, .auth-panel position relative', () => {
-    const m = css.match(/\.user-panel section,\s*\n\s*\.auth-panel\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain('position: relative;');
-  });
-});
+const SHARED_FRAME_SELECTOR_LIST = SHARED_FRAME_SELECTORS.join(', ');
 
-describe('no rounded chrome (AC-10)', () => {
-  it('every border-radius declaration is 0', () => {
-    const matches = css.match(/border-radius:\s*[^;]+;/g) || [];
-    for (const m of matches) {
-      expect(m).toBe('border-radius: 0;');
-    }
-  });
-});
+function withPseudo(pseudo: '::before' | '::after'): string {
+  return SHARED_FRAME_SELECTORS.map((selector) => `${selector}${pseudo}`).join(', ');
+}
 
-describe('HUD blink (AC-12)', () => {
-  it('defines @keyframes hud-blink', () => {
-    expect(css).toMatch(/@keyframes\s+hud-blink\s*\{/);
-  });
-  it('applies hud-blink with duration <= 300ms', () => {
-    const m = css.match(/main > section\[data-blinking="true"\][^{]*\{[\s\S]*?animation:\s*hud-blink\s+(\d+)ms/);
-    expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeLessThanOrEqual(300);
-  });
-  it('keyframes animates filter and no box-shadow', () => {
-    const m = css.match(/@keyframes\s+hud-blink\s*\{([\s\S]*?)\n\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain('filter:');
-    expect(m![1]).not.toContain('box-shadow:');
-  });
-});
-
-describe('minimize control (AC-13)', () => {
-  it('main > section button has required declarations', () => {
-    const body = ruleBody(/main > section button\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('pointer-events: auto');
-    expect(body).toContain('cursor: pointer');
-    expect(body).toContain('min-width: 1.5rem;');
-    expect(body).toContain('min-height: 1.5rem;');
-  });
-  it('button::before has content:', () => {
-    expect(css).toMatch(/main > section button::before\s*\{[\s\S]*?content:/);
-  });
-  it('button:focus-visible has outline and inset ring', () => {
-    const body = ruleBody(/main > section button:focus-visible\s*\{([\s\S]*?)\}/);
-    expect(body).toMatch(/outline:\s*2px\s+solid\s+var\(--accent\)/);
-    expect(body).toContain('box-shadow: inset 0 0 0 2px var(--accent)');
-  });
-});
-
-describe('minimized state (AC-14)', () => {
-  it('exact minimized rule has opacity or brightness', () => {
-    const m = css.match(/main > section\[data-minimized="true"\]\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toMatch(/opacity:|filter:\s*brightness\(/);
-  });
-  it('adjacent p rule collapses', () => {
-    const m = css.match(/main > section\[data-minimized="true"\] p\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('max-height: 0');
-    expect(body).toContain('opacity: 0');
-    expect(body).toContain('overflow: hidden');
-  });
-});
-
-describe('scanline (AC-11)', () => {
-  it('defines @keyframes hud-scanline', () => {
-    expect(css).toMatch(/@keyframes\s+hud-scanline\s*\{/);
-  });
-  it('applies to ::after with duration in range', () => {
-    const m = css.match(/main > section::after[^{]*\{[\s\S]*?animation:\s*hud-scanline\s+(\d+)ms\s+linear\s+infinite/);
-    expect(m).not.toBeNull();
-    const n = Number(m![1]);
-    expect(n).toBeGreaterThanOrEqual(2000);
-    expect(n).toBeLessThanOrEqual(6000);
-  });
-  it('::after carries content, position, pointer-events', () => {
-    const body = ruleBody(/main > section::after\s*\{([\s\S]*?)\}/);
-    expect(body).toMatch(/content:/);
-    expect(body).toContain('position: absolute');
-    expect(body).toContain('pointer-events: none');
-  });
-  it('sheen rule does not contain hud-scanline', () => {
-    const body = ruleBody(/main > section::before,\s*\n\s*\.user-panel section::before,\s*\n\s*\.connection-banner::before,\s*\n\s*\.phase-announcement::before,\s*\n\s*\.auth-panel::before\s*\{([\s\S]*?)\}/);
-    expect(body).not.toContain('hud-scanline');
-  });
-});
-
-describe('reduced motion (AC-15)', () => {
-  it('names all required selectors', () => {
-    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
-    const block = css.slice(idx);
-    const sels = [
-      'main > section,',
-      'main > section::before,',
-      'main > section::after,',
-      'main > section button,',
-      'main > section[data-minimized="true"] p,',
-      'main > section[data-blinking="true"],',
-      '.user-panel section,',
-      '.user-panel section::before,',
-      '.connection-banner,',
-      '.connection-banner::before,',
-      '.phase-announcement,',
-      '.phase-announcement::before,',
-      '.auth-panel,',
-      '.auth-panel::before,',
-      '.auth-button,',
-      '.verification-pending button,',
-      '.auth-input',
+describe('Neon Forge tokens (AC-17)', () => {
+  it('declares every --gf-* token with its exact pinned value', () => {
+    const root = declarations(ruleBody(':root'));
+    const tokens: ReadonlyArray<readonly [string, string]> = [
+      ['--gf-void', '#04060d'],
+      ['--gf-surface-top', 'rgba(10, 18, 34, 0.94)'],
+      ['--gf-surface-bottom', 'rgba(5, 10, 20, 0.9)'],
+      ['--gf-surface-raised', 'rgba(18, 30, 52, 0.94)'],
+      ['--gf-rim', 'rgba(124, 246, 255, 0.56)'],
+      ['--gf-rim-strong', '#7cf6ff'],
+      ['--gf-rim-warm', '#ffb35c'],
+      ['--gf-text', '#e8f6ff'],
+      ['--gf-text-muted', 'rgba(232, 246, 255, 0.76)'],
+      ['--gf-gold', '#ffcc66'],
+      ['--gf-amber', '#ffb35c'],
+      ['--gf-amber-deep', '#ff7a1a'],
+      ['--gf-success', '#34d399'],
+      ['--gf-danger', '#ff6b6b'],
+      ['--gf-rare', '#60a5fa'],
+      ['--gf-epic', '#c084fc'],
+      ['--gf-grid', 'rgba(124, 246, 255, 0.05)'],
+      ['--gf-scanline', 'rgba(124, 246, 255, 0.06)'],
+      ['--gf-shadow', 'rgba(0, 0, 0, 0.55)'],
+      ['--gf-panel-glow', 'rgba(124, 246, 255, 0.2)'],
+      ['--gf-radius-panel', '1rem'],
+      ['--gf-radius-control', '0.6rem'],
+      ['--gf-chamfer', '0.65rem'],
+      ['--gf-chamfer-auth', '1.1rem'],
+      ['--gf-focus', '#7cf6ff'],
+      ['--gf-cta-text', '#1a1206'],
     ];
-    for (const s of sels) {
-      expect(block).toContain(s);
+    for (const [name, value] of tokens) {
+      expect(root.get(name), `${name} is declared exactly once`).toBe(value);
     }
-    expect(block).toContain('animation: none');
-    expect(block).toContain('transition: none');
+    expect([...root.keys()].filter((name) => name.startsWith('--gf-'))).toHaveLength(
+      tokens.length,
+    );
+  });
+
+  it('keeps the accepted shell tokens with their existing values', () => {
+    const root = declarations(ruleBody(':root'));
+    expect(root.get('--hud-text')).toBe('#e8f6ff');
+    expect(root.get('--hud-background')).toBe('rgba(6, 10, 20, 0.72)');
+    expect(root.get('--accent')).toBe('#7cf6ff');
+    expect(root.get('--page-background')).toBe('#000000');
+  });
+
+  it('removes the retired metallic --frame-* tokens and their rules', () => {
+    expect(css).not.toMatch(/--frame-[\w-]+\s*:/);
+    expect(css).not.toContain('border-image');
+    expect(css).not.toContain('frame-sheen');
+    expect(css).not.toContain('hud-scanline');
+    expect(css).not.toContain('@keyframes frame-sheen');
+    expect(css).not.toContain('@keyframes hud-scanline');
+  });
+
+  it('does not shadow the accepted --panel-* tokens owned by game-view.css', () => {
+    expect(css).not.toContain('--panel-');
+    for (const token of [
+      '--panel-bg-top: rgba(5, 11, 24, 0.86);',
+      '--panel-bg-bottom: rgba(10, 22, 44, 0.8);',
+      '--panel-border: rgba(124, 246, 255, 0.62);',
+      '--panel-glow: rgba(124, 246, 255, 0.35);',
+      '--panel-radius: 1rem;',
+      '--users-badge-top: #d63a2f;',
+      '--users-badge-bottom: #a51f1f;',
+      '--coin-gold: #ffcc66;',
+      '--upgrade-green: #16a34a;',
+    ]) {
+      expect(gameViewCss).toContain(token);
+    }
   });
 });
 
-describe('responsive fit (AC-16)', () => {
-  it('exactly one max-width: 480px block', () => {
-    const matches = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)/g);
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBe(1);
+describe('shared Neon Forge frame (AC-18)', () => {
+  it('is one grouped rule with exactly the pinned selector list', () => {
+    const matches = rules.filter(
+      (rule) => normalizeSelector(rule.selector) === SHARED_FRAME_SELECTOR_LIST,
+    );
+    expect(matches).toHaveLength(1);
   });
-  it('adjusts padding/font-size for main > section inside', () => {
-    const m = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)\s*\{([\s\S]*?)\n\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toMatch(/main > section[^{]*\{[\s\S]*?(?:padding:|font-size:)/);
-  });
-});
 
-describe('alert overrides (AC-21)', () => {
-  it('.auth-error declares overrides and color, no frame-erasing props', () => {
-    // find the standalone .auth-error rule (not in shared list). Match a rule starting at line .auth-error {
-    const idx = css.indexOf('\n.auth-error {');
-    const body = css.slice(idx).match(/\{([\s\S]*?)\}/)![1];
-    expect(body).toContain('--frame-center: var(--frame-center-alert);');
-    expect(body).toContain('--frame-glow: var(--frame-glow-alert);');
-    expect(body).toContain('color: #ffb4b4;');
-    expect(body).not.toMatch(/background(?:-color|-image)?:/);
-    expect(body).not.toMatch(/border(?:-radius)?:/);
-    expect(body).not.toMatch(/box-shadow:/);
+  it('declares the exact graphite-glass frame declarations', () => {
+    const frame = declarations(ruleBody(SHARED_FRAME_SELECTOR_LIST));
+    expect(frame.get('border')).toBe('1px solid var(--gf-rim)');
+    expect(frame.get('border-radius')).toBe('var(--gf-radius-panel)');
+    expect(frame.get('clip-path')).toBe(
+      'polygon(var(--gf-chamfer) 0, 100% 0, 100% calc(100% - var(--gf-chamfer)), calc(100% - var(--gf-chamfer)) 100%, 0 100%)',
+    );
+    expect(frame.get('background')).toBe(
+      'repeating-linear-gradient(0deg, transparent 0 23px, var(--gf-grid) 23px 24px), linear-gradient(180deg, var(--gf-surface-top), var(--gf-surface-bottom))',
+    );
+    expect(frame.get('color')).toBe('var(--gf-text)');
+    expect(frame.get('box-shadow')).toBe(
+      'inset 0 1px 0 rgba(232, 246, 255, 0.16), inset 0 0 0 1px rgba(124, 246, 255, 0.08), inset 0 0 40px var(--gf-shadow), inset 0 0 24px var(--gf-panel-glow)',
+    );
+    expect(frame.get('-webkit-backdrop-filter')).toBe('blur(14px) saturate(1.2)');
+    expect(frame.get('backdrop-filter')).toBe('blur(14px) saturate(1.2)');
+    expect([...frame.keys()]).toHaveLength(8);
   });
-});
 
-describe('disabled controls (AC-23)', () => {
-  it('.auth-button:disabled, .verification-pending button:disabled declares opacity and cursor, no background', () => {
-    const m = css.match(/\.auth-button:disabled,\s*\n\s*\.verification-pending button:disabled\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('opacity: 0.62;');
-    expect(body).toContain('cursor: progress;');
-    expect(body).not.toMatch(/background/);
-  });
-  it('.user-panel li button:disabled declares color and cursor, no background', () => {
-    const m = css.match(/\.user-panel li button:disabled\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('color: rgba(232, 246, 255, 0.62);');
-    expect(body).toContain('cursor: default;');
-    expect(body).not.toMatch(/background/);
-  });
-});
-
-describe('HUD panel frame (CSS guard, AC-2)', () => {
-  it('pins position/backdrop/overflow on base main > section', () => {
-    const m = css.match(/main > section\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('position: absolute');
-    expect(body).toMatch(/(?:-webkit-)?backdrop-filter[^;]*blur\(/);
-    expect(body).toContain('overflow: hidden');
-  });
-  it('carries pointer-events: none on both detailing pseudo-elements', () => {
-    for (const pseudo of ['::before', '::after']) {
-      const re = new RegExp(`main > section${pseudo.replace('::', '\\:\\:')}\\s*\\{([\\s\\S]*?)\\}`);
-      const m = css.match(re);
-      // sheen rule is grouped for ::before, so match grouped rule
-      if (pseudo === '::before') {
-        const mm = css.match(/main > section::before,[\s\S]*?\{([\s\S]*?)\}/);
-        expect(mm).not.toBeNull();
-        expect(mm![1]).toContain('pointer-events: none');
+  it('deliberately omits position, filter and any outer shadow', () => {
+    const frame = declarations(ruleBody(SHARED_FRAME_SELECTOR_LIST));
+    expect(frame.has('position')).toBe(false);
+    expect(frame.has('filter')).toBe(false);
+    const shadow = frame.get('box-shadow') ?? '';
+    const layers: string[] = [];
+    let current = '';
+    let depth = 0;
+    for (const character of shadow) {
+      if (character === '(') depth += 1;
+      if (character === ')') depth -= 1;
+      if (character === ',' && depth === 0) {
+        layers.push(current.trim());
+        current = '';
       } else {
-        expect(m).not.toBeNull();
-        expect(m![1]).toContain('pointer-events: none');
+        current += character;
       }
     }
+    layers.push(current.trim());
+    expect(layers).toHaveLength(4);
+    for (const layer of layers) {
+      expect(layer.startsWith('inset ')).toBe(true);
+    }
   });
-});
 
-describe('minimize control visibility (CSS guard, AC-3, AC-4)', () => {
-  it('grants pointer-events: auto, cursor: pointer, and canonical 1.5rem size to the button', () => {
-    const m = css.match(/main > section button\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('pointer-events: auto');
-    expect(body).toContain('cursor: pointer');
-    expect(body).toContain('min-width: 1.5rem;');
-    expect(body).toContain('min-height: 1.5rem;');
+  it('keeps every framed surface positioned by the accepted rules', () => {
+    // The shared frame must not override the HUD/pre-welcome absolute placement.
+    const hud = declarations(firstRuleBody('main > section'));
+    expect(hud.get('position')).toBe('absolute');
+    expect(hud.get('top')).toBe('calc(1rem + env(safe-area-inset-top, 0px))');
+    expect(hud.get('left')).toBe('calc(1rem + env(safe-area-inset-left, 0px))');
   });
-  it('provides a visible glyph via button::before or ::after content:', () => {
-    expect(css).toMatch(/main > section button::(?:before|after)\s*\{[\s\S]*?content:/);
-  });
-  it('defines a focus-visible outline using the accent token', () => {
-    const m = css.match(/main > section button:focus-visible\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toMatch(/outline:\s*2px\s+solid\s+var\(--accent\)/);
-  });
-});
 
-describe('minimized state presentation (CSS guard, AC-5)', () => {
-  it('dims the panel via opacity or brightness in the exact minimized rule', () => {
-    const m = css.match(/main > section\[data-minimized="true"\]\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toMatch(/opacity:|filter:\s*brightness\(/);
+  it('gives only .auth-panel, .auth-error and .user-panel .users-list a containing block', () => {
+    const position = declarations(
+      ruleBody('.auth-panel, .auth-error, .user-panel .users-list'),
+    );
+    expect([...position.keys()]).toEqual(['position']);
+    expect(position.get('position')).toBe('relative');
+    expect(rules.filter((rule) => rule.body.trim() === 'position: relative;')).toHaveLength(
+      1,
+    );
   });
-  it('collapses the stat paragraphs in the adjacent p rule', () => {
-    const m = css.match(/main > section\[data-minimized="true"\] p\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('max-height: 0');
-    expect(body).toContain('opacity: 0');
-    expect(body).toContain('overflow: hidden');
-  });
-});
 
-describe('scanline detailing (CSS guard, AC-6)', () => {
-  it('defines @keyframes hud-scanline', () => {
-    expect(css).toMatch(/@keyframes\s+hud-scanline\s*\{/);
-  });
-  it('applies hud-scanline to main > section::after with a duration in 2000..6000ms', () => {
-    const m = css.match(/main > section::after[^{]*\{[\s\S]*?animation:\s*hud-scanline\s+(\d+)ms\s+linear\s+infinite/);
-    expect(m).not.toBeNull();
-    const n = Number(m![1]);
-    expect(n).toBeGreaterThanOrEqual(2000);
-    expect(n).toBeLessThanOrEqual(6000);
-  });
-  it('carries content, position: absolute, and pointer-events: none on ::after', () => {
-    const m = css.match(/main > section::after\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toMatch(/content:/);
-    expect(body).toContain('position: absolute');
-    expect(body).toContain('pointer-events: none');
-  });
-  it('does not apply hud-scanline to ::before', () => {
-    const m = css.match(/main > section::before,[\s\S]*?\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).not.toContain('hud-scanline');
-  });
-});
+  it('retargets the auth chamfer/radius and the compact banner/phase chamfer', () => {
+    const auth = declarations(ruleBody('.auth-panel'));
+    expect(auth.get('--gf-chamfer')).toBe('var(--gf-chamfer-auth)');
+    expect(auth.get('--gf-radius-panel')).toBe('1.25rem');
 
-describe('reduced motion (CSS guard, AC-7)', () => {
-  it('disables animation and transition for the required selectors', () => {
-    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
-    const block = css.slice(idx);
-    expect(block).toContain('main > section::after');
-    expect(block).toContain('animation: none');
-    expect(block).toContain('transition: none');
+    const compact = declarations(ruleBody('.connection-banner, .phase-announcement'));
+    expect([...compact.keys()]).toEqual(['--gf-chamfer']);
+    expect(compact.get('--gf-chamfer')).toBe('0.45rem');
   });
-  it('names each required selector in the reduced-motion block', () => {
-    const idx = css.indexOf('@media (prefers-reduced-motion: reduce)');
-    const block = css.slice(idx);
-    for (const sel of [
-      'main > section,',
-      'main > section::before,',
-      'main > section::after,',
-      'main > section button,',
-      'main > section[data-minimized="true"] p,',
-      'main > section[data-blinking="true"],',
+
+  it('declares the top light edge for every framed surface', () => {
+    expect(rules.filter((rule) => normalizeSelector(rule.selector) === withPseudo('::before'))).toHaveLength(1);
+    const edge = declarations(ruleBody(withPseudo('::before')));
+    expect(edge.get('content')).toBe("''");
+    expect(edge.get('position')).toBe('absolute');
+    expect(edge.get('left')).toBe('var(--gf-chamfer)');
+    expect(edge.get('right')).toBe('0');
+    expect(edge.get('top')).toBe('0');
+    expect(edge.get('height')).toBe('1px');
+    expect(edge.get('background')).toBe(
+      'linear-gradient(90deg, transparent 0%, var(--gf-rim-strong) 50%, transparent 100%)',
+    );
+    expect(edge.get('pointer-events')).toBe('none');
+    expect([...edge.keys()]).toHaveLength(8);
+  });
+
+  it('declares the left status rail for every framed surface', () => {
+    expect(rules.filter((rule) => normalizeSelector(rule.selector) === withPseudo('::after'))).toHaveLength(1);
+    const rail = declarations(ruleBody(withPseudo('::after')));
+    expect(rail.get('content')).toBe("''");
+    expect(rail.get('position')).toBe('absolute');
+    expect(rail.get('left')).toBe('0');
+    expect(rail.get('top')).toBe('var(--gf-chamfer)');
+    expect(rail.get('width')).toBe('2px');
+    expect(rail.get('height')).toBe('40%');
+    expect(rail.get('background')).toBe(
+      'linear-gradient(180deg, var(--gf-rim-strong) 0%, transparent 100%)',
+    );
+    expect(rail.get('box-shadow')).toBe('inset -2px 0 8px var(--gf-rim-strong)');
+    expect(rail.get('pointer-events')).toBe('none');
+    expect([...rail.keys()]).toHaveLength(9);
+  });
+
+  it('drops every bit of chrome from the empty phase announcement', () => {
+    const empty = declarations(ruleBody('.phase-announcement:empty'));
+    expect(empty.get('padding')).toBe('0');
+    expect(empty.get('border')).toBe('none');
+    expect(empty.get('background')).toBe('transparent');
+    expect(empty.get('box-shadow')).toBe('none');
+    expect(empty.get('filter')).toBe('none');
+    expect(empty.get('clip-path')).toBe('none');
+    expect([...empty.keys()]).toHaveLength(6);
+
+    for (const selector of [
+      '.phase-announcement:empty::before',
+      '.phase-announcement:empty::after',
     ]) {
-      expect(block).toContain(sel);
+      const pseudo = declarations(ruleBody(selector));
+      expect([...pseudo.keys()]).toEqual(['content']);
+      expect(pseudo.get('content')).toBe('none');
+    }
+  });
+
+  it('never regains the retired metallic frame', () => {
+    expect(css).not.toContain('border-image');
+    expect(css).not.toContain('--frame-cut');
+    const frame = declarations(ruleBody(SHARED_FRAME_SELECTOR_LIST));
+    expect(frame.has('filter')).toBe(false);
+  });
+});
+
+describe('auth chrome (AC-26)', () => {
+  it('builds the scrim from --gf-void, two radial gradients and a scanline', () => {
+    const overlay = ruleBody('.auth-menu, .auth-forms');
+    const background = declarations(overlay).get('background') ?? '';
+    expect(background).toContain('var(--gf-void)');
+    expect(background.match(/radial-gradient\(/g)).toHaveLength(2);
+    expect(background).toContain('repeating-linear-gradient(0deg');
+    expect(background).toContain('var(--gf-scanline)');
+    expect(declarations(overlay).get('background-origin')).toBe('border-box');
+  });
+
+  it('renders the auth title as an uppercase wordmark with a gradient bar', () => {
+    const title = declarations(ruleBody('.auth-title'));
+    expect(title.get('font-size')).toBe('clamp(2rem, 6vw, 2.8rem)');
+    expect(title.get('font-weight')).toBe('800');
+    expect(title.get('letter-spacing')).toBe('0.18em');
+    expect(title.get('text-transform')).toBe('uppercase');
+    expect(title.get('color')).toBe('var(--gf-text)');
+
+    const bar = declarations(ruleBody('.auth-title::after'));
+    expect(bar.get('content')).toBe("''");
+    expect(bar.get('display')).toBe('block');
+    expect(bar.get('height')).toBe('2px');
+    expect(bar.get('background')).toBe(
+      'linear-gradient(90deg, var(--gf-rim-strong), transparent)',
+    );
+  });
+
+  it('keeps secondary auth buttons glass and >= 48px', () => {
+    const button = declarations(ruleBody('.auth-button, .verification-pending button'));
+    expect(button.get('min-height')).toBe('48px');
+    expect(button.get('border')).toBe('1px solid var(--gf-rim)');
+    expect(button.get('border-radius')).toBe('var(--gf-radius-control)');
+    expect(button.get('background')).toBe('var(--gf-surface-raised)');
+    expect(button.get('color')).toBe('var(--gf-text)');
+  });
+
+  it('makes the primary auth action the amber CTA with dark ink', () => {
+    const primary = declarations(ruleBody('.auth-button-primary'));
+    expect(primary.get('background')).toBe(
+      'linear-gradient(180deg, var(--gf-amber), var(--gf-amber-deep))',
+    );
+    expect(primary.get('color')).toBe('var(--gf-cta-text)');
+    expect(primary.get('border-color')).toBe('var(--gf-rim-warm)');
+  });
+
+  it('keeps the input well inset and at least 44px with a cyan focus ring', () => {
+    const input = declarations(ruleBody('.auth-input, .verification-pending input'));
+    expect(input.get('min-height')).toBe('44px');
+    expect(input.get('border')).toBe('1px solid var(--gf-rim)');
+    expect(input.get('border-radius')).toBe('var(--gf-radius-control)');
+    expect(input.get('background')).toBe('rgba(0, 0, 0, 0.42)');
+    expect(input.get('box-shadow')).toBe('inset 0 2px 8px var(--gf-shadow)');
+    expect(input.has('clip-path')).toBe(false);
+    expect(input.has('border-image')).toBe(false);
+
+    const focus = declarations(ruleBody('.auth-input:focus, .verification-pending input:focus'));
+    expect(focus.get('border-color')).toBe('var(--gf-focus)');
+    expect(focus.get('outline')).toBe('2px solid var(--gf-focus)');
+    expect(focus.get('box-shadow')).toBe('inset 0 0 0 2px var(--gf-focus)');
+  });
+
+  it('paints the auth error through the danger channel', () => {
+    const error = declarations(ruleBody('.auth-error'));
+    expect(error.get('--gf-rim')).toBe('rgba(255, 107, 107, 0.56)');
+    expect(error.get('color')).toBe('var(--gf-danger)');
+    expect(error.has('background')).toBe(false);
+    expect(error.has('border')).toBe(false);
+  });
+
+  it('gives every auth control the shared gf-focus ring', () => {
+    const focus = declarations(
+      ruleBody('.auth-button:focus-visible, .verification-pending button:focus-visible'),
+    );
+    expect(focus.get('outline')).toBe('2px solid var(--gf-focus)');
+    expect(focus.get('outline-offset')).toBe('2px');
+    expect(focus.get('box-shadow')).toBe('inset 0 0 0 2px var(--gf-focus)');
+  });
+});
+
+describe('control states (AC-28)', () => {
+  it('makes .gf-cta the amber 44px primary action', () => {
+    const cta = declarations(ruleBody('.gf-cta'));
+    expect(cta.get('background')).toBe(
+      'linear-gradient(180deg, var(--gf-amber), var(--gf-amber-deep))',
+    );
+    expect(cta.get('color')).toBe('var(--gf-cta-text)');
+    expect(cta.get('min-height')).toBe('44px');
+    expect(cta.get('border')).toBe('1px solid var(--gf-rim-warm)');
+    expect(cta.get('border-radius')).toBe('var(--gf-radius-control)');
+  });
+
+  it('brightens the CTA on hover and adds the warm rim', () => {
+    const hover = declarations(ruleBody('.gf-cta:hover'));
+    expect(hover.get('filter')).toBe('brightness(1.08)');
+    expect(hover.get('border-color')).toBe('var(--gf-rim-warm)');
+    expect(hover.get('box-shadow')).toBe('inset 0 0 0 1px var(--gf-rim-warm)');
+  });
+
+  it('presses the CTA down 1px and shows the gf-focus ring', () => {
+    const active = declarations(ruleBody('.gf-cta:active'));
+    expect(active.get('transform')).toBe('translateY(1px)');
+
+    const focus = declarations(ruleBody('.gf-cta:focus-visible'));
+    expect(focus.get('outline')).toBe('2px solid var(--gf-focus)');
+    expect(focus.get('outline-offset')).toBe('2px');
+  });
+
+  it('fades the disabled CTA without any glow', () => {
+    const disabled = declarations(ruleBody('.gf-cta:disabled'));
+    expect(disabled.get('opacity')).toBe('0.5');
+    expect(disabled.get('box-shadow')).toBe('none');
+    expect(disabled.get('filter')).toBe('none');
+    expect(disabled.get('cursor')).toBe('not-allowed');
+  });
+
+  it('keeps the secondary controls glass, 44px and gf-focus ringed', () => {
+    const secondary = declarations(
+      ruleBody(
+        '.user-panel > button, .connection-banner button, .customization-equip, .customization-unequip',
+      ),
+    );
+    expect(secondary.get('border')).toBe('1px solid var(--gf-rim)');
+    expect(secondary.get('border-radius')).toBe('var(--gf-radius-control)');
+    expect(secondary.get('background')).toBe('var(--gf-surface-raised)');
+    expect(secondary.get('color')).toBe('var(--gf-text)');
+
+    const focus = declarations(
+      ruleBody(
+        '.user-panel > button:focus-visible, .user-panel li button:focus-visible, .connection-banner button:focus-visible, .customization-equip:focus-visible, .customization-unequip:focus-visible',
+      ),
+    );
+    expect(focus.get('outline')).toBe('2px solid var(--gf-focus)');
+    expect(focus.get('outline-offset')).toBe('2px');
+    expect(focus.get('box-shadow')).toBe('inset 0 0 0 2px var(--gf-focus)');
+  });
+
+  it('keeps the CTA and secondary glass chrome across hover/active/disabled states', () => {
+    const states = [
+      '.gf-cta:hover',
+      '.gf-cta:active',
+      '.gf-cta:disabled',
+      '.auth-button:hover',
+      '.auth-button-primary:hover',
+      '.user-panel > button:hover, .connection-banner button:hover, .customization-equip:hover, .customization-unequip:hover',
+      '.user-panel > button:active, .connection-banner button:active, .customization-equip:active, .customization-unequip:active',
+      '.user-panel > button:disabled, .connection-banner button:disabled, .customization-equip:disabled, .customization-unequip:disabled',
+    ];
+    for (const selector of states) {
+      const state = declarations(ruleBody(selector));
+      expect(state.has('background'), `${selector} keeps its background`).toBe(false);
+      expect(state.has('border-image'), `${selector} keeps its border`).toBe(false);
+      expect(state.has('clip-path'), `${selector} keeps its shape`).toBe(false);
+    }
+  });
+
+  it('keeps a disabled state on every app.css secondary control', () => {
+    const disabled = declarations(
+      ruleBody(
+        '.user-panel > button:disabled, .connection-banner button:disabled, .customization-equip:disabled, .customization-unequip:disabled',
+      ),
+    );
+    expect(disabled.get('opacity')).toBe('0.5');
+    expect(disabled.get('box-shadow')).toBe('none');
+    expect(disabled.get('filter')).toBe('none');
+    expect(disabled.get('cursor')).toBe('not-allowed');
+  });
+
+  it('keeps the panel targets at 44px and the HUD minimize at the accepted 1.5rem', () => {
+    const panelTargets = declarations(
+      ruleBody(
+        '.customization-open, .customization-equip, .customization-unequip, .customization-reveal-equip, .customization-reveal-dismiss',
+      ),
+    );
+    expect(panelTargets.get('min-width')).toBe('44px');
+    expect(panelTargets.get('min-height')).toBe('44px');
+
+    const minimize = declarations(ruleBody('main > section button'));
+    expect(minimize.get('min-width')).toBe('1.5rem');
+    expect(minimize.get('min-height')).toBe('1.5rem');
+    expect(minimize.get('pointer-events')).toBe('auto');
+    expect(minimize.get('cursor')).toBe('pointer');
+  });
+});
+
+describe('typography (AC-29)', () => {
+  it('declares the panel-title role on every gameplay title and the auth wordmark', () => {
+    const titles = declarations(
+      ruleBody(
+        '.hud-title, .upgrades-title, .activity-feed-title, .leaderboard-title, .customization-title, .users-list-title',
+      ),
+    );
+    expect(titles.get('font-size')).toBe('0.72rem');
+    expect(titles.get('font-weight')).toBe('800');
+    expect(titles.get('letter-spacing')).toBe('0.18em');
+    expect(titles.get('text-transform')).toBe('uppercase');
+    expect(titles.get('color')).toBe('var(--gf-text)');
+  });
+
+  it('declares the HUD level chip role', () => {
+    const level = declarations(ruleBody('.hud-level'));
+    expect(level.get('font-size')).toBe('0.8rem');
+    expect(level.get('font-weight')).toBe('800');
+    expect(level.get('letter-spacing')).toBe('0.1em');
+    expect(level.get('text-transform')).toBe('uppercase');
+  });
+
+  it('declares the HUD resource-value role with tabular numerals', () => {
+    const value = declarations(ruleBody('.hud-resource-value'));
+    expect(value.get('font-size')).toBe('1.05rem');
+    expect(value.get('font-weight')).toBe('700');
+    expect(value.get('letter-spacing')).toBe('0.02em');
+    expect(value.get('font-variant-numeric')).toBe('tabular-nums');
+  });
+
+  it('declares the button role on every shell control', () => {
+    const buttons = declarations(
+      ruleBody(
+        '.gf-cta, .upgrade-buy, .customization-equip, .customization-unequip, .users-badge, .connection-banner button',
+      ),
+    );
+    expect(buttons.get('font-size')).toBe('0.9rem');
+    expect(buttons.get('font-weight')).toBe('700');
+    expect(buttons.get('letter-spacing')).toBe('0.08em');
+    expect(buttons.get('text-transform')).toBe('uppercase');
+    expect(buttons.get('font-family')).toBe('inherit');
+  });
+
+  it('keeps the body font stack unchanged', () => {
+    const body = declarations(ruleBody('body'));
+    expect(body.get('font-family')).toBe(
+      "'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif",
+    );
+  });
+});
+
+describe('responsive fit and reduced motion (AC-31)', () => {
+  it('keeps exactly one max-width: 480px block with the compact auth/HUD sizing', () => {
+    expect(css.match(/@media \(max-width: 480px\)/g)).toHaveLength(1);
+    const block = css.match(/@media \(max-width: 480px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(block).toContain('padding: 0.75rem;');
+    expect(block).toContain('padding: 1.15rem;');
+    expect(block).toContain('font-size: 1.75rem;');
+    expect(block).toContain('min-height: 48px;');
+    expect(block).toContain('main > section');
+    expect(block).toContain('font-size: 0.85rem;');
+  });
+
+  it('disables every app.css transition/animation and press transform under reduced motion', () => {
+    const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+    for (const selector of [
+      'main > section,',
+      'main > section button,',
+      'main > section[data-blinking="true"],',
+      '.auth-button,',
+      '.verification-pending button,',
+      '.auth-input,',
+      '.gf-cta,',
+      '.user-panel > button,',
+      '.connection-banner button,',
+      '.customization-equip,',
+      '.customization-unequip {',
+    ]) {
+      expect(block).toContain(selector);
+    }
+    expect(block).toContain('transition: none;');
+    expect(block).toContain('animation: none;');
+    expect(block).toContain('main > section button:active,');
+    expect(block).toContain('.gf-cta:active,');
+    expect(block).toContain('transform: none;');
+  });
+
+  it('keeps the accepted placement of the shell surfaces', () => {
+    const phase = declarations(ruleBody('.phase-announcement'));
+    expect(phase.get('position')).toBe('absolute');
+    expect(phase.get('left')).toBe('50%');
+    expect(phase.get('bottom')).toBe('calc(1.5rem + env(safe-area-inset-bottom, 0px))');
+    expect(phase.get('transform')).toBe('translateX(-50%)');
+    expect(phase.get('pointer-events')).toBe('none');
+
+    const banner = declarations(ruleBody('.connection-banner'));
+    expect(banner.get('position')).toBe('absolute');
+    expect(banner.get('top')).toBe('calc(1rem + env(safe-area-inset-top, 0px))');
+    expect(banner.get('left')).toBe('50%');
+    expect(banner.get('pointer-events')).toBe('none');
+
+    const users = declarations(ruleBody('.user-panel'));
+    expect(users.get('position')).toBe('absolute');
+    expect(users.get('top')).toBe('calc(1rem + env(safe-area-inset-top, 0px))');
+    expect(users.get('right')).toBe('calc(1rem + env(safe-area-inset-right, 0px))');
+  });
+
+  it('keeps the accepted customization/upgrades/toggle placements', () => {
+    const panel = declarations(ruleBody('.customization-panel'));
+    expect(panel.get('position')).toBe('absolute');
+    expect(panel.get('top')).toBe('auto');
+    expect(panel.get('bottom')).toBe('calc(4rem + env(safe-area-inset-bottom, 0px))');
+    expect(panel.get('left')).toBe('calc(1rem + env(safe-area-inset-left, 0px))');
+    expect(panel.get('max-height')).toBe('60vh');
+
+    const toggle = declarations(ruleBody('.customization-toggle'));
+    expect(toggle.get('position')).toBe('absolute');
+    expect(toggle.get('bottom')).toBe('calc(1rem + env(safe-area-inset-bottom, 0px))');
+    expect(toggle.get('left')).toBe('calc(1rem + env(safe-area-inset-left, 0px))');
+
+    const upgrades = declarations(ruleBody('.upgrades-panel'));
+    expect(upgrades.get('position')).toBe('absolute');
+    expect(upgrades.get('bottom')).toBe('calc(1rem + env(safe-area-inset-bottom, 0px))');
+    expect(upgrades.get('right')).toBe('calc(1rem + env(safe-area-inset-right, 0px))');
+  });
+
+  it('keeps the accepted HUD blink and minimize affordance', () => {
+    expect(css).toContain('@keyframes hud-blink');
+    const blink = css.match(/main > section\[data-blinking="true"\]\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(blink).toContain('animation: hud-blink 200ms ease;');
+    const glyph = declarations(ruleBody('main > section button::before'));
+    expect(glyph.get('content')).toBe("'▾'");
+    const focus = declarations(ruleBody('main > section button:focus-visible'));
+    expect(focus.get('outline')).toBe('2px solid var(--accent)');
+    expect(focus.get('box-shadow')).toBe('inset 0 0 0 2px var(--accent)');
+
+    const minimized = declarations(ruleBody('main > section[data-minimized="true"]'));
+    expect(minimized.get('gap')).toBe('0.125rem');
+    expect(minimized.get('opacity')).toBe('0.75');
+  });
+
+  it('keeps the panel slots, variant lists and preview styling', () => {
+    const lists = declarations(ruleBody('.customization-slots, .customization-variants'));
+    expect(lists.get('display')).toBe('flex');
+    expect(lists.get('flex-direction')).toBe('column');
+    expect(lists.get('list-style')).toBe('none');
+    expect(lists.get('margin')).toBe('0');
+    expect(lists.get('padding')).toBe('0');
+
+    const preview = declarations(ruleBody('.spaceship-preview'));
+    expect(preview.get('border')).toBe('1px solid var(--gf-rim)');
+    expect(preview.get('height')).toBe('12rem');
+
+    const slot = declarations(ruleBody('.customization-slot'));
+    expect(slot.get('border-top')).toBe('1px solid rgba(124, 246, 255, 0.18)');
+  });
+
+  it('does not scale, translate or animate the customization panel itself', () => {
+    const panel = declarations(ruleBody('.customization-panel'));
+    for (const property of ['transform', 'translate', 'rotate', 'scale', 'animation']) {
+      expect(panel.has(property)).toBe(false);
     }
   });
 });
 
-describe('border light retained (CSS guard, AC-8)', () => {
-  it('uses inset: 0 on main > section::before', () => {
-    const m = css.match(/main > section::before,[\s\S]*?\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain('inset: 0');
-    expect(m![1]).not.toContain('inset: -1px');
-    expect(m![1]).not.toContain('inset: -2px');
+describe('stylesheet integration (AC-18, AC-26, AC-28, AC-29)', () => {
+  const SHELL_MARKUP = `
+    <main>
+      <section aria-label="Game statistics"><p>Clicks: <span data-stat="clicks">0</span></p></section>
+      <div class="connection-banner"><span>Connection lost</span><button type="button">Retry</button></div>
+      <div class="phase-announcement" role="status" aria-live="polite"></div>
+      <div class="auth-forms">
+        <section class="auth-panel">
+          <h2 class="auth-title">Welcome back</h2>
+          <form class="auth-form">
+            <label class="auth-field"><span>Username</span><input class="auth-input" name="username" /></label>
+            <p class="auth-error" role="alert">request failed</p>
+            <div class="auth-actions">
+              <button class="auth-button auth-button-primary" type="submit">Login</button>
+              <button class="auth-button auth-button-secondary" type="button">Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
+      <button class="gf-cta" type="button">Open lootbox</button>
+    </main>
+  `;
+
+  function withShellStyles(markup: string, run: (root: HTMLElement) => void): void {
+    const style = document.createElement('style');
+    style.textContent = rawCss;
+    document.head.append(style);
+    const root = document.createElement('div');
+    root.innerHTML = markup;
+    document.body.append(root);
+    try {
+      run(root);
+    } finally {
+      root.remove();
+      style.remove();
+    }
+  }
+
+  it('cascades the shared frame and the accepted placements onto real markup', () => {
+    withShellStyles(SHELL_MARKUP, (root) => {
+      const hudSection = root.querySelector<HTMLElement>('main > section');
+      if (hudSection === null) throw new Error('HUD section missing');
+      const hud = window.getComputedStyle(hudSection);
+      expect(hud.position).toBe('absolute');
+      expect(hud.pointerEvents).toBe('none');
+      expect(hud.clipPath).toBe(
+        'polygon(var(--gf-chamfer) 0, 100% 0, 100% calc(100% - var(--gf-chamfer)), calc(100% - var(--gf-chamfer)) 100%, 0 100%)',
+      );
+
+      const panel = root.querySelector<HTMLElement>('.auth-panel');
+      if (panel === null) throw new Error('auth panel missing');
+      const auth = window.getComputedStyle(panel);
+      expect(auth.position).toBe('relative');
+      expect(auth.display).toBe('flex');
+      expect(auth.getPropertyValue('--gf-chamfer')).toBe('var(--gf-chamfer-auth)');
+      expect(auth.getPropertyValue('--gf-radius-panel')).toBe('1.25rem');
+      expect(auth.borderRadius).toBe('var(--gf-radius-panel)');
+      expect(auth.boxShadow).toBe(
+        'inset 0 1px 0 rgba(232, 246, 255, 0.16), inset 0 0 0 1px rgba(124, 246, 255, 0.08), inset 0 0 40px var(--gf-shadow), inset 0 0 24px var(--gf-panel-glow)',
+      );
+
+      const banner = root.querySelector<HTMLElement>('.connection-banner');
+      if (banner === null) throw new Error('connection banner missing');
+      const bannerStyle = window.getComputedStyle(banner);
+      expect(bannerStyle.position).toBe('absolute');
+      expect(bannerStyle.transform).toBe('translateX(-50%)');
+      expect(bannerStyle.getPropertyValue('--gf-chamfer')).toBe('0.45rem');
+
+      const emptyPhase = root.querySelector<HTMLElement>('.phase-announcement');
+      if (emptyPhase === null) throw new Error('phase announcement missing');
+      const empty = window.getComputedStyle(emptyPhase);
+      expect(empty.padding).toBe('0px');
+      expect(empty.borderTopStyle).toBe('none');
+      expect(empty.boxShadow).toBe('none');
+      expect(empty.filter).toBe('none');
+      expect(empty.clipPath).toBe('none');
+    });
   });
-  it('carries pointer-events: none on ::before', () => {
-    const m = css.match(/main > section::before,[\s\S]*?\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain('pointer-events: none');
+
+  it('cascades the auth/CTA control sizes and typography onto real markup', () => {
+    withShellStyles(SHELL_MARKUP, (root) => {
+      const title = root.querySelector<HTMLElement>('.auth-title');
+      if (title === null) throw new Error('auth title missing');
+      const titleStyle = window.getComputedStyle(title);
+      expect(titleStyle.fontSize).toBe('44.8px');
+      expect(titleStyle.fontWeight).toBe('800');
+      expect(titleStyle.letterSpacing).toBe('8.064px');
+      expect(titleStyle.textTransform).toBe('uppercase');
+
+      const authButton = root.querySelector<HTMLElement>('.auth-button');
+      if (authButton === null) throw new Error('auth button missing');
+      const authButtonStyle = window.getComputedStyle(authButton);
+      expect(authButtonStyle.minHeight).toBe('48px');
+      expect(authButtonStyle.borderRadius).toBe('var(--gf-radius-control)');
+      expect(authButtonStyle.textTransform).toBe('uppercase');
+
+      const input = root.querySelector<HTMLElement>('.auth-input');
+      if (input === null) throw new Error('auth input missing');
+      const inputStyle = window.getComputedStyle(input);
+      expect(inputStyle.minHeight).toBe('44px');
+      expect(inputStyle.boxSizing).toBe('border-box');
+      expect(inputStyle.borderRadius).toBe('var(--gf-radius-control)');
+
+      const error = root.querySelector<HTMLElement>('.auth-error');
+      if (error === null) throw new Error('auth error missing');
+      const errorStyle = window.getComputedStyle(error);
+      expect(errorStyle.getPropertyValue('--gf-rim')).toBe('rgba(255,107,107,0.56)');
+      expect(errorStyle.padding).toBe('9.6px 12px');
+
+      const retry = root.querySelector<HTMLElement>('.connection-banner button');
+      if (retry === null) throw new Error('retry button missing');
+      const retryStyle = window.getComputedStyle(retry);
+      expect(retryStyle.minWidth).toBe('44px');
+      expect(retryStyle.minHeight).toBe('44px');
+      expect(retryStyle.borderRadius).toBe('var(--gf-radius-control)');
+      expect(retryStyle.fontSize).toBe('14.4px');
+      expect(retryStyle.textTransform).toBe('uppercase');
+
+      const cta = root.querySelector<HTMLElement>('.gf-cta');
+      if (cta === null) throw new Error('CTA missing');
+      const ctaStyle = window.getComputedStyle(cta);
+      expect(ctaStyle.minHeight).toBe('44px');
+      expect(ctaStyle.borderRadius).toBe('var(--gf-radius-control)');
+      expect(ctaStyle.color).toBe('var(--gf-cta-text)');
+      expect(ctaStyle.fontSize).toBe('14.4px');
+      expect(ctaStyle.textTransform).toBe('uppercase');
+    });
   });
 });
 
-describe('responsive fit (CSS guard, AC-11)', () => {
-  it('introduces no second max-width: 480px block', () => {
-    const matches = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)/g);
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBe(1);
-  });
-  it('adjusts padding or font-size for main > section inside the 480px block', () => {
-    const m = css.match(/@media\s*\(\s*max-width:\s*480px\s*\)\s*\{([\s\S]*?)\n\}/);
-    expect(m).not.toBeNull();
-    const block = m![1];
-    expect(block).toMatch(/main > section[^{]*\{[\s\S]*?(?:padding:|font-size:)/);
-  });
-});
-describe('spaceship customization placement (CSS guard)', () => {
-  it('positions .customization-panel as an absolutely positioned overlay at bottom-left', () => {
-    const m = css.match(/\.customization-panel\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('position: absolute;');
-    expect(body).toContain('top: auto;');
-    expect(body).toContain('bottom: calc(4rem + env(safe-area-inset-bottom, 0px));');
-    expect(body).toContain('left: calc(1rem + env(safe-area-inset-left, 0px));');
+describe('stylesheet hygiene (AC-33)', () => {
+  it('references no external asset or font in either stylesheet', () => {
+    for (const source of [css, gameViewCss]) {
+      expect(source).not.toContain('url(http');
+      expect(source).not.toContain('@font-face');
+      expect(source).not.toContain('data:image');
+      expect(source).not.toContain('@import');
+      expect(source).not.toContain('<img');
+    }
   });
 
-  it('positions .customization-toggle as an absolutely positioned overlay at bottom-left', () => {
-    const m = css.match(/\.customization-toggle\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('position: absolute;');
-    expect(body).toContain('bottom: calc(1rem + env(safe-area-inset-bottom, 0px));');
-    expect(body).toContain('left: calc(1rem + env(safe-area-inset-left, 0px));');
-  });
-});
-
-describe('upgrades panel placement (CSS guard)', () => {
-  it('positions .upgrades-panel as an absolutely positioned overlay at bottom-right', () => {
-    const m = css.match(/\.upgrades-panel\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    const body = m![1];
-    expect(body).toContain('position: absolute;');
-    expect(body).toContain('top: auto;');
-    expect(body).toContain('bottom: calc(1rem + env(safe-area-inset-bottom, 0px));');
-    expect(body).toContain('left: auto;');
-    expect(body).toContain('right: calc(1rem + env(safe-area-inset-right, 0px));');
-  });
-});
-
-describe('upgrades panel buy icon (CSS guard, upgrades-buy-icon)', () => {
-  it('defines a .upgrades-panel button::before rule with a content: declaration', () => {
-    const m = css.match(/\.upgrades-panel button::before\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toMatch(/content:/);
+  it('never importance-flags a declaration', () => {
+    expect(css).not.toContain('!important');
   });
 
-  it('overrides the inherited glyph with content: \'+\'', () => {
-    const m = css.match(/\.upgrades-panel button::before\s*\{([\s\S]*?)\}/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("content: '+';");
-  });
-});
-
-describe('stylesheet hygiene', () => {
   it('ends with exactly one trailing newline', () => {
-    expect(css.endsWith('\n')).toBe(true);
-    expect(css.endsWith('\n\n')).toBe(false);
-  });
-});
-
-describe('customization panel slots and targets (AC-29, AC-30)', () => {
-  it('scrolls within max-height 60vh and clips horizontal overflow', () => {
-    const body = ruleBody(/\.customization-panel\s*\{([\s\S]*?)\}/);
-    expect(body).toContain('box-sizing: border-box;');
-    expect(body).toContain('max-width: min(22rem, calc(100vw - 2rem));');
-    expect(body).toContain('max-height: 60vh;');
-    expect(body).toContain('overflow-x: hidden;');
-    expect(body).toContain('overflow-y: auto;');
-  });
-
-  it('gives open, equip, unequip and reveal controls a 44x44 minimum target', () => {
-    const body = ruleBody(
-      /\.customization-open,\s*\n\s*\.customization-equip,\s*\n\s*\.customization-unequip,\s*\n\s*\.customization-reveal-equip,\s*\n\s*\.customization-reveal-dismiss\s*\{([\s\S]*?)\}/,
-    );
-    expect(body).toContain('min-width: 44px;');
-    expect(body).toContain('min-height: 44px;');
-  });
-
-  it('lays out the ten slot rows and three-variant lists without bullets', () => {
-    const body = ruleBody(
-      /\.customization-slots,\s*\n\s*\.customization-variants\s*\{([\s\S]*?)\}/,
-    );
-    expect(body).toContain('display: flex;');
-    expect(body).toContain('flex-direction: column;');
-    expect(body).toContain('list-style: none;');
-    expect(body).toContain('margin: 0;');
-    expect(body).toContain('padding: 0;');
-  });
-
-  it('does not scale or translate the panel itself (no shake)', () => {
-    const body = ruleBody(/\.customization-panel\s*\{([\s\S]*?)\}/);
-    expect(body).not.toMatch(/(?:transform|translate|rotate|scale|animation)\s*:/);
+    expect(rawCss.endsWith('\n')).toBe(true);
+    expect(rawCss.endsWith('\n\n')).toBe(false);
   });
 });

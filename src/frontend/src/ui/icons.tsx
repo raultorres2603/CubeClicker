@@ -69,6 +69,27 @@ export function CoinIcon({ className }: IconProps): ReactElement {
   );
 }
 
+/** Key — HUD keys resource chip. */
+export function KeyIcon({ className }: IconProps): ReactElement {
+  return (
+    <Icon className={className} name="key">
+      <circle cx="8" cy="8" r="4.2" />
+      <path d="M11 11l8 8M16.2 16.2l2.2-2.2M18.7 18.7l2-2" />
+    </Icon>
+  );
+}
+
+/** Lootbox crate — HUD lootboxes resource chip. */
+export function LootboxIcon({ className }: IconProps): ReactElement {
+  return (
+    <Icon className={className} name="lootbox">
+      <path d="M3.5 8.5h17v11.2h-17z" />
+      <path d="M3.5 8.5l2.4-4.2h12.2l2.4 4.2M10.2 8.5v11.2M13.8 8.5v11.2" />
+      <path d="M9.4 8.5h5.2v3.1H9.4z" />
+    </Icon>
+  );
+}
+
 /** Server stack — HUD server row. */
 export function ServerIcon({ className }: IconProps): ReactElement {
   return (

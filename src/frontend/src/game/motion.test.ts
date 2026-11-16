@@ -96,7 +96,37 @@ describe('MOTION tokens (AC-34)', () => {
       shotMuzzleFlashMs: 80,
       shotRecoilMs: 120,
       shotRecoilDistance: 0.12,
+      // Game-feel overhaul: 3D reveal stage + Neon Forge UI (spec AC-32).
+      revealStageOrbScale: 1.1,
+      revealStageFlashOpacity: 0.85,
+      revealStageRingMinScale: 0.4,
+      revealStageRingMaxScale: 2.4,
+      revealStageRingOpacity: 0.9,
+      revealStageSlotPulse: 1.1,
+      uiPanelEnterMs: 220,
+      uiPanelEnterOffsetPx: 6,
+      uiButtonPressMs: 90,
+      uiButtonPressScale: 0.97,
+      uiGlowPulseMs: 2400,
+      uiRevealSpotlightMs: 260,
     });
+  });
+
+  it('adds the twelve game-feel overhaul tokens with exact values (AC-32)', () => {
+    // 3D reveal stage pose values.
+    expect(MOTION.revealStageOrbScale).toBe(1.1);
+    expect(MOTION.revealStageFlashOpacity).toBe(0.85);
+    expect(MOTION.revealStageRingMinScale).toBe(0.4);
+    expect(MOTION.revealStageRingMaxScale).toBe(2.4);
+    expect(MOTION.revealStageRingOpacity).toBe(0.9);
+    expect(MOTION.revealStageSlotPulse).toBe(1.1);
+    // Neon Forge UI durations and offsets.
+    expect(MOTION.uiPanelEnterMs).toBe(220);
+    expect(MOTION.uiPanelEnterOffsetPx).toBe(6);
+    expect(MOTION.uiButtonPressMs).toBe(90);
+    expect(MOTION.uiButtonPressScale).toBe(0.97);
+    expect(MOTION.uiGlowPulseMs).toBe(2400);
+    expect(MOTION.uiRevealSpotlightMs).toBe(260);
   });
 
   it('pins the destruction and shot headline sums', () => {

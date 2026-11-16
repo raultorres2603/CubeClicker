@@ -48,7 +48,7 @@ import {
   type SessionEnvironment,
   type VisibilitySource,
 } from './session';
-import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type MiniCubeId, type UpgradeState } from './types';
+import { FACE_IDS, GRID_SIZE, type EconomyState, type FaceId, type LootboxGrant, type MiniCubeId, type UpgradeState } from './types';
 
 /**
  * The hover pick is wrapped so the coalescing contract is observable from the session
@@ -168,6 +168,7 @@ interface FakeEngine {
   economyAdoptions: EconomyState[];
   upgradeAdoptions: UpgradeState[];
   spectatingCalls: boolean[];
+  clearGrants(): number;
   setSnapshot(snapshot: EngineSnapshot): void;
 }
 
@@ -531,6 +532,7 @@ function createFakeEngine(
   const economyAdoptions: EconomyState[] = [];
   const upgradeAdoptions: UpgradeState[] = [];
   const spectatingCalls: boolean[] = [];
+  let clearGrantCalls = 0;
   let snapshot = initial;
   return {
     engine: {
@@ -599,6 +601,11 @@ function createFakeEngine(
       setSpectating(active) {
         spectatingCalls.push(active);
       },
+      clearLootboxGrant() {
+        // Recording only: the engine contract is owned by `engine.test.ts`; the session
+        // tests here pin *that* the documented clear seam is used (AC-11).
+        clearGrantCalls += 1;
+      },
     },
     events,
     advancements,
@@ -609,6 +616,7 @@ function createFakeEngine(
     economyAdoptions,
     upgradeAdoptions,
     spectatingCalls,
+    clearGrants: () => clearGrantCalls,
     setSnapshot(next) {
       snapshot = next;
     },
@@ -5234,6 +5242,251 @@ describe('multiplayer customization wiring (T11)', () => {
 
     wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
     expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+  });
+});
+
+describe('lootbox grant lifecycle (AC-2, AC-3, AC-11)', () => {
+  /** One opener-only account grant, exactly as the hub sends it to the opening connection. */
+  function emitAccountGrant(wire: FakeTransport): void {
+    wire.emit({
+      type: 'lootboxOpened',
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1 },
+      appearance: {},
+    });
+  }
+
+  /** The exact grant the opener's session holds after {@link emitAccountGrant}. */
+  const accountGrant: LootboxGrant = {
+    partId: 'hull-obsidian',
+    slot: 'hull',
+    rarity: 'rare',
+    duplicate: false,
+    sequence: 1,
+  };
+
+  it('clears the account grant on a rejoin welcome and publishes the engine snapshot', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+
+    emitAccountGrant(wire);
+    expect(session.getSnapshot().lastLootboxGrant).toEqual(accountGrant);
+
+    // A second account open is in flight when the resume welcome arrives.
+    session.openLootbox();
+    expect(wire.sent).toEqual([{ type: 'openLootbox' }]);
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(true);
+
+    const publishedGrants: Array<LootboxGrant | null | undefined> = [];
+    session.subscribe(() => {
+      publishedGrants.push(session.getSnapshot().lastLootboxGrant);
+    });
+
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    // The subscriber observes the cleared grant in the published snapshot, and the clear
+    // adds no wire message and keeps the existing welcome pending rule.
+    expect(publishedGrants).toEqual([null]);
+    expect(session.getSnapshot().lastLootboxGrant).toBeNull();
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+    expect(wire.sent).toEqual([{ type: 'openLootbox' }]);
+    expect(session.getMultiplayerSnapshot().status).toBe('connected');
+  });
+
+  it('clears a pre-seeded grant on the attach-time connecting status (fresh join)', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptLootboxGrant({ partId: 'hull-gold', slot: 'hull', rarity: 'epic', duplicate: true, sequence: 6 });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    const publishedGrants: Array<LootboxGrant | null | undefined> = [];
+    session.subscribe(() => {
+      publishedGrants.push(session.getSnapshot().lastLootboxGrant);
+    });
+
+    session.attach(fake.canvas.surface);
+
+    // The transport's first status is `connecting`: a fresh session never starts with a
+    // reveal, and the clear reaches the engine-snapshot subscribers.
+    expect(publishedGrants).toEqual([null]);
+    expect(session.getSnapshot().lastLootboxGrant).toBeNull();
+
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(session.getSnapshot().lastLootboxGrant).toBeNull();
+    expect(wire.sent).toEqual([]);
+  });
+
+  it.each(['connecting', 'disconnected', 'exhausted'] as const)(
+    'clears a mid-reveal grant and publishes the engine snapshot before the store on %s',
+    (next) => {
+      const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+      const fake = createFakeEnv();
+      const wire = createFakeTransport();
+      const session = createOnlineSession(fake, wire, engine);
+      session.attach(fake.canvas.surface);
+      wire.emitStatus('connected');
+      wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+      session.join('account');
+      emitAccountGrant(wire);
+      expect(session.getSnapshot().lastLootboxGrant).toEqual(accountGrant);
+
+      const publishes: string[] = [];
+      const publishedGrants: Array<LootboxGrant | null | undefined> = [];
+      session.subscribe(() => {
+        publishes.push('engine');
+        publishedGrants.push(session.getSnapshot().lastLootboxGrant);
+      });
+      session.subscribeMultiplayer(() => {
+        publishes.push('multiplayer');
+      });
+
+      wire.emitStatus(next);
+
+      expect(session.getSnapshot().lastLootboxGrant).toBeNull();
+      expect(publishedGrants).toEqual([null]);
+      expect(publishes).toEqual(['engine', 'multiplayer']);
+      expect(session.getMultiplayerSnapshot().status).toBe(next);
+      expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+      expect(wire.sent).toEqual([]);
+    },
+  );
+
+  it('keeps the grant on a connected status', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    session.join('account');
+    emitAccountGrant(wire);
+
+    const engineListener = vi.fn();
+    session.subscribe(engineListener);
+
+    wire.emitStatus('connected');
+
+    expect(session.getSnapshot().lastLootboxGrant).toEqual(accountGrant);
+    expect(engineListener).toHaveBeenCalledTimes(0);
+  });
+
+  it('never sets a grant on a second tab that only receives customizationUpdate', () => {
+    const firstEnv = createFakeEnv();
+    const secondEnv = createFakeEnv();
+    const firstWire = createFakeTransport();
+    const secondWire = createFakeTransport();
+    const first = createOnlineSession(
+      firstEnv,
+      firstWire,
+      createEngine({ online: true, gridSize: 5, random: fixedRandom }),
+    );
+    const second = createOnlineSession(
+      secondEnv,
+      secondWire,
+      createEngine({ online: true, gridSize: 5, random: fixedRandom }),
+    );
+    first.attach(firstEnv.canvas.surface);
+    second.attach(secondEnv.canvas.surface);
+    firstWire.emitStatus('connected');
+    secondWire.emitStatus('connected');
+    firstWire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    secondWire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    first.join('account');
+    second.join('account');
+
+    // The hub sends `lootboxOpened` only to the opening connection; the second tab sees
+    // the account-wide customization delta and must never start a reveal.
+    emitAccountGrant(firstWire);
+    secondWire.emit({ type: 'customizationUpdate', lootboxes: 0, keys: 0, parts: { 'hull-obsidian': 1 }, appearance: {} });
+
+    expect(first.getSnapshot().lastLootboxGrant).toEqual(accountGrant);
+    expect(second.getSnapshot().lastLootboxGrant).toBeNull();
+    expect(firstWire.sent).toEqual([]);
+    expect(secondWire.sent).toEqual([]);
+  });
+
+  it('advances the guest grant sequence and keeps the grant on an insufficient open', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    engine.adoptCustomization({ lootboxes: 2, keys: 2, parts: {}, appearance: {} });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+
+    session.openLootbox();
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'engine-left-vector',
+      slot: 'engine-left',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
+
+    session.openLootbox();
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'engine-left-vector',
+      slot: 'engine-left',
+      rarity: 'rare',
+      duplicate: true,
+      sequence: 2,
+    });
+
+    // No lootboxes left: the draw never runs and the previous grant is untouched.
+    session.openLootbox();
+    expect(session.getSnapshot().lastLootboxGrant).toEqual({
+      partId: 'engine-left-vector',
+      slot: 'engine-left',
+      rarity: 'rare',
+      duplicate: true,
+      sequence: 2,
+    });
+    expect(session.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'engine-left-vector': 2 },
+      appearance: {},
+    });
+    expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('delegates every clear to engine.clearLootboxGrant (welcome and non-connected status)', () => {
+    const recording = createFakeEngine(
+      snapshot({
+        lastLootboxGrant: { partId: 'hull-gold', slot: 'hull', rarity: 'epic', duplicate: false, sequence: 3 },
+      }),
+    );
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, recording.engine);
+
+    session.attach(fake.canvas.surface);
+    // Attach connects, and the transport reports `connecting`: the non-connected path clears.
+    expect(recording.clearGrants()).toBe(1);
+
+    wire.emitStatus('connected');
+    expect(recording.clearGrants()).toBe(1);
+
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(recording.clearGrants()).toBe(2);
+
+    wire.emitStatus('exhausted');
+    expect(recording.clearGrants()).toBe(3);
   });
 });
 

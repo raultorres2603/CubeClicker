@@ -10,6 +10,8 @@
  * honest).
  */
 
+import { REVEAL_RARITY_HEX } from '../game/reveal-motion';
+
 /** Primary HUD text colour (contrast-checked against the HUD panel). */
 export const HUD_TEXT = '#e8f6ff';
 
@@ -54,3 +56,45 @@ export const COIN_GOLD = '#ffcc66';
 
 /** Upgrade buy-button surface colour (white text must keep >= 3.0:1). */
 export const UPGRADE_GREEN = '#16a34a';
+
+/**
+ * Neon Forge mirrors (game-feel-overhaul T6; spec AC-17, AC-31).
+ *
+ * These are the TypeScript side of the additive `--gf-*` palette in `app.css`. The
+ * accepted `--panel-*` tokens above are unchanged; the reveal rarity colours are the
+ * single source (`REVEAL_RARITY_HEX`) so the 3D ring and the CSS channel can never
+ * drift apart.
+ */
+
+/** Panel gradient top stop. */
+export const GF_SURFACE_TOP = 'rgba(10, 18, 34, 0.94)';
+
+/** Panel gradient bottom stop. */
+export const GF_SURFACE_BOTTOM = 'rgba(5, 10, 20, 0.9)';
+
+/** Primary shell text (equal to `HUD_TEXT`, both contrast-checked). */
+export const GF_TEXT = HUD_TEXT;
+
+/** Secondary/muted shell text. */
+export const GF_TEXT_MUTED = 'rgba(232, 246, 255, 0.76)';
+
+/** Rare channel, shared with the reveal stage ring. */
+export const GF_RARE = REVEAL_RARITY_HEX.rare;
+
+/** Epic channel, shared with the reveal stage ring. */
+export const GF_EPIC = REVEAL_RARITY_HEX.epic;
+
+/** Warm reward accent / primary CTA top stop. */
+export const GF_AMBER = '#ffb35c';
+
+/** Primary CTA bottom stop. */
+export const GF_AMBER_DEEP = '#ff7a1a';
+
+/** Ink used on the amber primary CTA. */
+export const GF_CTA_TEXT = '#1a1206';
+
+/** Error / exhausted channel. */
+export const GF_DANGER = '#ff6b6b';
+
+/** Positive / purchase channel. */
+export const GF_SUCCESS = '#34d399';

@@ -2,9 +2,21 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { REVEAL_RARITY_HEX } from '../game/reveal-motion';
 import {
   ACCENT,
   COIN_GOLD,
+  GF_AMBER,
+  GF_AMBER_DEEP,
+  GF_CTA_TEXT,
+  GF_DANGER,
+  GF_EPIC,
+  GF_RARE,
+  GF_SUCCESS,
+  GF_SURFACE_BOTTOM,
+  GF_SURFACE_TOP,
+  GF_TEXT,
+  GF_TEXT_MUTED,
   HUD_BACKGROUND,
   HUD_TEXT,
   PAGE_BACKGROUND,
@@ -84,6 +96,17 @@ function readCssVar(name: string): string {
   return match[1].trim();
 }
 
+/** Rounded contrast ratio: a token edit cannot silently slide towards the floor. */
+function rounded(ratio: number): number {
+  return Math.round(ratio * 100) / 100;
+}
+
+/** One translated surface, composited over black and white backdrops. */
+function surfaceOver(stop: string, backdrop: string): Rgb {
+  const { color, alpha } = parseRgba(stop);
+  return composite(color, alpha, hexToRgb(backdrop));
+}
+
 describe('HUD theme', () => {
   it('pins the exact theme colours', () => {
     expect(HUD_TEXT).toBe('#e8f6ff');
@@ -104,6 +127,172 @@ describe('HUD theme', () => {
     expect(UPGRADE_GREEN).toBe('#16a34a');
   });
 
+  it('pins the Neon Forge exports and keeps GF_TEXT identical to HUD_TEXT (AC-17)', () => {
+    expect(GF_SURFACE_TOP).toBe('rgba(10, 18, 34, 0.94)');
+    expect(GF_SURFACE_BOTTOM).toBe('rgba(5, 10, 20, 0.9)');
+    expect(GF_TEXT).toBe('#e8f6ff');
+    expect(GF_TEXT).toBe(HUD_TEXT);
+    expect(GF_TEXT_MUTED).toBe('rgba(232, 246, 255, 0.76)');
+    expect(GF_RARE).toBe('#60a5fa');
+    expect(GF_EPIC).toBe('#c084fc');
+    expect(GF_AMBER).toBe('#ffb35c');
+    expect(GF_AMBER_DEEP).toBe('#ff7a1a');
+    expect(GF_CTA_TEXT).toBe('#1a1206');
+    expect(GF_DANGER).toBe('#ff6b6b');
+    expect(GF_SUCCESS).toBe('#34d399');
+  });
+
+  it('takes the rarity channels from REVEAL_RARITY_HEX', () => {
+    expect(GF_RARE).toBe(REVEAL_RARITY_HEX.rare);
+    expect(GF_EPIC).toBe(REVEAL_RARITY_HEX.epic);
+    expect(REVEAL_RARITY_HEX).toEqual({ rare: '#60a5fa', epic: '#c084fc' });
+  });
+
+  it('mirrors each exported GF_* constant in the app.css :root block', () => {
+    const mirrors: ReadonlyArray<readonly [string, string]> = [
+      ['--gf-surface-top', GF_SURFACE_TOP],
+      ['--gf-surface-bottom', GF_SURFACE_BOTTOM],
+      ['--gf-text', GF_TEXT],
+      ['--gf-text-muted', GF_TEXT_MUTED],
+      ['--gf-rare', GF_RARE],
+      ['--gf-epic', GF_EPIC],
+      ['--gf-amber', GF_AMBER],
+      ['--gf-amber-deep', GF_AMBER_DEEP],
+      ['--gf-cta-text', GF_CTA_TEXT],
+      ['--gf-danger', GF_DANGER],
+      ['--gf-success', GF_SUCCESS],
+    ];
+    for (const [name, value] of mirrors) {
+      expect(readCssVar(name)).toBe(value);
+    }
+  });
+
+  it('leaves every accepted --panel-* and --frame-metal-* value out of app.css', () => {
+    const css = readFileSync(new URL('./app.css', import.meta.url), 'utf8');
+    expect(css).not.toContain('--panel-bg-top');
+    expect(css).not.toContain('--frame-metal');
+    expect(css).not.toContain('--frame-center');
+  });
+});
+
+describe('Neon Forge contrast (AC-31)', () => {
+  const panels = [
+    { name: 'top', stop: GF_SURFACE_TOP },
+    { name: 'bottom', stop: GF_SURFACE_BOTTOM },
+  ] as const;
+  const backdrops = [
+    { name: 'black', value: PAGE_BACKGROUND },
+    { name: 'white', value: WHITE_BACKDROP },
+  ] as const;
+
+  it('keeps GF_TEXT >= 4.5 over both surface stops on black and white backdrops', () => {
+    const expected = [17.13, 14.76, 18.09, 14.38];
+    let index = 0;
+    for (const { stop } of panels) {
+      for (const { value } of backdrops) {
+        const ratio = contrastRatio(hexToRgb(GF_TEXT), surfaceOver(stop, value));
+        expect(rounded(ratio)).toBe(expected[index]);
+        expect(ratio).toBeGreaterThanOrEqual(4.5);
+        index += 1;
+      }
+    }
+  });
+
+  it('keeps GF_TEXT_MUTED >= 4.5 over both surface stops on black and white backdrops', () => {
+    const expected = [10.07, 9.03, 10.43, 8.85];
+    const { color: muted, alpha } = parseRgba(GF_TEXT_MUTED);
+    let index = 0;
+    for (const { stop } of panels) {
+      for (const { value } of backdrops) {
+        const panel = surfaceOver(stop, value);
+        const ratio = contrastRatio(composite(muted, alpha, panel), panel);
+        expect(rounded(ratio)).toBe(expected[index]);
+        expect(ratio).toBeGreaterThanOrEqual(4.5);
+        index += 1;
+      }
+    }
+  });
+
+  it('keeps the rarity/success/danger channels >= 4.5 over both surfaces on black and white', () => {
+    const channels = [
+      { name: 'GF_RARE', value: GF_RARE, expected: [7.42, 6.4, 7.84, 6.23] },
+      { name: 'GF_EPIC', value: GF_EPIC, expected: [7.14, 6.16, 7.54, 6.0] },
+      { name: 'GF_SUCCESS', value: GF_SUCCESS, expected: [9.82, 8.46, 10.37, 8.24] },
+      { name: 'GF_DANGER', value: GF_DANGER, expected: [6.8, 5.86, 7.18, 5.71] },
+    ] as const;
+
+    for (const channel of channels) {
+      let index = 0;
+      for (const { stop } of panels) {
+        for (const { value } of backdrops) {
+          const ratio = contrastRatio(hexToRgb(channel.value), surfaceOver(stop, value));
+          expect(rounded(ratio)).toBe(channel.expected[index]);
+          expect(ratio, `${channel.name} over a panel`).toBeGreaterThanOrEqual(4.5);
+          index += 1;
+        }
+      }
+    }
+  });
+
+  it('keeps GF_CTA_TEXT >= 4.5 on both amber CTA stops', () => {
+    const cases = [
+      { stop: GF_AMBER, expected: 10.46 },
+      { stop: GF_AMBER_DEEP, expected: 7.11 },
+    ] as const;
+    for (const { stop, expected } of cases) {
+      const ratio = contrastRatio(hexToRgb(GF_CTA_TEXT), hexToRgb(stop));
+      expect(rounded(ratio)).toBe(expected);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('keeps the composited --gf-rim >= 3.0 (non-text) over both surfaces', () => {
+    const forwarded = readCssVar('--gf-rim');
+    const { color: rim, alpha } = parseRgba(forwarded);
+    expect(forwarded).toBe('rgba(124, 246, 255, 0.56)');
+    const expected = [5.25, 4.93, 5.29, 4.86];
+    let index = 0;
+    for (const { stop } of panels) {
+      for (const { value } of backdrops) {
+        const panel = surfaceOver(stop, value);
+        const ratio = contrastRatio(composite(rim, alpha, panel), panel);
+        expect(rounded(ratio)).toBe(expected[index]);
+        expect(ratio).toBeGreaterThanOrEqual(3.0);
+        index += 1;
+      }
+    }
+  });
+
+  it('keeps disabled control text >= 4.5 over both surfaces', () => {
+    const text = hexToRgb(HUD_TEXT);
+    const expected = [7, 6.47, 7.13, 6.37];
+    let index = 0;
+    for (const { stop } of panels) {
+      for (const { value } of backdrops) {
+        const panel = surfaceOver(stop, value);
+        const ratio = contrastRatio(composite(text, 0.62, panel), panel);
+        expect(rounded(ratio)).toBe(expected[index]);
+        expect(ratio).toBeGreaterThanOrEqual(4.5);
+        index += 1;
+      }
+    }
+  });
+
+  it('keeps input-well text >= 4.5 over both surfaces', () => {
+    const expected = [18, 16.92, 18.49, 16.73];
+    let index = 0;
+    for (const { stop } of panels) {
+      for (const { value } of backdrops) {
+        const panel = surfaceOver(stop, value);
+        const well = composite(hexToRgb(PAGE_BACKGROUND), 0.42, panel);
+        const ratio = contrastRatio(hexToRgb(HUD_TEXT), well);
+        expect(rounded(ratio)).toBe(expected[index]);
+        expect(ratio).toBeGreaterThanOrEqual(4.5);
+        index += 1;
+      }
+    }
+  });
+
   it('keeps HUD text contrast >= 4.5 over both panel stops on black and white backdrops (AC-19)', () => {
     const cases = [
       { stop: PANEL_BACKGROUND_TOP, backdrop: PAGE_BACKGROUND, expected: 18.03 },
@@ -113,12 +302,11 @@ describe('HUD theme', () => {
     ];
 
     for (const { stop, backdrop, expected } of cases) {
-      const { color, alpha } = parseRgba(stop);
-      const panel = composite(color, alpha, hexToRgb(backdrop));
+      const panel = surfaceOver(stop, backdrop);
       const ratio = contrastRatio(hexToRgb(HUD_TEXT), panel);
 
       // Exact pinned ratios: a token edit cannot silently slide towards the floor.
-      expect(Math.round(ratio * 100) / 100).toBe(expected);
+      expect(rounded(ratio)).toBe(expected);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     }
   });
@@ -131,14 +319,14 @@ describe('HUD theme', () => {
 
     for (const { stop, expected } of cases) {
       const ratio = contrastRatio(hexToRgb(WHITE_BACKDROP), hexToRgb(stop));
-      expect(Math.round(ratio * 100) / 100).toBe(expected);
+      expect(rounded(ratio)).toBe(expected);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     }
   });
 
   it('keeps the green buy-button surface at >= 3.0 non-text contrast against #ffffff (AC-19)', () => {
     const ratio = contrastRatio(hexToRgb(UPGRADE_GREEN), hexToRgb(WHITE_BACKDROP));
-    expect(Math.round(ratio * 100) / 100).toBe(3.3);
+    expect(rounded(ratio)).toBe(3.3);
     expect(ratio).toBeGreaterThanOrEqual(3.0);
   });
 
@@ -148,49 +336,7 @@ describe('HUD theme', () => {
     const ratio = contrastRatio(hexToRgb(HUD_TEXT), panel);
 
     // Exact value for the pinned pair (18.2648…), so an unnoticed colour change fails.
-    expect(Math.round(ratio * 100) / 100).toBe(18.26);
-    expect(ratio).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it('keeps HUD text contrast >= 12 over the frame center (AC-17)', () => {
-    const { color, alpha } = parseRgba(readCssVar('--frame-center-top'));
-    const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
-    const ratio = contrastRatio(hexToRgb(HUD_TEXT), center);
-    expect(ratio).toBeGreaterThanOrEqual(12);
-  });
-
-  it('keeps HUD text contrast >= 12 over both alert center stops (AC-22)', () => {
-    for (const name of ['--frame-center-alert-start', '--frame-center-alert-end']) {
-      const { color, alpha } = parseRgba(readCssVar(name));
-      const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
-      const ratio = contrastRatio(hexToRgb(HUD_TEXT), center);
-      expect(ratio).toBeGreaterThanOrEqual(12);
-    }
-  });
-
-  it('keeps #ffb4b4 contrast >= 4.5 over both alert center stops (AC-22)', () => {
-    for (const name of ['--frame-center-alert-start', '--frame-center-alert-end']) {
-      const { color, alpha } = parseRgba(readCssVar(name));
-      const center = composite(color, alpha, hexToRgb(PAGE_BACKGROUND));
-      const ratio = contrastRatio(hexToRgb('#ffb4b4'), center);
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
-    }
-  });
-
-  it('keeps HUD text contrast >= 4.5 over the input well (AC-22)', () => {
-    const { color: centerColor, alpha: centerAlpha } = parseRgba(readCssVar('--frame-center-top'));
-    const center = composite(centerColor, centerAlpha, hexToRgb(PAGE_BACKGROUND));
-    const { color: wellColor, alpha: wellAlpha } = parseRgba('rgba(0, 0, 0, 0.42)');
-    const well = composite(wellColor, wellAlpha, center);
-    const ratio = contrastRatio(hexToRgb(HUD_TEXT), well);
-    expect(ratio).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it('keeps disabled text at 0.62 alpha contrast >= 4.5 over the frame center (AC-23)', () => {
-    const { color: centerColor, alpha: centerAlpha } = parseRgba(readCssVar('--frame-center-top'));
-    const center = composite(centerColor, centerAlpha, hexToRgb(PAGE_BACKGROUND));
-    const disabledText = composite(hexToRgb(HUD_TEXT), 0.62, center);
-    const ratio = contrastRatio(disabledText, center);
+    expect(rounded(ratio)).toBe(18.26);
     expect(ratio).toBeGreaterThanOrEqual(4.5);
   });
 });

@@ -48,7 +48,7 @@ At most one tier change happens per frame/decision; frame times are clamped into
 
 ## Frame loop
 
-The session owns the only `requestAnimationFrame` loop; the scheduler is injected (`createRafScheduler` wraps `requestAnimationFrame` in production). One frame of [`session.ts`](../../src/frontend/src/game/session.ts) runs in this order:
+The session owns the requestAnimationFrame loop for the Three.js game scene; the scheduler is injected (`createRafScheduler` wraps `requestAnimationFrame` in production). The reveal adds one additional bounded 30 fps loop outside the session, in the deferred customization panel (§ Lootbox reveal stage). One frame of [`session.ts`](../../src/frontend/src/game/session.ts) runs in this order:
 
 1. **Simulation.** Measure `dtMs` from the previous frame baseline (never negative), advance the engine when `canRun()`, and handle level swaps/travel arrivals.
 2. **Intents and hover.** `view.applyIntents(engine.drainIntents(), nowMs)`; when playing, resolve the hovered front-face mini-cube for the current pointer position.
@@ -59,6 +59,32 @@ The session owns the only `requestAnimationFrame` loop; the scheduler is injecte
 7. **Publish and reschedule.** Publish the snapshot/multiplayer views, then `scheduleFrame()` for the next frame.
 
 `appliedTier` is seeded at attach (after the attach-time `setQuality`), so the first frame adds no call and stable-tier frames add neither `setQuality` nor a pixel-ratio apply. Because the tier poll and DPR re-apply happen before step 6, a tier change takes effect in the same frame it is observed.
+
+## Lootbox reveal stage
+
+The 3D lootbox reveal is a second, deliberately small three.js presentation of an accepted grant; it changes no protocol, server, persistence or quality-tier behavior. The grant still arrives as the server-authoritative, opener-only `lootboxOpened` message (or a guest engine's local grant), the session stores it as `lastLootboxGrant`, and a `welcome` or any non-`connected` transport status clears it, so a reconnect never replays the animation.
+
+- **Modules.** [`game/reveal-motion.ts`](../../src/frontend/src/game/reveal-motion.ts) is pure arithmetic — the pinned 1290 ms pose timeline (`revealStagePose`), the per-slot yaw table and the rarity colours — with no DOM, timers or randomness, and it writes one pre-allocated `RevealStagePose` so a frame allocates nothing. [`render/lootbox-reveal.ts`](../../src/frontend/src/render/lootbox-reveal.ts) builds the stage (`createRevealStage`): one scene named `lootbox-reveal-scene` with an ambient light, a key light, the existing `createCursorShipModel` group and one rarity `RingGeometry` mesh; it owns no renderer and no loop. [`ui/LootboxReveal.tsx`](../../src/frontend/src/ui/LootboxReveal.tsx) owns the browser boundary and the card.
+- **Try-on, never a mutation.** The slot is resolved from the pinned catalog (`partDefinition(partId).slot`), never from the wire `slot`; the stage copies the normalized appearance, replaces only that slot, and applies it through the model's single `applyAppearance` path — the same `appearanceToCursorShipParams` mapping the pointer ship and the customization preview use. The player's stored appearance changes only through `Equip` (the existing `onEquip`/server path).
+- **One context and one bounded loop.** The reveal renders in its own canvas inside the customization panel; while a grant exists the panel renders `LootboxReveal` and **not** `SpaceshipPreview`, so the panel has exactly one WebGL context in addition to the main scene's own context. The reveal loop is capped at 30 frames per second, skips rendering and stops scheduling while `document.hidden`, resumes on `visibilitychange` with a reset frame baseline, and is disposed on dismissal, grant replacement and unmount (stage first, then renderer). The main scene's frame loop, quality tier and draw budget are untouched.
+- **Deferred chunk.** The component and its three.js imports stay behind the existing `DeferredSpaceshipCustomizationPanel` dynamic import, so the entry graph remains Three-free and the bundle-budget gate is unchanged (§ Loading and code splitting).
+- **Reduced motion and fallback.** With reduced motion the component renders exactly one static rest-pose frame and schedules no further frame. If the renderer or the stage cannot be constructed, the card stays complete and the stage is replaced by a static inline-SVG ship fallback. The reveal root is a non-live `role="group" aria-live="off"` region labelled `Lootbox reveal: <part name>`; it is non-modal (no scrim, no focus trap, the game and the customization toggle stay interactive), and `Escape`, `Dismiss` and `Equip` are the only dismissal paths.
+
+## Game shell layering
+
+The game view is one stacking context inside `<main>`; the canvas, the CSS ambience layer and the HUD/panel surfaces are ordered by explicit `z-index` values so no new surface accidentally covers a control:
+
+| Layer | `z-index` | Surface |
+| --- | --- | --- |
+| Game canvas | `0` | `main > canvas` (`position: relative`) |
+| Ambience | `2` | `.game-ambience` (procedural scanline/vignette/corner glow, `pointer-events: none`, `inset: 0`) |
+| Panels and controls | `3` | every Neon Forge panel surface (HUD, upgrades, activity feed, leaderboard, users list, connection banner, phase announcement, `main > section`), `.user-panel`, `.game-runtime-status`, `.game-runtime-error` |
+| Level banner | `5` | `.level-complete` |
+| Reveal spotlight | `20` | the revealing `.customization-panel` (centred spotlight at `min-width: 721px`, bottom sheet at `max-width: 720px`) |
+| Customization toggle | `21` | `.customization-toggle`, above the reveal panel so closing it is a real dismissal |
+| Auth | `100` | `.auth-menu` / `.auth-forms` |
+
+The reveal is non-modal: there is no full-screen scrim and no `data-reveal-active` on `<main>`. Under reduced motion the ambience scanline animation is `none` and only the static gradients remain.
 
 ## Loading and code splitting
 

@@ -11,10 +11,12 @@ import type { TransportStatus } from '../multiplayer/transport';
  * - `exhausted` → `Connection lost` plus a `Retry` button that restarts the connection
  * - `connected` → no banner at all (there is nothing to say)
  *
- * **Accessibility.** The banner is plain text, deliberately **not** a live region: the
- * shell keeps exactly one `role="status"` region (the phase announcement) so connection
- * and gameplay announcements never compete. The `Retry` button is a real focusable
- * `<button>` (the CSS gives it a visible focus ring); the text itself needs no role.
+ * **Accessibility.** The banner is plain text with a decorative `aria-hidden` status
+ * dot (`data-connection-dot`) and a `data-status` hook for the Neon Forge chip channel.
+ * It is deliberately **not** a live region: the shell keeps exactly one `role="status"`
+ * region (the phase announcement) so connection and gameplay announcements never
+ * compete. The `Retry` button is a real focusable `<button>` (the CSS gives it a visible
+ * focus ring and a 44 px target); the text itself needs no role.
  *
  * **Responsive overlay (AC-4, AC-5, AC-13).** `app.css` positions `.connection-banner`
  * absolutely at the top centre, offsets it by `env(safe-area-inset-top)`, keeps the
@@ -36,7 +38,8 @@ export function ConnectionBanner({
 
   if (status === 'exhausted') {
     return (
-      <div className="connection-banner">
+      <div className="connection-banner" data-status={status}>
+        <span className="connection-dot" data-connection-dot="true" aria-hidden="true" />
         <span>Connection lost</span>
         <button type="button" onClick={onRetry}>
           Retry
@@ -46,7 +49,8 @@ export function ConnectionBanner({
   }
 
   return (
-    <div className="connection-banner">
+    <div className="connection-banner" data-status={status}>
+      <span className="connection-dot" data-connection-dot="true" aria-hidden="true" />
       {status === 'connecting' ? 'Connecting…' : 'Connection lost — retrying…'}
     </div>
   );

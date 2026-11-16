@@ -13,6 +13,10 @@ import type { LeaderboardEntry, LeaderboardSnapshot } from '../multiplayer/proto
  * demand. There is no focusable control, no timestamp (the `at` clock is the server's) and
  * no coin column: guests and accounts compete on the same session counters.
  *
+ * Chrome is decorative only: the title carries one `gf-live-dot` and each row one
+ * `leaderboard-medal` and one `leaderboard-bar` span, all `aria-hidden` and keyed by the
+ * row's rank (`data-medal`/`data-bar`); the readable `#N`, name and score text is unchanged.
+ *
  * `data-reduced-motion` lets `game-view.css` disable the 160 ms row-entry animation for the
  * session preference independently of `prefers-reduced-motion`.
  */
@@ -62,13 +66,18 @@ export function Leaderboard({
       data-reduced-motion={reducedMotion ? 'true' : 'false'}
       data-server-id={snapshot.serverId}
     >
-      <h2 className="leaderboard-title">Leaderboard</h2>
+      <h2 className="leaderboard-title">
+        <span className="gf-live-dot" data-live-dot="true" aria-hidden="true" />
+        Leaderboard
+      </h2>
       <ol className="leaderboard-list">
         {snapshot.entries.slice(0, LEADERBOARD_VISIBLE_COUNT).map((entry, index) => (
           <li key={entry.playerId} data-rank={index + 1} data-player-id={entry.playerId}>
+            <span className="leaderboard-medal" data-medal={index + 1} aria-hidden="true" />
             <span className="leaderboard-rank">#{index + 1}</span>
             <span className="leaderboard-name">{entry.name}</span>
             <span className="leaderboard-score">{leaderboardEntryText(entry)}</span>
+            <span className="leaderboard-bar" data-bar={index + 1} aria-hidden="true" />
           </li>
         ))}
       </ol>

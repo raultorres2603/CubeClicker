@@ -538,12 +538,19 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   return (
     <main data-customization-open={customizationOpen ? 'true' : 'false'}>
       <GameCanvas session={session} active={gateState.view === 'closed'} />
+      <div
+        className="game-ambience"
+        aria-hidden="true"
+        data-reduced-motion={snapshot.reducedMotion ? 'true' : 'false'}
+      />
       {isPerfOverlayEnabled() ? <PerfOverlay session={session} /> : null}
       {welcomed ? (
         <Hud
           stats={snapshot.stats}
           levelIndex={snapshot.levelIndex}
           serverId={world.serverId}
+          keys={snapshot.customization?.keys ?? 0}
+          lootboxes={snapshot.customization?.lootboxes ?? 0}
           minimized={hudMinimized}
           blinking={hudBlinking}
           coinPops={coinPops}

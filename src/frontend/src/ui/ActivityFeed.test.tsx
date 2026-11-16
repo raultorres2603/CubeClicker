@@ -81,7 +81,9 @@ describe('ActivityFeed', () => {
 
     expect(html).toBe(
       '<aside class="activity-feed" aria-label="Server activity" aria-live="off" data-reduced-motion="false">' +
-        '<h2 class="activity-feed-title">Server activity</h2>' +
+        '<h2 class="activity-feed-title">' +
+        '<span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>' +
+        'Server activity</h2>' +
         '<ol class="activity-feed-list">' +
         '<li data-event-type="fastClear" data-event-id="6">' +
         '<span class="activity-feed-text">Player 1 fast-cleared Cube 4 in 2.5s</span>' +
@@ -100,6 +102,22 @@ describe('ActivityFeed', () => {
         '</li>' +
         '</ol>' +
         '</aside>',
+    );
+  });
+
+  it('adds exactly one decorative live dot inside the title (AC-22, AC-29, AC-31)', () => {
+    const html = renderToStaticMarkup(<ActivityFeed events={FEED} />);
+
+    expect(html).toContain(
+      '<h2 class="activity-feed-title">' +
+        '<span class="gf-live-dot" data-live-dot="true" aria-hidden="true"></span>' +
+        'Server activity</h2>',
+    );
+    expect([...html.matchAll(/class="gf-live-dot"/g)]).toHaveLength(1);
+    expect([...html.matchAll(/data-live-dot="true"/g)]).toHaveLength(1);
+    // The landmark keeps its exact accessible name; the dot adds no semantics.
+    expect(html).toContain(
+      '<aside class="activity-feed" aria-label="Server activity" aria-live="off"',
     );
   });
 

@@ -79,13 +79,55 @@ function grant(overrides: Partial<LootboxGrant> = {}): LootboxGrant {
   };
 }
 
-describe('SpaceshipCustomizationPanel slots (AC-29)', () => {
+/** The panel root section (the reveal spotlight shell). */
+function panelRoot(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>('section.customization-panel');
+  if (section === null) {
+    throw new Error('customization panel section missing');
+  }
+  return section;
+}
+
+/** The authoritative `.lootbox-reveal` region (AC-7). */
+function revealRegion(container: HTMLElement): HTMLElement {
+  const region = container.querySelector<HTMLElement>('.lootbox-reveal');
+  if (region === null) {
+    throw new Error('lootbox reveal region missing');
+  }
+  return region;
+}
+
+/** jsdom serializes inline hex colours as `rgb(r, g, b)`. */
+function cssRgb(hex: string): string {
+  const value = hex.replace('#', '');
+  const red = Number.parseInt(value.slice(0, 2), 16);
+  const green = Number.parseInt(value.slice(2, 4), 16);
+  const blue = Number.parseInt(value.slice(4, 6), 16);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+/** Every attribute value and text node inside `root`, for raw-string leak checks. */
+function domStrings(root: HTMLElement): string[] {
+  const values: string[] = [];
+  for (const element of root.querySelectorAll<HTMLElement>('*')) {
+    for (const attribute of Array.from(element.attributes)) {
+      values.push(attribute.value);
+    }
+    if (element.children.length === 0 && element.textContent !== null) {
+      values.push(element.textContent);
+    }
+  }
+  return values;
+}
+
+describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
   it('renders exactly ten slot rows in SLOT_CATALOG order with the section contract', () => {
     const { container } = renderPanel();
 
-    const section = container.querySelector('section');
-    expect(section?.getAttribute('aria-label')).toBe('Spaceship customization');
-    expect(section?.getAttribute('data-mode')).toBe('guest');
+    const section = panelRoot(container);
+    expect(section.getAttribute('aria-label')).toBe('Spaceship customization');
+    expect(section.getAttribute('data-mode')).toBe('guest');
+    expect(section.getAttribute('data-reveal-active')).toBe('false');
 
     const rows = Array.from(container.querySelectorAll<HTMLElement>('li.customization-slot'));
     expect(rows.map((row) => row.getAttribute('data-slot'))).toEqual([
@@ -103,18 +145,22 @@ describe('SpaceshipCustomizationPanel slots (AC-29)', () => {
     expect(rows).toHaveLength(10);
   });
 
-  it('renders exactly three variants per row in standard → rare → epic order', () => {
+  it('renders exactly three variants per row with catalog rarity and a colour swatch', () => {
     const { container } = renderPanel();
     const rows = Array.from(container.querySelectorAll<HTMLElement>('li.customization-slot'));
 
     for (const [index, row] of rows.entries()) {
       const slot = SLOT_CATALOG[index];
       if (slot === undefined) throw new Error('slot missing');
+      const catalog = partsForSlot(slot.id);
       const variants = Array.from(
         row.querySelectorAll<HTMLElement>('li.customization-variant'),
       );
       expect(variants.map((variant) => variant.getAttribute('data-part'))).toEqual(
-        partsForSlot(slot.id).map((part) => part.id),
+        catalog.map((part) => part.id),
+      );
+      expect(variants.map((variant) => variant.getAttribute('data-rarity'))).toEqual(
+        catalog.map((part) => part.rarity),
       );
       expect(variants).toHaveLength(3);
       expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual([
@@ -132,6 +178,19 @@ describe('SpaceshipCustomizationPanel slots (AC-29)', () => {
         'false',
         'false',
       ]);
+
+      const swatches = variants.map((variant) =>
+        variant.querySelector<HTMLElement>('.customization-swatch'),
+      );
+      expect(swatches.map((swatch) => swatch?.getAttribute('aria-hidden'))).toEqual([
+        'true',
+        'true',
+        'true',
+      ]);
+      expect(swatches.map((swatch) => swatch?.style.background)).toEqual(
+        catalog.map((part) => cssRgb(part.color)),
+      );
+      expect(swatches.map((swatch) => swatch?.textContent)).toEqual(['', '', '']);
     }
   });
 
@@ -188,6 +247,11 @@ describe('SpaceshipCustomizationPanel slots (AC-29)', () => {
       'hull-default',
       'hull-obsidian',
       'hull-gold',
+    ]);
+    expect(variants.map((variant) => variant.getAttribute('data-rarity'))).toEqual([
+      'standard',
+      'rare',
+      'epic',
     ]);
     expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual([
       'true',
@@ -308,43 +372,111 @@ describe('SpaceshipCustomizationPanel slots (AC-29)', () => {
       );
     }
   });
+
+  it('keeps every panel control at a 44px minimum pointer target (AC-28, AC-31)', () => {
+    withPanelStyles(() => {
+      const normal = renderPanel({
+        customization: {
+          lootboxes: 1,
+          keys: 1,
+          parts: {},
+          appearance: {},
+        },
+      });
+
+      const open = normal.container.querySelector<HTMLElement>('button.customization-open');
+      expect(open?.textContent).toBe('Open lootbox');
+      if (open === null) throw new Error('open control missing');
+      expect(window.getComputedStyle(open).minHeight).toBe('44px');
+
+      const targets = Array.from(
+        normal.container.querySelectorAll<HTMLElement>(
+          'button.customization-equip, button.customization-unequip',
+        ),
+      );
+      expect(targets).toHaveLength(20);
+      for (const target of targets) {
+        const style = window.getComputedStyle(target);
+        expect(style.minWidth).toBe('44px');
+        expect(style.minHeight).toBe('44px');
+      }
+
+      normal.unmount();
+
+      const revealing = renderPanel({ lastLootboxGrant: grant() });
+      const revealTargets = Array.from(
+        revealing.container.querySelectorAll<HTMLElement>(
+          'button.customization-reveal-equip, button.customization-reveal-dismiss',
+        ),
+      );
+      expect(revealTargets).toHaveLength(2);
+      for (const target of revealTargets) {
+        const style = window.getComputedStyle(target);
+        expect(style.minWidth).toBe('44px');
+        expect(style.minHeight).toBe('44px');
+      }
+      revealing.unmount();
+    });
+  });
 });
 
-describe('SpaceshipCustomizationPanel lootbox controls (AC-29)', () => {
-  it('renders the lootbox/key counts and one Open lootbox button', () => {
-    const html = panel({ lootboxes: 3, keys: 2 });
-    expect(html).toContain('Lootboxes: 3');
-    expect(html).toContain('Keys: 2');
-    expect(html).toContain('Open lootbox');
-    expect((html.match(/customization-open/g) ?? []).length).toBe(1);
+describe('SpaceshipCustomizationPanel lootbox controls (AC-21, AC-29)', () => {
+  it('renders the hangar title, both gf chips and one Open lootbox control', () => {
+    const { container } = renderPanel({ lootboxes: 3, keys: 2 });
+
+    const section = panelRoot(container);
+    expect(section.querySelector('h2.customization-title')?.textContent).toBe(
+      'Spaceship hangar',
+    );
+
+    const chips = Array.from(section.querySelectorAll<HTMLElement>('.gf-chip'));
+    expect(chips).toHaveLength(2);
+    expect(chips.map((chip) => chip.textContent)).toEqual(['Lootboxes: 3', 'Keys: 2']);
+    expect(chips.map((chip) => chip.getAttribute('data-lootboxes'))).toEqual(['3', null]);
+    expect(chips.map((chip) => chip.getAttribute('data-keys'))).toEqual([null, '2']);
+
+    const buttons = section.querySelectorAll<HTMLButtonElement>('button.customization-open');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]?.className).toBe('customization-open gf-cta');
+    expect(buttons[0]?.textContent).toBe('Open lootbox');
+    expect(buttons[0]?.disabled).toBe(false);
+  });
+
+  it('renders the accepted normal branch without the reveal (AC-13, AC-21)', () => {
+    const { container } = renderPanel({ lootboxes: 1, keys: 1 });
+    const section = panelRoot(container);
+
+    expect(section.getAttribute('data-reveal-active')).toBe('false');
+    expect(section.hasAttribute('data-part-id')).toBe(false);
+    expect(section.querySelector('.lootbox-reveal')).toBeNull();
+    expect(section.querySelectorAll('li.customization-slot')).toHaveLength(10);
+    expect(section.querySelector('.spaceship-preview')?.getAttribute('aria-label')).toBe(
+      'Spaceship preview',
+    );
   });
 
   it('disables Open lootbox when lootboxes are zero', () => {
-    const html = panel({ lootboxes: 0, keys: 5 });
-    expect(html).toContain(
-      '<button type="button" class="customization-open" disabled="">Open lootbox</button>',
-    );
+    const { container } = renderPanel({ lootboxes: 0, keys: 5 });
+    const open = container.querySelector<HTMLButtonElement>('button.customization-open');
+    expect(open?.disabled).toBe(true);
   });
 
   it('disables Open lootbox when keys are zero', () => {
-    const html = panel({ lootboxes: 5, keys: 0 });
-    expect(html).toContain(
-      '<button type="button" class="customization-open" disabled="">Open lootbox</button>',
-    );
+    const { container } = renderPanel({ lootboxes: 5, keys: 0 });
+    const open = container.querySelector<HTMLButtonElement>('button.customization-open');
+    expect(open?.disabled).toBe(true);
   });
 
   it('disables Open lootbox while an account open is pending', () => {
-    const html = panel({ lootboxes: 1, keys: 1, pendingOpen: true });
-    expect(html).toContain(
-      '<button type="button" class="customization-open" disabled="">Open lootbox</button>',
-    );
+    const { container } = renderPanel({ lootboxes: 1, keys: 1, pendingOpen: true });
+    const open = container.querySelector<HTMLButtonElement>('button.customization-open');
+    expect(open?.disabled).toBe(true);
   });
 
   it('enables Open lootbox with both counts and no pending open', () => {
-    const html = panel({ lootboxes: 1, keys: 1, pendingOpen: false });
-    expect(html).toContain(
-      '<button type="button" class="customization-open">Open lootbox</button>',
-    );
+    const { container } = renderPanel({ lootboxes: 1, keys: 1, pendingOpen: false });
+    const open = container.querySelector<HTMLButtonElement>('button.customization-open');
+    expect(open?.disabled).toBe(false);
   });
 
   it('calls onOpenLootbox once when the enabled control is clicked', () => {
@@ -365,30 +497,73 @@ describe('SpaceshipCustomizationPanel lootbox controls (AC-29)', () => {
   });
 });
 
-describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
-  it('renders the rare/new grant region with the pinned data attributes and copy', () => {
-    const { container } = renderPanel({ lastLootboxGrant: grant() });
-    const region = container.querySelector<HTMLElement>('[data-reveal-active="true"]');
+describe('SpaceshipCustomizationPanel reveal branch (AC-7, AC-13, AC-14, AC-21)', () => {
+  it('replaces the whole normal branch with the reveal while a grant is present', () => {
+    const { container } = renderPanel({
+      lootboxes: 1,
+      keys: 1,
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 2 },
+    });
 
-    expect(region).not.toBeNull();
-    expect(region?.getAttribute('role')).toBe('status');
-    expect(region?.getAttribute('aria-live')).toBe('polite');
-    expect(region?.getAttribute('data-part-id')).toBe('wing-left-silver');
-    expect(region?.getAttribute('data-slot')).toBe('wing-left');
-    expect(region?.getAttribute('data-rarity')).toBe('rare');
-    expect(region?.getAttribute('data-duplicate')).toBe('false');
-    expect(region?.getAttribute('data-reveal-sequence')).toBe('1');
-    expect(region?.getAttribute('data-reveal-phase')).toBe('charge');
-    expect(region?.textContent).toContain('Rare');
-    expect(region?.textContent).toContain('Port Silver Wing');
-    expect(region?.textContent).toContain('Port Wing');
-    expect(region?.textContent).toContain('New');
+    const section = panelRoot(container);
+    expect(section.getAttribute('data-reveal-active')).toBe('true');
+    expect(section.getAttribute('data-mode')).toBe('guest');
+    expect(section.querySelectorAll('.lootbox-reveal')).toHaveLength(1);
+    expect(section.querySelector('h2.customization-title')).toBeNull();
+    expect(section.querySelector('.customization-counts')).toBeNull();
+    expect(section.querySelector('button.customization-open')).toBeNull();
+    expect(section.querySelector('ul.customization-slots')).toBeNull();
+    expect(section.querySelector('li.customization-slot')).toBeNull();
+    expect(section.querySelector('.spaceship-preview')).toBeNull();
+    expect(section.querySelector('.customization-panel-scrim')).toBeNull();
+    expect(section.querySelector('[role="dialog"]')).toBeNull();
+    expect(section.querySelector('[aria-modal="true"]')).toBeNull();
+
+    const region = revealRegion(container);
+    expect(region.parentElement).toBe(section);
+  });
+
+  it('renders the rare/new reveal region with the pinned attributes and copy', () => {
+    const { container } = renderPanel({
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 2 },
+    });
+    const region = revealRegion(container);
+
+    expect(region.getAttribute('role')).toBe('group');
+    expect(region.getAttribute('aria-live')).toBe('off');
+    expect(region.getAttribute('aria-label')).toBe('Lootbox reveal: Port Silver Wing');
+    expect(region.getAttribute('data-reveal-active')).toBe('true');
+    expect(region.getAttribute('data-reveal-sequence')).toBe('1');
+    expect(region.getAttribute('data-reveal-phase')).toBe('charge');
+    expect(region.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(region.getAttribute('data-slot')).toBe('wing-left');
+    expect(region.getAttribute('data-rarity')).toBe('rare');
+    expect(region.getAttribute('data-duplicate')).toBe('false');
+    expect(region.getAttribute('data-owned-count')).toBe('2');
+    expect(region.getAttribute('data-reveal-3d')).toBe('unavailable');
+    expect(region.getAttribute('data-reduced-motion')).toBe('false');
+    const stage = region.querySelector<HTMLElement>('.lootbox-stage');
+    expect(stage?.getAttribute('data-reveal-stage')).toBe('true');
+    const card = region.querySelector<HTMLElement>('.lootbox-reveal-card');
+    expect(card?.getAttribute('data-reveal-card')).toBe('true');
+    expect(card?.querySelector('.lootbox-reveal-owned')?.textContent).toBe('Owned ×2');
+    expect(region.textContent).toContain('Rare');
+    expect(region.textContent).toContain('Port Silver Wing');
+    expect(region.textContent).toContain('Port Wing');
+    expect(region.textContent).toContain('New');
+    expect(region.textContent).toContain('Owned ×2');
     expect(screen.getByRole('button', { name: 'Equip Port Silver Wing' }).className).toBe(
       'customization-reveal-equip',
     );
+    expect(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }).className).toBe(
+      'customization-reveal-dismiss',
+    );
+    expect(container.querySelector('[aria-live="polite"]')).toBeNull();
   });
 
-  it('renders the epic/duplicate copy and the wireframe orb with an orange core', () => {
+  it('renders the epic duplicate copy and the epic rarity channel', () => {
     const { container } = renderPanel({
       lastLootboxGrant: grant({
         partId: 'hull-gold',
@@ -397,153 +572,122 @@ describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
         duplicate: true,
         sequence: 4,
       }),
+      parts: { 'hull-gold': 3 },
     });
-    const region = container.querySelector<HTMLElement>('[data-reveal-active="true"]');
+    const region = revealRegion(container);
 
-    expect(region?.getAttribute('data-rarity')).toBe('epic');
-    expect(region?.getAttribute('data-duplicate')).toBe('true');
-    expect(region?.getAttribute('data-reveal-sequence')).toBe('4');
-    expect(region?.textContent).toContain('Epic');
-    expect(region?.textContent).toContain('Gold Hull');
-    expect(region?.textContent).toContain('Hull');
-    expect(region?.textContent).toContain('Duplicate');
-
-    const orb = region?.querySelector('svg[data-reveal-orb="true"]');
-    expect(orb?.getAttribute('aria-hidden')).toBe('true');
-    expect(orb?.querySelectorAll('circle')).toHaveLength(2);
-    expect(orb?.querySelectorAll('ellipse')).toHaveLength(2);
-    expect(orb?.querySelector('.lootbox-orb-core')?.getAttribute('r')).toBe('6');
-    expect(region?.querySelector('[data-reveal-flash="true"]')).not.toBeNull();
+    expect(region.getAttribute('data-rarity')).toBe('epic');
+    expect(region.getAttribute('data-duplicate')).toBe('true');
+    expect(region.getAttribute('data-reveal-sequence')).toBe('4');
+    expect(region.getAttribute('data-owned-count')).toBe('3');
+    expect(region.textContent).toContain('Epic');
+    expect(region.textContent).toContain('Gold Hull');
+    expect(region.textContent).toContain('Hull');
+    expect(region.textContent).toContain('Duplicate');
+    expect(region.textContent).toContain('Owned ×3');
+    expect(panelRoot(container).getAttribute('data-rarity')).toBe('epic');
   });
 
-  it('renders no reveal region without a grant', () => {
-    const html = panel();
-    expect(html).not.toContain('data-reveal-active');
-    expect(html).not.toContain('role="status"');
+  it('derives the slot from the catalog and never trusts the wire slot', () => {
+    for (const wireSlot of ['hull', 'warp-core', '']) {
+      const { container, unmount } = renderPanel({
+        lastLootboxGrant: grant({ slot: wireSlot }),
+      });
+      const region = revealRegion(container);
+      expect(region.getAttribute('data-slot')).toBe('wing-left');
+      expect(region.textContent).toContain('Port Wing');
+      expect(panelRoot(container).getAttribute('data-slot')).toBe('wing-left');
+      if (wireSlot !== '') {
+        for (const value of domStrings(container)) {
+          expect(value).not.toBe(wireSlot);
+        }
+      }
+      for (const value of domStrings(container)) {
+        expect(value).not.toContain('warp-core');
+      }
+      unmount();
+    }
+  });
+
+  it('sanitises an unknown part without leaking the raw server string', () => {
+    const { container } = renderPanel({
+      lastLootboxGrant: grant({ partId: 'mystery-part', slot: 'warp-core' }),
+      parts: { 'mystery-part': 4 },
+    });
+    const region = revealRegion(container);
+
+    expect(region.getAttribute('data-part-id')).toBe('unknown');
+    expect(region.getAttribute('data-slot')).toBe('');
+    expect(region.getAttribute('data-owned-count')).toBe('0');
+    expect(region.getAttribute('data-reveal-3d')).toBe('unavailable');
+    expect(region.getAttribute('aria-label')).toBe('Lootbox reveal: Unknown part');
+    expect(region.textContent).toContain('Unknown part');
+    expect(panelRoot(container).getAttribute('data-part-id')).toBe('unknown');
+    expect(panelRoot(container).getAttribute('data-slot')).toBe('');
+
+    for (const value of domStrings(container)) {
+      expect(value).not.toContain('mystery-part');
+      expect(value).not.toContain('warp-core');
+    }
   });
 
   it('advances through the exact 420 + 250 + 120 + 360 + 140 ms timeline', () => {
     vi.useFakeTimers();
     const { container } = renderPanel({ lastLootboxGrant: grant({ sequence: 9 }) });
-    const region = (): HTMLElement | null =>
-      container.querySelector<HTMLElement>('[data-reveal-active="true"]');
+    const phase = (): string | null =>
+      revealRegion(container).getAttribute('data-reveal-phase');
 
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('charge');
+    expect(phase()).toBe('charge');
 
     act(() => {
       vi.advanceTimersByTime(419);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('charge');
+    expect(phase()).toBe('charge');
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('orb');
+    expect(phase()).toBe('orb');
 
     act(() => {
       vi.advanceTimersByTime(249);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('orb');
+    expect(phase()).toBe('orb');
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('flash');
+    expect(phase()).toBe('flash');
 
     act(() => {
       vi.advanceTimersByTime(119);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('flash');
+    expect(phase()).toBe('flash');
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('reveal');
+    expect(phase()).toBe('reveal');
 
     act(() => {
       vi.advanceTimersByTime(359);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('reveal');
+    expect(phase()).toBe('reveal');
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('settle');
+    expect(phase()).toBe('settle');
 
     act(() => {
       vi.advanceTimersByTime(139);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('settle');
+    expect(phase()).toBe('settle');
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('rest');
-  });
-
-  it('keeps the reveal, orb and card non-shrinking and fully visible at the reveal phase', () => {
-    vi.useFakeTimers();
-    withPanelStyles(() => {
-      const { container } = renderPanel({ lastLootboxGrant: grant({ sequence: 21 }) });
-      act(() => {
-        vi.advanceTimersByTime(
-          MOTION.lootboxChargeMs + MOTION.orbOvershootMs + MOTION.lootboxFlashMs,
-        );
-      });
-
-      const panel = container.querySelector<HTMLElement>('section.customization-panel');
-      const region = container.querySelector<HTMLElement>('[data-reveal-active="true"]');
-      const orb = region?.querySelector<SVGSVGElement>('svg[data-reveal-orb="true"]');
-      const card = region?.querySelector<HTMLElement>('[data-reveal-card="true"]');
-
-      expect(region?.getAttribute('data-reveal-phase')).toBe('reveal');
-      expect(region?.getAttribute('role')).toBe('status');
-      expect(panel).not.toBeNull();
-      expect(region).not.toBeNull();
-      expect(orb).not.toBeNull();
-      expect(card).not.toBeNull();
-      if (panel === null || !region || !orb || !card) {
-        throw new Error('reveal layout elements missing');
-      }
-
-      // The panel remains the scroll container; its 60vh cap resolves to 460.8px in
-      // jsdom's 1024x768 viewport (432px at the failed 1280x720 capture).
-      const panelStyle = window.getComputedStyle(panel);
-      expect(panelStyle.display).toBe('flex');
-      expect(panelStyle.flexDirection).toBe('column');
-      expect(panelStyle.overflowY).toBe('auto');
-      expect(panelStyle.maxHeight).toBe('460.8px');
-
-      const revealStyle = window.getComputedStyle(region);
-      expect(revealStyle.display).toBe('flex');
-      expect(revealStyle.flexDirection).toBe('column');
-      expect(revealStyle.flexShrink).toBe('0');
-      expect(revealStyle.flexBasis).toBe('auto');
-      expect(revealStyle.overflow).toBe('visible');
-      expect(revealStyle.minHeight).toBe('288px');
-      expect(revealStyle.paddingTop).toBe('8px');
-      expect(revealStyle.paddingBottom).toBe('8px');
-
-      const orbStyle = window.getComputedStyle(orb);
-      expect(orbStyle.flexShrink).toBe('0');
-      expect(orbStyle.width).toBe('80px');
-      expect(orbStyle.height).toBe('80px');
-      expect(orbStyle.minWidth).toBe('80px');
-      expect(orbStyle.minHeight).toBe('80px');
-
-      const cardStyle = window.getComputedStyle(card);
-      expect(cardStyle.flexShrink).toBe('0');
-      expect(cardStyle.overflow).toBe('visible');
-      expect(card.querySelector('.lootbox-reveal-part')?.textContent).toBe('Port Silver Wing');
-      expect(card.querySelector('.lootbox-reveal-slot')?.textContent).toBe('Port Wing');
-
-      const revealMinBox =
-        Number.parseFloat(revealStyle.minHeight) +
-        Number.parseFloat(revealStyle.paddingTop) +
-        Number.parseFloat(revealStyle.paddingBottom);
-      expect(revealMinBox).toBe(304);
-      expect(revealMinBox).toBeLessThanOrEqual(Number.parseFloat(panelStyle.maxHeight));
-    });
+    expect(phase()).toBe('rest');
   });
 
   it('restarts the timeline when the same part is reopened with a new sequence', () => {
@@ -554,9 +698,7 @@ describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
     act(() => {
       vi.advanceTimersByTime(1290);
     });
-    expect(
-      container.querySelector('[data-reveal-active="true"]')?.getAttribute('data-reveal-phase'),
-    ).toBe('rest');
+    expect(revealRegion(container).getAttribute('data-reveal-phase')).toBe('rest');
 
     rerender(
       <SpaceshipCustomizationPanel
@@ -567,50 +709,313 @@ describe('SpaceshipCustomizationPanel reveal (AC-32, AC-41)', () => {
       />,
     );
 
-    const region = container.querySelector<HTMLElement>('[data-reveal-active="true"]');
-    expect(region?.getAttribute('data-reveal-sequence')).toBe('12');
-    expect(region?.getAttribute('data-reveal-phase')).toBe('charge');
+    const region = revealRegion(container);
+    expect(region.getAttribute('data-reveal-sequence')).toBe('12');
+    expect(region.getAttribute('data-reveal-phase')).toBe('charge');
     act(() => {
       vi.advanceTimersByTime(420);
     });
-    expect(
-      container.querySelector('[data-reveal-active="true"]')?.getAttribute('data-reveal-phase'),
-    ).toBe('orb');
+    expect(revealRegion(container).getAttribute('data-reveal-phase')).toBe('orb');
   });
 
-  it('renders the settled reveal instantly under reduced motion', () => {
-    vi.useFakeTimers();
+  it('renders the settled reveal instantly under reduced motion without phase timers', () => {
+    // Fake only the phase timers: the panel's timeline is `setTimeout`-based, while the
+    // React scheduler keeps its own `setImmediate` message loop that is not a phase timer.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { container } = renderPanel({
       lastLootboxGrant: grant({ sequence: 3 }),
       reducedMotion: true,
     });
-    const region = (): HTMLElement | null =>
-      container.querySelector<HTMLElement>('[data-reveal-active="true"]');
+    const region = revealRegion(container);
 
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('rest');
-    expect(region()?.getAttribute('data-reduced-motion')).toBe('true');
+    expect(region.getAttribute('data-reveal-phase')).toBe('rest');
+    expect(region.getAttribute('data-reduced-motion')).toBe('true');
+    expect(vi.getTimerCount()).toBe(0);
 
     act(() => {
       vi.advanceTimersByTime(1290);
     });
-    expect(region()?.getAttribute('data-reveal-phase')).toBe('rest');
+    expect(revealRegion(container).getAttribute('data-reveal-phase')).toBe('rest');
   });
 
-  it('dismisses the reveal through onDismissReveal', () => {
+  it('does not mutate the appearance prop while the reveal is mounted (AC-5)', () => {
+    vi.useFakeTimers();
+    const appearance = { hull: 'hull-gold' };
+    const before = { ...appearance };
+    const { container, rerender } = renderPanel({
+      customization: {
+        lootboxes: 1,
+        keys: 1,
+        parts: { 'wing-left-silver': 1 },
+        appearance,
+      },
+      lastLootboxGrant: grant(),
+    });
+
+    expect(revealRegion(container).getAttribute('data-part-id')).toBe('wing-left-silver');
+    act(() => {
+      vi.advanceTimersByTime(1290);
+    });
+    expect(appearance).toEqual(before);
+
+    rerender(
+      <SpaceshipCustomizationPanel
+        customization={{
+          lootboxes: 1,
+          keys: 1,
+          parts: { 'wing-left-silver': 1 },
+          appearance,
+        }}
+        mode="guest"
+        {...HANDLERS}
+        lastLootboxGrant={null}
+      />,
+    );
+    expect(container.querySelector('li[data-slot="hull"] .customization-equipped-name')?.textContent)
+      .toBe('Gold Hull');
+    expect(container.querySelector('li[data-slot="wing-left"] .customization-equipped-name')?.textContent)
+      .toBe('Port Wing');
+    expect(appearance).toEqual(before);
+  });
+});
+
+describe('SpaceshipCustomizationPanel reveal dismissal and focus (AC-8, AC-13)', () => {
+  it('focuses the reveal Equip control on mount', () => {
+    renderPanel({
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 1 },
+    });
+
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Equip Port Silver Wing' }),
+    );
+  });
+
+  it('dismisses the reveal through onDismissReveal exactly once', () => {
     const onDismissReveal = vi.fn();
-    renderPanel({ lastLootboxGrant: grant(), onDismissReveal });
+    renderPanel({ lastLootboxGrant: grant(), parts: { 'wing-left-silver': 1 }, onDismissReveal });
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }));
     expect(onDismissReveal).toHaveBeenCalledTimes(1);
+    expect(onDismissReveal).toHaveBeenCalledWith();
   });
 
-  it('equips the revealed part through the panel command', () => {
-    const onEquip = vi.fn();
-    renderPanel({ lastLootboxGrant: grant(), onEquip });
+  it('dismisses the reveal on Escape exactly once', () => {
+    const onDismissReveal = vi.fn();
+    renderPanel({ lastLootboxGrant: grant(), parts: { 'wing-left-silver': 1 }, onDismissReveal });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Equip Port Silver Wing' }), {
+      key: 'Escape',
+    });
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('equips the granted part, then dismisses, and flashes the reappearing row', () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const onEquip = vi.fn((partId: string) => {
+      calls.push(`equip:${partId}`);
+    });
+    const onDismissReveal = vi.fn(() => {
+      calls.push('dismiss');
+    });
+
+    const { container, rerender } = renderPanel({
+      customization: {
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'wing-left-silver': 1 },
+        appearance: {},
+      },
+      lastLootboxGrant: grant(),
+      onEquip,
+      onDismissReveal,
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Equip Port Silver Wing' }));
-    expect(onEquip).toHaveBeenCalledTimes(1);
-    expect(onEquip).toHaveBeenCalledWith('wing-left-silver');
+    expect(calls).toEqual(['equip:wing-left-silver', 'dismiss']);
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <SpaceshipCustomizationPanel
+        customization={{
+          lootboxes: 0,
+          keys: 0,
+          parts: { 'wing-left-silver': 1 },
+          appearance: {},
+        }}
+        mode="guest"
+        {...HANDLERS}
+        lastLootboxGrant={null}
+        onEquip={onEquip}
+        onDismissReveal={onDismissReveal}
+      />,
+    );
+
+    const row = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>('li[data-slot="wing-left"]');
+    expect(row()?.getAttribute('data-equipping')).toBe('true');
+    act(() => {
+      vi.advanceTimersByTime(MOTION.equipRowFlashMs);
+    });
+    expect(row()?.getAttribute('data-equipping')).toBeNull();
+  });
+
+  it('restores focus to Open lootbox after an in-panel dismissal', () => {
+    const onDismissReveal = vi.fn();
+    const customization: CustomizationState = {
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'wing-left-silver': 1 },
+      appearance: {},
+    };
+    const { container, rerender } = renderPanel({
+      customization,
+      lastLootboxGrant: grant(),
+      onDismissReveal,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }));
+    rerender(
+      <SpaceshipCustomizationPanel
+        customization={customization}
+        mode="guest"
+        {...HANDLERS}
+        lastLootboxGrant={null}
+        onDismissReveal={onDismissReveal}
+      />,
+    );
+
+    expect(panelRoot(container).getAttribute('data-reveal-active')).toBe('false');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open lootbox' }));
+  });
+
+  it('restores focus to Open lootbox after Escape', () => {
+    const onDismissReveal = vi.fn();
+    const customization: CustomizationState = {
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'wing-left-silver': 1 },
+      appearance: {},
+    };
+    const { rerender } = renderPanel({
+      customization,
+      lastLootboxGrant: grant(),
+      onDismissReveal,
+    });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Equip Port Silver Wing' }), {
+      key: 'Escape',
+    });
+    rerender(
+      <SpaceshipCustomizationPanel
+        customization={customization}
+        mode="guest"
+        {...HANDLERS}
+        lastLootboxGrant={null}
+        onDismissReveal={onDismissReveal}
+      />,
+    );
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open lootbox' }));
+  });
+
+  it('dismisses exactly once when the panel unmounts while revealing', () => {
+    const onDismissReveal = vi.fn();
+    const { unmount } = renderPanel({ lastLootboxGrant: grant(), onDismissReveal });
+
+    expect(onDismissReveal).toHaveBeenCalledTimes(0);
+    unmount();
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+    expect(onDismissReveal).toHaveBeenCalledWith();
+  });
+
+  it('reopens the normal panel after the unmount dismissal cleared the grant', () => {
+    const onDismissReveal = vi.fn();
+    const first = renderPanel({ lastLootboxGrant: grant(), onDismissReveal });
+    first.unmount();
+
+    const reopened = renderPanel({ lastLootboxGrant: null, onDismissReveal });
+    const section = panelRoot(reopened.container);
+    expect(section.getAttribute('data-reveal-active')).toBe('false');
+    expect(section.querySelector('.lootbox-reveal')).toBeNull();
+    expect(section.querySelector('h2.customization-title')?.textContent).toBe(
+      'Spaceship hangar',
+    );
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('never dismisses on a grant-to-grant replacement, but does once on unmount', () => {
+    const onDismissReveal = vi.fn();
+    const customization: CustomizationState = {
+      lootboxes: 2,
+      keys: 2,
+      parts: { 'wing-left-silver': 1, 'hull-gold': 1 },
+      appearance: {},
+    };
+    const { container, rerender, unmount } = renderPanel({
+      customization,
+      lastLootboxGrant: grant({ sequence: 1 }),
+      onDismissReveal,
+    });
+
+    rerender(
+      <SpaceshipCustomizationPanel
+        customization={customization}
+        mode="guest"
+        {...HANDLERS}
+        lastLootboxGrant={grant({
+          partId: 'hull-gold',
+          slot: 'hull',
+          rarity: 'epic',
+          sequence: 2,
+        })}
+        onDismissReveal={onDismissReveal}
+      />,
+    );
+
+    expect(onDismissReveal).toHaveBeenCalledTimes(0);
+    expect(revealRegion(container).getAttribute('data-reveal-sequence')).toBe('2');
+    expect(revealRegion(container).getAttribute('data-part-id')).toBe('hull-gold');
+
+    unmount();
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore focus to the absent Open lootbox on unmount', () => {
+    const onDismissReveal = vi.fn();
+    const { unmount } = renderPanel({
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 1 },
+      onDismissReveal,
+    });
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Equip Port Silver Wing' }),
+    );
+
+    unmount();
+    expect(document.activeElement).toBe(document.body);
+
+    renderPanel({ lastLootboxGrant: null, onDismissReveal });
+    expect(document.activeElement).toBe(document.body);
+    expect(onDismissReveal).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the reveal mounted with no input for 10 seconds (no auto-dismiss)', () => {
+    vi.useFakeTimers();
+    const onDismissReveal = vi.fn();
+    const { container } = renderPanel({
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 1 },
+      onDismissReveal,
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(revealRegion(container).getAttribute('data-reveal-phase')).toBe('rest');
+    expect(onDismissReveal).toHaveBeenCalledTimes(0);
   });
 });
 
@@ -670,7 +1075,7 @@ describe('SpaceshipCustomizationPanel equip-row flash (AC-43)', () => {
 });
 
 describe('SpaceshipCustomizationPanel preview (AC-31)', () => {
-  it('keeps the labeled live-preview canvas inside the panel', () => {
+  it('keeps the labeled live-preview canvas inside the normal panel', () => {
     const html = panel();
     expect(html).toContain('<canvas');
     expect(html).toContain('class="spaceship-preview"');
@@ -678,11 +1083,24 @@ describe('SpaceshipCustomizationPanel preview (AC-31)', () => {
     expect(html).toContain('data-preview-slot-hull="hull-default"');
     expect(html).toContain('data-preview-slot-tail-fin="tail-fin-default"');
   });
+
+  it('renders no preview canvas while revealing (one panel canvas at most)', () => {
+    vi.useFakeTimers();
+    const { container } = renderPanel({ lastLootboxGrant: grant() });
+    expect(container.querySelector('.spaceship-preview')).toBeNull();
+    expect(container.querySelector('[data-preview-slot-hull]')).toBeNull();
+    expect(revealRegion(container).getAttribute('data-part-id')).toBe('wing-left-silver');
+  });
 });
 
 describe('SpaceshipCustomizationPanel mode', () => {
   it('records the authenticated mode on the section', () => {
     const html = panel({ mode: 'account', lootboxes: 1, keys: 1 });
     expect(html).toContain('data-mode="account"');
+  });
+
+  it('records the authenticated mode on the section while revealing', () => {
+    const { container } = renderPanel({ mode: 'account', lastLootboxGrant: grant() });
+    expect(panelRoot(container).getAttribute('data-mode')).toBe('account');
   });
 });

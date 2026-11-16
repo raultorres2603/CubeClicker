@@ -9,6 +9,10 @@
  * values copied from the reference analysis and the extrapolated `[E]` values chosen for the
  * interactions the video does not show. {@link easeOutCubic} is the single implementation in
  * the app — `game/effects.ts` re-exports it in T9 (F14), so no second copy may exist.
+ *
+ * It also carries the additive game-feel overhaul tokens (spec AC-32): the 3D reveal-stage
+ * pose values consumed by `game/reveal-motion.ts` and the Neon Forge UI durations mapped to
+ * CSS custom properties on `main`.
  */
 
 /**
@@ -99,6 +103,19 @@ export const MOTION = {
   shotMuzzleFlashMs: 80,
   shotRecoilMs: 120,
   shotRecoilDistance: 0.12,
+  // Game-feel overhaul: 3D reveal stage + Neon Forge UI (spec AC-32).
+  revealStageOrbScale: 1.1,
+  revealStageFlashOpacity: 0.85,
+  revealStageRingMinScale: 0.4,
+  revealStageRingMaxScale: 2.4,
+  revealStageRingOpacity: 0.9,
+  revealStageSlotPulse: 1.1,
+  uiPanelEnterMs: 220,
+  uiPanelEnterOffsetPx: 6,
+  uiButtonPressMs: 90,
+  uiButtonPressScale: 0.97,
+  uiGlowPulseMs: 2400,
+  uiRevealSpotlightMs: 260,
 } as const;
 
 /** Standard cubic ease-out: `1 − (1 − t)³` (AC-34; the app's only implementation). */

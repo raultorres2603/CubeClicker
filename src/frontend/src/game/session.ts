@@ -53,6 +53,10 @@
  * - spectate flights are camera-only engine travels: selection → `travelTo (spectate,
  *   destination)` → arrival → `setSpectating(true)`; return / target left → `travelTo
  *   (return, own position)` → arrival → `setSpectating(false)` (AC-18, AC-19);
+ * - the opener-only `lootboxOpened` grant is adopted into the engine for the 3D reveal; a
+ *   `welcome` (fresh join or resume) and every non-`connected` transport status clear it
+ *   through `engine.clearLootboxGrant`, and the status path publishes the engine snapshot
+ *   before the status store so the cleared grant is observable (AC-11);
  * - while the transport is not connected every gameplay input dispatch is gated and the
  *   engine is frozen, so a level travel holds; a resume `welcome` abandons a running
  *   camera-only flight (the engine returns to `playing` with no intents), adopts the
@@ -886,6 +890,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     welcomed = true;
     completionLevel = null;
     pendingLootboxOpen = false;
+    // A welcome is a fresh view of the world, for a join and a resume alike: the one-shot
+    // reveal grant never survives it, so a rejoin can never replay a stale animation
+    // (AC-11). The `publish` below makes the cleared grant observable to the store.
+    engine.clearLootboxGrant?.();
     flushPendingRotate();
     pendingAutoReturn = false;
     activeScene?.enterWorld({
@@ -1163,6 +1171,12 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       welcomed = false;
       // A dropped socket can never deliver the pong: settle every in-flight measurement.
       clearPendingRtt();
+      // A broken transport ends the reveal: the grant is cleared and the engine snapshot is
+      // published before the status publish so `App` observes the clear and unmounts the
+      // reveal (AC-11). The clear sends no message and leaves `pendingLootboxOpen` to the
+      // existing status rule below.
+      engine.clearLootboxGrant?.();
+      publish(engine.getSnapshot());
     }
     // A transport status change abandons any in-flight account open (AC-29).
     pendingLootboxOpen = false;

@@ -33,6 +33,18 @@ const ICON_CASES: readonly IconCase[] = [
     shapeCount: 2,
   },
   {
+    name: 'key',
+    Icon: icons.KeyIcon,
+    shape: '<circle cx="8" cy="8" r="4.2"',
+    shapeCount: 2,
+  },
+  {
+    name: 'lootbox',
+    Icon: icons.LootboxIcon,
+    shape: '<path d="M3.5 8.5h17v11.2h-17z"',
+    shapeCount: 3,
+  },
+  {
     name: 'server',
     Icon: icons.ServerIcon,
     shape: '<path d="M11 7h6M11 17h6"',
@@ -125,7 +137,7 @@ describe('className forwarding', () => {
 });
 
 describe('module contract', () => {
-  it('exports exactly the twelve pinned icon components', () => {
+  it('exports exactly the fourteen pinned icon components', () => {
     expect(Object.keys(icons).sort()).toEqual([
       'CoinIcon',
       'CubeIcon',
@@ -134,6 +146,8 @@ describe('module contract', () => {
       'DiamondIcon',
       'GearIcon',
       'GroupIcon',
+      'KeyIcon',
+      'LootboxIcon',
       'ServerIcon',
       'ShipIcon',
       'UpgradeClickIcon',
