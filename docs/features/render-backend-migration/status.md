@@ -14,7 +14,7 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 
 ## Task board
 
-- [ ] T1 — Render Blueprint and backend service config
+- [x] T1 — Render Blueprint and backend service config
 - [ ] T2 — GitHub Actions deploy path (Render deploy hook, remove Fly)
 - [ ] T3 — Environment catalog and docs (README, deployment, Vercel/Render/Neon)
 - [ ] T4 — Local/static verification and live development proof
@@ -26,6 +26,9 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 - 2026-11-16 — planning → building — Render MCP confirmed; direct free Docker web service provisioning started (Frankfurt, `src/backend/Dockerfile`, health `/healthz`) — `build-log-T1-render.md`
 - 2026-11-16 — T1 backend live — Render service `srv-dbtcvv9srm7s73au5bag`, URL `https://cubeclicker-development.onrender.com`, free/frankfurt; deploy `dep-dbtcvvhsrm7s73au5cfg` live; `/healthz` 200; WS hello; Neon migrations 001–007 applied — `build-log-T1-render.md`
 - 2026-11-16 — T2 Vercel live — project `prj_9GfusgivGpVJDXeJPi2TnMUCb2RV`, SSO disabled, `VITE_API_URL`/`VITE_WS_URL` set, production deployment `dpl_9Hdnjf9Ze57EADRNpccKrNnc8KrF` READY, alias `cubeclicker-development.vercel.app`; deployed smoke 7/8 — Render free edge drops the 1008 close for a disallowed WS Origin; pre-upgrade 403 fix pending — `build-log-T2-vercel.md`
+- 2026-11-16 — T2 smoke green — origin fix `e6a7afd` pushed; Render deploy `dep-dbtdbrdckfvc73eh5c9g` live at `ec9949d`; `/healthz` 200; deployed smoke **8/8** (disallowed Origin now HTTP 403 before upgrade); `VERCEL_TOKEN` + `RENDER_DEPLOY_HOOK_URL` present in `development` environment — `build-log-T2-smoke.md`
+- 2026-11-16 — T2 workflow update in progress — replace Fly steps with Render deploy hook + health poll; set GitHub `development` vars/secrets and `develop` branch
+- 2026-11-16 — user directive — push to `main` MUST auto-deploy `development`; production remains manual. Remove `gh workflow run` from the dev path; Vercel dev deploy must update the stable `cubeclicker-development.vercel.app` production target — workflow correction in progress
 
 ## Blockers / open questions
 
