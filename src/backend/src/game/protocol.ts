@@ -33,6 +33,12 @@
  *   payload) and `placementPayload` always includes a copied `activity` array (absent → `[]`)
  *   on `welcome`/`worldEntered`. The client catalog is unchanged, so a client
  *   `activityEvent` frame decodes to `bad_message`.
+ * - `leaderboardUpdate` is the additive server-only ranking frame (feature
+ *   `server-live-leaderboard`): `parseLeaderboardSnapshot` enforces the shared validation
+ *   matrix and returns the pinned shape with fresh copies, `copyLeaderboardSnapshot` and
+ *   `leaderboardUpdateMessage` re-validate + copy (throwing `TypeError` on invalid) and an
+ *   optional `leaderboard` snapshot travels on `welcome`/`worldEntered` (absence preserved).
+ *   The client catalog is unchanged and there is no protocol version bump.
  */
 
 import type { Position } from './servers.js';
@@ -62,6 +68,12 @@ export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
  * newest first. Shared verbatim with the frontend mirror.
  */
 export const ACTIVITY_FEED_LIMIT = 20;
+
+/**
+ * Pinned leaderboard row cap (`server-live-leaderboard`): a snapshot carries at most the
+ * five highest-ranked current members. Shared verbatim with the frontend mirror.
+ */
+export const LEADERBOARD_TOP_LIMIT = 5;
 
 /** The six cube faces, in the accepted board order (mirrors the frontend `FaceId`). */
 export type FaceId = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
@@ -156,6 +168,36 @@ export type ActivityEvent =
       name: string;
     };
 
+/**
+ * One ranked leaderboard row (`server-live-leaderboard`): server-issued identity plus the
+ * member's session counters. Coins, upgrades and account totals are never part of it.
+ */
+export interface LeaderboardEntry {
+  playerId: string;
+  name: string;
+  cubesCompleted: number;
+  clicks: number;
+}
+
+/**
+ * One server's ranked session snapshot, carried by `leaderboardUpdate` and by the optional
+ * `leaderboard` field of `welcome`/`worldEntered`.
+ *
+ * `entries` is already in server rank order (cubes desc → clicks desc → slot order) and is
+ * capped at {@link LEADERBOARD_TOP_LIMIT}; `totals` is summed over **all** current members
+ * of the server, including members outside the top five.
+ */
+export interface LeaderboardSnapshot {
+  serverId: number;
+  at: number;
+  entries: LeaderboardEntry[];
+  totals: {
+    cubesCompleted: number;
+    clicks: number;
+    facesDestroyed: number;
+  };
+}
+
 /** The pinned error codes (spec § 8). */
 export type ErrorCode =
   | 'bad_message'
@@ -202,6 +244,7 @@ export type ServerMessage =
       self: CubeState;
       roster: MemberState[];
       activity?: ActivityEvent[];
+      leaderboard?: LeaderboardSnapshot;
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
@@ -218,6 +261,7 @@ export type ServerMessage =
       self: CubeState;
       roster: MemberState[];
       activity?: ActivityEvent[];
+      leaderboard?: LeaderboardSnapshot;
       identity: Identity;
       economy?: EconomyState;
       upgrades?: UpgradeState;
@@ -226,6 +270,7 @@ export type ServerMessage =
   | { type: 'memberJoined'; member: MemberState }
   | { type: 'memberLeft'; playerId: string; reason: 'left' | 'moved' }
   | { type: 'activityEvent'; event: ActivityEvent }
+  | { type: 'leaderboardUpdate'; leaderboard: LeaderboardSnapshot }
   | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
   | { type: 'miniCubesRemoved'; playerId: string; ids: MiniCubeId[] }
@@ -561,6 +606,107 @@ export function activityEventMessage(event: ActivityEvent): ServerMessage {
 }
 
 /**
+ * A non-negative integer wire field: `0` is valid; negatives, floats, `NaN` and non-numbers
+ * are not (the session counters and every total).
+ */
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Decodes one `LeaderboardSnapshot` payload (the shared validation matrix).
+ *
+ * Returns the pinned shape with exactly the documented fields — positive-integer `serverId`,
+ * finite non-negative `at`, 0…{@link LEADERBOARD_TOP_LIMIT} entries with non-empty
+ * `playerId`/`name` and non-negative-integer counters, and a `totals` object with three
+ * non-negative-integer counters — or `null` when any rule fails. Unknown extra fields are
+ * dropped and every returned object (the entries array, each entry and the totals) is a
+ * fresh copy in the pinned wire key order.
+ */
+export function parseLeaderboardSnapshot(value: unknown): LeaderboardSnapshot | null {
+  const frame = asJsonObject(value);
+  if (frame === null) {
+    return null;
+  }
+
+  const { serverId, at, entries, totals } = frame;
+  if (!isPositiveInteger(serverId) || !isNonNegativeFiniteNumber(at)) {
+    return null;
+  }
+  if (!Array.isArray(entries) || entries.length > LEADERBOARD_TOP_LIMIT) {
+    return null;
+  }
+
+  const copiedEntries: LeaderboardEntry[] = [];
+  for (const candidate of entries) {
+    const entry = asJsonObject(candidate);
+    if (entry === null) {
+      return null;
+    }
+    const { playerId, name, cubesCompleted, clicks } = entry;
+    if (
+      !isNonEmptyString(playerId) ||
+      !isNonEmptyString(name) ||
+      !isNonNegativeInteger(cubesCompleted) ||
+      !isNonNegativeInteger(clicks)
+    ) {
+      return null;
+    }
+    copiedEntries.push({ playerId, name, cubesCompleted, clicks });
+  }
+
+  const totalsObject = asJsonObject(totals);
+  if (totalsObject === null) {
+    return null;
+  }
+  const { cubesCompleted, clicks, facesDestroyed } = totalsObject;
+  if (
+    !isNonNegativeInteger(cubesCompleted) ||
+    !isNonNegativeInteger(clicks) ||
+    !isNonNegativeInteger(facesDestroyed)
+  ) {
+    return null;
+  }
+
+  return {
+    serverId,
+    at,
+    entries: copiedEntries,
+    totals: { cubesCompleted, clicks, facesDestroyed },
+  };
+}
+
+/**
+ * Defensive copy of one leaderboard snapshot in the pinned wire key order.
+ *
+ * The input is expected to be a valid `LeaderboardSnapshot`; a payload that no longer
+ * satisfies the validation matrix throws `TypeError` instead of leaking a malformed object.
+ */
+export function copyLeaderboardSnapshot(snapshot: LeaderboardSnapshot): LeaderboardSnapshot {
+  const parsed = parseLeaderboardSnapshot(snapshot);
+  if (parsed === null) {
+    throw new TypeError('invalid leaderboard snapshot');
+  }
+  return parsed;
+}
+
+/**
+ * Builds the server-only `leaderboardUpdate` frame (AC-14).
+ *
+ * The snapshot is re-validated through {@link parseLeaderboardSnapshot} and copied, so an
+ * invalid payload (despite the static type) throws `TypeError` instead of reaching the wire.
+ * The client catalog has no matching message: a client `leaderboardUpdate` frame is
+ * `bad_message`.
+ */
+export function leaderboardUpdateMessage(snapshot: LeaderboardSnapshot): ServerMessage {
+  const parsed = parseLeaderboardSnapshot(snapshot);
+  if (parsed === null) {
+    throw new TypeError('invalid leaderboardUpdate payload');
+  }
+  return { type: 'leaderboardUpdate', leaderboard: parsed };
+}
+
+/**
  * The placement payload shared by `welcome` (join/resume) and `worldEntered` (a mover whose
  * next cube lands on a different server): identity, assignment and the full world state.
  */
@@ -610,6 +756,7 @@ export interface Placement {
   self: CubeState;
   roster: MemberState[];
   activity?: ActivityEvent[];
+  leaderboard?: LeaderboardSnapshot;
   identity: Identity;
   economy?: EconomyState;
   upgrades?: UpgradeState;
@@ -656,6 +803,9 @@ function placementPayload(placement: Placement): Placement {
     self: copyCubeState(placement.self),
     roster: placement.roster.map(copyMemberState),
     activity: (placement.activity ?? []).map(copyActivityEvent),
+    ...(placement.leaderboard
+      ? { leaderboard: copyLeaderboardSnapshot(placement.leaderboard) }
+      : {}),
     identity,
     ...(placement.economy ? { economy: copyEconomyState(placement.economy) } : {}),
     ...(placement.upgrades ? { upgrades: copyUpgradeState(placement.upgrades) } : {}),
