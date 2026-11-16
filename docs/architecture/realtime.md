@@ -123,6 +123,136 @@ late peer attach is closed, late async continuations return before touching memb
 updating members, scheduling or sending, and both schedulers are discarded so no further
 timer is created. No send or timer callback happens after shutdown.
 
+## Activity feed
+
+Added by feature `live-activity-feed` (2026-11-16); the full contract and acceptance criteria are
+in the [feature spec](../features/live-activity-feed/spec.md), and the player-facing term is in the
+[glossary](../product/glossary.md#activity-feed). The feed is a small, per-server, read-only stream
+of notable server transitions on a second additive path: the hub derives each event from a
+transition it has already validated, offers it to that server's gate, and only when the gate
+accepts it broadcasts one `activityEvent` frame through the same encode-once fan-out described in
+§ Fan-out. No client message creates, names or modifies an event, and the protocol version is
+unchanged.
+
+### Event catalog
+
+Every event has the same envelope: a positive-integer `id` (per-server sequence, starting at 1,
+assigned only on acceptance), a finite non-negative `at` (the hub's injected clock), a
+positive-integer `serverId` (the server that owns the event, also the client's cross-server guard),
+a closed `type`, the server-issued `playerId` and the server-issued `name` at event time. Six types
+exist, with the type-specific fields below. The catalog defines **candidates**; every candidate is
+then offered to the cadence gate, so a candidate is not guaranteed to reach the wire.
+
+| `type` | Candidate at | Exact condition | Extra fields |
+| --- | --- | --- | --- |
+| `levelMilestone` | accepted full-board completion | the completed 1-based cube number is a multiple of `ACTIVITY_MILESTONE_EVERY` (5), starting at cube 5 | `level` |
+| `fastClear` | accepted full-board completion | not a milestone, and the completion meets the existing speed-bonus predicate (`elapsedMs <= (thresholdSeconds(previousGridSize) + speedWindowSeconds(upgrades)) * 1000`) | `level`, `elapsedMs` |
+| `cubeCleared` | accepted full-board completion | not a milestone and not a fast clear | `level` |
+| `epicLoot` | successful account `openLootbox` | the drawn part's rarity is `epic`, new or duplicate; rare draws, failed/in-flight opens and guest local opens never qualify | `partId` |
+| `memberJoined` | fresh `join` | recorded after the `welcome`/`memberJoined` transition; a rejoin and a move-in never qualify | — |
+| `memberLeft` | final grace-expiry removal or move-out | recorded after the `memberLeft` broadcast; a socket close (grace start) and a server-destroying removal never qualify | — |
+
+One completion produces exactly one candidate, with precedence `levelMilestone` > `fastClear` >
+`cubeCleared`. The fast-clear predicate is the same boolean that doubles the completion's coins,
+so the feed and the economy can never disagree about what a fast clear is. An invalid completion
+and an incomplete board create no candidate.
+
+**Moves.** A cross-server completion is attributed to the target server, where the member is after
+the move resolves. After the existing `worldEntered`/`memberLeft (moved)`/`memberJoined` protocol
+broadcasts, the completion is the **sole new-server activity candidate** (recorded before a move-in
+join would be considered), and the move-in `memberJoined` activity is suppressed for the move
+whether the completion is accepted or dropped; the protocol `memberJoined` broadcast is unchanged.
+The old server's `memberLeft` is a separate candidate on its own server and does not share the
+target server's window.
+
+### Cadence
+
+Each server accepts at most one event in any trailing `ACTIVITY_MIN_INTERVAL_MS` (1000 ms) window,
+with an inclusive boundary (`now - lastAcceptedAt >= 1000`). A candidate inside the window is
+**dropped, not queued**: it sends no frame, consumes no `id`, does not enter the ring and does not
+move the window. A dropped candidate is forgotten — the feed keeps no pending candidate, no
+per-client queue and no timer; the gate is a timestamp comparison on the low-frequency candidate
+paths. Two servers have independent windows, so each can accept one event in the same second, and
+a quiet server's first candidate is always accepted.
+
+### Ring buffer
+
+Each server keeps at most the newest `ACTIVITY_FEED_LIMIT` (20) accepted events, newest first
+(`index 0` is the newest). State is created lazily on the first accepted event and holds
+`nextId`/`lastAcceptedAt`/`events`; `nextId` starts at 1 for every server, so two servers' first
+accepted events both have `id: 1`. Every read returns a fresh array of fresh event objects.
+Retention is bounded by construction: the ring drops its oldest entry when a 21st event arrives.
+Cleanup deletes a server's ring when that server is destroyed — its last member is removed or
+moves away — and `hub.close()` clears every ring and closes the feed: after close `record` returns
+nothing, `snapshot` returns `[]`, and `dropServer` and a second `clear()` are no-ops. The number of
+rings never exceeds the number of live servers.
+
+### Welcome, reconnect and `worldEntered`
+
+`welcome` (fresh join and rejoin) and `worldEntered` (cross-server move) carry the target server's
+current ring as `activity` (newest first, at most 20) as a defensive copy; a server with no
+accepted events sends `[]`. A member that was disconnected while events occurred receives the
+current ring in the rejoin `welcome`: the missed events are included while they fit, and if more
+than 20 were accepted they are evicted by the ring by design. This is the same "presentation
+delta, not state" contract as § Removal batching and § Economy coalescing: the hub keeps no
+per-client outbound queue and never replays one missed frame.
+
+**Travel window.** `worldEntered` supplies the target ring without changing the mover's current
+feed. Target-server `activityEvent` frames received between `worldEntered` and the travel midpoint
+are folded into the pending swap feed (newest first, capped at 20); the midpoint `applyWorldSwap`
+replaces the feed with that updated target ring. No old-server event is applied to the new feed
+once a swap is pending.
+
+### Isolation and authority
+
+Buffers and events are keyed by `serverId`, and an event is delivered only to that server's members
+through the server's existing slot visitor; no client ever receives another server's event. The
+event carries its `serverId`, and the client reducer ignores an event matching neither the current
+server nor a pending target server. Every event originates from an already validated server
+transition — a full-board completion, a successful loot draw or an accepted membership transition
+— and its time is the hub's injected clock, never a client value.
+
+### Metrics
+
+The encode-once path already counts every broadcast. `activityEvent` is added to the closed `type`
+allow-lists of `cubeclicker_ws_messages_encoded_total` and `cubeclicker_ws_frames_sent_total` —
+two catalog values, no new metric. The allow-list entry is required, not optional instrumentation:
+the counter throws on an unlisted `type` value.
+
+### Client presentation and accessibility
+
+The frontend stores the feed in `WorldState.activity` (and `pendingWorldSwap.activity` during a
+travel) and renders a non-interactive `<aside class="activity-feed" aria-label="Server activity"
+aria-live="off">` with an `<h2>` heading and an `<ol>` of the five newest events, each with a full
+text sentence. The feed contributes no live-region semantics — no `role="status"`, `role="alert"`
+or `role="log"` and no live `aria-live` — so `.phase-announcement` stays the shell's only
+polite/assertive live region; the feed is readable on demand via its landmark. It has no focusable
+control and no timestamp (the server clock is not the client clock). The ticker is placed
+top-center below the connection banner with a mobile offset, capped at five visible items, and is
+`pointer-events: none`. New entries use a 160 ms entry animation that is disabled both by the
+session's reduced-motion preference (`data-reduced-motion="true"`) and independently by
+`@media (prefers-reduced-motion: reduce)`; reduced motion changes animation only, and the content
+stays fully readable.
+
+### Privacy
+
+Every field is server-issued: ids, the injected-clock timestamp, the catalog `level`/`elapsedMs`
+numbers, the catalog `partId`, and the member's `name` as already published in the roster (guest
+`Player N` or the account username). No event carries `accountId`, token, email, IP, free text or
+any client-supplied string, and the client catalog still has no activity message, so no client
+frame can create, name or modify an event.
+
+### Additivity and rollback
+
+The frame is a new `ServerMessage` variant, `activity` is optional in the wire type (absent decodes
+to `[]`), and no protocol version bump is made, so both deploy orders are safe: an old client drops
+an unknown `activityEvent` frame at its decoder and ignores the extra `activity` field, and a new
+client against an old backend renders an empty feed. Backend rollback removes the union/builder,
+the `activity` field, the feed module, the hub derivation hooks and the two metrics allow-list
+values; frontend rollback removes the component, its render and the reducer case. There is nothing
+to roll back operationally: the feed is process memory only, has no feature flag and no stored
+data, and a restart clears it.
+
 ## Benchmark
 
 The feature's before/after evidence is produced by

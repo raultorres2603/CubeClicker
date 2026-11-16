@@ -10,6 +10,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** An optional, persistent player identity created by registering a username, email and password. An account is activated only after email verification, and its username is also its display name. Accounts are additive: a player may always choose guest play instead, and no account is ever required to play. Account identity is resolved server-side from the session cookie; the client never supplies an account id or verified flag.
 **Example:** A returning player logs in with username and password to resume the same account identity across sessions.
 
+### activity feed
+
+**Definition:** A compact, per-**game server** ticker of notable events the backend has already validated — cube cleared, fast clear, level milestone, epic loot, member joined and member left. The hub derives each event on the server that owns it, accepts at most one event per server per second, keeps the newest 20 in memory (newest first) and includes the current ring in the `welcome` snapshot, so a joining or reconnecting member sees the recent activity. The frontend shows the five newest entries in a non-interactive, non-live ticker below the connection banner. The feed is server-derived and per server: it carries no free text (only server-issued names and catalog identifiers) and no history across restarts — a backend restart clears every feed.
+**Example:** `Player 2 joined` appears in the ticker of game server 1, and a member reconnecting to that server sees it in the welcome snapshot until 20 newer events push it out of the ring.
+
 ### appearance
 
 **Definition:** The equipped look of a player's spaceship, expressed as a map from **part slot** to a part id; a missing slot resolves to that slot's standard part. Slots are equipped and unequipped independently, so a loadout may be asymmetric (for example a silver port wing and a gold starboard wing). It is persisted per **account** in the `user_economy.appearance` column and broadcast to that account's joined connections; **guests** keep an ephemeral copy for the session. Changing appearance updates the live 3D preview and the in-game pointer ship.
