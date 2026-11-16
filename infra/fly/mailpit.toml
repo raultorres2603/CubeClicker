@@ -1,0 +1,47 @@
+# Dev-only Mailpit SMTP sink for the Fly development backend.
+#
+# This app is deployment support for the development environment only: it gives
+# the Fly backend a reachable SMTP host (`cubeclicker-mailpit-development.internal`)
+# so verification email works without a paid provider. It is never used in
+# production or by the local `podman compose` path (which keeps its own Mailpit
+# service on the compose network).
+#
+# Network posture:
+#   * HTTP 8025 (Mailpit UI/API) is served through Fly Proxy, public at
+#     https://cubeclicker-mailpit-development.fly.dev.
+#   * SMTP 1025 is NOT declared as a service. Fly only routes declared service
+#     ports through Fly Proxy / public IPs; undeclared ports remain reachable
+#     only over Fly 6PN private networking (`<app>.internal`), which is exactly
+#     what the backend uses. No dedicated IPv4 (a paid resource) is allocated.
+#
+# Deploy (no Dockerfile, no build step):
+#   flyctl deploy --config infra/fly/mailpit.toml \
+#     --app cubeclicker-mailpit-development --primary-region iad --remote-only
+
+app = "cubeclicker-mailpit-development"
+primary_region = "iad"
+
+[build]
+  image = "axllent/mailpit:latest"
+
+[env]
+  # Bounded in-memory store: the sink is disposable and runs on free-tier-sized
+  # hardware, so old development mail must not accumulate without limit.
+  MP_MAX_MESSAGES = "500"
+  # The backend authenticates with the development SMTP_USER/SMTP_PASS pair over
+  # the private network, where Mailpit sees an unencrypted connection; accept any
+  # credentials and allow AUTH on that unencrypted hop.
+  MP_SMTP_AUTH_ACCEPT_ANY = "1"
+  MP_SMTP_AUTH_ALLOW_INSECURE = "1"
+
+[http_service]
+  internal_port = 8025
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
