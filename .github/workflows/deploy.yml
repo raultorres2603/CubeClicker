@@ -1,18 +1,20 @@
 name: Deploy
 
 on:
-  # A push to main auto-deploys development. Production is workflow_dispatch-only
-  # until its environment and secrets are provisioned.
-  push:
+  # CI runs once per push to main; this workflow deploys development only after
+  # that CI run succeeds. Production is workflow_dispatch-only until provisioned.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
       environment:
-        description: GitHub Environment to deploy
+        description: GitHub Environment to deploy (manual production only)
         type: choice
         required: true
-        default: development
-        options: [development, production]
+        default: production
+        options: [production]
 
 concurrency:
   group: deploy-${{ github.event.inputs.environment || 'development' }}
@@ -20,15 +22,12 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  verify:
-    name: verify
-    uses: ./.github/workflows/ci.yml
-
   deploy:
     name: deploy
-    needs: verify
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: ${{ github.event.inputs.environment || 'development' }}
@@ -38,8 +37,32 @@ jobs:
       VITE_API_URL: ${{ vars.VITE_API_URL }}
       VITE_WS_URL: ${{ vars.VITE_WS_URL }}
     steps:
+      - name: Reject non-push CI runs
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push'
+        env:
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          echo "Deploy follows only a push-triggered CI run; got '${WORKFLOW_EVENT}'" >&2
+          exit 1
+      - name: Verify CI succeeded for target commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          if ! conclusion=$(gh run list --workflow CI --commit "$TARGET_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'); then
+            echo "Unable to query CI runs for $TARGET_SHA; the token may lack actions:read" >&2
+            exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "CI for $TARGET_SHA is not successful (conclusion: ${conclusion:-none}); refusing to deploy" >&2
+            exit 1
+          fi
+          echo "CI succeeded for $TARGET_SHA"
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

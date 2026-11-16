@@ -226,6 +226,103 @@ $ grep -n "vercel pull\|vercel build\|vercel deploy\|vercel alias" .github/workf
 124:          vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
 ```
 
+## Follow-up — CI runs once; deploy follows a successful CI run
+
+User directive: CI runs first, and deployment happens only if CI succeeded — no second verification inside the deploy pipeline. This supersedes the `push` trigger from the previous follow-up; `main` pushes now reach deployment through the CI workflow run, not directly. Trigger graph:
+
+```
+push main ──► CI (verify-app + smoke-e2e + verify-workflows)
+                 │ completed
+                 ▼
+             Deploy (workflow_run)
+                 └─ job runs only if conclusion == success && head_branch == main
+                    └─ migrate → Render hook → 180 s health poll
+                       → Vercel production deploy + alias → warm health → smoke
+
+workflow_dispatch (production only) ──► read-only CI-conclusion guard ──► same deploy path
+```
+
+`deploy.yml` changes:
+
+- Trigger is `workflow_run: workflows: [CI], types: [completed], branches: [main]` plus `workflow_dispatch`; `push` is gone.
+- `workflow_dispatch` is production-only: the `environment` input keeps its name but now offers `options: [production]` with `default: production`, so development is reachable only through the successful-CI `workflow_run` path. The environment expression `github.event.inputs.environment || 'development'` resolves to `production` on a manual dispatch and `development` for `workflow_run`.
+- The `verify` job (`uses: ./.github/workflows/ci.yml`) and `needs: verify` are removed.
+- Job condition: `github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')`.
+- Checkout pins `ref: ${{ github.event.workflow_run.head_sha || github.sha }}`, so the deploy uses the exact commit CI validated (manual runs use the dispatch SHA).
+- Manual runs (`workflow_dispatch`) run a read-only guard before checkout: `gh run list --workflow CI --commit "$GITHUB_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'` must be `success`. The job grants `actions: read` for this query; no CI jobs are re-run. If the token cannot query Actions runs, the step exits non-zero (fail-closed) with an explicit message, so a missing permission blocks the deploy rather than skipping the guard.
+- Defense in depth: a `workflow_run` that did not originate from a `push` event (for example a fork PR whose head branch is named `main`) is rejected before checkout. The pinned job condition is unchanged; this step only closes the fork-PR path.
+- Deploy keeps only setup/migration/build work: checkout, Node + `npm ci` (for the `tsx` migration runner), Neon migration, Render hook + health poll, Vercel CLI pull/build/deploy/alias, warm health, deployed smoke. No lint/typecheck/test/coverage step exists in `deploy.yml`.
+
+`ci.yml` changes: the `workflow_call` trigger is removed; `pull_request` and `push` to `main`/`develop` remain, and the workflow name is exactly `CI`. All three jobs are unchanged.
+
+Evidence:
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ grep -nE "workflow_run|workflow_dispatch|push:|branches:|types:" .github/workflows/deploy.yml
+5:  # that CI run succeeds. Production is workflow_dispatch-only until provisioned.
+6:  workflow_run:
+8:    types: [completed]
+9:    branches: [main]
+10:  workflow_dispatch:
+30:    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+41:        if: github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push'
+43:          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+48:        if: github.event_name == 'workflow_dispatch'
+65:          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+$ grep -n "description:\|default:\|options:" .github/workflows/deploy.yml
+13:        description: GitHub Environment to deploy (manual production only)
+16:        default: production
+17:        options: [production]
+
+$ grep -n "uses: ./.github/workflows/ci.yml\|needs: verify\|npm run lint\|npm run typecheck\|npm test\|npm run coverage" .github/workflows/deploy.yml || echo "no matches"
+no matches
+
+$ grep -n "workflow_call" .github/workflows/ci.yml || echo "no matches"
+no matches
+
+$ grep -n "^name:\|^on:\|^  pull_request:\|^  push:\|^    branches:" .github/workflows/ci.yml
+1:name: CI
+3:on:
+4:  pull_request:
+5:  push:
+6:    branches: [main, develop]
+
+$ grep -n "workflow_run\|github.event.inputs.environment\|head_sha\|gh run list\|actions: read" .github/workflows/deploy.yml
+6:  workflow_run:
+20:  group: deploy-${{ github.event.inputs.environment || 'development' }}
+25:  actions: read
+30:    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+33:    environment: ${{ github.event.inputs.environment || 'development' }}
+35:      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+41:        if: github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push'
+43:          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+53:          if ! conclusion=$(gh run list --workflow CI --commit "$TARGET_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'); then
+65:          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+$ grep -n "^      - name:" .github/workflows/deploy.yml
+40:      - name: Reject non-push CI runs
+47:      - name: Verify CI succeeded for target commit
+62:      - name: Checkout
+66:      - name: Setup Node
+71:      - name: Install dependencies
+74:      - name: Migrate Neon database
+82:      - name: Deploy Render backend
+86:      - name: Wait for Render backend health
+103:      - name: Install Vercel CLI
+107:      - name: Pull Vercel project settings
+114:      - name: Build Vercel frontend
+124:      - name: Deploy Vercel frontend
+136:      - name: Alias development deployment
+151:      - name: Warm Render backend before smoke
+154:      - name: Run deployed smoke
+```
+
+Known limits of the manual guard: it reads the newest CI run for the dispatch SHA through the Actions API (`actions: read`); it does not re-run CI, and a SHA with no CI run fails the guard. Production remains unprovisioned, so a manual production dispatch still stops at the first missing production secret.
+
 ## Acceptance audit
 
 1. Fly env and all Fly steps removed from `deploy.yml` → **met** (`grep -ni fly deploy.yml` → no matches).
@@ -253,6 +350,6 @@ The `development` environment secrets/variables are configured (`d2ba961`, `buil
 git push origin main
 ```
 
-A push to `main` runs `deploy.yml` automatically and resolves to the `development` environment; it must not be dispatched manually. The orchestrator may watch the resulting run with `gh run watch`.
+CI runs once on the push; only when that run completes successfully does the `Deploy` workflow start and deploy development. No `gh workflow run` is used for development. The orchestrator may watch both runs with `gh run watch` but must not dispatch the development deploy.
 
 `fly.config.toml` deletion and the deployment documentation updates remain in T3.
