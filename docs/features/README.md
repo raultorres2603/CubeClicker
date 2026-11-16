@@ -57,5 +57,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | runtime-observability | Runtime Observability (structured logs, internal Prometheus metrics, DB latency, dev-only perf overlay) | accepted | 2026-11-15 |
 | live-activity-feed | Live Activity Feed (per-server events, 1/s cadence, 20-event ring, top-center ticker) | accepted | 2026-11-16 |
 | server-live-leaderboard | Server Live Leaderboard (session counters, top-5 + totals, 1 Hz coalescing, left-rail panel) | accepted | 2026-11-16 |
+| render-backend-migration | Render Backend Migration (Fly free-tier gate → Render free Docker backend, CI-once deploy, Vercel/Neon retained) | accepted | 2026-11-16 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

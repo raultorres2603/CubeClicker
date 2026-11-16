@@ -1,6 +1,6 @@
 ---
 feature: render-backend-migration
-state: code_review
+state: accepted
 spec_review_round: 0
 build_round: 2
 created: 2026-11-16
@@ -18,7 +18,7 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 - [x] T2 — GitHub Actions deploy path (Render deploy hook, remove Fly)
 - [x] T3 — Environment catalog and docs (README, deployment, Vercel/Render/Neon)
 - [x] T4 — Local/static verification and live development proof
-- [ ] T5 — Acceptance/supersession bookkeeping
+- [x] T5 — Acceptance/supersession bookkeeping
 
 ## Loop log
 
@@ -35,6 +35,8 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 - 2026-11-16 — T3 docs complete — `74e0b60` `docs: document render deployment`; `render.yaml`, Vercel/Render/Neon runbook, Fly archive; actionlint/link/tests/coverage green
 - 2026-11-16 — T4 live proof complete — CI `43852511347` + Deploy `43852823666` green; deployed smoke 8/8; Render/Vercel/Neon live — `build-log-T2-smoke.md`
 - 2026-11-16 — review r1 fixes — `0d802e4` clean-job Render validation, no platform health check, production unprovisioned docs, main-only branch model; local, pending push — `build-log-T3-docs.md`
+- 2026-11-16 — post-fix pipeline green — `0d802e4`/`74e0b60` on origin; CI `43863104962` success (Render validation after npm ci); Deploy `43863511736` success; Render `dep-dbtf3s8ae00c73d8dstg` live; Vercel `dpl_68pi3FkrwRVBGk35kYSXqgitu2HL` READY/aliased; deployed smoke 8/8
+- 2026-11-16 — code_review → accepted — review r2 approved (0 blockers); live dev stack green; production/SMTP separation documented — `reviews/code-review-r2.md`
 
 ## Blockers / open questions
 
@@ -44,4 +46,4 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 - Neon production branch is unprotected; accepted free-plan deviation.
 - Production is unprovisioned and unprotected; manual `workflow_dispatch` only.
 - Backlog: stale Fly source comments; T2 workflow log acceptance audit superseded by later follow-ups; CI smoke uses `docker compose` (pre-existing).
-- T3 docs commit `74e0b60` and follow-up fixes must be pushed before acceptance; review r1 changes requested.
+- Accepted 2026-11-16; production and SMTP delivery remain separate follow-ups.
