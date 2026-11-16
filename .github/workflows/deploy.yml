@@ -32,18 +32,9 @@ jobs:
     environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
     env:
       TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
-      FLY_APP_NAME: ${{ vars.FLY_APP_NAME }}
-      FLY_REGION: ${{ vars.FLY_REGION }}
       FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
       VITE_API_URL: ${{ vars.VITE_API_URL }}
       VITE_WS_URL: ${{ vars.VITE_WS_URL }}
-      SMTP_HOST: ${{ vars.SMTP_HOST }}
-      SMTP_PORT: ${{ vars.SMTP_PORT }}
-      SMTP_USER: ${{ vars.SMTP_USER }}
-      SMTP_FROM: ${{ vars.SMTP_FROM }}
-      SESSION_COOKIE_SECURE: ${{ vars.SESSION_COOKIE_SECURE }}
-      SESSION_COOKIE_SAMESITE: ${{ vars.SESSION_COOKIE_SAMESITE }}
-      MAX_USERS_PER_SERVER: ${{ vars.MAX_USERS_PER_SERVER }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,51 +52,27 @@ jobs:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: npx --no-install tsx src/backend/src/db/migrate-cli.ts
 
-      - name: Setup flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # v1.5
-      - name: Stage Fly runtime configuration
+      # Backend runtime configuration lives on the Render service; this hook only
+      # starts a build of the service's tracked branch.
+      - name: Deploy Render backend
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+      - name: Wait for Render backend health
         run: |
-          flyctl secrets set --stage --app "$FLY_APP_NAME" \
-            "DATABASE_URL=$DATABASE_URL" \
-            "DIRECT_DATABASE_URL=$DIRECT_DATABASE_URL" \
-            "CORS_ORIGIN=$FRONTEND_ORIGIN" \
-            "ALLOWED_ORIGIN=$FRONTEND_ORIGIN" \
-            "APP_BASE_URL=$FRONTEND_ORIGIN" \
-            "SMTP_HOST=$SMTP_HOST" \
-            "SMTP_PORT=$SMTP_PORT" \
-            "SMTP_USER=$SMTP_USER" \
-            "SMTP_PASS=$SMTP_PASS" \
-            "SMTP_FROM=$SMTP_FROM" \
-            "SESSION_COOKIE_SECURE=$SESSION_COOKIE_SECURE" \
-            "SESSION_COOKIE_SAMESITE=$SESSION_COOKIE_SAMESITE" \
-            "MAX_USERS_PER_SERVER=$MAX_USERS_PER_SERVER" \
-            "NODE_ENV=production" \
-            "HOST=0.0.0.0" \
-            "PORT=8080" \
-            "METRICS_ENABLED=false"
-      - name: Deploy Fly backend
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only --config fly.config.toml --app "$FLY_APP_NAME" --primary-region "$FLY_REGION" --strategy rolling
-      - name: Verify Fly backend health
-        run: |
-          attempt=0
-          body=""
-          while [ "$attempt" -lt 12 ]; do
-            body=$(curl -fsS "$VITE_API_URL/healthz" || true)
-            if [ "$body" = '{"status":"ok"}' ]; then
-              echo "healthz OK: $body"
+          start=$SECONDS
+          deadline=$((start + 180))
+          response=$(mktemp)
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            status=$(curl -sS -o "$response" -w '%{http_code}' --max-time 15 "$VITE_API_URL/healthz" || true)
+            if [ "$status" = "200" ]; then
+              echo "healthz OK after $((SECONDS - start))s: $(cat "$response")"
               exit 0
             fi
-            attempt=$((attempt + 1))
+            echo "healthz not ready (HTTP ${status:-000}) after $((SECONDS - start))s; retrying in 5s"
             sleep 5
           done
-          echo "healthz check failed; last response: $body" >&2
+          echo "healthz did not return 200 within 180s" >&2
           exit 1
 
       - name: Install Vercel CLI
@@ -166,12 +133,18 @@ jobs:
           frontend_host="${frontend_host%/}"
           vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
 
+      # The free backend instance can be cold when the smoke starts; warm it and
+      # give each smoke check a longer budget than the local 10 s default.
+      - name: Warm Render backend before smoke
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors --max-time 30 "$VITE_API_URL/healthz"
       - name: Run deployed smoke
         env:
           SMOKE_FRONTEND_URL: ${{ vars.FRONTEND_ORIGIN }}
           SMOKE_API_URL: ${{ vars.VITE_API_URL }}
           SMOKE_WS_URL: ${{ vars.VITE_WS_URL }}
           SMOKE_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+          SMOKE_TIMEOUT_MS: "20000"
         run: |
           if [ -z "$SMOKE_WS_URL" ]; then
             SMOKE_WS_URL="${SMOKE_API_URL/https:/wss:}/ws"

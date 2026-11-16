@@ -62,10 +62,9 @@ jobs:
       - name: Validate Vercel config
         run: |
           node -e "JSON.parse(require('node:fs').readFileSync('src/frontend/vercel.json', 'utf8')); console.log('vercel.json: valid JSON')"
-      - name: Check Fly config anchors
+      - name: Check deploy workflow has no Fly deploy path
         run: |
-          grep -nE 'internal_port = 8080|force_https = true|auto_stop_machines = "off"|auto_start_machines = false|min_machines_running = 1|path = "/healthz"|type = "connections"|memory = "512mb"' fly.config.toml
-          if grep -nE 'primary_region' fly.config.toml; then
-            echo "fly.config.toml must not pin primary_region; FLY_REGION is the only region source" >&2
+          if grep -niE 'fly' .github/workflows/deploy.yml; then
+            echo '.github/workflows/deploy.yml must not reference Fly; the backend deploys to Render' >&2
             exit 1
           fi
