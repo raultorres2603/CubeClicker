@@ -9,6 +9,7 @@ import type { Phase } from './game/types';
 import type { WorldState } from './multiplayer/server-state';
 import type { SpectateStatus } from './multiplayer/spectate';
 import { createTransport } from './multiplayer/transport';
+import { ActivityFeed } from './ui/ActivityFeed';
 import { ConnectionBanner } from './ui/ConnectionBanner';
 import { CustomizationToggle } from './ui/CustomizationToggle';
 import { DeferredSpaceshipCustomizationPanel } from './ui/DeferredSpaceshipCustomizationPanel';
@@ -569,6 +570,9 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
         />
       ) : null}
       <ConnectionBanner status={status} onRetry={session.retryConnection} />
+      {welcomed ? (
+        <ActivityFeed events={world.activity} reducedMotion={snapshot.reducedMotion} />
+      ) : null}
       <UserPanel
         welcomed={welcomed}
         selfName={world.self.name}

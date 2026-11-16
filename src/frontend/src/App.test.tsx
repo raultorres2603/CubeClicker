@@ -12,7 +12,7 @@ import { MOTION } from './game/motion';
 import { CUBE_STYLES } from './game/progression';
 import type { MultiplayerSnapshot, OnlineGameSession } from './game/session';
 import { GRID_SIZE, type CustomizationState, type GameStats, type LootboxGrant, type Phase } from './game/types';
-import type { MemberState } from './multiplayer/protocol';
+import type { ActivityEvent, MemberState } from './multiplayer/protocol';
 import type { WorldState } from './multiplayer/server-state';
 import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
 
@@ -202,10 +202,12 @@ function worldFor({
   serverId = 1,
   selfName = 'Player 1',
   members = [],
+  activity = [],
 }: {
   serverId?: number;
   selfName?: string;
   members?: MemberState[];
+  activity?: ActivityEvent[];
 } = {}): WorldState {
   return {
     serverId,
@@ -218,7 +220,7 @@ function worldFor({
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     },
     members,
-    activity: [],
+    activity,
     pendingWorldSwap: null,
   };
 }
@@ -823,6 +825,93 @@ describe('App', () => {
       <App hasChosen session={sessionFor(snapshotFor('playing', { clicks: 5, facesDestroyed: 0 }, 0), multiplayerFor({ world: worldFor({ serverId: 0, selfName: '' }) }))} />,
     );
     expect(html).not.toContain('data-blinking');
+  });
+});
+
+describe('App — server activity ticker (AC-19…AC-21)', () => {
+  const FEED: ActivityEvent[] = [
+    {
+      id: 5,
+      at: 5000,
+      serverId: 1,
+      type: 'fastClear',
+      playerId: 'p2',
+      name: 'Player 2',
+      level: 4,
+      elapsedMs: 2500,
+    },
+    {
+      id: 4,
+      at: 4000,
+      serverId: 1,
+      type: 'cubeCleared',
+      playerId: 'p1',
+      name: 'Player 1',
+      level: 3,
+    },
+  ];
+
+  it('renders the ticker in the welcomed shell and keeps one live region (AC-19, AC-20)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing'),
+          multiplayerFor({ world: worldFor({ activity: FEED }) }),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<aside class="activity-feed" aria-label="Server activity" aria-live="off" data-reduced-motion="false">',
+    );
+    expect(html).toContain('<h2 class="activity-feed-title">Server activity</h2>');
+    expect(html).toContain(
+      '<li data-event-type="fastClear" data-event-id="5"><span class="activity-feed-text">Player 2 fast-cleared Cube 4 in 2.5s</span></li>',
+    );
+    expect(html).toContain(
+      '<li data-event-type="cubeCleared" data-event-id="4"><span class="activity-feed-text">Player 1 cleared Cube 3</span></li>',
+    );
+    expect(occurrences(html, 'class="activity-feed"')).toBe(1);
+    expect(occurrences(html, 'aria-live="polite"')).toBe(1);
+    expect(occurrences(html, 'aria-live="assertive"')).toBe(0);
+    expect(occurrences(html, 'role="status"')).toBe(1);
+    expect(occurrences(html, 'role="alert"')).toBe(0);
+    expect(occurrences(html, 'role="log"')).toBe(0);
+  });
+
+  it('marks the ticker reduced under the session reduced-motion preference (AC-21)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing', undefined, 0, { reducedMotion: true }),
+          multiplayerFor({ world: worldFor({ activity: FEED }) }),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<aside class="activity-feed" aria-label="Server activity" aria-live="off" data-reduced-motion="true">',
+    );
+  });
+
+  it('renders no ticker before the first welcome (AC-19, AC-20)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing'),
+          multiplayerFor({
+            world: worldFor({ serverId: 0, selfName: '', activity: FEED }),
+          }),
+        )}
+      />,
+    );
+
+    expect(html).not.toContain('class="activity-feed"');
+    expect(html).not.toContain('Server activity');
+    expect(occurrences(html, 'aria-live="polite"')).toBe(1);
   });
 });
 

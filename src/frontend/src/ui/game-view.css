@@ -3,9 +3,10 @@
  *
  * Imported after `app.css`. This file owns the rounded, translucent cyan gameplay
  * chrome only; the four base corner placements stay in `app.css` (AC-2), and the
- * `@media (max-width: 720px)` bottom-band overrides below are the only position
- * declarations here. The same block's top-band sizing reserves keep the HUD and
- * the users pill apart without moving either corner (T17). The nine `:root`
+ * `@media (max-width: 720px)` bottom-band overrides below plus the self-owned
+ * top-center activity ticker placement are the only position declarations here.
+ * The same block's top-band sizing reserves keep the HUD and the users pill apart
+ * without moving either corner (T17). The nine `:root`
  * custom properties mirror the exported `ui/theme.ts` tokens 1:1;
  * `game-view.css.test.ts` keeps the pair honest (AC-3).
  */
@@ -30,6 +31,7 @@
 .hud-panel,
 .upgrades-panel,
 .customization-panel,
+.activity-feed,
 .user-panel .users-list {
   border: 2px solid var(--panel-border);
   border-image: none;
@@ -52,6 +54,8 @@
 .upgrades-panel::after,
 .customization-panel::before,
 .customization-panel::after,
+.activity-feed::before,
+.activity-feed::after,
 .user-panel .users-list::before {
   content: none;
 }
@@ -184,6 +188,65 @@
 /* The open customization panel receives input (AC-7). */
 .customization-panel {
   pointer-events: auto;
+}
+
+/*
+ * Server activity ticker (live-activity-feed, AC-19…AC-22). A compact, non-interactive
+ * top-center stack below the connection banner; the rounded chrome comes from the grouped
+ * rule above. It is a landmark, not a live region, and adds no keyboard stop. The 720px
+ * block below moves it under the HUD so it never overlaps the top band on phones.
+ */
+.activity-feed {
+  position: absolute;
+  top: calc(4.25rem + env(safe-area-inset-top, 0px));
+  left: 50%;
+  box-sizing: border-box;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: 30vh;
+  padding: 0.5rem 0.75rem;
+  overflow: hidden;
+  color: var(--hud-text);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.activity-feed-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+/* 160 ms entry for a newly prepended event; items are keyed by the server-assigned id. */
+.activity-feed li {
+  animation: activity-feed-entry 160ms ease-out both;
+}
+
+@keyframes activity-feed-entry {
+  0% {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Session reduced-motion preference: new entries appear without the entry animation (AC-21). */
+.activity-feed[data-reduced-motion='true'] li {
+  animation: none;
 }
 
 /*
@@ -805,6 +868,11 @@ main {
   main[data-customization-open='true'] .upgrades-panel {
     display: none;
   }
+
+  .activity-feed {
+    top: calc(10rem + env(safe-area-inset-top, 0px));
+    max-height: 6rem;
+  }
 }
 
 /* Existing motion stays off for the gameplay chrome (AC-19). */
@@ -824,6 +892,7 @@ main {
   .customization-panel,
   .customization-panel::before,
   .customization-panel::after,
+  .activity-feed li,
   .hud-coin-pop,
   .customization-slot,
   .upgrade-row[data-purchased='true'],

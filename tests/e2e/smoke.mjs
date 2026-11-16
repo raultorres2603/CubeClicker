@@ -14,6 +14,8 @@
 //      parseable `serverTime` within 5s (the first frame on every connection)
 //   4. two clients `join` → both `welcome`s report the same server id and `maxUsers 2`, the
 //      roster grows from 1 (A's welcome) to 2 (B's welcome), and A also receives `memberJoined`
+//   4b. activity snapshot: A's `welcome.activity` is `[]` and B's `welcome.activity` carries
+//      exactly A's accepted `memberJoined` event (serverId, playerId, name, positive id, finite at)
 //   5. a third client `join`s → its `welcome.serverId` is the run's first server id + 1
 //      (overflow with X = 2)
 //   6. A's valid `explode` → `miniCubeRemoved` on A (ack) and B (broadcast)
@@ -21,6 +23,8 @@
 //       one `miniCubesRemoved` with both ids in order on A and B, and neither id in a single
 //       `miniCubeRemoved` frame on either client (AC-26)
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
+//   7b. activity leave: A also receives the `activityEvent` `memberLeft` for B with B's name,
+//      A's server id and an id newer than the `memberJoined` snapshot id (no extra wait)
 //   8. joined-state metrics: one client opens, reads `hello`, sends `join`, waits for
 //      `welcome`, and while it is still joined a scrape of `BACKEND_URL/metrics` asserts the
 //      Prometheus content type, the `# TYPE cubeclicker_ws_connections_open gauge` line, and
@@ -656,6 +660,10 @@ const BURST_SINGLE_FRAME_CHECK_LABEL =
   'multiplayer batching: front:0:1 and front:0:2 never arrive as single miniCubeRemoved frames on A or B';
 const LEAVE_CHECK_LABEL =
   "multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window";
+const ACTIVITY_JOIN_CHECK_LABEL =
+  "activity snapshot: A's welcome feed is empty and B's welcome carries exactly A's memberJoined event";
+const ACTIVITY_LEAVE_CHECK_LABEL =
+  "activity leave: A receives the memberLeft activity event with B's name and an id newer than the snapshot id";
 const METRICS_CHECK_LABEL =
   'metrics: a joined client sees the Prometheus endpoint with connections_open and servers_active >= 1 and live frame/join counters';
 
@@ -919,6 +927,69 @@ async function checkMultiplayerFlow() {
       record(false, JOIN_CHECK_LABEL, setupProblem);
     }
 
+    // Activity snapshot: A's fresh server starts with an empty ring; B's welcome is built
+    // after A's accepted `memberJoined` event, so it carries exactly that one event. B's own
+    // join candidate is either outside the 1 s window (accepted after the snapshot) or
+    // dropped by it — neither path changes B's snapshot.
+    let joinActivityId = null;
+    if (!setupComplete) {
+      record(false, ACTIVITY_JOIN_CHECK_LABEL, 'not run — the two-client join failed');
+    } else {
+      const problems = [];
+      if (!Array.isArray(welcomeA.activity) || welcomeA.activity.length !== 0) {
+        problems.push(
+          `A welcome.activity expected an empty array, got ${JSON.stringify(welcomeA.activity)}`,
+        );
+      }
+      const ring = welcomeB.activity;
+      if (!Array.isArray(ring) || ring.length !== 1) {
+        problems.push(
+          `B welcome.activity expected exactly one event (A's memberJoined), got ${JSON.stringify(ring)}`,
+        );
+      } else {
+        const [joined] = ring;
+        if (joined.type !== 'memberJoined') {
+          problems.push(
+            `B welcome.activity[0].type expected "memberJoined", got ${JSON.stringify(joined.type)}`,
+          );
+        }
+        if (joined.serverId !== welcomeA.serverId) {
+          problems.push(
+            `B welcome.activity[0].serverId expected ${welcomeA.serverId}, got ${JSON.stringify(joined.serverId)}`,
+          );
+        }
+        if (joined.playerId !== welcomeA.playerId) {
+          problems.push(
+            `B welcome.activity[0].playerId expected ${JSON.stringify(welcomeA.playerId)}, got ${JSON.stringify(joined.playerId)}`,
+          );
+        }
+        if (joined.name !== welcomeA.name) {
+          problems.push(
+            `B welcome.activity[0].name expected ${JSON.stringify(welcomeA.name)}, got ${JSON.stringify(joined.name)}`,
+          );
+        }
+        if (typeof joined.id !== 'number' || !Number.isInteger(joined.id) || joined.id < 1) {
+          problems.push(
+            `B welcome.activity[0].id expected a positive integer, got ${JSON.stringify(joined.id)}`,
+          );
+        } else {
+          joinActivityId = joined.id;
+        }
+        if (typeof joined.at !== 'number' || !Number.isFinite(joined.at)) {
+          problems.push(
+            `B welcome.activity[0].at expected a finite number, got ${JSON.stringify(joined.at)}`,
+          );
+        }
+      }
+      record(
+        problems.length === 0,
+        ACTIVITY_JOIN_CHECK_LABEL,
+        problems.length === 0
+          ? `server ${welcomeA.serverId}; memberJoined id ${joinActivityId} for ${welcomeA.playerId}`
+          : problems.join('; '),
+      );
+    }
+
     if (!setupComplete) {
       record(false, OVERFLOW_CHECK_LABEL, 'not run — the two-client join failed');
     } else {
@@ -1057,9 +1128,13 @@ async function checkMultiplayerFlow() {
 
     if (!setupComplete) {
       record(false, LEAVE_CHECK_LABEL, 'not run — the two-client join failed');
+      record(false, ACTIVITY_LEAVE_CHECK_LABEL, 'not run — the two-client join failed');
     } else {
       let problem = null;
       let elapsedMs = null;
+      // Baseline for the activity frame: only frames received after B's close can prove the
+      // live leave event (the earlier `memberJoined` activity frame is already in history).
+      const activityStart = clientA.history.length;
       try {
         const closedAt = Date.now();
         clientB.close();
@@ -1079,6 +1154,59 @@ async function checkMultiplayerFlow() {
         problem = problemText(error);
       }
       record(problem === null, LEAVE_CHECK_LABEL, problem ?? `memberLeft(left) received after ${elapsedMs}ms`);
+
+      // The feed frame is broadcast right after the protocol `memberLeft`; the predicate skips
+      // every other frame and matches only B's leave, so an earlier activity frame (or any
+      // interleaved broadcast) can never satisfy it.
+      const matchesLeaveActivity = (message) =>
+        message?.type === 'activityEvent' &&
+        message.event?.type === 'memberLeft' &&
+        message.event.playerId === welcomeB.playerId;
+      let activityProblem = null;
+      let activityId = null;
+      try {
+        // Prefer the already-received frame (the leave wait above may have consumed it), then
+        // wait inside the same existing grace budget — the check adds no new wait of its own.
+        const activity =
+          clientA.history.slice(activityStart).find(matchesLeaveActivity) ??
+          (await waitForMessage(
+            clientA,
+            matchesLeaveActivity,
+            MEMBER_LEFT_TIMEOUT_MS,
+            `activityEvent memberLeft for ${welcomeB.playerId}`,
+          ));
+        const event = activity.event;
+        activityId = event.id;
+        const problems = [];
+        if (event.name !== welcomeB.name) {
+          problems.push(
+            `event.name expected ${JSON.stringify(welcomeB.name)}, got ${JSON.stringify(event.name)}`,
+          );
+        }
+        if (event.serverId !== welcomeA.serverId) {
+          problems.push(
+            `event.serverId expected ${welcomeA.serverId}, got ${JSON.stringify(event.serverId)}`,
+          );
+        }
+        if (
+          typeof event.id !== 'number' ||
+          !Number.isInteger(event.id) ||
+          joinActivityId === null ||
+          event.id <= joinActivityId
+        ) {
+          problems.push(
+            `event.id expected an integer > ${JSON.stringify(joinActivityId)}, got ${JSON.stringify(event.id)}`,
+          );
+        }
+        activityProblem = problems.length === 0 ? null : problems.join('; ');
+      } catch (error) {
+        activityProblem = problemText(error);
+      }
+      record(
+        activityProblem === null,
+        ACTIVITY_LEAVE_CHECK_LABEL,
+        activityProblem ?? `memberLeft id ${activityId} for ${welcomeB.playerId}`,
+      );
     }
   } finally {
     for (const socket of sockets) {

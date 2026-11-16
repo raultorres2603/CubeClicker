@@ -60,9 +60,10 @@ function mediaBlock(source: string, marker: string): string {
   return match[1] ?? '';
 }
 
-const PANEL_RULE = /\.hud-panel,\s*\.upgrades-panel,\s*\.customization-panel,\s*\.user-panel \.users-list\s*\{([\s\S]*?)\}/;
+const PANEL_RULE =
+  /\.hud-panel,\s*\.upgrades-panel,\s*\.customization-panel,\s*\.activity-feed,\s*\.user-panel \.users-list\s*\{([\s\S]*?)\}/;
 const RESET_RULE =
-  /\.hud-panel::before,\s*\.hud-panel::after,\s*\.upgrades-panel::before,\s*\.upgrades-panel::after,\s*\.customization-panel::before,\s*\.customization-panel::after,\s*\.user-panel \.users-list::before\s*\{([\s\S]*?)\}/;
+  /\.hud-panel::before,\s*\.hud-panel::after,\s*\.upgrades-panel::before,\s*\.upgrades-panel::after,\s*\.customization-panel::before,\s*\.customization-panel::after,\s*\.activity-feed::before,\s*\.activity-feed::after,\s*\.user-panel \.users-list::before\s*\{([\s\S]*?)\}/;
 
 describe('reference tokens (AC-3)', () => {
   it('declares exactly one :root block with exactly the nine pinned tokens', () => {
@@ -480,6 +481,7 @@ describe('stylesheet hygiene', () => {
       '.upgrade-buy,',
       '.customization-toggle,',
       '.customization-panel,',
+      '.activity-feed li,',
     ]) {
       expect(block).toContain(selector);
     }
@@ -793,5 +795,77 @@ describe('motion accessibility (AC-30, AC-48)', () => {
     }
     expect(block).toContain('animation: none;');
     expect(block).toContain('transition: none;');
+  });
+});
+
+describe('server activity ticker (live-activity-feed, AC-19…AC-22)', () => {
+  it('joins the shared rounded chrome and drops both metallic pseudo-elements', () => {
+    expect(cssSource).toContain('.activity-feed,\n.user-panel .users-list {');
+    expect(cssSource).toContain(
+      '.activity-feed::before,\n.activity-feed::after,\n.user-panel .users-list::before {',
+    );
+  });
+
+  it('pins the top-center placement below the connection banner', () => {
+    expect(declarations(ruleBody(cssSource, /^\.activity-feed\s*\{([\s\S]*?)\}/m))).toEqual([
+      'position: absolute',
+      'top: calc(4.25rem + env(safe-area-inset-top, 0px))',
+      'left: 50%',
+      'box-sizing: border-box',
+      'width: min(24rem, calc(100vw - 2rem))',
+      'max-height: 30vh',
+      'padding: 0.5rem 0.75rem',
+      'overflow: hidden',
+      'color: var(--hud-text)',
+      'pointer-events: none',
+      'transform: translateX(-50%)',
+    ]);
+  });
+
+  it('styles the heading and the newest-first list without markers', () => {
+    expect(declarations(ruleBody(cssSource, /^\.activity-feed-title\s*\{([\s\S]*?)\}/m))).toEqual([
+      'margin: 0 0 0.25rem',
+      'font-size: 0.75rem',
+      'font-weight: 700',
+      'letter-spacing: 0.08em',
+      'text-transform: uppercase',
+    ]);
+    expect(declarations(ruleBody(cssSource, /^\.activity-feed-list\s*\{([\s\S]*?)\}/m))).toEqual([
+      'display: flex',
+      'flex-direction: column',
+      'gap: 0.15rem',
+      'margin: 0',
+      'padding: 0',
+      'list-style: none',
+      'font-size: 0.85rem',
+    ]);
+  });
+
+  it('runs the 160 ms entry animation and disables it for the session preference (AC-21)', () => {
+    expect(declarations(ruleBody(cssSource, /^\.activity-feed li\s*\{([\s\S]*?)\}/m))).toEqual([
+      'animation: activity-feed-entry 160ms ease-out both',
+    ]);
+    expect(
+      ruleBody(cssSource, /@keyframes\s+activity-feed-entry\s*\{([\s\S]*?)\n\}/),
+    ).toContain('opacity: 0;');
+    expect(
+      declarations(
+        ruleBody(cssSource, /^\.activity-feed\[data-reduced-motion='true'\] li\s*\{([\s\S]*?)\}/m),
+      ),
+    ).toEqual(['animation: none']);
+  });
+
+  it('disables the entry inside the single prefers-reduced-motion block (AC-21)', () => {
+    const block = mediaBlock(cssSource, '@media (prefers-reduced-motion: reduce)');
+    expect(block).toContain('.activity-feed li,');
+    expect(block).toContain('animation: none;');
+  });
+
+  it('moves below the HUD and caps at 6rem on narrow viewports (AC-22)', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    expect(declarations(ruleBody(block, /\.activity-feed\s*\{([\s\S]*?)\}/))).toEqual([
+      'top: calc(10rem + env(safe-area-inset-top, 0px))',
+      'max-height: 6rem',
+    ]);
   });
 });
