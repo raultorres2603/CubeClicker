@@ -104,15 +104,15 @@ jobs:
         run: npm install --global vercel@65.15.0
       # The only Vercel project is the development project, so every run uses its
       # production environment and target; the alias step pins the stable domain.
+      # Project Root Directory is src/frontend; run the CLI from the repo root so
+      # Vercel applies the root exactly once.
       - name: Pull Vercel project settings
-        working-directory: src/frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
         run: vercel pull --yes --environment=production
       - name: Build Vercel frontend
-        working-directory: src/frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
@@ -123,7 +123,6 @@ jobs:
         run: vercel build --prod
       - name: Deploy Vercel frontend
         id: vercel_deploy
-        working-directory: src/frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
@@ -135,7 +134,6 @@ jobs:
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
       - name: Alias development deployment
         if: env.TARGET_ENVIRONMENT != 'production'
-        working-directory: src/frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}

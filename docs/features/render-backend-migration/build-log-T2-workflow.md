@@ -323,6 +323,100 @@ $ grep -n "^      - name:" .github/workflows/deploy.yml
 
 Known limits of the manual guard: it reads the newest CI run for the dispatch SHA through the Actions API (`actions: read`); it does not re-run CI, and a SHA with no CI run fails the guard. Production remains unprovisioned, so a manual production dispatch still stops at the first missing production secret.
 
+## Follow-up — Vercel CLI runs from the repo root (single Root Directory)
+
+**Exact error** (deploy run of `5db5def`, `Pull Vercel project settings`/Vercel steps):
+
+```
+The provided path "~/work/CubeClicker/CubeClicker/src/frontend/src/frontend" does not exist.
+```
+
+**Root cause.** The Vercel project `cubeclicker-development` has Root Directory `src/frontend`, and the workflow *also* set `working-directory: src/frontend` on the four Vercel steps. Vercel composes the path from the CLI working directory plus the project Root Directory, so it applied the root twice and resolved `src/frontend/src/frontend` under the runner workspace `~/work/CubeClicker/CubeClicker`. The failure hits the first Vercel step (`vercel pull`), before any build output exists.
+
+**Fix.** Removed `working-directory: src/frontend` from the `pull`, `build`, `deploy`, and `alias` steps only; the CLI now runs from the repository root so Vercel applies the project Root Directory exactly once. A comment next to the steps records the invariant. Not changed: the Vercel project settings (Root Directory stays `src/frontend`), every `VITE_*` value (`VITE_CLOUD_DEPLOY: "true"` on the build step; `VITE_API_URL`/`VITE_WS_URL` from `vars`), and the deterministic alias target (`vercel alias set "$DEPLOYMENT_URL" "$frontend_host"`, development only). `vercel pull`/`vercel build` now write `.vercel/project.json` and `.vercel/output` at the repo root, which `vercel deploy --prebuilt` reads from the same root — one root, one place.
+
+```diff
+       # The only Vercel project is the development project, so every run uses its
+       # production environment and target; the alias step pins the stable domain.
++      # Project Root Directory is src/frontend; run the CLI from the repo root so
++      # Vercel applies the root exactly once.
+       - name: Pull Vercel project settings
+-        working-directory: src/frontend
+         env:
+           ...
+         run: vercel pull --yes --environment=production
+       - name: Build Vercel frontend
+-        working-directory: src/frontend
+         env:
+           ...
+       - name: Deploy Vercel frontend
+         id: vercel_deploy
+-        working-directory: src/frontend
+         env:
+           ...
+       - name: Alias development deployment
+         if: env.TARGET_ENVIRONMENT != 'production'
+-        working-directory: src/frontend
+         env:
+           ...
+```
+
+Totals: 4 deletions (the `working-directory` lines) plus a 2-line comment; no other hunk touches the file.
+
+### Branch state (`git fetch origin` first)
+
+```
+$ git fetch origin
+(no output)
+
+$ git status --short --branch
+## main...origin/main
+
+$ git rev-parse HEAD
+4c95b7eeebff9a7ff974f69cdfecd12ebc9a9c05
+
+$ git log --oneline -1 origin/main
+4c95b7e docs
+```
+
+Local `main` is level with `origin/main` (no ahead/behind marker), so no fast-forward was required and nothing was merged or rebased. Feature artifacts under `docs/features/render-backend-migration/` were already committed; the only modification in the tree is `.github/workflows/deploy.yml`.
+
+### Evidence
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ grep -n "working-directory: src/frontend" .github/workflows/deploy.yml; echo "exit=$?"
+exit=1
+(no output — no match)
+
+$ grep -rn "working-directory" .github/workflows/ || echo "no matches"
+no matches
+
+$ grep -n "vercel pull\|vercel build\|vercel deploy\|vercel alias" .github/workflows/deploy.yml
+114:        run: vercel pull --yes --environment=production
+123:        run: vercel build --prod
+131:          deploy_output=$(vercel deploy --prebuilt --prod --yes)
+145:          vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
+
+$ grep -n "VITE_CLOUD_DEPLOY\|VITE_API_URL\|VITE_WS_URL" .github/workflows/deploy.yml
+37:      VITE_API_URL: ${{ vars.VITE_API_URL }}
+38:      VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+92:            status=$(curl -sS -o "$response" -w '%{http_code}' --max-time 15 "$VITE_API_URL/healthz" || true)
+120:          VITE_CLOUD_DEPLOY: "true"
+121:          VITE_API_URL: ${{ vars.VITE_API_URL }}
+122:          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+151:          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors --max-time 30 "$VITE_API_URL/healthz"
+155:          SMOKE_API_URL: ${{ vars.VITE_API_URL }}
+156:          SMOKE_WS_URL: ${{ vars.VITE_WS_URL }}
+
+$ grep -n "Root Directory" .github/workflows/deploy.yml
+107:      # Project Root Directory is src/frontend; run the CLI from the repo root so
+```
+
+Verify scope: workflow-only change — no application source, no tests, and no coverage run were required (`npm run lint`/`typecheck`/`coverage` are unaffected; the previous full-gate run stands and `ci.yml` still enforces it on the push). Tests are not applicable: the changed artifact is CI YAML whose behaviour is exercised by actionlint, the pinned greps, and the next deploy run.
+
 ## Acceptance audit
 
 1. Fly env and all Fly steps removed from `deploy.yml` → **met** (`grep -ni fly deploy.yml` → no matches).
