@@ -110,6 +110,8 @@ coverage_exit=0
 
 ## Follow-up — production deploy deferred to workflow dispatch
 
+Superseded by the next follow-up: the push trigger now targets `main` and resolves to development; production remains `workflow_dispatch`-only. The deploy-hook safety rationale below still holds for production.
+
 The `production` environment still has no `RENDER_DEPLOY_HOOK_URL` (and no other secrets), so a push to `main` would have started a deploy that fails at the Render step. The push trigger now covers `develop` only:
 
 ```diff
@@ -148,15 +150,91 @@ on:
         options: [development, production]
 ```
 
+## Follow-up — auto-deploy development from a main push
+
+User directive: a push to `main` must deploy **development** automatically; `gh workflow run` is not used for dev. This supersedes the `develop`-only trigger above and keeps production manual.
+
+```diff
+ on:
+-  # Pushes deploy development only; production is workflow_dispatch-only until
+-  # its environment and secrets are provisioned.
++  # A push to main auto-deploys development. Production is workflow_dispatch-only
++  # until its environment and secrets are provisioned.
+   push:
+-    branches: [develop]
++    branches: [main]
+   workflow_dispatch:
+     inputs:
+       environment:
+         ...
+
+ concurrency:
+-  group: deploy-${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
++  group: deploy-${{ github.event.inputs.environment || 'development' }}
+ ...
+-    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
++    environment: ${{ github.event.inputs.environment || 'development' }}
+     env:
+-      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
++      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+```
+
+Mapping: on a `push` event `github.event.inputs.environment` is unset, so the expression resolves to `development`; on `workflow_dispatch` it resolves to the chosen input (`development` or `production`). Production therefore stays manual and unprovisioned, while a `main` push deploys development with no dispatch.
+
+Vercel now always targets the development project's production environment, so the stable domain is updated on every dev run and no preview URL is produced for the dev pipeline:
+
+- `vercel pull --yes --environment=production`
+- `vercel build --prod`
+- `vercel deploy --prebuilt --prod --yes`
+- `vercel alias set "$DEPLOYMENT_URL" "$FRONTEND_ORIGIN"` (deterministic `cubeclicker-development.vercel.app` alias, development only)
+
+Pipeline order is unchanged: migrate → Render hook → 180 s health poll → Vercel production deploy → alias → warm health → deployed smoke.
+
+Evidence:
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ grep -n "preview\|refs/heads\|branches:" .github/workflows/deploy.yml
+7:    branches: [main]
+
+$ grep -n "github.event.inputs.environment" .github/workflows/deploy.yml
+18:  group: deploy-${{ github.event.inputs.environment || 'development' }}
+34:    environment: ${{ github.event.inputs.environment || 'development' }}
+36:      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+
+$ grep -n "^      - name:" .github/workflows/deploy.yml
+41:      - name: Checkout
+43:      - name: Setup Node
+48:      - name: Install dependencies
+51:      - name: Migrate Neon database
+59:      - name: Deploy Render backend
+63:      - name: Wait for Render backend health
+80:      - name: Install Vercel CLI
+84:      - name: Pull Vercel project settings
+91:      - name: Build Vercel frontend
+101:      - name: Deploy Vercel frontend
+113:      - name: Alias development deployment
+128:      - name: Warm Render backend before smoke
+131:      - name: Run deployed smoke
+
+$ grep -n "vercel pull\|vercel build\|vercel deploy\|vercel alias" .github/workflows/deploy.yml
+90:        run: vercel pull --yes --environment=production
+100:        run: vercel build --prod
+109:          deploy_output=$(vercel deploy --prebuilt --prod --yes)
+124:          vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
+```
+
 ## Acceptance audit
 
 1. Fly env and all Fly steps removed from `deploy.yml` → **met** (`grep -ni fly deploy.yml` → no matches).
 2. Neon migration retained → **met** (`Migrate Neon database` step with `DATABASE_URL`/`DIRECT_DATABASE_URL`, unchanged).
-3. Render deploy hook step uses `curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"` → **met** (line 60).
-4. Bounded health poll on `${VITE_API_URL}/healthz`, up to 180 s, fails on non-200 → **met** (lines 63–76; behaviour run above).
+3. Render deploy hook step uses `curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"` → **met** (line 62).
+4. Bounded health poll on `${VITE_API_URL}/healthz`, up to 180 s, fails on non-200 → **met** (lines 63–78; behaviour run above).
 5. Vercel pull/build/deploy/alias kept, `working-directory: src/frontend` and `VITE_CLOUD_DEPLOY`/`VITE_API_URL`/`VITE_WS_URL` kept → **met** (grep output above).
-6. Deployed smoke kept; `/healthz` warmed first; longer smoke timeout → **met** (lines 138–153).
-7. `develop`/`main` environment selection, concurrency, and `verify` job unchanged → **met** (identical lines 15–34, `needs: verify`).
+6. Deployed smoke kept; `/healthz` warmed first; longer smoke timeout → **met** (lines 128–143).
+7. `develop`/`main` environment selection, concurrency, and `verify` job unchanged → **met at the commit described here** (the mapping was later superseded by the follow-up below: main push → development, dispatch → input).
 8. `ci.yml` Fly check replaced, actionlint not weakened → **met** (no `render.yaml` exists, so no Render file checks were added; actionlint step untouched and green).
 9. actionlint on both workflows → **met** (`actionlint_exit=0`).
 10. Pinned grep checks → **met** (block above).
@@ -169,10 +247,12 @@ on:
 
 ## Next step (out of scope here)
 
-The `development` environment secrets/variables were configured in `d2ba961` (`build-log-T2-env.md`). Push all pending commits, then:
+The `development` environment secrets/variables are configured (`d2ba961`, `build-log-T2-env.md`). Push the pending commits:
 
 ```
-gh workflow run deploy.yml --repo raultorres2603/CubeClicker -f environment=development
+git push origin main
 ```
+
+A push to `main` runs `deploy.yml` automatically and resolves to the `development` environment; it must not be dispatched manually. The orchestrator may watch the resulting run with `gh run watch`.
 
 `fly.config.toml` deletion and the deployment documentation updates remain in T3.

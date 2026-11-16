@@ -1,10 +1,10 @@
 name: Deploy
 
 on:
-  # Pushes deploy development only; production is workflow_dispatch-only until
-  # its environment and secrets are provisioned.
+  # A push to main auto-deploys development. Production is workflow_dispatch-only
+  # until its environment and secrets are provisioned.
   push:
-    branches: [develop]
+    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
@@ -15,7 +15,7 @@ on:
         options: [development, production]
 
 concurrency:
-  group: deploy-${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+  group: deploy-${{ github.event.inputs.environment || 'development' }}
   cancel-in-progress: false
 
 permissions:
@@ -31,9 +31,9 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+    environment: ${{ github.event.inputs.environment || 'development' }}
     env:
-      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+      TARGET_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
       FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
       VITE_API_URL: ${{ vars.VITE_API_URL }}
       VITE_WS_URL: ${{ vars.VITE_WS_URL }}
@@ -79,18 +79,15 @@ jobs:
 
       - name: Install Vercel CLI
         run: npm install --global vercel@65.15.0
+      # The only Vercel project is the development project, so every run uses its
+      # production environment and target; the alias step pins the stable domain.
       - name: Pull Vercel project settings
         working-directory: src/frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-        run: |
-          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
-            vercel pull --yes --environment=production
-          else
-            vercel pull --yes --environment=preview
-          fi
+        run: vercel pull --yes --environment=production
       - name: Build Vercel frontend
         working-directory: src/frontend
         env:
@@ -100,12 +97,7 @@ jobs:
           VITE_CLOUD_DEPLOY: "true"
           VITE_API_URL: ${{ vars.VITE_API_URL }}
           VITE_WS_URL: ${{ vars.VITE_WS_URL }}
-        run: |
-          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
-            vercel build --prod
-          else
-            vercel build
-          fi
+        run: vercel build --prod
       - name: Deploy Vercel frontend
         id: vercel_deploy
         working-directory: src/frontend
@@ -114,11 +106,7 @@ jobs:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
         run: |
-          if [ "$TARGET_ENVIRONMENT" = "production" ]; then
-            deploy_output=$(vercel deploy --prebuilt --prod --yes)
-          else
-            deploy_output=$(vercel deploy --prebuilt --yes)
-          fi
+          deploy_output=$(vercel deploy --prebuilt --prod --yes)
           printf '%s\n' "$deploy_output"
           deployment_url=$(printf '%s\n' "$deploy_output" | tail -n 1)
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
