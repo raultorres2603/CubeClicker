@@ -15,6 +15,7 @@ import { CustomizationToggle } from './ui/CustomizationToggle';
 import { DeferredSpaceshipCustomizationPanel } from './ui/DeferredSpaceshipCustomizationPanel';
 import { GameCanvas } from './ui/GameCanvas';
 import { HUD_BLINK_MS, Hud, type HudCoinPop } from './ui/Hud';
+import { Leaderboard } from './ui/Leaderboard';
 import { LevelCompleteBanner } from './ui/LevelCompleteBanner';
 import { PerfOverlay } from './ui/PerfOverlay';
 import { isPerfOverlayEnabled } from './perf/overlay';
@@ -572,6 +573,9 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
       <ConnectionBanner status={status} onRetry={session.retryConnection} />
       {welcomed ? (
         <ActivityFeed events={world.activity} reducedMotion={snapshot.reducedMotion} />
+      ) : null}
+      {welcomed ? (
+        <Leaderboard snapshot={world.leaderboard} reducedMotion={snapshot.reducedMotion} />
       ) : null}
       <UserPanel
         welcomed={welcomed}

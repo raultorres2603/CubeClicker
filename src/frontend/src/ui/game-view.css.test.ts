@@ -61,9 +61,9 @@ function mediaBlock(source: string, marker: string): string {
 }
 
 const PANEL_RULE =
-  /\.hud-panel,\s*\.upgrades-panel,\s*\.customization-panel,\s*\.activity-feed,\s*\.user-panel \.users-list\s*\{([\s\S]*?)\}/;
+  /\.hud-panel,\s*\.upgrades-panel,\s*\.customization-panel,\s*\.activity-feed,\s*\.leaderboard,\s*\.user-panel \.users-list\s*\{([\s\S]*?)\}/;
 const RESET_RULE =
-  /\.hud-panel::before,\s*\.hud-panel::after,\s*\.upgrades-panel::before,\s*\.upgrades-panel::after,\s*\.customization-panel::before,\s*\.customization-panel::after,\s*\.activity-feed::before,\s*\.activity-feed::after,\s*\.user-panel \.users-list::before\s*\{([\s\S]*?)\}/;
+  /\.hud-panel::before,\s*\.hud-panel::after,\s*\.upgrades-panel::before,\s*\.upgrades-panel::after,\s*\.customization-panel::before,\s*\.customization-panel::after,\s*\.activity-feed::before,\s*\.activity-feed::after,\s*\.leaderboard::before,\s*\.leaderboard::after,\s*\.user-panel \.users-list::before\s*\{([\s\S]*?)\}/;
 
 describe('reference tokens (AC-3)', () => {
   it('declares exactly one :root block with exactly the nine pinned tokens', () => {
@@ -321,8 +321,12 @@ describe('gate-close runtime status (AC-2)', () => {
 });
 
 describe('mobile bands (AC-18)', () => {
-  it('has exactly one 720px block and no 480px block', () => {
-    expect(cssSource.match(/@media\s*\(\s*max-width:\s*720px\s*\)/g) ?? []).toHaveLength(1);
+  it('has exactly one 720px block, one short-viewport block and no 480px block', () => {
+    expect(cssSource.match(/@media\s*\(\s*max-width:\s*720px\s*\)\s*\{/g) ?? []).toHaveLength(1);
+    expect(
+      cssSource.match(/@media\s*\(\s*max-width:\s*720px\s*\)\s*and\s*\(\s*max-height:\s*600px\s*\)\s*\{/g) ??
+        [],
+    ).toHaveLength(1);
     expect(cssSource).not.toMatch(/@media\s*\(\s*max-width:\s*480px\s*\)/);
   });
 
@@ -800,9 +804,9 @@ describe('motion accessibility (AC-30, AC-48)', () => {
 
 describe('server activity ticker (live-activity-feed, AC-19…AC-22)', () => {
   it('joins the shared rounded chrome and drops both metallic pseudo-elements', () => {
-    expect(cssSource).toContain('.activity-feed,\n.user-panel .users-list {');
+    expect(cssSource).toContain('.activity-feed,\n.leaderboard,\n.user-panel .users-list {');
     expect(cssSource).toContain(
-      '.activity-feed::before,\n.activity-feed::after,\n.user-panel .users-list::before {',
+      '.activity-feed::before,\n.activity-feed::after,\n.leaderboard::before,\n.leaderboard::after,\n.user-panel .users-list::before {',
     );
   });
 
@@ -867,5 +871,157 @@ describe('server activity ticker (live-activity-feed, AC-19…AC-22)', () => {
       'top: calc(10rem + env(safe-area-inset-top, 0px))',
       'max-height: 6rem',
     ]);
+  });
+});
+
+describe('server live leaderboard (server-live-leaderboard, AC-22, AC-23)', () => {
+  it('joins the shared rounded chrome and drops both metallic pseudo-elements', () => {
+    expect(cssSource).toContain('.activity-feed,\n.leaderboard,\n.user-panel .users-list {');
+    expect(cssSource).toContain(
+      '.leaderboard::before,\n.leaderboard::after,\n.user-panel .users-list::before {',
+    );
+  });
+
+  it('pins the non-interactive desktop left rail below the HUD (AC-23)', () => {
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard\s*\{([\s\S]*?)\}/m))).toEqual([
+      'position: absolute',
+      'top: calc(12.5rem + env(safe-area-inset-top, 0px))',
+      'left: calc(1rem + env(safe-area-inset-left, 0px))',
+      'box-sizing: border-box',
+      'width: min(17rem, calc(100vw - 2rem))',
+      'max-height: 40vh',
+      'padding: 0.5rem 0.75rem',
+      'overflow: hidden',
+      'color: var(--hud-text)',
+      'pointer-events: none',
+    ]);
+    expect(ruleBody(cssSource, /^\.leaderboard\s*\{([\s\S]*?)\}/m)).not.toMatch(
+      /(?:transform|translate|rotate|scale)\s*:/,
+    );
+  });
+
+  it('styles the title, list, rows and totals compactly (AC-20, AC-23)', () => {
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-title\s*\{([\s\S]*?)\}/m))).toEqual([
+      'margin: 0 0 0.25rem',
+      'font-size: 0.75rem',
+      'font-weight: 700',
+      'letter-spacing: 0.08em',
+      'text-transform: uppercase',
+    ]);
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-list\s*\{([\s\S]*?)\}/m))).toEqual([
+      'display: flex',
+      'flex-direction: column',
+      'gap: 0.15rem',
+      'margin: 0',
+      'padding: 0',
+      'list-style: none',
+      'font-size: 0.85rem',
+    ]);
+
+    const row = declarations(ruleBody(cssSource, /^\.leaderboard li\s*\{([\s\S]*?)\}/m));
+    expect(row).toContain('display: flex');
+    expect(row).toContain('align-items: baseline');
+    expect(row).toContain('gap: 0.35rem');
+
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-rank\s*\{([\s\S]*?)\}/m))).toEqual([
+      'flex: none',
+      'color: var(--accent)',
+      'font-variant-numeric: tabular-nums',
+      'font-weight: 700',
+    ]);
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-name\s*\{([\s\S]*?)\}/m))).toEqual([
+      'min-width: 0',
+      'overflow: hidden',
+      'text-overflow: ellipsis',
+      'white-space: nowrap',
+      'font-weight: 600',
+    ]);
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-score\s*\{([\s\S]*?)\}/m))).toEqual([
+      'flex: none',
+      'margin-left: auto',
+      'color: rgba(232, 246, 255, 0.72)',
+      'font-variant-numeric: tabular-nums',
+    ]);
+    expect(declarations(ruleBody(cssSource, /^\.leaderboard-totals\s*\{([\s\S]*?)\}/m))).toEqual([
+      'margin: 0.35rem 0 0',
+      'padding-top: 0.3rem',
+      'border-top: 1px solid rgba(124, 246, 255, 0.18)',
+      'font-size: 0.75rem',
+      'color: rgba(232, 246, 255, 0.72)',
+    ]);
+  });
+
+  it('runs the 160 ms row-entry animation and disables it for both reduced-motion paths (AC-22)', () => {
+    expect(ruleBody(cssSource, /^\.leaderboard li\s*\{([\s\S]*?)\}/m)).toContain(
+      'animation: leaderboard-entry 160ms ease-out both',
+    );
+    expect(
+      ruleBody(cssSource, /@keyframes\s+leaderboard-entry\s*\{([\s\S]*?)\n\}/),
+    ).toContain('opacity: 0;');
+    expect(
+      declarations(
+        ruleBody(cssSource, /^\.leaderboard\[data-reduced-motion='true'\] li\s*\{([\s\S]*?)\}/m),
+      ),
+    ).toEqual(['animation: none']);
+
+    const block = mediaBlock(cssSource, '@media (prefers-reduced-motion: reduce)');
+    expect(block).toContain('.leaderboard li,');
+    expect(block).toContain('animation: none;');
+  });
+
+  it('moves below the activity feed and caps at 18vh on narrow viewports (AC-23)', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    expect(declarations(ruleBody(block, /\.leaderboard\s*\{([\s\S]*?)\}/))).toEqual([
+      'top: calc(17rem + env(safe-area-inset-top, 0px))',
+      'width: min(14rem, calc(100vw - 2rem))',
+      'max-height: 18vh',
+    ]);
+    expect(declarations(ruleBody(block, /\.leaderboard-list\s*\{([\s\S]*?)\}/))).toEqual([
+      'font-size: 0.75rem',
+    ]);
+
+    // 17rem clears the feed band (10rem top + 6rem max-height = 16rem), so the rail never
+    // overlaps the ticker on the narrow layout.
+    const feedTop = Number(
+      declarations(ruleBody(block, /\.activity-feed\s*\{([\s\S]*?)\}/))[0]?.match(/([\d.]+)rem/)?.[1],
+    );
+    const feedMaxHeight = Number(
+      declarations(ruleBody(block, /\.activity-feed\s*\{([\s\S]*?)\}/))[1]?.match(/([\d.]+)rem/)?.[1],
+    );
+    const railTop = Number(
+      declarations(ruleBody(block, /\.leaderboard\s*\{([\s\S]*?)\}/))[0]?.match(/([\d.]+)rem/)?.[1],
+    );
+    expect(feedTop).toBe(10);
+    expect(feedMaxHeight).toBe(6);
+    expect(railTop).toBe(17);
+    expect(railTop).toBeGreaterThan(feedTop + feedMaxHeight);
+  });
+
+  it('caps the panel at 12vh with a smaller font on very short phones (AC-23)', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px) and (max-height: 600px)');
+    expect(declarations(ruleBody(block, /\.leaderboard\s*\{([\s\S]*?)\}/))).toEqual([
+      'max-height: 12vh',
+    ]);
+    expect(declarations(ruleBody(block, /\.leaderboard-list\s*\{([\s\S]*?)\}/))).toEqual([
+      'font-size: 0.7rem',
+    ]);
+  });
+
+  it('changes no existing panel placement and adds no !important (AC-23)', () => {
+    const block = mediaBlock(cssSource, '@media (max-width: 720px)');
+    // The existing bottom-band and ticker overrides stay byte-for-byte intact alongside the rail.
+    expect(declarations(ruleBody(block, /\.upgrades-panel\s*\{([\s\S]*?)\}/))).toEqual([
+      'left: calc(1rem + env(safe-area-inset-left, 0px))',
+      'right: calc(1rem + env(safe-area-inset-right, 0px))',
+      'bottom: calc(5rem + env(safe-area-inset-bottom, 0px))',
+      'max-width: none',
+      'max-height: 35vh',
+      'overflow-y: auto',
+    ]);
+    expect(declarations(ruleBody(block, /\.activity-feed\s*\{([\s\S]*?)\}/))).toEqual([
+      'top: calc(10rem + env(safe-area-inset-top, 0px))',
+      'max-height: 6rem',
+    ]);
+    expect(cssSource).not.toContain('!important');
   });
 });

@@ -22,6 +22,10 @@
 //   6b. A's two `explode` frames in one event-loop turn (`front:0:1`, `front:0:2`) → exactly
 //       one `miniCubesRemoved` with both ids in order on A and B, and neither id in a single
 //       `miniCubeRemoved` frame on either client (AC-26)
+//   6c. leaderboard: A's `welcome.leaderboard` is a one-entry zero snapshot; B's carries A
+//       and B with zero counters/totals; after the three accepted explodes A receives a
+//       coalesced `leaderboardUpdate` (1 s window) with A clicks >= 3, B clicks = 0, both
+//       cubesCompleted = 0 and totals clicks >= 3 (`server-live-leaderboard`, AC-25)
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
 //   7b. activity leave: A also receives the `activityEvent` `memberLeft` for B with B's name,
 //      A's server id and an id newer than the `memberJoined` snapshot id (no extra wait)
@@ -664,6 +668,10 @@ const ACTIVITY_JOIN_CHECK_LABEL =
   "activity snapshot: A's welcome feed is empty and B's welcome carries exactly A's memberJoined event";
 const ACTIVITY_LEAVE_CHECK_LABEL =
   "activity leave: A receives the memberLeft activity event with B's name and an id newer than the snapshot id";
+const LEADERBOARD_JOIN_CHECK_LABEL =
+  "leaderboard join: A's welcome is a one-entry zero snapshot and B's welcome carries A and B with zero counters and totals";
+const LEADERBOARD_UPDATE_CHECK_LABEL =
+  'leaderboard update: the accepted explodes yield a coalesced leaderboardUpdate with A clicks >= 3, B clicks = 0 and totals clicks >= 3';
 const METRICS_CHECK_LABEL =
   'metrics: a joined client sees the Prometheus endpoint with connections_open and servers_active >= 1 and live frame/join counters';
 
@@ -865,6 +873,84 @@ function serverIdProblems(label, welcome) {
 }
 
 /**
+ * Exact per-field checks for one leaderboard entry (`server-live-leaderboard`, AC-25): the
+ * server-issued `playerId`/`name` and the session counters as sent. Reads only the four
+ * documented fields, so a leaked extra field never satisfies a check by accident.
+ */
+function leaderboardEntryProblems(label, entry, expected) {
+  const problems = [];
+  if (entry?.playerId !== expected.playerId) {
+    problems.push(
+      `${label}.playerId expected ${JSON.stringify(expected.playerId)}, got ${JSON.stringify(entry?.playerId)}`,
+    );
+  }
+  if (entry?.name !== expected.name) {
+    problems.push(`${label}.name expected ${JSON.stringify(expected.name)}, got ${JSON.stringify(entry?.name)}`);
+  }
+  if (entry?.cubesCompleted !== expected.cubesCompleted) {
+    problems.push(
+      `${label}.cubesCompleted expected ${expected.cubesCompleted}, got ${JSON.stringify(entry?.cubesCompleted)}`,
+    );
+  }
+  if (entry?.clicks !== expected.clicks) {
+    problems.push(`${label}.clicks expected ${expected.clicks}, got ${JSON.stringify(entry?.clicks)}`);
+  }
+  return problems;
+}
+
+/**
+ * The pinned zero totals of a fresh server: every member has just joined and no accepted
+ * action has incremented a counter yet.
+ */
+function zeroLeaderboardTotalsProblems(label, totals) {
+  const problems = [];
+  for (const key of ['cubesCompleted', 'clicks', 'facesDestroyed']) {
+    if (totals?.[key] !== 0) {
+      problems.push(`${label}.${key} expected 0, got ${JSON.stringify(totals?.[key])}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * The exact welcome snapshot contract: an object on the run's server, a finite `at`, the
+ * expected entries in server order (zero counters at join) and zero totals.
+ */
+function welcomeLeaderboardProblems(label, leaderboard, serverId, expectedEntries) {
+  if (leaderboard === null || typeof leaderboard !== 'object' || Array.isArray(leaderboard)) {
+    return [`${label} welcome.leaderboard expected an object, got ${JSON.stringify(leaderboard)}`];
+  }
+  const problems = [];
+  if (leaderboard.serverId !== serverId) {
+    problems.push(
+      `${label} welcome.leaderboard.serverId expected ${serverId}, got ${JSON.stringify(leaderboard.serverId)}`,
+    );
+  }
+  if (typeof leaderboard.at !== 'number' || !Number.isFinite(leaderboard.at)) {
+    problems.push(
+      `${label} welcome.leaderboard.at expected a finite number, got ${JSON.stringify(leaderboard.at)}`,
+    );
+  }
+  if (!Array.isArray(leaderboard.entries) || leaderboard.entries.length !== expectedEntries.length) {
+    problems.push(
+      `${label} welcome.leaderboard.entries expected ${expectedEntries.length}, got ${JSON.stringify(leaderboard.entries)}`,
+    );
+  } else {
+    expectedEntries.forEach((expected, index) => {
+      problems.push(
+        ...leaderboardEntryProblems(
+          `${label} welcome.leaderboard.entries[${index}]`,
+          leaderboard.entries[index],
+          expected,
+        ),
+      );
+    });
+  }
+  problems.push(...zeroLeaderboardTotalsProblems(`${label} welcome.leaderboard.totals`, leaderboard.totals));
+  return problems;
+}
+
+/**
  * AC-26 end-to-end sequence against the smoke-run backend (X = 2, grace 1 s): join/roster,
  * overflow, an explode ack + broadcast, and a disconnect that expires through the grace window.
  * Every frame is server-authored; the script only asserts the concrete values it receives.
@@ -987,6 +1073,27 @@ async function checkMultiplayerFlow() {
         problems.length === 0
           ? `server ${welcomeA.serverId}; memberJoined id ${joinActivityId} for ${welcomeA.playerId}`
           : problems.join('; '),
+      );
+    }
+
+    // Leaderboard snapshot at join (`server-live-leaderboard`, AC-25): A is alone and sees
+    // itself with zero counters; B's welcome includes the same zero counters for both.
+    if (!setupComplete) {
+      record(false, LEADERBOARD_JOIN_CHECK_LABEL, 'not run — the two-client join failed');
+    } else {
+      const problems = [
+        ...welcomeLeaderboardProblems('A', welcomeA.leaderboard, welcomeA.serverId, [
+          { playerId: welcomeA.playerId, name: welcomeA.name, cubesCompleted: 0, clicks: 0 },
+        ]),
+        ...welcomeLeaderboardProblems('B', welcomeB.leaderboard, welcomeA.serverId, [
+          { playerId: welcomeA.playerId, name: welcomeA.name, cubesCompleted: 0, clicks: 0 },
+          { playerId: welcomeB.playerId, name: welcomeB.name, cubesCompleted: 0, clicks: 0 },
+        ]),
+      ];
+      record(
+        problems.length === 0,
+        LEADERBOARD_JOIN_CHECK_LABEL,
+        problems.length === 0 ? `server ${welcomeA.serverId}` : problems.join('; '),
       );
     }
 
@@ -1124,6 +1231,113 @@ async function checkMultiplayerFlow() {
         BURST_SINGLE_FRAME_CHECK_LABEL,
         singleProblems.join('; '),
       );
+    }
+
+    // Coalesced leaderboard update (`server-live-leaderboard`, AC-25): the single accepted
+    // explode and the two-id burst land in the hub's 1 s window. Scan A's history first and
+    // otherwise wait inside the existing multiplayer budget; the predicate is the full AC
+    // (serverId, both entries, totals), so a frame carrying the single click cannot satisfy it.
+    if (!setupComplete) {
+      record(false, LEADERBOARD_UPDATE_CHECK_LABEL, 'not run — the two-client join failed');
+    } else if (explodeProblem !== null) {
+      record(false, LEADERBOARD_UPDATE_CHECK_LABEL, 'not run — the explode check failed');
+    } else {
+      const matchesCoalescedLeaderboard = (message) => {
+        if (message?.type !== 'leaderboardUpdate') {
+          return false;
+        }
+        const leaderboard = message.leaderboard;
+        if (leaderboard?.serverId !== welcomeA.serverId) {
+          return false;
+        }
+        const entries = Array.isArray(leaderboard.entries) ? leaderboard.entries : [];
+        if (entries.length !== 2) {
+          return false;
+        }
+        const entryA = entries.find((entry) => entry.playerId === welcomeA.playerId);
+        const entryB = entries.find((entry) => entry.playerId === welcomeB.playerId);
+        return (
+          entryA !== undefined &&
+          entryA.clicks >= 3 &&
+          entryA.cubesCompleted === 0 &&
+          entryB !== undefined &&
+          entryB.clicks === 0 &&
+          entryB.cubesCompleted === 0 &&
+          leaderboard.totals?.clicks >= 3 &&
+          leaderboard.totals?.cubesCompleted === 0
+        );
+      };
+
+      let update = null;
+      let updateProblem = null;
+      try {
+        update =
+          clientA.history.find(matchesCoalescedLeaderboard) ??
+          (await waitForMessage(
+            clientA,
+            matchesCoalescedLeaderboard,
+            MULTIPLAYER_TIMEOUT_MS,
+            'coalesced leaderboardUpdate with A clicks >= 3',
+          ));
+      } catch (error) {
+        const observed = clientA.history
+          .filter((message) => message?.type === 'leaderboardUpdate')
+          .map((message) => JSON.stringify(message.leaderboard));
+        updateProblem = `${problemText(error)}; observed leaderboard frames: ${
+          observed.length === 0 ? 'none' : observed.join(' | ')
+        }`;
+      }
+
+      let detail = '';
+      if (update !== null) {
+        const leaderboard = update.leaderboard;
+        const entries = Array.isArray(leaderboard.entries) ? leaderboard.entries : [];
+        const entryA = entries.find((entry) => entry.playerId === welcomeA.playerId);
+        const entryB = entries.find((entry) => entry.playerId === welcomeB.playerId);
+        const problems = [];
+        if (leaderboard.serverId !== welcomeA.serverId) {
+          problems.push(
+            `serverId expected ${welcomeA.serverId}, got ${JSON.stringify(leaderboard.serverId)}`,
+          );
+        }
+        if (typeof leaderboard.at !== 'number' || !Number.isFinite(leaderboard.at)) {
+          problems.push(`at expected a finite number, got ${JSON.stringify(leaderboard.at)}`);
+        }
+        if (entries.length !== 2) {
+          problems.push(`entries expected A and B (2), got ${JSON.stringify(entries)}`);
+        }
+        if (entryA === undefined) {
+          problems.push(`A entry expected playerId ${JSON.stringify(welcomeA.playerId)}, got none`);
+        } else {
+          if (entryA.clicks < 3) {
+            problems.push(`A clicks expected >= 3, got ${JSON.stringify(entryA.clicks)}`);
+          }
+          if (entryA.cubesCompleted !== 0) {
+            problems.push(`A cubesCompleted expected 0, got ${JSON.stringify(entryA.cubesCompleted)}`);
+          }
+        }
+        if (entryB === undefined) {
+          problems.push(`B entry expected playerId ${JSON.stringify(welcomeB.playerId)}, got none`);
+        } else {
+          if (entryB.clicks !== 0) {
+            problems.push(`B clicks expected 0, got ${JSON.stringify(entryB.clicks)}`);
+          }
+          if (entryB.cubesCompleted !== 0) {
+            problems.push(`B cubesCompleted expected 0, got ${JSON.stringify(entryB.cubesCompleted)}`);
+          }
+        }
+        if (!(leaderboard.totals?.clicks >= 3)) {
+          problems.push(`totals.clicks expected >= 3, got ${JSON.stringify(leaderboard.totals?.clicks)}`);
+        }
+        if (leaderboard.totals?.cubesCompleted !== 0) {
+          problems.push(
+            `totals.cubesCompleted expected 0, got ${JSON.stringify(leaderboard.totals?.cubesCompleted)}`,
+          );
+        }
+        updateProblem = problems.length === 0 ? null : problems.join('; ');
+        detail = `A clicks ${entryA?.clicks}, B clicks ${entryB?.clicks}, totals clicks ${leaderboard.totals?.clicks}`;
+      }
+      record(updateProblem === null, LEADERBOARD_UPDATE_CHECK_LABEL, updateProblem ?? detail);
     }
 
     if (!setupComplete) {

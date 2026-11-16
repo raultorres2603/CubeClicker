@@ -13,6 +13,7 @@ import { CUBE_STYLES } from './game/progression';
 import type { MultiplayerSnapshot, OnlineGameSession } from './game/session';
 import { GRID_SIZE, type CustomizationState, type GameStats, type LootboxGrant, type Phase } from './game/types';
 import type { ActivityEvent, MemberState } from './multiplayer/protocol';
+import type { LeaderboardSnapshot } from './multiplayer/protocol';
 import type { WorldState } from './multiplayer/server-state';
 import { submitAuthForm, type AuthFormStore } from './ui/AuthForms';
 
@@ -203,11 +204,13 @@ function worldFor({
   selfName = 'Player 1',
   members = [],
   activity = [],
+  leaderboard = null,
 }: {
   serverId?: number;
   selfName?: string;
   members?: MemberState[];
   activity?: ActivityEvent[];
+  leaderboard?: LeaderboardSnapshot | null;
 } = {}): WorldState {
   return {
     serverId,
@@ -221,7 +224,7 @@ function worldFor({
     },
     members,
     activity,
-    leaderboard: null,
+    leaderboard,
     pendingWorldSwap: null,
   };
 }
@@ -913,6 +916,130 @@ describe('App — server activity ticker (AC-19…AC-21)', () => {
     expect(html).not.toContain('class="activity-feed"');
     expect(html).not.toContain('Server activity');
     expect(occurrences(html, 'aria-live="polite"')).toBe(1);
+  });
+});
+
+describe('App — server leaderboard (AC-20, AC-21)', () => {
+  const LEADERBOARD: LeaderboardSnapshot = {
+    serverId: 1,
+    at: 1000,
+    entries: [
+      { playerId: 'p2', name: 'Player 2', cubesCompleted: 2, clicks: 40 },
+      { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 3 },
+    ],
+    totals: { cubesCompleted: 2, clicks: 43, facesDestroyed: 3 },
+  };
+
+  const FEED: ActivityEvent[] = [
+    {
+      id: 7,
+      at: 7000,
+      serverId: 1,
+      type: 'memberJoined',
+      playerId: 'p2',
+      name: 'Player 2',
+    },
+  ];
+
+  it('renders the populated panel beside the ticker in the welcomed shell and keeps one live region (AC-20, AC-21)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing'),
+          multiplayerFor({ world: worldFor({ activity: FEED, leaderboard: LEADERBOARD }) }),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<aside class="leaderboard" aria-label="Server leaderboard" aria-live="off" data-reduced-motion="false" data-server-id="1">' +
+        '<h2 class="leaderboard-title">Leaderboard</h2>' +
+        '<ol class="leaderboard-list">' +
+        '<li data-rank="1" data-player-id="p2">' +
+        '<span class="leaderboard-rank">#1</span>' +
+        '<span class="leaderboard-name">Player 2</span>' +
+        '<span class="leaderboard-score">2 cubes · 40 clicks</span>' +
+        '</li>' +
+        '<li data-rank="2" data-player-id="p1">' +
+        '<span class="leaderboard-rank">#2</span>' +
+        '<span class="leaderboard-name">Player 1</span>' +
+        '<span class="leaderboard-score">0 cubes · 3 clicks</span>' +
+        '</li>' +
+        '</ol>' +
+        '<p class="leaderboard-totals">Server totals: 2 cubes · 43 clicks · 3 faces</p>' +
+        '</aside>',
+    );
+    expect(occurrences(html, 'class="leaderboard"')).toBe(1);
+    // The ticker stays first and the rail follows it, before the user panel.
+    expect(html.indexOf('class="activity-feed"')).toBeLessThan(html.indexOf('class="leaderboard"'));
+    expect(html.indexOf('class="leaderboard"')).toBeLessThan(html.indexOf('class="user-panel"'));
+    // AC-21: the ticker and the leaderboard are the only `aria-live="off"` landmarks and the
+    // shell still has exactly one polite live region (`.phase-announcement`); no
+    // status/alert/log competes.
+    expect(occurrences(html, 'aria-live="polite"')).toBe(1);
+    expect(occurrences(html, 'aria-live="assertive"')).toBe(0);
+    expect(occurrences(html, 'aria-live="off"')).toBe(2);
+    expect(occurrences(html, 'role="status"')).toBe(1);
+    expect(occurrences(html, 'role="alert"')).toBe(0);
+    expect(occurrences(html, 'role="log"')).toBe(0);
+  });
+
+  it('renders no panel before the first welcome (AC-20)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing'),
+          multiplayerFor({
+            world: worldFor({ serverId: 0, selfName: '', leaderboard: LEADERBOARD }),
+          }),
+        )}
+      />,
+    );
+
+    expect(html).not.toContain('class="leaderboard"');
+    expect(html).not.toContain('Server leaderboard');
+    expect(occurrences(html, 'aria-live="polite"')).toBe(1);
+  });
+
+  it('renders no panel for an empty server snapshot (AC-20)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing'),
+          multiplayerFor({
+            world: worldFor({
+              leaderboard: {
+                serverId: 1,
+                at: 1000,
+                entries: [],
+                totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+              },
+            }),
+          }),
+        )}
+      />,
+    );
+
+    expect(html).not.toContain('class="leaderboard"');
+  });
+
+  it('passes the session reduced-motion preference to the panel (AC-22)', () => {
+    const html = renderToStaticMarkup(
+      <App
+        hasChosen
+        session={sessionFor(
+          snapshotFor('playing', undefined, 0, { reducedMotion: true }),
+          multiplayerFor({ world: worldFor({ leaderboard: LEADERBOARD }) }),
+        )}
+      />,
+    );
+
+    expect(html).toContain(
+      '<aside class="leaderboard" aria-label="Server leaderboard" aria-live="off" data-reduced-motion="true" data-server-id="1">',
+    );
   });
 });
 
