@@ -78,6 +78,7 @@ import {
   upgradesUpdateMessage,
   welcomeMessage,
   worldEnteredMessage,
+  leaderboardUpdateMessage,
   type CubeState,
   type CubeSync,
   type EconomyState,
@@ -90,6 +91,7 @@ import {
   type ServerMessage,
   type UpgradeState,
   type CustomizationState,
+  type LeaderboardSnapshot,
   customizationUpdateMessage,
   lootboxOpenedMessage,
 } from './protocol.js';
@@ -102,6 +104,12 @@ import {
   createEconomyCoalescer,
   createRemovalBatcher,
 } from './broadcast.js';
+import {
+  buildLeaderboardSnapshot,
+  createLeaderboardCoalescer,
+  LEADERBOARD_INTERVAL_MS,
+  type LeaderboardMember,
+} from './leaderboard.js';
 import {
   ACTIVITY_MILESTONE_EVERY,
   createActivityFeed,
@@ -357,6 +365,18 @@ interface Member {
   upgrades: UpgradeState;
   /** Server-authoritative customization state for this member. */
   customization: CustomizationState;
+  /**
+   * Session counters for the live leaderboard (`server-live-leaderboard`).
+   *
+   * Incremented only at the hub's accepted transitions (`handleExplode` after validation,
+   * `handleCompletion` after `isComplete`); never read from or written to the account
+   * economy, and deleted with the member. Coins are deliberately absent.
+   */
+  sessionStats: {
+    clicks: number;
+    facesDestroyed: number;
+    cubesCompleted: number;
+  };
   /** The live socket, or `null` while the member is inside the grace window. */
   connection: Connection | null;
   rate: RateWindow;
@@ -487,6 +507,20 @@ export function createGameHub(deps: HubDeps): GameHub {
       metrics?.inc('cubeclicker_economy_flushes_total');
       // The coalescer deletes the account's pending entry before invoking this callback.
       metrics?.set('cubeclicker_economy_pending_accounts', economyCoalescer.pendingAccounts());
+    },
+  });
+
+  /**
+   * Coalesces leaderboard snapshots per dirty server to one 1 s cadence
+   * (`server-live-leaderboard`). The flush builds the snapshot then, from the server's live
+   * members, and publishes one encode-once `leaderboardUpdate` (no `except`: the ranking is a
+   * server-wide view, so the origin is included too).
+   */
+  const leaderboard = createLeaderboardCoalescer({
+    intervalMs: LEADERBOARD_INTERVAL_MS,
+    timers,
+    flush(serverId): void {
+      publishLeaderboard(serverId);
     },
   });
 
@@ -689,6 +723,52 @@ export function createGameHub(deps: HubDeps): GameHub {
     return roster;
   }
 
+  /**
+   * The server's members for the leaderboard builder, in registry/slot order.
+   *
+   * Only server-issued identity and session counters are exposed; the missing-member check is
+   * defensive (the registry and `members` are kept in sync by every membership transition).
+   */
+  function collectLeaderboardMembers(serverId: number): LeaderboardMember[] {
+    const collected: LeaderboardMember[] = [];
+    registry.forEachMember(serverId, (playerId) => {
+      const member = members.get(playerId);
+      if (member === undefined) {
+        return;
+      }
+      collected.push({
+        playerId: member.playerId,
+        name: member.name,
+        clicks: member.sessionStats.clicks,
+        facesDestroyed: member.sessionStats.facesDestroyed,
+        cubesCompleted: member.sessionStats.cubesCompleted,
+      });
+    });
+    return collected;
+  }
+
+  /** The server's current ranked snapshot, built at this exact call (never cached). */
+  function snapshotFor(serverId: number): LeaderboardSnapshot {
+    return buildLeaderboardSnapshot(
+      serverId,
+      deps.now(),
+      collectLeaderboardMembers(serverId),
+    );
+  }
+
+  /**
+   * The coalescer flush: one encoded `leaderboardUpdate` per dirty server.
+   *
+   * A closed hub sends nothing, and a server that lost its last member while the timer was
+   * pending is skipped (its timer is dropped on destruction anyway; this is the backstop).
+   */
+  function publishLeaderboard(serverId: number): void {
+    if (closed || !serverHasMembers(serverId)) {
+      return;
+    }
+    broadcast(serverId, leaderboardUpdateMessage(snapshotFor(serverId)));
+  }
+
   function placementFor(member: Member): Placement {
     const location = locationOf(member.playerId)!;
     const identity: Identity =
@@ -705,6 +785,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       self: cubeState(member),
       roster: rosterFor(location.serverId),
       activity: activity.snapshot(location.serverId),
+      leaderboard: snapshotFor(location.serverId),
       identity,
       economy: member.economy,
       ...(member.accountId !== null
@@ -782,12 +863,14 @@ export function createGameHub(deps: HubDeps): GameHub {
       // A destroyed server keeps no feed: its buffer is deleted with the room (AC-6/AC-11).
       if (removal.serverDestroyed) {
         activity.dropServer(location.serverId);
+        leaderboard.dropServer(location.serverId);
       } else {
         recordActivity(location.serverId, {
           type: 'memberLeft',
           playerId,
           name: member.name,
         });
+        leaderboard.markDirty(location.serverId);
       }
     }
     recomputePlan();
@@ -1019,6 +1102,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       economy: loadedEconomy,
       upgrades: loadedUpgrades,
       customization: loadedCustomization,
+      sessionStats: { clicks: 0, facesDestroyed: 0, cubesCompleted: 0 },
       connection,
       rate: { admitted: [], lastLimitedAt: null },
       rotateRate: { admitted: [], lastLimitedAt: null },
@@ -1044,6 +1128,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     );
     recomputePlan();
     refreshRoomGauges();
+    // A fresh join is a membership change: the joiner appears with zero counters in the next
+    // coalesced snapshot (their `welcome` already carries the immediate one).
+    leaderboard.markDirty(assignment.serverId);
   }
 
   function handleRejoin(connection: Connection, token: string): void {
@@ -1124,6 +1211,9 @@ export function createGameHub(deps: HubDeps): GameHub {
       return;
     }
     member.cube.removedIds.add(id);
+    // Accepted-click counter: only the validated path above reaches this line, so invalid,
+    // rate-limited, oversized and pre-join attempts never increment (AC-1).
+    member.sessionStats.clicks += 1;
     const location = locationOf(member.playerId)!;
     // Authority first: the removed id is recorded synchronously above; only the
     // notification is coalesced into the 40 ms window (AC-8/AC-9).
@@ -1142,6 +1232,11 @@ export function createGameHub(deps: HubDeps): GameHub {
         }
       }
     }
+    if (faceCleared) {
+      member.sessionStats.facesDestroyed += 1;
+    }
+    // Any accepted click is a counter change for this server's coalesced snapshot (AC-9).
+    leaderboard.markDirty(location.serverId);
 
     // Account credit (fire-and-forget): mini-cube coins + click + face (if cleared).
     if (member.accountId !== null && economyRepo !== null) {
@@ -1274,6 +1369,9 @@ export function createGameHub(deps: HubDeps): GameHub {
     // Boundary: pending removals for this level reach every recipient before the cube is
     // replaced and before `levelAdvanced`/`worldEntered`/membership messages (AC-11).
     flushRemovalBatches();
+    // Accepted-completion counter: exactly once per validated full board, before the target
+    // snapshot is built, and carried with the member across a cross-server move (AC-2).
+    member.sessionStats.cubesCompleted += 1;
     // Speed bonus uses the previous cube's gridSize and the server clock, before reset.
     const previousGridSize = member.cube.gridSize;
     const elapsedMs = deps.now() - member.cubeStartedAtMs;
@@ -1330,6 +1428,8 @@ export function createGameHub(deps: HubDeps): GameHub {
       broadcast(previous.serverId, levelAdvancedMessage(advance));
       // One candidate per completion, after the protocol broadcast (AC-1/AC-2/AC-3).
       recordCompletion(previous.serverId, member, completedLevel, elapsedMs, bonus);
+      // The same server's counters changed: one coalesced snapshot per window (AC-9).
+      leaderboard.markDirty(previous.serverId);
       refreshRoomGauges();
       return;
     }
@@ -1348,13 +1448,18 @@ export function createGameHub(deps: HubDeps): GameHub {
         playerId: member.playerId,
         name: member.name,
       });
+      leaderboard.markDirty(previous.serverId);
     } else {
       activity.dropServer(previous.serverId);
+      // A destroyed server owns no snapshot and no pending flush.
+      leaderboard.dropServer(previous.serverId);
     }
     broadcast(location.serverId, memberJoinedMessage(memberState(member)), member.playerId);
     // The completion is the sole new-server activity candidate for this move (the move-in
     // join is suppressed), recorded after the target server's protocol messages (AC-7/AC-14).
     recordCompletion(location.serverId, member, completedLevel, elapsedMs, bonus);
+    // The mover's counters (including this completion) belong to the target server's snapshot.
+    leaderboard.markDirty(location.serverId);
     refreshRoomGauges();
   }
 
@@ -1779,6 +1884,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       closed = true;
       removalBatcher.discard();
       economyCoalescer.discard();
+      leaderboard.discard();
       for (const connection of connections) {
         connection.closeReason = 'server';
         metrics?.inc('cubeclicker_ws_connections_closed_total', { reason: 'server' });

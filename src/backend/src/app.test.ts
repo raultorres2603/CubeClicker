@@ -412,15 +412,15 @@ describe('GET /ws', () => {
         expect(helloOf(await client.next()).type).toBe('hello');
       }
       first.send({ type: 'join' });
-      const firstWelcome = welcomeOf(await first.next());
+      const firstWelcome = welcomeOf(await nextWithoutLeaderboard(first));
       second.send({ type: 'join' });
-      const secondWelcome = welcomeOf(await second.next());
+      const secondWelcome = welcomeOf(await nextWithoutLeaderboard(second));
       third.send({ type: 'join' });
-      const thirdWelcome = welcomeOf(await third.next());
+      const thirdWelcome = welcomeOf(await nextWithoutLeaderboard(third));
       fourth.send({ type: 'join' });
-      const fourthWelcome = welcomeOf(await fourth.next());
+      const fourthWelcome = welcomeOf(await nextWithoutLeaderboard(fourth));
       fifth.send({ type: 'join' });
-      const fifthWelcome = welcomeOf(await fifth.next());
+      const fifthWelcome = welcomeOf(await nextWithoutLeaderboard(fifth));
 
       // [1: p1, p2] [2: p3, p4] [3: p5].
       expect(firstWelcome.serverId).toBe(1);
@@ -441,7 +441,7 @@ describe('GET /ws', () => {
       expect(fifthWelcome.position).toEqual({ x: 7.639437268410976, y: 0 });
 
       // p3 still has p4's join broadcast queued.
-      expect(await third.next()).toEqual({
+      expect(await nextWithoutLeaderboard(third)).toEqual({
         type: 'memberJoined',
         member: {
           playerId: 'p4',
@@ -475,8 +475,8 @@ describe('GET /ws', () => {
       // The pinned clock reaches the grace deadline, so the expiry timer finalises p1 and the
       // leave candidate (1000 ms after p1's accepted join) passes the inclusive gate.
       clock = 1_001_000;
-      expect(await second.next()).toEqual({ type: 'memberLeft', playerId: 'p1', reason: 'left' });
-      expect(await second.next()).toEqual({
+      expect(await nextWithoutLeaderboard(second)).toEqual({ type: 'memberLeft', playerId: 'p1', reason: 'left' });
+      expect(await nextWithoutLeaderboard(second)).toEqual({
         type: 'activityEvent',
         event: {
           id: 2,
@@ -494,15 +494,15 @@ describe('GET /ws', () => {
         third.send({ type: 'explode', id, level: 0 });
       }
       // One 40 ms window holds the whole level: one batch frame per recipient.
-      const thirdBatch = await third.next();
+      const thirdBatch = await nextWithoutLeaderboard(third);
       expect(thirdBatch).toEqual({
         type: 'miniCubesRemoved',
         playerId: 'p3',
         ids: thirdIds,
       });
-      expect(await fourth.next()).toEqual(thirdBatch);
+      expect(await nextWithoutLeaderboard(fourth)).toEqual(thirdBatch);
       third.send({ type: 'cubeCompleted', level: 0 });
-      const enteredThird = await third.next();
+      const enteredThird = await nextWithoutLeaderboard(third);
       expect(enteredThird.type).toBe('worldEntered');
       if (enteredThird.type !== 'worldEntered') {
         throw new Error('expected p3 to enter the target world');
@@ -541,18 +541,18 @@ describe('GET /ws', () => {
           pitchSteps: 0,
         },
       ]);
-      expect(await second.next()).toEqual({
+      expect(await nextWithoutLeaderboard(second)).toEqual({
         type: 'memberJoined',
         member: enteredThird.roster[0],
       });
-      expect(await fourth.next()).toEqual({
+      expect(await nextWithoutLeaderboard(fourth)).toEqual({
         type: 'memberLeft',
         playerId: 'p3',
         reason: 'moved',
       });
       // The old server's leave is its own candidate: server 2 last accepted p3's join 1000 ms
       // earlier (the inclusive boundary), so p4 receives exactly one leave event.
-      expect(await fourth.next()).toEqual({
+      expect(await nextWithoutLeaderboard(fourth)).toEqual({
         type: 'activityEvent',
         event: {
           id: 2,
@@ -569,13 +569,13 @@ describe('GET /ws', () => {
       for (const id of fifthIds) {
         fifth.send({ type: 'explode', id, level: 0 });
       }
-      expect(await fifth.next()).toEqual({
+      expect(await nextWithoutLeaderboard(fifth)).toEqual({
         type: 'miniCubesRemoved',
         playerId: 'p5',
         ids: fifthIds,
       });
       fifth.send({ type: 'cubeCompleted', level: 0 });
-      const enteredFifth = await fifth.next();
+      const enteredFifth = await nextWithoutLeaderboard(fifth);
       expect(enteredFifth.type).toBe('worldEntered');
       if (enteredFifth.type !== 'worldEntered') {
         throw new Error('expected p5 to enter the target world');
@@ -614,7 +614,7 @@ describe('GET /ws', () => {
           pitchSteps: 0,
         },
       ]);
-      expect(await fourth.next()).toEqual({
+      expect(await nextWithoutLeaderboard(fourth)).toEqual({
         type: 'memberJoined',
         member: enteredFifth.roster[0],
       });
@@ -622,9 +622,9 @@ describe('GET /ws', () => {
       // Servers 1 and 2 are full and server 3 is gone: a fresh join gets id 4.
       const sixth = await connectClient(url);
       try {
-        expect(helloOf(await sixth.next()).type).toBe('hello');
+        expect(helloOf(await nextWithoutLeaderboard(sixth)).type).toBe('hello');
         sixth.send({ type: 'join' });
-        const sixthWelcome = welcomeOf(await sixth.next());
+        const sixthWelcome = welcomeOf(await nextWithoutLeaderboard(sixth));
         expect(sixthWelcome.serverId).toBe(4);
         expect(sixthWelcome.position).toEqual({ x: 7.639437268410976, y: 0 });
         expect(sixthWelcome.roster).toEqual([
@@ -934,6 +934,22 @@ function welcomeOf(message: ServerMessage): WelcomeMessage {
     throw new Error('expected a welcome message');
   }
   return message;
+}
+
+/**
+ * The next frame that is not the additive coalesced `leaderboardUpdate`.
+ *
+ * The live leaderboard publishes on its own 1 s cadence and may interleave with the protocol
+ * frames this packing test pins; skipping it here keeps every protocol assertion exact. The
+ * leaderboard's own wire behavior is covered by the hub integration suite and the smoke test.
+ */
+async function nextWithoutLeaderboard(client: TestClient): Promise<ServerMessage> {
+  for (;;) {
+    const message = await client.next();
+    if (message.type !== 'leaderboardUpdate') {
+      return message;
+    }
+  }
 }
 
 async function flushMicrotasks(): Promise<void> {

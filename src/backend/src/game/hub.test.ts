@@ -10,7 +10,7 @@ import {
   MINI_CUBE_BATCH_WINDOW_MS,
   PING_RATE_LIMIT_MS,
 } from './hub.js';
-import type { Position, ServerMessage } from './protocol.js';
+import type { Position, ServerMessage, LeaderboardSnapshot } from './protocol.js';
 import type { LogFields, LogSink } from '../observability/logging.js';
 import { createMetrics, type Metrics } from '../observability/metrics.js';
 import { InMemoryEconomyRepository } from '../auth/economy-repository.js';
@@ -376,6 +376,25 @@ function sentTextsOfType(peer: FakePeer, type: ServerMessage['type']): string[] 
   return peer.sent.filter((text) => (JSON.parse(text) as ServerMessage).type === type);
 }
 
+/**
+ * The messages other than the coalesced `leaderboardUpdate` frames.
+ *
+ * The leaderboard is additive and deliberately coalesced at 1 s; tests that are not about the
+ * ranking assert their own exact frames through this filter instead of weakening them. The
+ * leaderboard's presence, cadence and payload are pinned by the `server live leaderboard` suite
+ * below.
+ */
+function messagesWithoutLeaderboard(peer: FakePeer): ServerMessage[] {
+  return peer.messages().filter((message) => message.type !== 'leaderboardUpdate');
+}
+
+/** The encoded texts other than the coalesced `leaderboardUpdate` frames. */
+function sentTextsWithoutLeaderboard(peer: FakePeer): string[] {
+  return peer.sent.filter(
+    (text) => (JSON.parse(text) as ServerMessage).type !== 'leaderboardUpdate',
+  );
+}
+
 type ActivityEventFrame = Extract<ServerMessage, { type: 'activityEvent' }>;
 
 /** An exact `activityEvent` frame for a member transition (join/leave). */
@@ -687,10 +706,10 @@ describe('reconnect grace', () => {
     second.clear();
 
     harness.advance(harness.config.reconnectGraceMs - 1);
-    expect(second.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
 
     harness.advance(1);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
@@ -766,10 +785,10 @@ describe('reconnect grace', () => {
       memberOf('p2', 'Player 2', X2_SLOT_2),
     ]);
     // No membership change is visible to the others, and the grace timer was cancelled.
-    expect(second.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
     expect(harness.hub.connectionCount()).toBe(2);
     harness.advance(1);
-    expect(second.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
   });
 
   it('fails a resume at exactly the deadline and finalises the removal', () => {    const harness = createHarness({ maxUsersPerServer: 2 });
@@ -786,13 +805,13 @@ describe('reconnect grace', () => {
     late.receive(JSON.stringify({ type: 'rejoin', token }));
 
     expect(late.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
     // The pending grace timer was cleared: no second memberLeft.
     harness.advanceTimersOnly(harness.config.reconnectGraceMs);
-    expect(second.messages()).toHaveLength(2);
+    expect(messagesWithoutLeaderboard(second)).toHaveLength(2);
   });
 
   it('reschedules a grace timer that fires before the deadline instead of dropping the member', () => {
@@ -806,12 +825,12 @@ describe('reconnect grace', () => {
 
     // The timer fires while the clock has not advanced: the member is still inside grace.
     harness.advanceTimersOnly(harness.config.reconnectGraceMs);
-    expect(second.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
 
     // The rescheduled timer reaches the deadline and removes the member.
     harness.setNow(harness.config.reconnectGraceMs);
     harness.advanceTimersOnly(harness.config.reconnectGraceMs);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
@@ -1053,13 +1072,13 @@ describe('explode broadcasts', () => {
     // 999 ms after the first admitted attempt all 30 are still inside the trailing second.
     harness.advance(999);
     explode(peer, ids[31]!);
-    expect(peer.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(peer)).toEqual([]);
 
     // At exactly +1000 ms the t = 0 attempts are outside (now − 1000, now]: quota is fresh.
     harness.advance(1);
     explode(peer, ids[30]!);
     flushRemovals(harness);
-    expect(peer.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(peer)).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
     ]);
   });
@@ -1085,7 +1104,7 @@ describe('explode broadcasts', () => {
     peer.clear();
     harness.advance(100);
     explode(peer, ids[30]!);
-    expect(peer.messages()).toEqual([{ type: 'error', code: 'rate_limited' }]);
+    expect(messagesWithoutLeaderboard(peer)).toEqual([{ type: 'error', code: 'rate_limited' }]);
 
     // Still inside the burst's trailing second at 999 ms after it.
     peer.clear();
@@ -1097,7 +1116,7 @@ describe('explode broadcasts', () => {
     harness.advance(1);
     explode(peer, ids[30]!);
     flushRemovals(harness);
-    expect(peer.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(peer)).toEqual([
       { type: 'miniCubeRemoved', playerId: 'p1', id: ids[30]! },
     ]);
   });
@@ -1126,14 +1145,14 @@ describe('explode broadcasts', () => {
     explode(peer, ids[2]!);
     harness.advance(599);
     explode(peer, ids[2]!);
-    expect(peer.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(peer)).toEqual([]);
 
     // At +1000 ms the first two attempts age out: two are admitted, the third reports again.
     harness.advance(1);
     explode(peer, ids[2]!);
     explode(peer, ids[3]!);
     flushRemovals(harness);
-    expect(peer.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(peer)).toEqual([
       { type: 'miniCubesRemoved', playerId: 'p1', ids: [ids[2]!, ids[3]!] },
     ]);
 
@@ -1240,11 +1259,11 @@ describe('cube completion', () => {
     second.clear();
     third.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
-    expect(third.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(third)).toEqual([]);
 
     // The server-2 member finishes their cube: the planned move executes on completion.
     removeLevel(harness, third, allIds(3));
@@ -1283,6 +1302,15 @@ describe('cube completion', () => {
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
           transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
+        leaderboard: {
+          serverId: 1,
+          at: 31_000,
+          entries: [
+            { playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
         identity: { kind: 'guest', playerId: 'p3' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
@@ -1326,16 +1354,21 @@ describe('cube completion', () => {
     fourth.clear();
     fifth.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(first.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(first)).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
-    expect(third.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(third)).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
-    expect(fourth.messages()).toEqual([]);
-    expect(fifth.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(fourth)).toEqual([]);
+    expect(messagesWithoutLeaderboard(fifth)).toEqual([]);
+    // Drop the additive ranking frames so the protocol assertions below are exact.
+    first.clear();
+    third.clear();
+    fourth.clear();
+    fifth.clear();
 
     fourth.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
     // Not complete yet: nothing happens server-side.
@@ -1399,6 +1432,16 @@ describe('cube completion', () => {
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2').event,
           transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
+        leaderboard: {
+          serverId: 1,
+          at: 31_000,
+          entries: [
+            { playerId: 'p4', name: 'Player 4', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 },
+            { playerId: 'p3', name: 'Player 3', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
         identity: { kind: 'guest', playerId: 'p4' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
@@ -1452,13 +1495,17 @@ describe('cube completion', () => {
     fourth.clear();
     fifth.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
-    expect(third.messages()).toEqual([]);
-    expect(fourth.messages()).toEqual([]);
-    expect(fifth.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(third)).toEqual([]);
+    expect(messagesWithoutLeaderboard(fourth)).toEqual([]);
+    expect(messagesWithoutLeaderboard(fifth)).toEqual([]);
+    second.clear();
+    third.clear();
+    fourth.clear();
+    fifth.clear();
 
     // p3 completes: the planned move executes into server 1's freed slot 1.
     removeLevel(harness, third, allIds(3));
@@ -1498,6 +1545,15 @@ describe('cube completion', () => {
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
           transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
+        leaderboard: {
+          serverId: 1,
+          at: 31_000,
+          entries: [
+            { playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
         identity: { kind: 'guest', playerId: 'p3' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
@@ -1552,6 +1608,15 @@ describe('cube completion', () => {
           transitionActivity(2, 31_000, 2, 'memberLeft', 'p3', 'Player 3').event,
           transitionActivity(1, 0, 2, 'memberJoined', 'p3', 'Player 3').event,
         ],
+        leaderboard: {
+          serverId: 2,
+          at: 32_000,
+          entries: [
+            { playerId: 'p5', name: 'Player 5', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p4', name: 'Player 4', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
         identity: { kind: 'guest', playerId: 'p5' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
@@ -1593,14 +1658,16 @@ describe('stable slots (T1b)', () => {
     first.clear();
     third.clear();
     harness.advance(harness.config.reconnectGraceMs);
-    expect(first.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(first)).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
-    expect(third.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(third)).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
+    first.clear();
+    third.clear();
 
     // p3 completes: their position is still slot 3 — the vacated slot 2 did not shift them.
     removeLevel(harness, third, allIds(3));
@@ -1749,7 +1816,7 @@ describe('orientation storage and rotate (T2)', () => {
 
     harness.advance(1);
     rotate(first, 1, 0);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'cubeRotated', playerId: 'p1', yawSteps: 1, pitchSteps: 0 },
     ]);
   });
@@ -3076,7 +3143,7 @@ describe('encode-once fan-out (T3-B)', () => {
     const expectedActivity =
       '{"type":"activityEvent","event":{"id":2,"at":30000,"serverId":1,"type":"memberLeft","playerId":"p1","name":"Player 1"}}';
     for (const peer of peers.slice(1)) {
-      expect(peer.sent).toEqual([expectedText, expectedActivity]);
+      expect(sentTextsWithoutLeaderboard(peer)).toEqual([expectedText, expectedActivity]);
     }
     expect(peers[0]!.sent).toEqual([]);
   });
@@ -4812,11 +4879,11 @@ describe('server activity feed (live-activity-feed)', () => {
     h.setNow(30_000);
     h.advanceTimersOnly(30_000);
 
-    expect(first.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(first)).toEqual([
       { type: 'memberLeft', playerId: 'p2', reason: 'left' },
       transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2'),
     ]);
-    expect(second.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
   });
 
   it('drops a 999 ms memberJoined candidate without consuming an id (AC-9)', () => {
@@ -5224,7 +5291,7 @@ describe('server activity feed (live-activity-feed)', () => {
     h.setNow(1000);
     h.advanceTimersOnly(1000);
 
-    expect(first.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(first)).toEqual([]);
     expect(activityFrames(first)).toEqual([]);
   });
 
@@ -5247,7 +5314,7 @@ describe('server activity feed (live-activity-feed)', () => {
     third.clear();
     h.setNow(1000);
     h.advanceTimersOnly(1000);
-    expect(second.messages()).toEqual([
+    expect(messagesWithoutLeaderboard(second)).toEqual([
       { type: 'memberLeft', playerId: 'p1', reason: 'left' },
       transitionActivity(2, 1000, 1, 'memberLeft', 'p1', 'Player 1'),
     ]);
@@ -5294,6 +5361,15 @@ describe('server activity feed (live-activity-feed)', () => {
           transitionActivity(2, 1000, 1, 'memberLeft', 'p1', 'Player 1').event,
           transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
+        leaderboard: {
+          serverId: 1,
+          at: 2000,
+          entries: [
+            { playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
         identity: { kind: 'guest', playerId: 'p3' },
         economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
       },
@@ -5643,5 +5719,863 @@ describe('server activity feed (live-activity-feed)', () => {
     expect(second.messages()).toEqual([]);
     expect(activityFrames(first)).toEqual([]);
     expect(activityFrames(second)).toEqual([]);
+  });
+});
+
+describe('server live leaderboard (server-live-leaderboard)', () => {
+  interface LeaderboardHarnessOptions {
+    overrides?: Partial<GameConfig>;
+    economy?: InMemoryEconomyRepository;
+    draw?: () => number;
+  }
+
+  /** A hub with a manual clock, fake timers, a metrics registry and an optional repository. */
+  function createLeaderboardHarness(options: LeaderboardHarnessOptions = {}) {
+    const config: GameConfig = { ...loadGameConfig({}), ...options.overrides };
+    const metrics = createMetrics();
+    let clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => options.draw ?? (() => 0),
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      metrics,
+      ...(options.economy === undefined ? {} : { economy: options.economy }),
+    });
+    return {
+      config,
+      hub,
+      metrics,
+      clock: () => clock,
+      setNow: (ms: number) => {
+        clock = ms;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      advanceTimersOnly: (ms: number) => {
+        vi.advanceTimersByTime(ms);
+      },
+      connect: (session: AccountSession | null = null) => {
+        const peer = new FakePeer();
+        hub.attach(peer, session);
+        return peer;
+      },
+      join: (peer: FakePeer) => {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+      flush: async () => {
+        for (let i = 0; i < 50; i += 1) {
+          await Promise.resolve();
+        }
+      },
+    };
+  }
+
+  type LeaderboardUpdateFrame = Extract<ServerMessage, { type: 'leaderboardUpdate' }>;
+
+  /** Every `leaderboardUpdate` frame on `peer`, in arrival order. */
+  function leaderboardFrames(peer: FakePeer): LeaderboardUpdateFrame[] {
+    return peer
+      .messages()
+      .filter((message): message is LeaderboardUpdateFrame => message.type === 'leaderboardUpdate');
+  }
+
+  /** The snapshot on a placement frame; fails when the field is absent. */
+  function leaderboardOf(message: { leaderboard?: LeaderboardSnapshot }): LeaderboardSnapshot {
+    if (message.leaderboard === undefined) {
+      throw new Error('expected a leaderboard snapshot');
+    }
+    return message.leaderboard;
+  }
+
+  /** The numeric value of one exact rendered sample (`name` or `name{labels}`), or `null`. */
+  function sampleValue(metrics: Metrics, sample: string): number | null {
+    const line = metrics
+      .render()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${sample} `));
+    if (line === undefined) {
+      return null;
+    }
+    return Number(line.slice(sample.length + 1));
+  }
+
+  function rotate(peer: FakePeer, yawSteps: number, pitchSteps: number): void {
+    peer.receive(JSON.stringify({ type: 'rotate', yawSteps, pitchSteps }));
+  }
+
+  it('counts only accepted clicks and a face clear at the existing boundary (AC-1)', () => {
+    const h = createLeaderboardHarness({
+      overrides: { maxUsersPerServer: 2, clickRateLimitPerSecond: 3 },
+    });
+    const peer = h.connect();
+    h.join(peer);
+    const unjoined = h.connect();
+    peer.clear();
+
+    // An invalid click consumes its rate slot but never counts.
+    explode(peer, 'front:9:9');
+    expect(peer.messages()).toEqual([
+      { type: 'error', code: 'invalid_click' },
+      {
+        type: 'stateSync',
+        playerId: 'p1',
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+      },
+    ]);
+    peer.clear();
+
+    // An oversized frame and a pre-join frame never reach the counter path.
+    peer.receive(
+      JSON.stringify({ type: 'explode', id: 'front:0:0', level: 0, pad: 'x'.repeat(1100) }),
+    );
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'bad_message' }]);
+    unjoined.receive(JSON.stringify({ type: 'explode', id: 'front:0:0', level: 0 }));
+    expect(unjoined.messages()).toEqual([{ type: 'error', code: 'not_joined' }]);
+    peer.clear();
+
+    // Two accepted clicks; the third is rate-limited and never counts.
+    explode(peer, 'front:0:0');
+    explode(peer, 'right:0:0');
+    explode(peer, 'left:0:0');
+    expect(sentTextsOfType(peer, 'error')).toEqual([
+      '{"type":"error","code":"rate_limited"}',
+    ]);
+    flushRemovals(h);
+    peer.clear();
+
+    h.advance(1000);
+    expect(leaderboardFrames(peer)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 1000,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 2 }],
+          totals: { cubesCompleted: 0, clicks: 2, facesDestroyed: 0 },
+        },
+      },
+    ]);
+  });
+
+  it('increments facesDestroyed only once the whole face is removed (AC-1)', () => {
+    const h = createLeaderboardHarness();
+    const peer = h.connect();
+    h.join(peer);
+    const frontFace = allIds(3).slice(0, 9);
+
+    for (const id of frontFace.slice(0, 8)) {
+      explode(peer, id);
+    }
+    flushRemovals(h);
+    peer.clear();
+    h.advance(1000);
+
+    expect(leaderboardFrames(peer)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 1000,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 8 }],
+          totals: { cubesCompleted: 0, clicks: 8, facesDestroyed: 0 },
+        },
+      },
+    ]);
+
+    // The ninth click clears the face: both counters move.
+    peer.clear();
+    explode(peer, frontFace[8]!);
+    flushRemovals(h);
+    peer.clear();
+    h.advance(1000);
+    expect(leaderboardFrames(peer)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 2000,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 9 }],
+          totals: { cubesCompleted: 0, clicks: 9, facesDestroyed: 1 },
+        },
+      },
+    ]);
+  });
+
+  it('increments cubesCompleted once per accepted completion only (AC-2)', () => {
+    const h = createLeaderboardHarness();
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    // An incomplete board and a wrong level change nothing.
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(first.messages()).toEqual([
+      { type: 'error', code: 'invalid_completion' },
+      {
+        type: 'stateSync',
+        playerId: 'p1',
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+      },
+    ]);
+    second.receive(JSON.stringify({ type: 'cubeCompleted', level: 3 }));
+    expect(second.messages()).toEqual([
+      { type: 'error', code: 'invalid_completion' },
+      {
+        type: 'stateSync',
+        playerId: 'p2',
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+      },
+    ]);
+    first.clear();
+    second.clear();
+
+    // p1 clears a full 3×3 board (54 accepted clicks, 6 faces) and completes once.
+    removeLevel(h, first, allIds(3));
+    first.clear();
+    second.clear();
+    first.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    first.clear();
+    second.clear();
+
+    h.advance(1000);
+    expect(leaderboardFrames(second)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 2000,
+          entries: [
+            { playerId: 'p1', name: 'Player 1', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
+      },
+    ]);
+  });
+
+  it('ranks guests and accounts identically from the same accepted actions (AC-3)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createLeaderboardHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const guest = h.connect();
+    h.join(guest);
+    await h.flush();
+    const account = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(account);
+    await h.flush();
+    expect(welcomeOf(account).serverId).toBe(1);
+    guest.clear();
+    account.clear();
+
+    explode(guest, 'front:0:0');
+    explode(account, 'front:0:0');
+    flushRemovals(h);
+    guest.clear();
+    account.clear();
+    h.advance(1000);
+
+    const expected: LeaderboardUpdateFrame = {
+      type: 'leaderboardUpdate',
+      leaderboard: {
+        serverId: 1,
+        at: 1000,
+        entries: [
+          { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 1 },
+          { playerId: 'p2', name: 'alice', cubesCompleted: 0, clicks: 1 },
+        ],
+        totals: { cubesCompleted: 0, clicks: 2, facesDestroyed: 0 },
+      },
+    };
+    expect(leaderboardFrames(guest)).toEqual([expected]);
+    expect(leaderboardFrames(account)).toEqual([expected]);
+  });
+
+  it('carries one zero entry in a fresh welcome and the current ranking on rejoin (AC-7)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connect();
+    h.join(first);
+    expect(welcomeOf(first).leaderboard).toEqual({
+      serverId: 1,
+      at: 0,
+      entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 }],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+
+    const second = h.connect();
+    h.join(second);
+    expect(welcomeOf(second).leaderboard).toEqual({
+      serverId: 1,
+      at: 0,
+      entries: [
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 },
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+      ],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+
+    const token = welcomeOf(first).token;
+    explode(first, 'front:0:0');
+    first.drop();
+    // p2's accepted clicks happen while p1's socket is closed.
+    explode(second, 'front:0:0');
+    explode(second, 'front:0:1');
+    h.setNow(500);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+
+    expect(welcomeOf(resumed).leaderboard).toEqual({
+      serverId: 1,
+      at: 500,
+      entries: [
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 2 },
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 1 },
+      ],
+      totals: { cubesCompleted: 0, clicks: 3, facesDestroyed: 0 },
+    });
+  });
+
+  it('keeps a grace member ranked, then drops them and their totals on removal (AC-10)', () => {
+    const h = createLeaderboardHarness({
+      overrides: { maxUsersPerServer: 2, reconnectGraceMs: 1000 },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    h.advance(1000);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    explode(first, 'front:0:1');
+    explode(second, 'right:0:0');
+    first.clear();
+    second.clear();
+
+    // A socket close starts grace and marks nothing: no frame while the window is open.
+    first.drop();
+    h.advance(999);
+    expect(leaderboardFrames(second)).toEqual([]);
+    second.clear();
+
+    // At the deadline the pending click flush runs first (p1 is still ranked), then the
+    // expiry removes them and marks the server dirty for the next window.
+    h.advance(1);
+    expect(leaderboardFrames(second)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 2000,
+          entries: [
+            { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 2 },
+            { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 1 },
+          ],
+          totals: { cubesCompleted: 0, clicks: 3, facesDestroyed: 0 },
+        },
+      },
+    ]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 2000, 1, 'memberLeft', 'p1', 'Player 1'),
+    ]);
+
+    second.clear();
+    h.advance(1000);
+    expect(leaderboardFrames(second)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 3000,
+          entries: [{ playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 1 }],
+          totals: { cubesCompleted: 0, clicks: 1, facesDestroyed: 0 },
+        },
+      },
+    ]);
+  });
+
+  it('attributes a completion to the mover and drops the old server totals (AC-2/AC-8)', () => {
+    const h = createLeaderboardHarness({
+      overrides: {
+        maxUsersPerServer: 2,
+        reconnectGraceMs: 1000,
+        clickRateLimitPerSecond: 1000,
+      },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const third = h.connect();
+    h.join(third);
+    const fourth = h.connect();
+    h.join(fourth);
+    h.advance(1000);
+    first.clear();
+    second.clear();
+    third.clear();
+    fourth.clear();
+
+    second.drop();
+    h.advance(1000);
+    first.clear();
+    third.clear();
+    fourth.clear();
+
+    // p3 completes on server 2 and executes the planned move into server 1's free slot.
+    removeLevel(h, third, allIds(3));
+    first.clear();
+    third.clear();
+    fourth.clear();
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    expect(leaderboardOf(onlyType(third, 'worldEntered'))).toEqual({
+      serverId: 1,
+      at: 3000,
+      entries: [
+        { playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 54 },
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 },
+      ],
+      totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+    });
+
+    first.clear();
+    third.clear();
+    fourth.clear();
+    h.advance(1000);
+
+    // The target server's snapshot includes the completion; the old server's snapshot and
+    // totals exclude the mover.
+    expect(leaderboardFrames(first)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 4000,
+          entries: [
+            { playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 54 },
+            { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 },
+          ],
+          totals: { cubesCompleted: 1, clicks: 54, facesDestroyed: 6 },
+        },
+      },
+    ]);
+    expect(leaderboardFrames(third)).toEqual(leaderboardFrames(first));
+    expect(leaderboardFrames(fourth)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 2,
+          at: 4000,
+          entries: [{ playerId: 'p4', name: 'Player 4', cubesCompleted: 0, clicks: 0 }],
+          totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+        },
+      },
+    ]);
+  });
+
+  it('publishes a join snapshot at 999 ms and the coalesced frame at 1000 ms (AC-9)', () => {
+    const h = createLeaderboardHarness();
+    const peer = h.connect();
+    h.join(peer);
+    peer.clear();
+
+    h.advance(999);
+    expect(leaderboardFrames(peer)).toEqual([]);
+
+    h.advance(1);
+    expect(leaderboardFrames(peer)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 1000,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 }],
+          totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+        },
+      },
+    ]);
+  });
+
+  it('coalesces ten accepted clicks into one frame and starts a new window after it (AC-9)', () => {
+    const h = createLeaderboardHarness();
+    const peer = h.connect();
+    h.join(peer);
+    // One id per face (then a second row) so ten clicks never clear a face.
+    const ids = [
+      'front:0:0',
+      'right:0:0',
+      'back:0:0',
+      'left:0:0',
+      'top:0:0',
+      'bottom:0:0',
+      'front:0:1',
+      'right:0:1',
+      'back:0:1',
+      'left:0:1',
+      'top:0:1',
+    ];
+    peer.clear();
+
+    for (let index = 0; index < 10; index += 1) {
+      if (index > 0) {
+        h.advance(100);
+      }
+      explode(peer, ids[index]!);
+    }
+    expect(leaderboardFrames(peer)).toEqual([]);
+
+    h.advance(100);
+    const frames = leaderboardFrames(peer);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toEqual({
+      type: 'leaderboardUpdate',
+      leaderboard: {
+        serverId: 1,
+        at: 1000,
+        entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 10 }],
+        totals: { cubesCompleted: 0, clicks: 10, facesDestroyed: 0 },
+      },
+    });
+
+    peer.clear();
+    h.advance(1);
+    explode(peer, ids[10]!);
+    h.advance(999);
+    expect(leaderboardFrames(peer)).toEqual([]);
+    h.advance(1);
+    expect(leaderboardFrames(peer)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 2001,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 11 }],
+          totals: { cubesCompleted: 0, clicks: 11, facesDestroyed: 0 },
+        },
+      },
+    ]);
+  });
+
+  it('publishes top five entries and totals over all current members (AC-5/AC-6)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 6 } });
+    const peers: FakePeer[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const peer = h.connect();
+      h.join(peer);
+      peers.push(peer);
+    }
+    h.advance(1000);
+    for (const peer of peers) {
+      peer.clear();
+    }
+
+    const ids = allIds(3);
+    // p1 → 6 clicks, p2 → 5, …, p6 → 1: the top five omit p6 and its click still totals.
+    peers.forEach((peer, index) => {
+      const clicks = 6 - index;
+      for (let count = 0; count < clicks; count += 1) {
+        explode(peer, ids[count]!);
+      }
+    });
+    h.advance(1000);
+
+    const expected: LeaderboardUpdateFrame = {
+      type: 'leaderboardUpdate',
+      leaderboard: {
+        serverId: 1,
+        at: 2000,
+        entries: [
+          { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 6 },
+          { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 5 },
+          { playerId: 'p3', name: 'Player 3', cubesCompleted: 0, clicks: 4 },
+          { playerId: 'p4', name: 'Player 4', cubesCompleted: 0, clicks: 3 },
+          { playerId: 'p5', name: 'Player 5', cubesCompleted: 0, clicks: 2 },
+        ],
+        totals: { cubesCompleted: 0, clicks: 21, facesDestroyed: 0 },
+      },
+    };
+    for (const peer of peers) {
+      expect(leaderboardFrames(peer)).toEqual([expected]);
+    }
+  });
+
+  it('encodes one frame once and fans the same bytes to every member with metrics (AC-11/AC-16)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    const stringify = vi.spyOn(JSON, 'stringify');
+    h.advance(1000);
+
+    expect(encodeCallsFor(stringify, 'leaderboardUpdate')).toHaveLength(1);
+    const expectedText =
+      '{"type":"leaderboardUpdate","leaderboard":{"serverId":1,"at":1000,"entries":[{"playerId":"p1","name":"Player 1","cubesCompleted":0,"clicks":0},{"playerId":"p2","name":"Player 2","cubesCompleted":0,"clicks":0}],"totals":{"cubesCompleted":0,"clicks":0,"facesDestroyed":0}}}';
+    expect(sentTextsOfType(first, 'leaderboardUpdate')).toEqual([expectedText]);
+    expect(sentTextsOfType(second, 'leaderboardUpdate')).toEqual([expectedText]);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="leaderboardUpdate"}'),
+    ).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="leaderboardUpdate"}'),
+    ).toBe(2);
+  });
+
+  it('keeps two servers isolated and addresses a snapshot to its own server (AC-12)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 1 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    expect(welcomeOf(first).serverId).toBe(1);
+    expect(welcomeOf(second).serverId).toBe(2);
+    h.advance(1000);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    h.advance(1000);
+    expect(leaderboardFrames(first)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 1,
+          at: 2000,
+          entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 1 }],
+          totals: { cubesCompleted: 0, clicks: 1, facesDestroyed: 0 },
+        },
+      },
+    ]);
+    expect(leaderboardFrames(second)).toEqual([]);
+
+    first.clear();
+    second.clear();
+    explode(second, 'front:0:0');
+    h.advance(1000);
+    expect(leaderboardFrames(second)).toEqual([
+      {
+        type: 'leaderboardUpdate',
+        leaderboard: {
+          serverId: 2,
+          at: 3000,
+          entries: [{ playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 1 }],
+          totals: { cubesCompleted: 0, clicks: 1, facesDestroyed: 0 },
+        },
+      },
+    ]);
+    expect(leaderboardFrames(first)).toEqual([]);
+  });
+
+  it('emits nothing on a quiet server, a rotate or a rejoin (AC-10)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 2 } });
+    const peer = h.connect();
+    h.join(peer);
+    const token = welcomeOf(peer).token;
+    h.advance(1000);
+    peer.clear();
+
+    h.advance(1000);
+    expect(leaderboardFrames(peer)).toEqual([]);
+
+    rotate(peer, 1, 0);
+    h.advance(1000);
+    expect(leaderboardFrames(peer)).toEqual([]);
+
+    peer.drop();
+    h.advance(500);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+    resumed.clear();
+    h.advance(1000);
+    expect(leaderboardFrames(resumed)).toEqual([]);
+  });
+
+  it('emits nothing for a purchase, a loot open or an equip (AC-10)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    await repo.grantCustomization('u1', { lootboxes: 1, keys: 1 });
+    const h = createLeaderboardHarness({ economy: repo });
+    const peer = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+    h.advance(1000);
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'purchaseUpgrade', upgradeId: 'mini_cube_value' }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'openLootbox' }));
+    await h.flush();
+    const reveal = onlyType(peer, 'lootboxOpened');
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: reveal.partId }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: reveal.slot }));
+    await h.flush();
+
+    expect(leaderboardFrames(peer)).toEqual([]);
+    h.advance(1000);
+    expect(leaderboardFrames(peer)).toEqual([]);
+  });
+
+  it('leaves the 40 ms removal and 250 ms economy paths unchanged (AC-11)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.creditWithRevision('u1', { coins: 100 });
+    const h = createLeaderboardHarness({ economy: repo });
+    const peer = h.connect({ userId: 'u1', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    explode(peer, 'front:0:0');
+    await h.flush();
+    h.advanceTimersOnly(39);
+    expect(
+      peer
+        .messages()
+        .filter(
+          (message) => message.type === 'miniCubeRemoved' || message.type === 'miniCubesRemoved',
+        ),
+    ).toEqual([]);
+    h.advanceTimersOnly(1);
+    expect(onlyType(peer, 'miniCubeRemoved')).toEqual({
+      type: 'miniCubeRemoved',
+      playerId: 'p1',
+      id: 'front:0:0',
+    });
+
+    expect(sentTextsOfType(peer, 'economyUpdate')).toEqual([]);
+    h.advanceTimersOnly(209);
+    expect(sentTextsOfType(peer, 'economyUpdate')).toEqual([]);
+    h.advanceTimersOnly(1);
+    expect(sentTextsOfType(peer, 'economyUpdate')).toEqual([
+      '{"type":"economyUpdate","coins":100.1,"clicks":1,"facesDestroyed":0,"cubesDestroyed":0}',
+    ]);
+    expect(leaderboardFrames(peer)).toEqual([]);
+  });
+
+  it('keeps every leaderboard counter and the token out of the snapshot frames (AC-24)', async () => {
+    const repo = new InMemoryEconomyRepository();
+    const h = createLeaderboardHarness({ economy: repo });
+    const peer = h.connect({ userId: 'acct-secret-42', username: 'alice', verified: true });
+    h.join(peer);
+    await h.flush();
+    const welcome = welcomeOf(peer);
+    const token = welcome.token;
+
+    expect(leaderboardOf(welcome)).toEqual({
+      serverId: 1,
+      at: 0,
+      entries: [{ playerId: 'p1', name: 'alice', cubesCompleted: 0, clicks: 0 }],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+
+    explode(peer, 'front:0:0');
+    h.advance(1000);
+    const updates = sentTextsOfType(peer, 'leaderboardUpdate');
+    expect(updates).toHaveLength(1);
+    expect(JSON.parse(updates[0]!)).toEqual({
+      type: 'leaderboardUpdate',
+      leaderboard: {
+        serverId: 1,
+        at: 1000,
+        entries: [{ playerId: 'p1', name: 'alice', cubesCompleted: 0, clicks: 1 }],
+        totals: { cubesCompleted: 0, clicks: 1, facesDestroyed: 0 },
+      },
+    });
+
+    for (const text of [JSON.stringify(leaderboardOf(welcome)), ...updates]) {
+      expect(text).not.toContain('acct-secret-42');
+      expect(text).not.toContain(token);
+      expect(text).not.toContain('coins');
+      expect(text).not.toContain('economy');
+      expect(text).not.toContain('accountId');
+      expect(text).not.toContain('upgrades');
+    }
+  });
+
+  it('drops a destroyed server timer on a last-member move and never flushes it (AC-13)', () => {
+    const h = createLeaderboardHarness({
+      overrides: {
+        maxUsersPerServer: 2,
+        reconnectGraceMs: 1000,
+        clickRateLimitPerSecond: 1000,
+      },
+    });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const third = h.connect();
+    h.join(third);
+    expect(welcomeOf(third).serverId).toBe(2);
+    h.advance(1000);
+    first.clear();
+    second.clear();
+    third.clear();
+
+    // p2's grace expires, leaving server 1 with one member and one planned donor (p3).
+    second.drop();
+    h.advance(1000);
+    first.clear();
+    third.clear();
+
+    // p3 clears a full level (server 2 dirty) then completes into server 1: server 2 dies.
+    for (const id of allIds(3)) {
+      explode(third, id);
+    }
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(leaderboardOf(onlyType(third, 'worldEntered')).serverId).toBe(1);
+
+    // Exactly two heartbeats and server 1's single pending flush remain: the destroyed
+    // server's click timer was dropped instead of surviving until its window.
+    expect(vi.getTimerCount()).toBe(3);
+    h.hub.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('discards every pending flush on close and never sends afterwards (AC-13)', () => {
+    const h = createLeaderboardHarness({ overrides: { maxUsersPerServer: 1 } });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    explode(first, 'front:0:0');
+    explode(second, 'front:0:0');
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    h.hub.close();
+    expect(vi.getTimerCount()).toBe(0);
+
+    h.advance(1000);
+    expect(leaderboardFrames(first)).toEqual([]);
+    expect(leaderboardFrames(second)).toEqual([]);
+    h.hub.close();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
