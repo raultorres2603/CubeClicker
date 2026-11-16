@@ -43,6 +43,7 @@ Replace the AWS ECS/RDS/Terraform deployment path with a provider split: Vercel 
 - 2026-11-16 — blocked → building — user authorized MCP-based development deployment on free tiers; T7 provisioning/deploy in progress — user directive
 - 2026-11-16 — T7 provisioning partial — Vercel project `cubeclicker-development` + Neon `development` branch created; Neon production protection blocked by Free plan; Fly/GitHub MCPs cannot deploy/configure; Vercel SSO protection and missing SMTP/domain remain — `build-log-T7-provision.md`
 - 2026-11-16 — T7 Fly deploy blocked — apps `cubeclicker-development` + `cubeclicker-mailpit-development` created, but Fly requires a credit card before any Machine (HTTP 422 `$1 Fly.io trial`); no backend/Mailpit deploy; Vercel frontend not deployed — `build-log-T7-fly.md`
+- 2026-11-16 — backend host superseded — user chose Render free; Fly apps left unprovisioned; new feature `render-backend-migration` will replace the Fly deploy path — user directive
 
 ## Blockers / open questions
 
