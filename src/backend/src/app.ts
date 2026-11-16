@@ -341,10 +341,28 @@ export function buildApp(
   app.register(async (instance) => {
     await instance.register(websocket);
 
-    instance.get('/ws', { websocket: true }, async (socket, req) => {
+    instance.get('/ws', {
+      websocket: true,
       // Browsers do not enforce CORS on WebSocket upgrades: validate a present Origin
-      // against the same exact allowlist and close 1008 before `hello`. A missing
-      // Origin stays allowed for non-browser clients (Node smoke/CLI).
+      // against the same exact allowlist. The rejection happens here, in the Fastify
+      // request lifecycle, so a disallowed Origin gets a real HTTP 403 and never a `101`:
+      // Render's free edge does not relay the immediate post-upgrade close frame, so the
+      // client would otherwise only observe a bare FIN/1006. The `1008` close in the
+      // handler below stays as defense in depth for a transport that reaches it directly.
+      preValidation: async (request, reply) => {
+        if (typeof request.headers.upgrade !== 'string' || request.headers.upgrade.toLowerCase() !== 'websocket') {
+          return;
+        }
+        if (isWebSocketOriginAllowed(request.headers.origin, allowedOrigins)) {
+          return;
+        }
+        reply.header('vary', 'Origin');
+        await reply.code(403).send({ message: 'origin not allowed', code: 'origin_not_allowed' });
+      },
+    }, async (socket, req) => {
+      // Defense in depth for direct/different transports (no Fastify lifecycle): repeat
+      // the Origin decision and close `1008` before `hello`. A missing Origin stays
+      // allowed for non-browser clients (Node smoke/CLI).
       if (!isWebSocketOriginAllowed(req.headers.origin, allowedOrigins)) {
         socket.close(WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE);
         return;

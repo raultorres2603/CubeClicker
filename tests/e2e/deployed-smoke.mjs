@@ -23,11 +23,18 @@
 //   5. frontend GET  <frontend>/deep/link -> 200 + text/html + the SPA shell (rewrite fallback)
 //   6. frontend GET  <frontend>/assets/does-not-exist.js -> 404, never the SPA shell
 //   7. WebSocket wss:// with the allowed Origin -> hello, guest join/welcome, explode ack
-//   8. WebSocket wss:// with a disallowed Origin -> close 1008 and no hello
+//   8. WebSocket wss:// with a disallowed Origin -> no session and no hello: HTTP 403 on the
+//      upgrade (current backend) or a post-upgrade close 1008
 //
 // Node's global WebSocket accepts a non-standard `{ headers }` init object (undici's
 // `WebSocketInit`); browsers do not, but this script is Node-only and an explicit
-// `Origin` is the only way to prove the upgrade allowlist without a raw frame codec.
+// `Origin` is the only way to prove the upgrade allowlist. Check 8 instead opens a raw
+// `node:http`/`node:https` upgrade so the handshake status and the close frame are both
+// observable: undici collapses a denied handshake into `error` plus close 1006, which
+// cannot distinguish a correct 403 from a dropped connection.
+
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 const DEFAULT_TIMEOUT_MS = 10000;
 const DISALLOWED_ORIGIN = 'https://disallowed.invalid';
@@ -505,24 +512,138 @@ async function checkWebSocketRoundTrip(config) {
   }
 }
 
+/** Parses the first unmasked server frame: opcode, close code and text payload. */
+function parseServerFrame(buffer) {
+  if (buffer.length < 2) return null;
+  const opcode = buffer[0] & 0x0f;
+  const length = buffer[1] & 0x7f;
+  // `hello` and a short close frame are far below 126 bytes; longer frames are not parsed.
+  if (length >= 126 || buffer.length < 2 + length) return null;
+  return {
+    opcode,
+    code: opcode === 8 && length >= 2 ? buffer.readUInt16BE(2) : null,
+    text: opcode === 1 ? buffer.subarray(2, 2 + length).toString('utf8') : '',
+  };
+}
+
+/**
+ * One raw WebSocket upgrade with zero dependencies. Resolves with the handshake status, the
+ * HTTP response body for a denied handshake, and (after a `101`) the first server frame.
+ * A `101` that ends without any frame resolves with `frame: null`, which the caller treats
+ * as a dropped upgrade rather than a WebSocket close.
+ */
+function rawUpgrade(url, origin, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const send = target.protocol === 'wss:' ? httpsRequest : httpRequest;
+    const request = send({
+      host: target.hostname,
+      port: target.port === '' ? undefined : Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      agent: false,
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        // RFC 6455 example nonce: 16 bytes, accepted by the server handshake.
+        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version': '13',
+        Origin: origin,
+      },
+    });
+
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`raw upgrade to ${url} produced no handshake result within ${timeoutMs}ms`));
+      request.destroy();
+    }, timeoutMs);
+
+    request.on('upgrade', (response, socket, head) => {
+      let buffer = Buffer.from(head);
+      const status = response.statusCode ?? 0;
+      const drain = () => {
+        const frame = parseServerFrame(buffer);
+        if (frame === null) return;
+        socket.end();
+        finish({ status, frame, body: '' });
+      };
+      socket.on('data', (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        drain();
+      });
+      // A `101` followed by FIN without a frame is the Render free-edge behavior this check
+      // exists to catch; report it explicitly instead of hanging.
+      socket.on('close', () => {
+        finish({ status, frame: null, body: '' });
+      });
+      socket.on('error', (error) => {
+        fail(new Error(`raw upgrade socket error: ${problemText(error)}`));
+      });
+      drain();
+    });
+    request.on('response', (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        finish({ status: response.statusCode ?? 0, frame: null, body });
+      });
+      response.on('close', () => {
+        finish({ status: response.statusCode ?? 0, frame: null, body });
+      });
+      response.on('error', (error) => {
+        fail(new Error(`raw upgrade response error: ${problemText(error)}`));
+      });
+    });
+    request.on('error', (error) => {
+      fail(new Error(`raw upgrade to ${url} failed: ${problemText(error)}`));
+    });
+    request.end();
+  });
+}
+
 async function checkWebSocketOriginGuard(config) {
-  const client = new SocketClient(config.ws, DISALLOWED_ORIGIN);
-  try {
-    const closed = await client.waitForClose(config.timeoutMs);
-    if (closed.code !== 1008) {
-      throw new Error(
-        `disallowed Origin expected close code 1008, got ${closed.code}${closed.reason ? ` (${closed.reason})` : ''}`,
-      );
-    }
-    if (client.messages.length > 0) {
-      throw new Error(
-        `disallowed Origin expected no frames before close 1008, got ${JSON.stringify(client.messages)}`,
-      );
-    }
-    return 'close 1008 without hello';
-  } finally {
-    client.close();
+  const result = await rawUpgrade(config.ws, DISALLOWED_ORIGIN, config.timeoutMs);
+
+  if (result.status === 403) {
+    const detail = result.body === '' ? '' : ` (${result.body})`;
+    return `HTTP 403 before the upgrade${detail}, no hello`;
   }
+  if (result.status === 101) {
+    const frame = result.frame;
+    if (frame === null) {
+      throw new Error(
+        'disallowed Origin upgraded and the connection closed without a close frame (no 1008 observed)',
+      );
+    }
+    if (frame.opcode === 1) {
+      throw new Error(
+        `disallowed Origin upgraded and received a text frame: ${JSON.stringify(frame.text)}`,
+      );
+    }
+    if (frame.opcode === 8 && frame.code === 1008) {
+      return 'close 1008 without hello';
+    }
+    throw new Error(
+      `disallowed Origin expected close 1008, got frame opcode ${frame.opcode}${frame.code === null ? '' : ` code ${frame.code}`}`,
+    );
+  }
+  throw new Error(
+    `disallowed Origin expected HTTP 403 or close 1008, got HTTP ${result.status}`,
+  );
 }
 
 async function main() {
@@ -550,7 +671,10 @@ async function main() {
       `WebSocket at ${config.ws} accepts Origin ${config.origin}: hello, guest join, explode`,
       () => checkWebSocketRoundTrip(config),
     ],
-    ['WebSocket rejects a disallowed Origin with close 1008', () => checkWebSocketOriginGuard(config)],
+    [
+      'WebSocket rejects a disallowed Origin before the upgrade (HTTP 403 or close 1008)',
+      () => checkWebSocketOriginGuard(config),
+    ],
   ];
 
   for (const [label, check] of checks) {

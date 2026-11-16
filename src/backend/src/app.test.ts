@@ -8,7 +8,6 @@ import { InMemoryEconomyRepository } from './auth/economy-repository.js';
 import { FakeEmailService } from './auth/email.js';
 import type { PartId } from './game/parts.js';
 import { roundCoins, idleCoins } from './game/economy.js';
-import { WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE } from './cors.js';
 import { buildLoggerOptions } from './observability/logging.js';
 import { METRIC_DEFINITIONS, type MetricDefinition } from './observability/metrics.js';
 
@@ -37,6 +36,8 @@ interface RawFrame {
 interface RawUpgradeResult {
   statusCode: number;
   frames: RawFrame[];
+  /** Response body for a denied (non-101) handshake; empty on a successful upgrade. */
+  body: string;
 }
 
 /** Parses one unmasked server frame; returns null until the full frame is buffered. */
@@ -70,9 +71,11 @@ function parseRawFrame(buffer: Buffer): { frame: RawFrame; rest: Buffer } | null
 
 /**
  * Performs a raw `node:http` WebSocket upgrade (no client dependency) and resolves with
- * the upgrade status plus the first frame the server sends. A close frame (opcode 8) or
- * the first text frame (opcode 1) ends the collection, so an allowed upgrade resolves on
- * `hello` and a denied upgrade resolves on the close frame, proving no `hello` was sent.
+ * the handshake status plus the first frame the server sends. A `101` resolves on the
+ * first close frame (opcode 8) or text frame (opcode 1), so an allowed upgrade resolves on
+ * `hello` and proves no close frame came first. A handshake the server answers without
+ * upgrading resolves on the HTTP response (status plus body) with no frames, proving the
+ * rejection happened before the protocol started.
  */
 function rawUpgrade(port: number, origin?: string): Promise<RawUpgradeResult> {
   return new Promise((resolve, reject) => {
@@ -91,6 +94,7 @@ function rawUpgrade(port: number, origin?: string): Promise<RawUpgradeResult> {
     });
     let settled = false;
     let buffer = Buffer.alloc(0);
+    let body = '';
     const frames: RawFrame[] = [];
     const timer = setTimeout(() => {
       fail(new Error('timed out waiting for WebSocket frames'));
@@ -107,7 +111,7 @@ function rawUpgrade(port: number, origin?: string): Promise<RawUpgradeResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ statusCode: response.statusCode ?? 0, frames });
+      resolve({ statusCode: response.statusCode ?? 0, frames, body });
     }
 
     request.on('upgrade', (response, socket, head) => {
@@ -136,7 +140,20 @@ function rawUpgrade(port: number, origin?: string): Promise<RawUpgradeResult> {
       drain();
     });
     request.on('response', (response) => {
-      fail(new Error(`expected a WebSocket upgrade, received HTTP ${response.statusCode}`));
+      // The server answered the upgrade with an HTTP response instead of `101`. The plugin
+      // destroys the socket right after the response completes, so resolve on `end` (and
+      // fall back to `close`) with whatever body was received.
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        settle(response);
+      });
+      response.on('close', () => {
+        settle(response);
+      });
+      response.on('error', fail);
     });
     request.on('error', fail);
     request.end();
@@ -676,18 +693,35 @@ describe('GET /ws', () => {
 });
 
 describe('GET /ws Origin guard (AC-7)', () => {
-  it('closes a present, non-allowlisted Origin with 1008 and sends no hello', async () => {
+  it('rejects a present, non-allowlisted Origin with HTTP 403 before the upgrade and sends no hello', async () => {
     const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
     await app.listen({ host: '127.0.0.1', port: 0 });
     try {
       const result = await rawUpgrade(listenPort(app), 'https://evil.example');
 
-      expect(result.statusCode).toBe(101);
-      expect(result.frames.map((frame) => frame.opcode)).toEqual([8]);
-      expect(result.frames[0]!.payload.readUInt16BE(0)).toBe(
-        WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE,
-      );
-      expect(WEBSOCKET_ORIGIN_REJECTED_CLOSE_CODE).toBe(1008);
+      // The handshake never upgrades: the client sees an ordinary 403 with the same body
+      // the CORS/CSRF origin denial uses, and no WebSocket frame is ever sent.
+      expect(result.statusCode).toBe(403);
+      expect(result.frames).toEqual([]);
+      expect(result.body).toBe('{"message":"origin not allowed","code":"origin_not_allowed"}');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('leaves a non-upgrade GET /ws at the plugin 404 for a disallowed Origin', async () => {
+    const app = buildApp({ CORS_ORIGIN: 'https://app.example.test' });
+    try {
+      // The pre-upgrade gate only owns upgrade handshakes; an ordinary HTTP GET keeps the
+      // websocket plugin's "no plain HTTP handler" 404.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/ws',
+        headers: { origin: 'https://evil.example' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toBe('');
     } finally {
       await app.close();
     }
