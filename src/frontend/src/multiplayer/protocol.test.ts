@@ -4,23 +4,28 @@ import {
   ACTIVITY_FEED_LIMIT,
   type ActivityEvent,
   type CustomizationState,
+  type LeaderboardSnapshot,
   type LootboxOpened,
   type MemberState,
   MAX_MESSAGE_BYTES,
+  LEADERBOARD_TOP_LIMIT,
   type MiniCubeId,
   type Placement,
   UpgradeState,
   activityEventMessage,
   copyActivityEvent,
   copyCustomizationState,
+  copyLeaderboardSnapshot,
   customizationUpdateMessage,
   economyUpdateMessage,
   encodeClientMessage,
   encodeServerMessage,
+  leaderboardUpdateMessage,
   lootboxOpenedMessage,
   miniCubesRemovedMessage,
   parseActivityEvent,
   parseClientMessage,
+  parseLeaderboardSnapshot,
   parseLootboxOpened,
   parseServerMessage,
   pongMessage,
@@ -1718,5 +1723,472 @@ describe('placement activity ring (AC-15)', () => {
     for (const text of invalidFrames) {
       expect(parseServerMessage(text)).toEqual({ ok: false, error: 'bad_message' });
     }
+  });
+});
+
+/**
+ * Parity fixture set copied verbatim from `src/backend/src/game/protocol.test.ts`
+ * (AC-15): the same valid snapshots round-trip through both decoders and the same invalid
+ * variants are rejected by both. The exact representative frame is pinned below.
+ */
+
+/** The pinned representative snapshot (spec § Wire contract); its key order is the wire order. */
+function leaderboardSnapshot(): LeaderboardSnapshot {
+  return {
+    serverId: 1,
+    at: 1000,
+    entries: [{ playerId: 'p1', name: 'Player 1', cubesCompleted: 2, clicks: 40 }],
+    totals: { cubesCompleted: 2, clicks: 40, facesDestroyed: 3 },
+  };
+}
+
+const LEADERBOARD_SNAPSHOT: LeaderboardSnapshot = leaderboardSnapshot();
+
+/** One ranked-row fixture the invalid matrix mutates. */
+function leaderboardEntryFixture(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    playerId: 'p1',
+    name: 'Player 1',
+    cubesCompleted: 2,
+    clicks: 40,
+    ...overrides,
+  };
+}
+
+/** The all-fields-valid snapshot payload the invalid matrix mutates. */
+function leaderboardBase(): Record<string, unknown> {
+  return {
+    serverId: 1,
+    at: 1000,
+    entries: [leaderboardEntryFixture({})],
+    totals: { cubesCompleted: 2, clicks: 40, facesDestroyed: 3 },
+  };
+}
+
+/** `n` valid ranked rows (0-based counters, so every total is derivable by hand). */
+function leaderboardEntries(count: number): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, index) => ({
+    playerId: `p${index + 1}`,
+    name: `Player ${index + 1}`,
+    cubesCompleted: index,
+    clicks: index * 10,
+  }));
+}
+
+/** The valid payload with one top-level field absent (a missing key, not `undefined`). */
+function withoutLeaderboardField(field: string): Record<string, unknown> {
+  const payload = leaderboardBase();
+  delete payload[field];
+  return payload;
+}
+
+/** The valid payload with one ranked-row field absent. */
+function withoutLeaderboardEntryField(field: string): Record<string, unknown> {
+  const entry = leaderboardEntryFixture({});
+  delete entry[field];
+  return { ...leaderboardBase(), entries: [entry] };
+}
+
+/** The valid payload with one totals field absent. */
+function withoutLeaderboardTotalField(field: string): Record<string, unknown> {
+  const totals: Record<string, unknown> = {
+    cubesCompleted: 2,
+    clicks: 40,
+    facesDestroyed: 3,
+  };
+  delete totals[field];
+  return { ...leaderboardBase(), totals };
+}
+
+/** The valid payload with one ranked-row field overridden. */
+function withLeaderboardEntry(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { ...leaderboardBase(), entries: [leaderboardEntryFixture(overrides)] };
+}
+
+/** The valid payload with one totals field overridden. */
+function withLeaderboardTotals(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...leaderboardBase(),
+    totals: { cubesCompleted: 2, clicks: 40, facesDestroyed: 3, ...overrides },
+  };
+}
+
+/** Every invalid variant of the shared validation matrix (spec § Protocol validation matrix). */
+const INVALID_LEADERBOARD_SNAPSHOTS: ReadonlyArray<readonly [string, unknown]> = [
+  ['a non-object null', null],
+  ['an array payload', [leaderboardBase()]],
+  ['a bare string payload', 'leaderboardUpdate'],
+  ['a number payload', 42],
+  ['a missing serverId', withoutLeaderboardField('serverId')],
+  ['a serverId of 0', { ...leaderboardBase(), serverId: 0 }],
+  ['a negative serverId', { ...leaderboardBase(), serverId: -1 }],
+  ['a fractional serverId', { ...leaderboardBase(), serverId: 1.5 }],
+  ['a string serverId', { ...leaderboardBase(), serverId: '1' }],
+  ['a null serverId', { ...leaderboardBase(), serverId: null }],
+  ['a missing at', withoutLeaderboardField('at')],
+  ['a negative at', { ...leaderboardBase(), at: -1 }],
+  ['a NaN at', { ...leaderboardBase(), at: Number.NaN }],
+  ['an Infinity at', { ...leaderboardBase(), at: Number.POSITIVE_INFINITY }],
+  ['a string at', { ...leaderboardBase(), at: '0' }],
+  ['a null at', { ...leaderboardBase(), at: null }],
+  ['a missing entries array', withoutLeaderboardField('entries')],
+  ['a non-array entries value', { ...leaderboardBase(), entries: {} }],
+  ['a null entries value', { ...leaderboardBase(), entries: null }],
+  ['six entries', { ...leaderboardBase(), entries: leaderboardEntries(6) }],
+  ['a non-object entry', { ...leaderboardBase(), entries: [7] }],
+  ['an entry missing playerId', withoutLeaderboardEntryField('playerId')],
+  ['an empty playerId', withLeaderboardEntry({ playerId: '' })],
+  ['a null playerId', withLeaderboardEntry({ playerId: null })],
+  ['a numeric playerId', withLeaderboardEntry({ playerId: 7 })],
+  ['an entry missing name', withoutLeaderboardEntryField('name')],
+  ['an empty name', withLeaderboardEntry({ name: '' })],
+  ['a null name', withLeaderboardEntry({ name: null })],
+  ['a numeric name', withLeaderboardEntry({ name: 7 })],
+  ['an entry missing cubesCompleted', withoutLeaderboardEntryField('cubesCompleted')],
+  ['a negative cubesCompleted', withLeaderboardEntry({ cubesCompleted: -1 })],
+  ['a fractional cubesCompleted', withLeaderboardEntry({ cubesCompleted: 1.5 })],
+  ['a NaN cubesCompleted', withLeaderboardEntry({ cubesCompleted: Number.NaN })],
+  ['a string cubesCompleted', withLeaderboardEntry({ cubesCompleted: '1' })],
+  ['a null cubesCompleted', withLeaderboardEntry({ cubesCompleted: null })],
+  ['an entry missing clicks', withoutLeaderboardEntryField('clicks')],
+  ['a negative clicks', withLeaderboardEntry({ clicks: -1 })],
+  ['a fractional clicks', withLeaderboardEntry({ clicks: 1.5 })],
+  ['a NaN clicks', withLeaderboardEntry({ clicks: Number.NaN })],
+  ['a string clicks', withLeaderboardEntry({ clicks: '1' })],
+  ['a null clicks', withLeaderboardEntry({ clicks: null })],
+  ['a missing totals object', withoutLeaderboardField('totals')],
+  ['a null totals object', { ...leaderboardBase(), totals: null }],
+  ['an array totals object', { ...leaderboardBase(), totals: [] }],
+  ['missing totals.cubesCompleted', withoutLeaderboardTotalField('cubesCompleted')],
+  ['negative totals.cubesCompleted', withLeaderboardTotals({ cubesCompleted: -1 })],
+  ['fractional totals.cubesCompleted', withLeaderboardTotals({ cubesCompleted: 1.5 })],
+  ['NaN totals.cubesCompleted', withLeaderboardTotals({ cubesCompleted: Number.NaN })],
+  ['string totals.cubesCompleted', withLeaderboardTotals({ cubesCompleted: '1' })],
+  ['null totals.cubesCompleted', withLeaderboardTotals({ cubesCompleted: null })],
+  ['missing totals.clicks', withoutLeaderboardTotalField('clicks')],
+  ['negative totals.clicks', withLeaderboardTotals({ clicks: -1 })],
+  ['fractional totals.clicks', withLeaderboardTotals({ clicks: 1.5 })],
+  ['NaN totals.clicks', withLeaderboardTotals({ clicks: Number.NaN })],
+  ['string totals.clicks', withLeaderboardTotals({ clicks: '1' })],
+  ['null totals.clicks', withLeaderboardTotals({ clicks: null })],
+  ['missing totals.facesDestroyed', withoutLeaderboardTotalField('facesDestroyed')],
+  ['negative totals.facesDestroyed', withLeaderboardTotals({ facesDestroyed: -1 })],
+  ['fractional totals.facesDestroyed', withLeaderboardTotals({ facesDestroyed: 1.5 })],
+  ['NaN totals.facesDestroyed', withLeaderboardTotals({ facesDestroyed: Number.NaN })],
+  ['string totals.facesDestroyed', withLeaderboardTotals({ facesDestroyed: '1' })],
+  ['null totals.facesDestroyed', withLeaderboardTotals({ facesDestroyed: null })],
+];
+
+/** The exact encoded representative frame (AC-14), byte-identical to the backend's. */
+const LEADERBOARD_FRAME =
+  '{"type":"leaderboardUpdate","leaderboard":{"serverId":1,"at":1000,"entries":[{"playerId":"p1","name":"Player 1","cubesCompleted":2,"clicks":40}],"totals":{"cubesCompleted":2,"clicks":40,"facesDestroyed":3}}}';
+
+describe('leaderboard wire catalog (AC-15)', () => {
+  it('pins the top-five row cap', () => {
+    expect(LEADERBOARD_TOP_LIMIT).toBe(5);
+  });
+
+  it('pins the exact representative encoded frame', () => {
+    expect(encodeServerMessage(leaderboardUpdateMessage(leaderboardSnapshot()))).toBe(
+      LEADERBOARD_FRAME,
+    );
+  });
+
+  it('decodes the exact backend frame to the pinned snapshot', () => {
+    expect(parseServerMessage(LEADERBOARD_FRAME)).toEqual({
+      ok: true,
+      message: { type: 'leaderboardUpdate', leaderboard: LEADERBOARD_SNAPSHOT },
+    });
+  });
+
+  it('never accepts a client leaderboardUpdate frame (server-only catalog)', () => {
+    expect(parseClientMessage(LEADERBOARD_FRAME)).toEqual({ ok: false, error: 'bad_message' });
+    expect(parseClientMessage('{"type":"leaderboardUpdate"}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+    expect(parseClientMessage('{"type":"leaderboardUpdate","clicks":5}')).toEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('rejects a malformed leaderboardUpdate frame at the server decoder', () => {
+    const invalidFrames: readonly string[] = [
+      '{"type":"leaderboardUpdate"}',
+      '{"type":"leaderboardUpdate","leaderboard":null}',
+      JSON.stringify({
+        type: 'leaderboardUpdate',
+        leaderboard: { ...leaderboardBase(), serverId: 0 },
+      }),
+      JSON.stringify({
+        type: 'leaderboardUpdate',
+        leaderboard: { ...leaderboardBase(), entries: leaderboardEntries(6) },
+      }),
+    ];
+    for (const text of invalidFrames) {
+      expect(parseServerMessage(text)).toEqual({ ok: false, error: 'bad_message' });
+    }
+  });
+});
+
+describe('parseLeaderboardSnapshot — valid payloads (parity table)', () => {
+  it('round-trips the pinned representative snapshot as a fresh copy', () => {
+    const parsed = parseLeaderboardSnapshot(JSON.parse(JSON.stringify(LEADERBOARD_SNAPSHOT)));
+
+    expect(parsed).toStrictEqual(LEADERBOARD_SNAPSHOT);
+    expect(parsed).not.toBe(LEADERBOARD_SNAPSHOT);
+    expect(parsed!.entries).not.toBe(LEADERBOARD_SNAPSHOT.entries);
+    expect(parsed!.entries[0]).not.toBe(LEADERBOARD_SNAPSHOT.entries[0]);
+    expect(parsed!.totals).not.toBe(LEADERBOARD_SNAPSHOT.totals);
+  });
+
+  it('accepts an empty ranking with a zero clock and zero totals', () => {
+    expect(
+      parseLeaderboardSnapshot({
+        serverId: 2,
+        at: 0,
+        entries: [],
+        totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+      }),
+    ).toStrictEqual({
+      serverId: 2,
+      at: 0,
+      entries: [],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+  });
+
+  it('accepts exactly five entries and a fractional at', () => {
+    const entries = leaderboardEntries(5);
+
+    expect(
+      parseLeaderboardSnapshot({
+        serverId: 3,
+        at: 1234.5,
+        entries,
+        totals: { cubesCompleted: 10, clicks: 100, facesDestroyed: 5 },
+      }),
+    ).toStrictEqual({
+      serverId: 3,
+      at: 1234.5,
+      entries,
+      totals: { cubesCompleted: 10, clicks: 100, facesDestroyed: 5 },
+    });
+  });
+
+  it('drops unknown extra fields at every level', () => {
+    const parsed = parseLeaderboardSnapshot({
+      ...leaderboardBase(),
+      rank: 99,
+      accountId: 'acct-1',
+      entries: [
+        leaderboardEntryFixture({ accountId: 'acct-1', coins: 9, token: 'secret' }),
+      ],
+      totals: { cubesCompleted: 2, clicks: 40, facesDestroyed: 3, coins: 9 },
+    });
+
+    expect(parsed).toStrictEqual(LEADERBOARD_SNAPSHOT);
+  });
+
+  it('copies the input entries and totals so later mutations cannot leak in', () => {
+    const entries = leaderboardEntries(2);
+    const totals = { cubesCompleted: 1, clicks: 10, facesDestroyed: 2 };
+    const parsed = parseLeaderboardSnapshot({ serverId: 1, at: 5, entries, totals });
+
+    entries[0]!.clicks = 999;
+    entries.push(leaderboardEntryFixture({}));
+    totals.clicks = 999;
+
+    expect(parsed).toStrictEqual({
+      serverId: 1,
+      at: 5,
+      entries: [
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 0 },
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 1, clicks: 10 },
+      ],
+      totals: { cubesCompleted: 1, clicks: 10, facesDestroyed: 2 },
+    });
+  });
+});
+
+describe('parseLeaderboardSnapshot — invalid payloads', () => {
+  it.each(INVALID_LEADERBOARD_SNAPSHOTS)('rejects %s', (_label, payload) => {
+    expect(parseLeaderboardSnapshot(payload)).toBeNull();
+  });
+});
+
+describe('copyLeaderboardSnapshot', () => {
+  it('returns an equal deep copy with fresh nested objects', () => {
+    const snapshot = leaderboardSnapshot();
+    const copy = copyLeaderboardSnapshot(snapshot);
+
+    expect(copy).toStrictEqual(snapshot);
+    expect(copy).not.toBe(snapshot);
+    expect(copy.entries).not.toBe(snapshot.entries);
+    expect(copy.entries[0]).not.toBe(snapshot.entries[0]);
+    expect(copy.totals).not.toBe(snapshot.totals);
+
+    copy.entries[0]!.clicks = 999;
+    copy.totals.cubesCompleted = 999;
+    expect(snapshot).toStrictEqual(LEADERBOARD_SNAPSHOT);
+  });
+
+  it('throws TypeError instead of copying an invalid snapshot', () => {
+    expect(() =>
+      copyLeaderboardSnapshot({
+        ...leaderboardSnapshot(),
+        serverId: 0,
+      }),
+    ).toThrow(new TypeError('invalid leaderboard snapshot'));
+    expect(() =>
+      copyLeaderboardSnapshot({
+        ...leaderboardSnapshot(),
+        entries: leaderboardEntries(6) as unknown as LeaderboardSnapshot['entries'],
+      }),
+    ).toThrow(new TypeError('invalid leaderboard snapshot'));
+  });
+});
+
+describe('leaderboardUpdateMessage', () => {
+  it('builds the frame with a fresh copied snapshot', () => {
+    const snapshot = leaderboardSnapshot();
+    const message = leaderboardUpdateMessage(snapshot);
+
+    expect(message).toStrictEqual({ type: 'leaderboardUpdate', leaderboard: snapshot });
+    if (message.type !== 'leaderboardUpdate') {
+      throw new Error('expected a leaderboardUpdate message');
+    }
+    expect(message.leaderboard).not.toBe(snapshot);
+    expect(message.leaderboard.entries[0]).not.toBe(snapshot.entries[0]);
+    expect(message.leaderboard.totals).not.toBe(snapshot.totals);
+
+    snapshot.entries[0]!.clicks = 999;
+    snapshot.totals.facesDestroyed = 999;
+    expect(message).toStrictEqual({
+      type: 'leaderboardUpdate',
+      leaderboard: LEADERBOARD_SNAPSHOT,
+    });
+  });
+
+  it.each(INVALID_LEADERBOARD_SNAPSHOTS)(
+    'throws TypeError for %s',
+    (_label, payload) => {
+      expect(() => leaderboardUpdateMessage(payload as LeaderboardSnapshot)).toThrow(
+        new TypeError('invalid leaderboardUpdate payload'),
+      );
+    },
+  );
+
+  it('round-trips through the wire codec', () => {
+    const encoded = encodeServerMessage(leaderboardUpdateMessage(leaderboardSnapshot()));
+    const decoded = JSON.parse(encoded) as { leaderboard: unknown };
+
+    expect(parseLeaderboardSnapshot(decoded.leaderboard)).toStrictEqual(LEADERBOARD_SNAPSHOT);
+  });
+});
+
+describe('placement leaderboard field (AC-15)', () => {
+  it('decodes welcome.leaderboard as a fresh copy', () => {
+    const source: LeaderboardSnapshot = {
+      ...leaderboardSnapshot(),
+      entries: leaderboardSnapshot().entries.map((entry) => ({ ...entry })),
+      totals: { ...leaderboardSnapshot().totals },
+    };
+    const result = parseServerMessage(
+      JSON.stringify({ type: 'welcome', ...PLACEMENT, leaderboard: source }),
+    );
+    if (!result.ok || result.message.type !== 'welcome') {
+      throw new Error('expected a welcome message');
+    }
+
+    expect(result.message.leaderboard).toStrictEqual(LEADERBOARD_SNAPSHOT);
+    expect(result.message.leaderboard).not.toBe(source);
+    expect(result.message.leaderboard!.entries).not.toBe(source.entries);
+    expect(result.message.leaderboard!.entries[0]).not.toBe(source.entries[0]);
+    expect(result.message.leaderboard!.totals).not.toBe(source.totals);
+
+    source.entries[0]!.clicks = 999;
+    expect(result.message.leaderboard!.entries[0]!.clicks).toBe(40);
+  });
+
+  it('decodes worldEntered.leaderboard with the matching enclosing serverId', () => {
+    const result = parseServerMessage(
+      JSON.stringify({
+        type: 'worldEntered',
+        ...PLACEMENT,
+        serverId: 3,
+        leaderboard: { ...LEADERBOARD_SNAPSHOT, serverId: 3 },
+      }),
+    );
+    if (!result.ok || result.message.type !== 'worldEntered') {
+      throw new Error('expected a worldEntered message');
+    }
+
+    expect(result.message.leaderboard).toStrictEqual({
+      ...LEADERBOARD_SNAPSHOT,
+      serverId: 3,
+    });
+  });
+
+  it('omits leaderboard for a legacy welcome or worldEntered without it', () => {
+    const welcome = parseServerMessage(WELCOME_TEXT);
+    if (!welcome.ok || welcome.message.type !== 'welcome') {
+      throw new Error('the pinned legacy welcome frame must decode');
+    }
+    expect(welcome.message.leaderboard).toBeUndefined();
+    expect(welcome.message).not.toHaveProperty('leaderboard');
+
+    const entered = parseServerMessage(WELCOME_TEXT.replace('"type":"welcome"', '"type":"worldEntered"'));
+    if (!entered.ok || entered.message.type !== 'worldEntered') {
+      throw new Error('the pinned legacy worldEntered frame must decode');
+    }
+    expect(entered.message.leaderboard).toBeUndefined();
+    expect(entered.message).not.toHaveProperty('leaderboard');
+  });
+
+  it('rejects a non-object, over-long, invalid or server-mismatched placement leaderboard', () => {
+    const invalidFrames: readonly string[] = [
+      JSON.stringify({ type: 'welcome', ...PLACEMENT, leaderboard: 'none' }),
+      JSON.stringify({ type: 'welcome', ...PLACEMENT, leaderboard: null }),
+      JSON.stringify({
+        type: 'welcome',
+        ...PLACEMENT,
+        leaderboard: { ...leaderboardBase(), entries: leaderboardEntries(6) },
+      }),
+      JSON.stringify({
+        type: 'welcome',
+        ...PLACEMENT,
+        leaderboard: { ...leaderboardBase(), entries: [{ clicks: 1 }] },
+      }),
+      JSON.stringify({
+        type: 'welcome',
+        ...PLACEMENT,
+        leaderboard: { ...leaderboardBase(), serverId: 2 },
+      }),
+      JSON.stringify({ type: 'worldEntered', ...PLACEMENT, leaderboard: { ...leaderboardBase(), serverId: 2 } }),
+    ];
+    for (const text of invalidFrames) {
+      expect(parseServerMessage(text)).toEqual({ ok: false, error: 'bad_message' });
+    }
+  });
+
+  it('drops unknown extra fields inside the placement leaderboard', () => {
+    const result = parseServerMessage(
+      JSON.stringify({
+        type: 'welcome',
+        ...PLACEMENT,
+        leaderboard: {
+          ...leaderboardBase(),
+          accountId: 'acct-1',
+          entries: [leaderboardEntryFixture({ coins: 9, token: 'secret' })],
+        },
+      }),
+    );
+    if (!result.ok || result.message.type !== 'welcome') {
+      throw new Error('expected a welcome message');
+    }
+
+    expect(result.message.leaderboard).toStrictEqual(LEADERBOARD_SNAPSHOT);
   });
 });

@@ -25,8 +25,8 @@
  * change position, so the order is stable for the life of a membership.
  */
 
-import type { ActivityEvent, CubeState, EconomyState, MemberState, Position, ServerMessage } from './protocol';
-import { ACTIVITY_FEED_LIMIT, copyActivityEvent } from './protocol';
+import type { ActivityEvent, CubeState, EconomyState, LeaderboardSnapshot, MemberState, Position, ServerMessage } from './protocol';
+import { ACTIVITY_FEED_LIMIT, copyActivityEvent, copyLeaderboardSnapshot } from './protocol';
 
 export type { ActivityEvent, CubeState, EconomyState, MemberState, Position };
 
@@ -55,6 +55,8 @@ export interface PendingWorldSwap {
   roster: MemberState[];
   /** The target server's activity ring at `worldEntered`, newest first (≤ 20). */
   activity: ActivityEvent[];
+  /** The target server's leaderboard snapshot at `worldEntered` (or `null`). */
+  leaderboard: LeaderboardSnapshot | null;
   economy: EconomyState;
 }
 
@@ -69,6 +71,8 @@ export interface WorldState {
   members: MemberState[];
   /** The server's activity feed, newest first, at most {@link ACTIVITY_FEED_LIMIT} events. */
   activity: ActivityEvent[];
+  /** The current server's ranked leaderboard snapshot; `null` until a snapshot arrives. */
+  leaderboard: LeaderboardSnapshot | null;
   /** Set by `worldEntered`, cleared by the swap / a fresh `welcome`. */
   pendingWorldSwap: PendingWorldSwap | null;
 }
@@ -90,6 +94,7 @@ export function createWorldState(): WorldState {
     },
     members: [],
     activity: [],
+    leaderboard: null,
     pendingWorldSwap: null,
   };
 }
@@ -150,6 +155,42 @@ function economiesEqual(a: EconomyState, b: EconomyState): boolean {
     a.clicks === b.clicks &&
     a.facesDestroyed === b.facesDestroyed &&
     a.cubesDestroyed === b.cubesDestroyed
+  );
+}
+
+/**
+ * Deep equality of two leaderboard snapshots (or `null`s). Identical snapshots must return
+ * the same state reference; a difference in any pinned field is a real change.
+ */
+function leaderboardsEqual(
+  a: LeaderboardSnapshot | null,
+  b: LeaderboardSnapshot | null,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a === null || b === null) {
+    return false;
+  }
+  if (a.serverId !== b.serverId || a.at !== b.at || a.entries.length !== b.entries.length) {
+    return false;
+  }
+  for (let index = 0; index < a.entries.length; index += 1) {
+    const left = a.entries[index]!;
+    const right = b.entries[index]!;
+    if (
+      left.playerId !== right.playerId ||
+      left.name !== right.name ||
+      left.cubesCompleted !== right.cubesCompleted ||
+      left.clicks !== right.clicks
+    ) {
+      return false;
+    }
+  }
+  return (
+    a.totals.cubesCompleted === b.totals.cubesCompleted &&
+    a.totals.clicks === b.totals.clicks &&
+    a.totals.facesDestroyed === b.totals.facesDestroyed
   );
 }
 
@@ -381,9 +422,10 @@ function withRotated(state: WorldState, msg: Extract<ServerMessage, { type: 'cub
  * `worldEntered` (record the pending swap and its activity ring), `memberJoined`/`memberLeft`
  * (roster), `miniCubeRemoved` (one board delta), `miniCubesRemoved` (every id of a batch, in
  * order), `levelAdvanced` (fresh cube + position), `stateSync` (authoritative board),
- * `cubeRotated` (orientation) and `activityEvent` (the per-server feed, or the pending
- * target feed while a swap is pending). `hello` and `error` carry no world state and return
- * the same reference.
+ * `cubeRotated` (orientation), `activityEvent` (the per-server feed, or the pending
+ * target feed while a swap is pending) and `leaderboardUpdate` (the current server's
+ * ranking, or the pending target ranking while a swap is pending). `hello` and `error`
+ * carry no world state and return the same reference.
  */
 export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldState {
   switch (msg.type) {
@@ -400,6 +442,7 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
         },
         members: othersFrom(msg.roster, msg.playerId, msg.maxUsers),
         activity: copyActivityFeed(msg.activity ?? []),
+        leaderboard: msg.leaderboard === undefined ? null : copyLeaderboardSnapshot(msg.leaderboard),
         pendingWorldSwap: null,
       };
 
@@ -421,6 +464,8 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
           self: copyCube(msg.self),
           roster: msg.roster.map(copyMember),
           activity: copyActivityFeed(msg.activity ?? []),
+          leaderboard:
+            msg.leaderboard === undefined ? null : copyLeaderboardSnapshot(msg.leaderboard),
           economy: pendingEconomy,
         },
       };
@@ -449,6 +494,31 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
         return { ...state, activity: nextActivity };
       }
       // A different server's event can never reach this client's feed (cross-server guard).
+      return state;
+    }
+
+    case 'leaderboardUpdate': {
+      const { leaderboard } = msg;
+      const pending = state.pendingWorldSwap;
+      // While a cross-server swap is pending, the target server's snapshot belongs to the
+      // pending swap; the old server's current snapshot stays untouched until the midpoint.
+      if (pending !== null && leaderboard.serverId === pending.serverId) {
+        if (leaderboardsEqual(pending.leaderboard, leaderboard)) {
+          return state;
+        }
+        return {
+          ...state,
+          pendingWorldSwap: { ...pending, leaderboard: copyLeaderboardSnapshot(leaderboard) },
+        };
+      }
+      if (leaderboard.serverId === state.serverId) {
+        if (leaderboardsEqual(state.leaderboard, leaderboard)) {
+          return state;
+        }
+        return { ...state, leaderboard: copyLeaderboardSnapshot(leaderboard) };
+      }
+      // A snapshot matching neither the current server nor the pending target is the
+      // cross-server guard: no state change (same reference).
       return state;
     }
 
@@ -504,9 +574,10 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
 /**
  * Applies the pending cross-server swap (AC-12): the mover's own placement and cube from
- * `worldEntered`, the target server's roster minus self, the target capacity and the target
- * activity ring (including any event folded in during travel). Called at the travel
- * midpoint by the session; with no pending swap it returns the same reference.
+ * `worldEntered`, the target server's roster minus self, the target capacity, the target
+ * activity ring and the target leaderboard snapshot (including any update folded in during
+ * travel). Called at the travel midpoint by the session; with no pending swap it returns
+ * the same reference.
  */
 export function applyWorldSwap(state: WorldState): WorldState {
   const pending = state.pendingWorldSwap;
@@ -525,6 +596,8 @@ export function applyWorldSwap(state: WorldState): WorldState {
     },
     members: othersFrom(pending.roster, state.self.playerId, pending.maxUsers),
     activity: copyActivityFeed(pending.activity),
+    leaderboard:
+      pending.leaderboard === null ? null : copyLeaderboardSnapshot(pending.leaderboard),
     pendingWorldSwap: null,
   };
 }

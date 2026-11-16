@@ -9,7 +9,7 @@ import {
 } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ActivityEvent, ClientMessage, MemberState, Position, ServerMessage } from '../multiplayer/protocol';
+import { leaderboardUpdateMessage, type ActivityEvent, type ClientMessage, type LeaderboardSnapshot, type MemberState, type Position, type ServerMessage } from '../multiplayer/protocol';
 import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import type { QualityTier } from '../render/quality';
 import { createSceneView, type SceneView, type SceneWorld } from '../render/scene';
@@ -866,6 +866,7 @@ function welcomeMessage(options: {
   serverId?: number;
   maxUsers?: number;
   activity?: ActivityEvent[];
+  leaderboard?: LeaderboardSnapshot;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
   customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
@@ -892,6 +893,7 @@ function welcomeMessage(options: {
       ],
     identity: { kind: 'guest', playerId },
     ...(options.activity === undefined ? {} : { activity: options.activity }),
+    ...(options.leaderboard === undefined ? {} : { leaderboard: options.leaderboard }),
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
     ...(options.customization === undefined ? {} : { customization: options.customization }),
@@ -908,6 +910,7 @@ function worldEnteredMessage(options: {
   serverId?: number;
   maxUsers?: number;
   activity?: ActivityEvent[];
+  leaderboard?: LeaderboardSnapshot;
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
   customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
@@ -931,6 +934,7 @@ function worldEnteredMessage(options: {
       ],
     identity: { kind: 'guest', playerId: 'p1' },
     ...(options.activity === undefined ? {} : { activity: options.activity }),
+    ...(options.leaderboard === undefined ? {} : { leaderboard: options.leaderboard }),
     ...(options.economy === undefined ? {} : { economy: options.economy }),
     ...(options.upgrades === undefined ? {} : { upgrades: options.upgrades }),
     ...(options.customization === undefined ? {} : { customization: options.customization }),
@@ -2662,6 +2666,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
         },
       ],
       activity: [],
+      leaderboard: null,
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
 
@@ -3118,6 +3123,192 @@ describe('activity feed over the wire (AC-16, AC-17, AC-18)', () => {
     const swapped = session.getMultiplayerSnapshot().world;
     expect(swapped.serverId).toBe(2);
     expect(swapped.activity).toEqual([TARGET_CLEARED_EVENT, TARGET_JOIN_EVENT]);
+    expect(swapped.pendingWorldSwap).toBeNull();
+
+    session.dispose();
+  });
+});
+
+describe('live leaderboard over the wire (AC-15, AC-19)', () => {
+  /** The browser WebSocket surface the real transport drives (same shape as above). */
+  class FakeLeaderboardSocket {
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+
+    readonly sent: string[] = [];
+
+    constructor(readonly url: string) {}
+
+    send(text: string): void {
+      this.sent.push(text);
+    }
+
+    close(): void {}
+
+    emitOpen(): void {
+      this.onopen?.();
+    }
+
+    emitMessage(data: unknown): void {
+      this.onmessage?.({ data });
+    }
+  }
+
+  const CURRENT_LEADERBOARD: LeaderboardSnapshot = {
+    serverId: 1,
+    at: 1000,
+    entries: [
+      { playerId: 'p2', name: 'Player 2', cubesCompleted: 2, clicks: 40 },
+      { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 3 },
+    ],
+    totals: { cubesCompleted: 2, clicks: 43, facesDestroyed: 3 },
+  };
+
+  const UPDATE_LEADERBOARD: LeaderboardSnapshot = {
+    serverId: 1,
+    at: 2000,
+    entries: [
+      { playerId: 'p2', name: 'Player 2', cubesCompleted: 2, clicks: 41 },
+      { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 3 },
+    ],
+    totals: { cubesCompleted: 2, clicks: 44, facesDestroyed: 3 },
+  };
+
+  const TARGET_LEADERBOARD: LeaderboardSnapshot = {
+    serverId: 2,
+    at: 1200,
+    entries: [{ playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 10 }],
+    totals: { cubesCompleted: 1, clicks: 10, facesDestroyed: 2 },
+  };
+
+  const TARGET_LEADERBOARD_NEXT: LeaderboardSnapshot = {
+    serverId: 2,
+    at: 2200,
+    entries: [
+      { playerId: 'p3', name: 'Player 3', cubesCompleted: 3, clicks: 30 },
+      { playerId: 'p1', name: 'Player 1', cubesCompleted: 1, clicks: 9 },
+    ],
+    totals: { cubesCompleted: 4, clicks: 39, facesDestroyed: 5 },
+  };
+
+  it('passes the exact welcome.leaderboard and leaderboardUpdate frames through the real decoder and reducer', () => {
+    const recording = createFakeEngine(snapshot({ phase: 'playing' }));
+    const fake = createFakeEnv();
+    const sockets: FakeLeaderboardSocket[] = [];
+    const transport = createTransport({
+      url: 'ws://test.local/ws',
+      socketFactory: (url) => {
+        const socket = new FakeLeaderboardSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+    const session = createGameSession({ env: fake.env, engine: recording.engine, transport });
+    session.attach(fake.canvas.surface);
+
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    session.join('guest');
+    socket.emitMessage('{"type":"hello","serverTime":"2026-11-16T00:00:00.000Z"}');
+    socket.emitMessage(
+      JSON.stringify(
+        welcomeMessage({ roster: [selfMember(), member()], leaderboard: CURRENT_LEADERBOARD }),
+      ),
+    );
+
+    expect(session.getMultiplayerSnapshot().world.leaderboard).toEqual(CURRENT_LEADERBOARD);
+
+    // The exact backend builder frame replaces the current snapshot.
+    socket.emitMessage(JSON.stringify(leaderboardUpdateMessage(UPDATE_LEADERBOARD)));
+    expect(session.getMultiplayerSnapshot().world.leaderboard).toEqual(UPDATE_LEADERBOARD);
+    expect(session.getMultiplayerSnapshot().world.serverId).toBe(1);
+
+    // A leaderboard frame carries no engine or scene action.
+    expect(recording.events).toEqual([]);
+
+    // A malformed over-long frame is dropped by the real decoder with no state change.
+    const stable = session.getMultiplayerSnapshot();
+    const sixEntries = Array.from({ length: 6 }, (_, index) => ({
+      playerId: `p${index + 1}`,
+      name: `Player ${index + 1}`,
+      cubesCompleted: index,
+      clicks: index * 10,
+    }));
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'leaderboardUpdate',
+        leaderboard: { ...UPDATE_LEADERBOARD, entries: sixEntries },
+      }),
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+
+    // A snapshot for another server is rejected by the reducer with no state change.
+    socket.emitMessage(
+      JSON.stringify(leaderboardUpdateMessage({ ...UPDATE_LEADERBOARD, serverId: 9 })),
+    );
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+
+    // A repeated identical snapshot returns the same store reference.
+    socket.emitMessage(JSON.stringify(leaderboardUpdateMessage(UPDATE_LEADERBOARD)));
+    expect(session.getMultiplayerSnapshot()).toBe(stable);
+    expect(recording.events).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('routes the target update during travel and applies it at the midpoint swap', () => {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], leaderboard: CURRENT_LEADERBOARD }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(416);
+    expect(session.getSnapshot().phase).toBe('travel');
+
+    wire.emit(
+      worldEnteredMessage({
+        leaderboard: TARGET_LEADERBOARD,
+        roster: [
+          selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }),
+          member({ playerId: 'p3', name: 'Player 3', position: { x: 24, y: 0 } }),
+        ],
+      }),
+    );
+
+    // The target update arrives before the travel midpoint: it joins the pending swap only.
+    wire.emit(leaderboardUpdateMessage(TARGET_LEADERBOARD_NEXT));
+    const duringTravel = session.getMultiplayerSnapshot().world;
+    expect(duringTravel.leaderboard).toEqual(CURRENT_LEADERBOARD);
+    expect(duringTravel.pendingWorldSwap!.leaderboard).toEqual(TARGET_LEADERBOARD_NEXT);
+
+    // An old-server update during travel applies to the current snapshot, never the pending one.
+    wire.emit(leaderboardUpdateMessage(UPDATE_LEADERBOARD));
+    const withOld = session.getMultiplayerSnapshot().world;
+    expect(withOld.leaderboard).toEqual(UPDATE_LEADERBOARD);
+    expect(withOld.pendingWorldSwap!.leaderboard).toEqual(TARGET_LEADERBOARD_NEXT);
+
+    fake.scheduler.tick(1666); // midpoint: the pending world (and its ranking) becomes current
+    const swapped = session.getMultiplayerSnapshot().world;
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.leaderboard).toEqual(TARGET_LEADERBOARD_NEXT);
     expect(swapped.pendingWorldSwap).toBeNull();
 
     session.dispose();

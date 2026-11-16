@@ -221,6 +221,7 @@ function worldFor({
     },
     members,
     activity,
+    leaderboard: null,
     pendingWorldSwap: null,
   };
 }

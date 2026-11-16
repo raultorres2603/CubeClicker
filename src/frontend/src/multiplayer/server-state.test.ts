@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ActivityEvent, MemberState, ServerMessage } from './protocol';
+import type { ActivityEvent, LeaderboardSnapshot, MemberState, ServerMessage } from './protocol';
 import { applyWorldSwap, createWorldState, reduceWorldState, type WorldState } from './server-state';
 
 /**
@@ -65,6 +65,47 @@ const MOVED_SELF_MEMBER: MemberState = {
 /** p2 as seen on server 2, where it holds slot 1 (the ring restarts per server). */
 const P2_MEMBER_SERVER_2: MemberState = { ...P2_MEMBER, position: SLOT_1 };
 
+/** The pinned current-server snapshot (server 1) the reducer scenes start from. */
+const LEADERBOARD: LeaderboardSnapshot = {
+  serverId: 1,
+  at: 1000,
+  entries: [
+    { playerId: 'p2', name: 'Player 2', cubesCompleted: 2, clicks: 40 },
+    { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 3 },
+  ],
+  totals: { cubesCompleted: 2, clicks: 43, facesDestroyed: 3 },
+};
+
+/** The next current-server snapshot (a later coalesced frame). */
+const LEADERBOARD_NEXT: LeaderboardSnapshot = {
+  serverId: 1,
+  at: 2000,
+  entries: [
+    { playerId: 'p2', name: 'Player 2', cubesCompleted: 2, clicks: 41 },
+    { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 3 },
+  ],
+  totals: { cubesCompleted: 2, clicks: 44, facesDestroyed: 3 },
+};
+
+/** The target server's snapshot carried by `worldEntered`. */
+const TARGET_LEADERBOARD: LeaderboardSnapshot = {
+  serverId: 2,
+  at: 1200,
+  entries: [{ playerId: 'p3', name: 'Player 3', cubesCompleted: 1, clicks: 10 }],
+  totals: { cubesCompleted: 1, clicks: 10, facesDestroyed: 2 },
+};
+
+/** A target-server update received during travel. */
+const TARGET_LEADERBOARD_NEXT: LeaderboardSnapshot = {
+  serverId: 2,
+  at: 2200,
+  entries: [
+    { playerId: 'p3', name: 'Player 3', cubesCompleted: 3, clicks: 30 },
+    { playerId: 'p1', name: 'Player 1', cubesCompleted: 1, clicks: 9 },
+  ],
+  totals: { cubesCompleted: 4, clicks: 39, facesDestroyed: 5 },
+};
+
 const WELCOME: Extract<ServerMessage, { type: 'welcome' }> = {
   type: 'welcome',
   playerId: 'p1',
@@ -126,6 +167,7 @@ const SEEDED: WorldState = {
   },
   members: [P2_MEMBER, P3_MEMBER],
   activity: [],
+  leaderboard: null,
   pendingWorldSwap: null,
 };
 
@@ -147,6 +189,7 @@ describe('createWorldState', () => {
       },
       members: [],
       activity: [],
+      leaderboard: null,
       pendingWorldSwap: null,
     });
   });
@@ -554,6 +597,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
       self: { levelIndex: 3, gridSize: 7, styleId: 'violet-nebula', removedIds: [], yawSteps: 0, pitchSteps: 0 },
       roster: [P2_MEMBER_SERVER_2, MOVED_SELF_MEMBER],
       activity: [],
+      leaderboard: null,
       economy: { coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 },
     });
     expect(pending.serverId).toBe(1);
@@ -588,6 +632,7 @@ describe('worldEntered and applyWorldSwap (AC-12)', () => {
       },
       members: [P2_MEMBER_SERVER_2],
       activity: [],
+      leaderboard: null,
       pendingWorldSwap: null,
     });
     // The swap is consumed exactly once: a second call is a no-op.
@@ -1067,5 +1112,241 @@ describe('reduceWorldState — economy (T8)', () => {
     const swapped = applyWorldSwap(pending);
     expect(swapped.self.economy).toEqual(ECO_B);
     expect(swapped.pendingWorldSwap).toBeNull();
+  });
+});
+
+describe('reduceWorldState — leaderboard (AC-17, AC-18)', () => {
+  function withLeaderboard(snapshot: LeaderboardSnapshot = LEADERBOARD): WorldState {
+    return reduceWorldState(createWorldState(), { ...WELCOME, leaderboard: snapshot });
+  }
+
+  it('welcome seeds the current snapshot as a deep copy', () => {
+    const source: LeaderboardSnapshot = {
+      ...LEADERBOARD,
+      entries: LEADERBOARD.entries.map((entry) => ({ ...entry })),
+      totals: { ...LEADERBOARD.totals },
+    };
+    const state = withLeaderboard(source);
+
+    expect(state.leaderboard).toEqual(LEADERBOARD);
+    expect(state.leaderboard).not.toBe(source);
+    expect(state.leaderboard!.entries).not.toBe(source.entries);
+    expect(state.leaderboard!.entries[0]).not.toBe(source.entries[0]);
+    expect(state.leaderboard!.totals).not.toBe(source.totals);
+
+    source.entries[0]!.clicks = 999;
+    source.totals.cubesCompleted = 999;
+    expect(state.leaderboard).toEqual(LEADERBOARD);
+  });
+
+  it('welcome replaces a previous snapshot and an absent field resets to null', () => {
+    const current = withLeaderboard();
+    const replaced = reduceWorldState(current, { ...WELCOME, leaderboard: LEADERBOARD_NEXT });
+    expect(replaced.leaderboard).toEqual(LEADERBOARD_NEXT);
+
+    const reset = reduceWorldState(replaced, WELCOME);
+    expect(reset.leaderboard).toBeNull();
+  });
+
+  it('preserves the server order of a five-entry snapshot without re-sorting', () => {
+    const fiveEntries: LeaderboardSnapshot = {
+      serverId: 1,
+      at: 5000,
+      entries: [
+        { playerId: 'p5', name: 'Player 5', cubesCompleted: 0, clicks: 1 },
+        { playerId: 'p4', name: 'Player 4', cubesCompleted: 1, clicks: 2 },
+        { playerId: 'p3', name: 'Player 3', cubesCompleted: 2, clicks: 3 },
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 3, clicks: 4 },
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 4, clicks: 5 },
+      ],
+      totals: { cubesCompleted: 10, clicks: 15, facesDestroyed: 6 },
+    };
+
+    const state = withLeaderboard(fiveEntries);
+
+    expect(state.leaderboard!.entries.map((entry) => entry.playerId)).toEqual([
+      'p5',
+      'p4',
+      'p3',
+      'p2',
+      'p1',
+    ]);
+  });
+
+  it('leaderboardUpdate replaces only the leaderboard branch as a deep copy', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, { type: 'leaderboardUpdate', leaderboard: LEADERBOARD });
+
+    expect(next.leaderboard).toEqual(LEADERBOARD);
+    expect(next.leaderboard).not.toBe(LEADERBOARD);
+    expect(next.self).toBe(state.self);
+    expect(next.members).toBe(state.members);
+    expect(next.activity).toBe(state.activity);
+    expect(next.pendingWorldSwap).toBeNull();
+  });
+
+  it('leaderboardUpdate for the current server replaces a previous snapshot', () => {
+    const state = withLeaderboard();
+    const next = reduceWorldState(state, {
+      type: 'leaderboardUpdate',
+      leaderboard: LEADERBOARD_NEXT,
+    });
+
+    expect(next.leaderboard).toEqual(LEADERBOARD_NEXT);
+    expect(next.leaderboard).not.toBe(LEADERBOARD_NEXT);
+  });
+
+  it('returns the same state for an identical snapshot', () => {
+    const state = withLeaderboard();
+    const identical: LeaderboardSnapshot = {
+      ...LEADERBOARD,
+      entries: LEADERBOARD.entries.map((entry) => ({ ...entry })),
+      totals: { ...LEADERBOARD.totals },
+    };
+
+    expect(reduceWorldState(state, { type: 'leaderboardUpdate', leaderboard: identical })).toBe(
+      state,
+    );
+  });
+
+  it('returns the same state for a snapshot matching neither server', () => {
+    const state = withLeaderboard();
+
+    expect(
+      reduceWorldState(state, {
+        type: 'leaderboardUpdate',
+        leaderboard: { ...LEADERBOARD, serverId: 99 },
+      }),
+    ).toBe(state);
+  });
+
+  it('worldEntered stores the target snapshot in the pending swap without changing the current', () => {
+    const state = withLeaderboard();
+    const current = state.leaderboard;
+    const source: LeaderboardSnapshot = {
+      ...TARGET_LEADERBOARD,
+      entries: TARGET_LEADERBOARD.entries.map((entry) => ({ ...entry })),
+      totals: { ...TARGET_LEADERBOARD.totals },
+    };
+    const travelling = reduceWorldState(state, { ...WORLD_ENTERED, leaderboard: source });
+
+    expect(travelling.leaderboard).toBe(current);
+    expect(travelling.pendingWorldSwap!.leaderboard).toEqual(TARGET_LEADERBOARD);
+    expect(travelling.pendingWorldSwap!.leaderboard).not.toBe(source);
+    expect(travelling.pendingWorldSwap!.leaderboard!.entries).not.toBe(source.entries);
+    expect(travelling.self).toBe(state.self);
+    expect(travelling.members).toBe(state.members);
+
+    source.entries[0]!.name = 'Mallory';
+    expect(travelling.pendingWorldSwap!.leaderboard!.entries[0]!.name).toBe('Player 3');
+  });
+
+  it('worldEntered without a snapshot keeps the pending leaderboard null', () => {
+    const state = withLeaderboard();
+    const current = state.leaderboard;
+    const travelling = reduceWorldState(state, WORLD_ENTERED);
+
+    expect(travelling.leaderboard).toBe(current);
+    expect(travelling.pendingWorldSwap!.leaderboard).toBeNull();
+  });
+
+  it('routes a target update into the pending swap and leaves the current snapshot', () => {
+    const travelling = reduceWorldState(withLeaderboard(), {
+      ...WORLD_ENTERED,
+      leaderboard: TARGET_LEADERBOARD,
+    });
+    const current = travelling.leaderboard;
+    const next = reduceWorldState(travelling, {
+      type: 'leaderboardUpdate',
+      leaderboard: TARGET_LEADERBOARD_NEXT,
+    });
+
+    expect(next.leaderboard).toBe(current);
+    expect(next.pendingWorldSwap!.leaderboard).toEqual(TARGET_LEADERBOARD_NEXT);
+    expect(next.pendingWorldSwap!.leaderboard).not.toBe(TARGET_LEADERBOARD_NEXT);
+    expect(next.self).toBe(travelling.self);
+    expect(next.members).toBe(travelling.members);
+  });
+
+  it('returns the same state for an identical snapshot while a swap is pending', () => {
+    const travelling = reduceWorldState(withLeaderboard(), {
+      ...WORLD_ENTERED,
+      leaderboard: TARGET_LEADERBOARD,
+    });
+    const identical: LeaderboardSnapshot = {
+      ...TARGET_LEADERBOARD,
+      entries: TARGET_LEADERBOARD.entries.map((entry) => ({ ...entry })),
+      totals: { ...TARGET_LEADERBOARD.totals },
+    };
+
+    expect(
+      reduceWorldState(travelling, { type: 'leaderboardUpdate', leaderboard: identical }),
+    ).toBe(travelling);
+  });
+
+  it('applies an old-server update to the current snapshot during travel, never the pending one', () => {
+    const travelling = reduceWorldState(withLeaderboard(), {
+      ...WORLD_ENTERED,
+      leaderboard: TARGET_LEADERBOARD,
+    });
+    const pending = travelling.pendingWorldSwap;
+    const next = reduceWorldState(travelling, {
+      type: 'leaderboardUpdate',
+      leaderboard: LEADERBOARD_NEXT,
+    });
+
+    expect(next.leaderboard).toEqual(LEADERBOARD_NEXT);
+    expect(next.pendingWorldSwap).toBe(pending);
+    expect(next.pendingWorldSwap!.leaderboard).toEqual(TARGET_LEADERBOARD);
+  });
+
+  it('applyWorldSwap applies the pending snapshot received during travel and clears the swap', () => {
+    const travelling = reduceWorldState(withLeaderboard(), {
+      ...WORLD_ENTERED,
+      leaderboard: TARGET_LEADERBOARD,
+    });
+    const updated = reduceWorldState(travelling, {
+      type: 'leaderboardUpdate',
+      leaderboard: TARGET_LEADERBOARD_NEXT,
+    });
+    const swapped = applyWorldSwap(updated);
+
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.leaderboard).toEqual(TARGET_LEADERBOARD_NEXT);
+    expect(swapped.leaderboard).not.toBe(updated.pendingWorldSwap!.leaderboard);
+    expect(swapped.pendingWorldSwap).toBeNull();
+  });
+
+  it('applyWorldSwap replaces a current snapshot with the pending null', () => {
+    const state = withLeaderboard();
+    const swapped = applyWorldSwap(reduceWorldState(state, WORLD_ENTERED));
+
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.leaderboard).toBeNull();
+  });
+
+  it('produces the identical leaderboard branch for a guest and an account', () => {
+    const accountWelcome: ServerMessage = {
+      ...WELCOME,
+      identity: { kind: 'account', accountId: 'account-1', username: 'Player 1' },
+      leaderboard: LEADERBOARD,
+    };
+    const guestState = withLeaderboard();
+    const accountState = reduceWorldState(createWorldState(), accountWelcome);
+
+    expect(accountState.leaderboard).toEqual(guestState.leaderboard);
+    expect(accountState.leaderboard).not.toBe(guestState.leaderboard);
+    expect(Object.keys(accountState.leaderboard!)).toEqual([
+      'serverId',
+      'at',
+      'entries',
+      'totals',
+    ]);
+    expect(Object.keys(accountState.leaderboard!.entries[0]!)).toEqual([
+      'playerId',
+      'name',
+      'cubesCompleted',
+      'clicks',
+    ]);
   });
 });

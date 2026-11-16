@@ -28,6 +28,10 @@
  *   `welcome`/`worldEntered` seed it (the mover's target ring travels in `pendingWorldSwap`)
  *   and `activityEvent` frames only update the store, so the session has no engine/scene
  *   action for them;
+ * - the per-server leaderboard is presentation state owned by the same reducer:
+ *   `welcome`/`worldEntered` carry the snapshot (the target ranking travels in
+ *   `pendingWorldSwap`) and `leaderboardUpdate` frames only update the store, so the
+ *   session has no engine/scene action for them either;
  * - the engine holds its intro at progress 0 until `welcome`, then the intro clock starts
  *   and the scene enters the server world at the own slot position (AC-23);
  * - own-cube play stays optimistic: a successful `explodeMiniCube` is forwarded as
@@ -1032,6 +1036,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       case 'activityEvent':
         // The world reducer owns the feed; there is no engine/scene action, and the
         // `publishMultiplayer()` below notifies the store when the feed changed.
+        break;
+      case 'leaderboardUpdate':
+        // The world reducer owns the ranking; there is no engine/scene action, and the
+        // `publishMultiplayer()` below notifies the store when the snapshot changed.
         break;
       case 'error':
         // A rejected account open ends its in-flight state; the panel re-enables the button.
