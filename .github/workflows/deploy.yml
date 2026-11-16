@@ -1,8 +1,10 @@
 name: Deploy
 
 on:
+  # Pushes deploy development only; production is workflow_dispatch-only until
+  # its environment and secrets are provisioned.
   push:
-    branches: [develop, main]
+    branches: [develop]
   workflow_dispatch:
     inputs:
       environment:

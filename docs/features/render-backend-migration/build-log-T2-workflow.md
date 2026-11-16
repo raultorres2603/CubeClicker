@@ -108,6 +108,46 @@ $ npm run coverage
 coverage_exit=0
 ```
 
+## Follow-up — production deploy deferred to workflow dispatch
+
+The `production` environment still has no `RENDER_DEPLOY_HOOK_URL` (and no other secrets), so a push to `main` would have started a deploy that fails at the Render step. The push trigger now covers `develop` only:
+
+```diff
+ on:
++  # Pushes deploy development only; production is workflow_dispatch-only until
++  # its environment and secrets are provisioned.
+   push:
+-    branches: [develop, main]
++    branches: [develop]
+   workflow_dispatch:
+```
+
+`workflow_dispatch` keeps the `development`/`production` choice, and the concurrency group and environment expression are unchanged, so a manual production run still selects the `production` environment. No other workflow behaviour changed.
+
+Evidence:
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ sed -n '1,16p' .github/workflows/deploy.yml
+name: Deploy
+
+on:
+  # Pushes deploy development only; production is workflow_dispatch-only until
+  # its environment and secrets are provisioned.
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment to deploy
+        type: choice
+        required: true
+        default: development
+        options: [development, production]
+```
+
 ## Acceptance audit
 
 1. Fly env and all Fly steps removed from `deploy.yml` → **met** (`grep -ni fly deploy.yml` → no matches).
@@ -129,7 +169,7 @@ coverage_exit=0
 
 ## Next step (out of scope here)
 
-Set the `development` environment variables/secrets, push this commit, then:
+The `development` environment secrets/variables were configured in `d2ba961` (`build-log-T2-env.md`). Push all pending commits, then:
 
 ```
 gh workflow run deploy.yml --repo raultorres2603/CubeClicker -f environment=development
