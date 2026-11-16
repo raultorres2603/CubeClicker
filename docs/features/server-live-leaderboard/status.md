@@ -1,8 +1,8 @@
 ---
 feature: server-live-leaderboard
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 1
+build_round: 2
 created: 2026-11-16
 updated: 2026-11-16
 ---
@@ -18,7 +18,7 @@ Session-scoped, per-server live leaderboard: the hub tracks accepted clicks, com
 - [x] T2 — Hub counters, snapshot delivery, coalescing and metrics `[seq]`
 - [x] T3 — Frontend protocol mirror, reducer and session chain `[seq]`
 - [x] T4 — Leaderboard UI, App wiring, CSS, smoke proof `[seq]`
-- [ ] T5 — Documentation and final verification `[seq]`
+- [x] T5 — Documentation and final verification `[seq]`
 
 ## Loop log
 
@@ -33,11 +33,15 @@ Session-scoped, per-server live leaderboard: the hub tracks accepted clicks, com
 - 2026-11-16 — building T2 completed — hub counters + 1 Hz coalescing + snapshots; commit `2a03d3c`; backend 1506 tests, coverage 96.19/89.83/99.57/96.19 — `build-log-T2.md`
 - 2026-11-16 — building T3 completed — frontend protocol/reducer/session; commit `d062913`; frontend 2229 tests, coverage 96.62/96.33/97.79/96.62 — `build-log-T3.md`
 - 2026-11-16 — building T4 completed — Leaderboard panel + App/CSS + smoke; commit `d6855b3`; frontend 2248 tests, coverage 96.63/96.35/97.8/96.63; smoke 26/26 — `build-log-T4.md`
+- 2026-11-16 — building T5 completed — realtime/glossary docs + final gates; commit `705f2fb`; full suite 3,754 tests; coverage backend 96.19/89.83/99.57/96.19, frontend 96.63/96.35/97.8/96.63; build + smoke 26/26 — `build-log-T5.md`
+- 2026-11-16 — building → code_review — all T1-T5 verified; acceptance row pending — `build-log-T5.md`
+- 2026-11-16 — code_review → accepted — code review r1 approved (0 blockers); all 26 ACs met; F1 log-label/F2 counter-order notes in backlog — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 
-- Q-1 — rank metric: cubes, then clicks, then slot order (recommended).
-- Q-2 — coins excluded from ranking, wire and totals (recommended; upgrade-scaled and account-only authority).
-- Q-3 — move/grace semantics: counters follow the member to the new server; the target snapshot includes the completion that caused the move; grace members retain their session row until expiry (recommended).
-- Q-4 — placement: left rail below the HUD and activity feed; no overlap with HUD/banner/feed/user panel, though very-short-viewport lower rows may clip behind the upgrades panel while remaining in the accessibility tree (recommended).
+- Q-1 — rank metric: cubes, then clicks, then slot order: approved.
+- Q-2 — coins excluded from ranking, wire and totals: approved.
+- Q-3 — move/grace semantics: counters follow the member; target snapshot includes the move completion; grace members retained: approved.
+- Q-4 — left-rail placement; short-viewport lower rows may clip behind upgrades panel while remaining accessible: approved.
 - Q-5…Q-14 — builder defaults recorded in `spec.md`/`plan.md`.
+- **Backlog (MINOR):** correct the T2 log label for the `app.test.ts` `nextWithoutLeaderboard` frame filter; optionally align the `cubesCompleted` increment/capture comment order; F4 image-vs-host bundle note is informational.
