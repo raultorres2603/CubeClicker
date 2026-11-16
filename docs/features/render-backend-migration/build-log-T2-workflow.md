@@ -417,6 +417,69 @@ $ grep -n "Root Directory" .github/workflows/deploy.yml
 
 Verify scope: workflow-only change — no application source, no tests, and no coverage run were required (`npm run lint`/`typecheck`/`coverage` are unaffected; the previous full-gate run stands and `ci.yml` still enforces it on the push). Tests are not applicable: the changed artifact is CI YAML whose behaviour is exercised by actionlint, the pinned greps, and the next deploy run.
 
+## Follow-up — drop the redundant Vercel alias step; wait for the Render rollout
+
+**Observed failure** (deploy run after the Root Directory fix): `vercel deploy --prebuilt --prod --yes` succeeded and printed:
+
+```
+▲ Aliased https://cubeclicker-development.vercel.app
+```
+
+but the following `Alias development deployment` step ran `vercel alias set "$DEPLOYMENT_URL" "$frontend_host"` and failed with:
+
+```
+Error: User not found.
+```
+
+The deployment and its production alias were already live (the Vercel API confirmed the alias points at the deployment), so the explicit alias step was redundant and turned a successful deploy into a red workflow.
+
+**Fix.**
+
+- Deleted the `Alias development deployment` step entirely. `vercel deploy --prebuilt --prod` assigns the production project's stable domain on its own; the deploy step still records `deployment_url` in its output, but no `vercel alias` call exists any more.
+- Added a bounded 45 s wait (`Wait for Render deploy to start`, `sleep 45`) between the Render deploy hook and the health poll. Render keeps the previous instance live while the new one builds, so without the wait the first `/healthz` 200 can come from the old instance. The poll keeps its 180 s budget; warm + deployed smoke still run after the Vercel deploy.
+- Updated the adjacent comment to say `--prod` updates the stable domain (it referenced the deleted alias step).
+- Unchanged: the CI-once `workflow_run` trigger and job condition/guards, the `vercel pull`/`vercel build`/`vercel deploy` commands, migrations, Render hook, 180 s poll, warm-up, and deployed smoke.
+
+Evidence:
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ grep -n "vercel alias\|Alias development" .github/workflows/deploy.yml || echo "no matches"
+no matches
+
+$ grep -n "vercel deploy --prebuilt --prod" .github/workflows/deploy.yml
+135:          deploy_output=$(vercel deploy --prebuilt --prod --yes)
+
+$ grep -n "Wait for Render\|sleep 45\|start + 180\|Warm Render backend\|Run deployed smoke" .github/workflows/deploy.yml
+88:      - name: Wait for Render deploy to start
+89:        run: sleep 45
+90:      - name: Wait for Render backend health
+93:          deadline=$((start + 180))
+142:      - name: Warm Render backend before smoke
+145:      - name: Run deployed smoke
+
+$ grep -n "^      - name:" .github/workflows/deploy.yml
+40:      - name: Reject non-push CI runs
+47:      - name: Verify CI succeeded for target commit
+62:      - name: Checkout
+66:      - name: Setup Node
+71:      - name: Install dependencies
+74:      - name: Migrate Neon database
+82:      - name: Deploy Render backend
+88:      - name: Wait for Render deploy to start
+90:      - name: Wait for Render backend health
+107:      - name: Install Vercel CLI
+113:      - name: Pull Vercel project settings
+119:      - name: Build Vercel frontend
+128:      - name: Deploy Vercel frontend
+142:      - name: Warm Render backend before smoke
+145:      - name: Run deployed smoke
+```
+
+Scope: workflow-only; no application source, tests, or coverage changes were needed. Actionlint plus the greps above are the applicable checks; the live proof is the next deploy run.
+
 ## Acceptance audit
 
 1. Fly env and all Fly steps removed from `deploy.yml` → **met** (`grep -ni fly deploy.yml` → no matches).
@@ -438,12 +501,12 @@ Verify scope: workflow-only change — no application source, no tests, and no c
 
 ## Next step (out of scope here)
 
-The `development` environment secrets/variables are configured (`d2ba961`, `build-log-T2-env.md`). Push the pending commits:
+The `development` environment secrets/variables are configured (`d2ba961`, `build-log-T2-env.md`). Run:
 
 ```
 git push origin main
 ```
 
-CI runs once on the push; only when that run completes successfully does the `Deploy` workflow start and deploy development. No `gh workflow run` is used for development. The orchestrator may watch both runs with `gh run watch` but must not dispatch the development deploy.
+CI runs once on the push; only when that run completes successfully does the `Deploy` workflow start. The deploy should now pass `Deploy Vercel frontend` (no alias step) and reach `Wait for Render deploy to start` → `Wait for Render backend health` → `Warm Render backend before smoke` → `Run deployed smoke`. Do not rerun the failed workflow; the push triggers a new run. No `gh workflow run` is used for development.
 
 `fly.config.toml` deletion and the deployment documentation updates remain in T3.

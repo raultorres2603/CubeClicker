@@ -83,6 +83,10 @@ jobs:
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+      # Render keeps the previous instance live while the new one builds; give the
+      # build a head start so the health poll cannot pass against the old instance.
+      - name: Wait for Render deploy to start
+        run: sleep 45
       - name: Wait for Render backend health
         run: |
           start=$SECONDS
@@ -103,7 +107,7 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@65.15.0
       # The only Vercel project is the development project, so every run uses its
-      # production environment and target; the alias step pins the stable domain.
+      # production environment and target; `--prod` updates the stable domain.
       # Project Root Directory is src/frontend; run the CLI from the repo root so
       # Vercel applies the root exactly once.
       - name: Pull Vercel project settings
@@ -132,17 +136,6 @@ jobs:
           printf '%s\n' "$deploy_output"
           deployment_url=$(printf '%s\n' "$deploy_output" | tail -n 1)
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
-      - name: Alias development deployment
-        if: env.TARGET_ENVIRONMENT != 'production'
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-          DEPLOYMENT_URL: ${{ steps.vercel_deploy.outputs.deployment_url }}
-        run: |
-          frontend_host="${FRONTEND_ORIGIN#https://}"
-          frontend_host="${frontend_host%/}"
-          vercel alias set "$DEPLOYMENT_URL" "$frontend_host"
 
       # The free backend instance can be cold when the smoke starts; warm it and
       # give each smoke check a longer budget than the local 10 s default.
