@@ -37,7 +37,7 @@ Canonical commands, mirrored in `AGENTS.md` § Commands:
 
 - The backend and the frontend each run as containers; the full local environment starts from a clean checkout with a single `podman compose up`-style command.
 - Podman and Podman Compose (`podman compose`) are the decided containerization tooling (user decision, 2026-10-17; tooling amendment 2026-10-17).
-- Deployable artifacts are container images runnable on any container platform — provider-neutral deployables. The deployment target is **Vercel (static frontend) + Fly.io (backend container) + Neon (PostgreSQL)**, orchestrated by GitHub Actions; the user selected it on 2026-11-13, superseding the earlier AWS target (see `docs/architecture/deployment.md`). The images themselves remain provider-neutral.
+- Deployable artifacts are container images runnable on any container platform — provider-neutral deployables. The deployment target is **Vercel (static frontend) + Render (backend container on the free plan) + Neon (PostgreSQL)**, orchestrated by GitHub Actions; Render replaced Fly.io on 2026-11-16 (Fly's credit-card gate blocked the free development app), which itself superseded the earlier AWS target (see `docs/architecture/deployment.md` and `docs/architecture/vercel-render-neon.md`). The images themselves remain provider-neutral.
 - Future services (databases, queues, etc.) are added via the same containerized path.
 - The application stack is decided (§ Application stack (DECIDED, 2026-10-17) above) and the container assets exist in this repository: `compose.yaml` and `compose.smoke.yaml` at the root, plus the Dockerfiles under `src/backend/` and `src/frontend/`.
 - The backend container must expose the WebSocket endpoint required by § Hard constraints.

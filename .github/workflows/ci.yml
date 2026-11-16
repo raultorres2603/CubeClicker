@@ -61,6 +61,12 @@ jobs:
       - name: Validate Vercel config
         run: |
           node -e "JSON.parse(require('node:fs').readFileSync('src/frontend/vercel.json', 'utf8')); console.log('vercel.json: valid JSON')"
+      # `render.yaml` is the committed description of the live Render service.
+      # js-yaml arrives with the locked eslint tree (`npm ci`), so no new
+      # dependency is added; the step fails loudly if it ever disappears.
+      - name: Validate Render blueprint
+        run: |
+          node -e "const fs=require('node:fs');const yaml=require('js-yaml');const blueprint=yaml.load(fs.readFileSync('render.yaml','utf8'));const services=blueprint&&blueprint.services;if(!Array.isArray(services)||services.length!==1){throw new Error('render.yaml must declare exactly one service')}const service=services[0];if(service.name!=='cubeclicker-development'||service.runtime!=='docker'||service.healthCheckPath!=='/healthz'){throw new Error('render.yaml must describe the cubeclicker-development docker service with /healthz')}console.log('render.yaml: valid YAML (cubeclicker-development, docker, /healthz)')"
       - name: Check deploy workflow has no Fly deploy path
         run: |
           if grep -niE 'fly' .github/workflows/deploy.yml; then

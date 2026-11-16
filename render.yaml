@@ -1,0 +1,63 @@
+# Render Blueprint — CubeClicker development backend.
+#
+# This file describes the live free Render web service
+# (`cubeclicker-development`, srv-dbtcvv9srm7s73au5bag) so the service
+# configuration is reviewable and reproducible from the repository. It is
+# documentation, not a deployment trigger: the service already exists, and
+# pointing a Blueprint at it would offer to create or adopt a service and could
+# start a build. Deploys run through the service deploy hook called by
+# `.github/workflows/deploy.yml` after CI succeeds.
+#
+# Free plan: the instance spins down after 15 minutes without traffic and
+# cold-starts on the next request or WebSocket connection. Development only;
+# see `docs/architecture/vercel-render-neon.md` § Cost and limits.
+#
+# Secret-shaped values are declared with `sync: false`: Render prompts for them
+# when a Blueprint creates a service and never stores them in git. On the live
+# service they are set in the Render dashboard instead.
+services:
+  - type: web
+    name: cubeclicker-development
+    runtime: docker
+    dockerfilePath: ./src/backend/Dockerfile
+    dockerContext: .
+    plan: free
+    region: frankfurt
+    branch: main
+    healthCheckPath: /healthz
+    autoDeployTrigger: 'off'
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: '8080'
+      - key: METRICS_ENABLED
+        value: 'false'
+      - key: MAX_USERS_PER_SERVER
+        value: '10'
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_DATABASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: SESSION_COOKIE_SECURE
+        sync: false
+      - key: SESSION_COOKIE_SAMESITE
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false

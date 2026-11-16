@@ -1,7 +1,7 @@
 # Infrastructure (Terraform + AWS) — SUPERSEDED
 
 > **SUPERSEDED — archive in place.**
-> This Terraform + AWS tree is superseded by the Vercel + Fly.io + Neon deployment documented in
+> This Terraform + AWS tree is superseded by the Vercel + Render + Neon deployment documented in
 > [`docs/architecture/deployment.md`](../docs/architecture/deployment.md). It is retained in place
 > for reference and history; CI no longer verifies or applies it. AWS resources are **not deployed**
 > by this feature and are **not destroyed** by it — delete-vs-keep is a user-owned decision
@@ -11,7 +11,7 @@
 This directory holds the Terraform infrastructure that described the superseded AWS deployment of
 CubeClicker. The application images themselves stay provider-neutral (see
 `docs/architecture/containerization.md`); AWS + Terraform was the deploy target per the user's
-2026-10-31 request and is superseded by the Vercel + Fly.io + Neon target (see
+2026-10-31 request and is superseded by the Vercel + Render + Neon target (see
 `docs/architecture/deployment.md`).
 
 ## Tooling convention (C-1) — no host binaries

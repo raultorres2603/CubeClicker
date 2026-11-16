@@ -1,6 +1,14 @@
-# Vercel + Fly.io + Neon — Deployment Reference
+# Vercel + Fly.io + Neon — Deployment Reference (SUPERSEDED)
 
-Current cloud deployment of CubeClicker: **Vercel** (static React/Vite SPA), **Fly.io** (one persistent Fastify + WebSocket backend machine) and **Neon** (PostgreSQL), delivered by GitHub Actions with the `development` and `production` GitHub Environments. It supersedes the earlier AWS deployment; the deployment conventions are in `deployment.md`, and the tier definitions are in `../features/vercel-fly-neon-deployment/spec.md`.
+> **SUPERSEDED — historical reference.**
+> The Fly.io backend was abandoned after Fly's credit-card gate blocked the free development app; no
+> Fly machine was ever deployed. The current cloud target is **Vercel + Render + Neon**, documented in
+> [`vercel-render-neon.md`](vercel-render-neon.md). Vercel and Neon are unchanged; only the backend
+> host moved. The Fly configuration files are archived at [`infra/archive/fly/`](../../infra/archive/fly/README.md)
+> and this document is kept for history — its `fly` commands, `FLY_*` variables, release-image
+> rollback, Mailpit-on-Fly notes and cost figures no longer describe the running system.
+
+Current superseded deployment of CubeClicker: **Vercel** (static React/Vite SPA), **Fly.io** (one persistent Fastify + WebSocket backend machine) and **Neon** (PostgreSQL), delivered by GitHub Actions with the `development` and `production` GitHub Environments. It superseded the earlier AWS deployment; the deployment conventions are in `deployment.md`, and the tier definitions are in `../features/vercel-fly-neon-deployment/spec.md`.
 
 ## Architecture
 
