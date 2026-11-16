@@ -6,7 +6,7 @@ import {
   createActivityFeed,
   type ActivityEventInput,
 } from './activity.js';
-import type { ActivityEvent } from './protocol.js';
+import { ACTIVITY_EVENT_TTL_MS, type ActivityEvent } from './protocol.js';
 
 /** A manual clock: the feed never reads wall time, so tests move time explicitly. */
 interface ManualClock {
@@ -155,6 +155,10 @@ describe('activity feed constants', () => {
     expect(ACTIVITY_MIN_INTERVAL_MS).toBe(1000);
     expect(ACTIVITY_MILESTONE_EVERY).toBe(5);
   });
+
+  it('pins the 5000 ms activity eligibility TTL', () => {
+    expect(ACTIVITY_EVENT_TTL_MS).toBe(5000);
+  });
 });
 
 describe('createActivityFeed — acceptance', () => {
@@ -284,6 +288,169 @@ describe('createActivityFeed — 1/s per-server gate', () => {
   });
 });
 
+describe('createActivityFeed — activity TTL (default 5000 ms)', () => {
+  it('serves an event at 4999 ms and expires it at exactly 5000 ms', () => {
+    const clock = createClock(0);
+    const feed = createActivityFeed({ now: clock.now });
+
+    expect(feed.record(1, CUBE_CLEARED)).toEqual({
+      id: 1,
+      at: 0,
+      serverId: 1,
+      type: 'cubeCleared',
+      playerId: 'p2',
+      name: 'Player 2',
+      level: 3,
+    });
+
+    clock.set(4999);
+    expect(feed.snapshot(1)).toEqual([
+      {
+        id: 1,
+        at: 0,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+    ]);
+
+    clock.set(5000);
+    expect(feed.snapshot(1)).toEqual([]);
+  });
+
+  it('filters independently: events at 0/1000/2000 leave only at: 2000 at 6000', () => {
+    const clock = createClock(0);
+    const feed = createActivityFeed({ now: clock.now });
+
+    expect(feed.record(1, CUBE_CLEARED)?.id).toBe(1);
+    clock.set(1000);
+    expect(feed.record(1, FAST_CLEAR)?.id).toBe(2);
+    clock.set(2000);
+    expect(feed.record(1, MILESTONE)?.id).toBe(3);
+
+    clock.set(6000);
+    expect(feed.snapshot(1)).toEqual([
+      {
+        id: 3,
+        at: 2000,
+        serverId: 1,
+        type: 'levelMilestone',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 5,
+      },
+    ]);
+  });
+
+  it('prunes the expired tail without moving nextId or lastAcceptedAt', () => {
+    const clock = createClock(0);
+    const feed = createActivityFeed({ now: clock.now });
+
+    for (let index = 0; index < 7; index += 1) {
+      clock.set(index * 1000);
+      expect(feed.record(1, CUBE_CLEARED)?.id).toBe(index + 1);
+    }
+
+    // 6000: at: 0/1000 are 6000/5000 ms old (expired); 2000..6000 are fresh.
+    clock.set(6000);
+    expect(feed.snapshot(1).map((event) => [event.id, event.at])).toEqual([
+      [7, 6000],
+      [6, 5000],
+      [5, 4000],
+      [4, 3000],
+      [3, 2000],
+    ]);
+
+    // 999 ms after the last acceptance at 6000: still dropped, so the window did not move.
+    clock.set(6999);
+    expect(feed.record(1, CUBE_CLEARED)).toBeNull();
+
+    // Exactly 1000 ms after it: accepted with id 8, so pruning reset neither nextId nor the gate.
+    clock.set(7000);
+    expect(feed.record(1, CUBE_CLEARED)).toEqual({
+      id: 8,
+      at: 7000,
+      serverId: 1,
+      type: 'cubeCleared',
+      playerId: 'p2',
+      name: 'Player 2',
+      level: 3,
+    });
+  });
+
+  it('serves exactly the five freshest events at 24 000 and keeps advancing ids', () => {
+    const clock = createClock(0);
+    const feed = createActivityFeed({ now: clock.now });
+
+    for (let index = 0; index < 25; index += 1) {
+      clock.set(index * 1000);
+      expect(feed.record(1, CUBE_CLEARED)?.id).toBe(index + 1);
+    }
+
+    clock.set(24_000);
+    expect(feed.snapshot(1)).toEqual([
+      {
+        id: 25,
+        at: 24_000,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+      {
+        id: 24,
+        at: 23_000,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+      {
+        id: 23,
+        at: 22_000,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+      {
+        id: 22,
+        at: 21_000,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+      {
+        id: 21,
+        at: 20_000,
+        serverId: 1,
+        type: 'cubeCleared',
+        playerId: 'p2',
+        name: 'Player 2',
+        level: 3,
+      },
+    ]);
+
+    clock.set(25_000);
+    expect(feed.record(1, MILESTONE)).toEqual({
+      id: 26,
+      at: 25_000,
+      serverId: 1,
+      type: 'levelMilestone',
+      playerId: 'p2',
+      name: 'Player 2',
+      level: 5,
+    });
+  });
+});
+
 describe('createActivityFeed — per-server isolation', () => {
   it('starts each server at id 1 with independent windows and rings', () => {
     const clock = createClock(0);
@@ -325,9 +492,9 @@ describe('createActivityFeed — per-server isolation', () => {
 });
 
 describe('createActivityFeed — ring buffer', () => {
-  it('keeps the 20 newest events newest first after 25 acceptances', () => {
+  it('keeps the 20 newest events newest first with a long TTL seam', () => {
     const clock = createClock(0);
-    const feed = createActivityFeed({ now: clock.now });
+    const feed = createActivityFeed({ now: clock.now, ttlMs: 1_000_000 });
 
     for (let index = 0; index < 25; index += 1) {
       clock.set(index * 1000);

@@ -15,14 +15,16 @@
  * `prefers-reduced-motion: reduce` query, the visibility reader follows the tab's own
  * visibility state plus its change event, the size reader follows a resize observer on
  * the canvas, the orientation reader follows the window's `orientationchange` event, the
- * frame clock is the monotonic time source and the layout seed is the host's random
- * function.
+ * page-lifecycle reader follows the window's `pagehide` event and forwards its bfcache
+ * `persisted` flag, the frame clock is the monotonic time source and the layout seed is
+ * the host's random function.
  */
 
 import type {
   CanvasLike,
   MotionSource,
   OrientationSource,
+  PageLifecycleSource,
   ResizeSource,
   SessionEnvironment,
   VisibilitySource,
@@ -77,6 +79,16 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     },
   };
 
+  const pageLifecycle: PageLifecycleSource = {
+    subscribe(cb: (persisted: boolean) => void): () => void {
+      // `persisted === true` means the page is entering the bfcache: it may come back with
+      // the same socket, so it is not a deliberate close (AC-7).
+      const handler = (event: PageTransitionEvent): void => cb(event.persisted === true);
+      window.addEventListener('pagehide', handler);
+      return () => window.removeEventListener('pagehide', handler);
+    },
+  };
+
   return {
     canvas,
     keyTarget: window,
@@ -85,6 +97,7 @@ export function browserEnvironment(canvas: CanvasLike): SessionEnvironment {
     visibility,
     resize,
     orientation,
+    pageLifecycle,
     rendererFactory: createRealisticRenderer,
     now: () => performance.now(),
     random: () => Math.random(),

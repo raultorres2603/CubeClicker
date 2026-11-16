@@ -14,6 +14,10 @@
  *   inclusive boundary `at - lastAcceptedAt >= minIntervalMs`); a candidate inside the
  *   window is dropped, not queued: it changes no id, no ring and no window;
  * - the ring keeps the newest `ACTIVITY_FEED_LIMIT` accepted events, `index 0` newest;
+ * - an event is fresh iff `now - event.at < ACTIVITY_EVENT_TTL_MS` (5000 ms): `snapshot`
+ *   returns only fresh events, newest first, and `record`/`snapshot` prune the always-expired
+ *   tail in place; pruning changes neither `nextId` nor `lastAcceptedAt`, so ids keep
+ *   advancing monotonically and the 1 s gate is unaffected;
  * - `snapshot` returns a fresh array of fresh objects (`[]` for unknown/empty servers);
  * - `dropServer` deletes one server's state and `clear()` is terminal for the instance:
  *   after it `record` returns `null`, `snapshot` returns `[]`, `dropServer` and a second
@@ -23,6 +27,7 @@
  */
 
 import {
+  ACTIVITY_EVENT_TTL_MS,
   ACTIVITY_FEED_LIMIT,
   copyActivityEvent,
   type ActivityEvent,
@@ -67,7 +72,10 @@ export interface ActivityFeed {
    * candidate consumes no id, changes no ring entry and does not move the window.
    */
   record(serverId: number, input: ActivityEventInput): ActivityEvent | null;
-  /** The server's current ring, newest first, as fresh objects; `[]` when unknown/empty. */
+  /**
+   * The server's fresh ring, newest first, as fresh objects; `[]` when unknown, empty or
+   * every stored event is at least `ttlMs` old. Expired events are pruned from the ring.
+   */
   snapshot(serverId: number): ActivityEvent[];
   /** Deletes one server's ring; a no-op after `clear()`. */
   dropServer(serverId: number): void;
@@ -78,18 +86,20 @@ export interface ActivityFeed {
 /**
  * Creates one activity feed over the injected clock.
  *
- * `now` is the only time source (the hub passes `HubDeps.now`); `limit`/`minIntervalMs`
- * default to the pinned constants and exist so tests can pin smaller windows without
- * changing production values. The factory creates no timer.
+ * `now` is the only time source (the hub passes `HubDeps.now`); `limit`/`minIntervalMs`/
+ * `ttlMs` default to the pinned constants and exist so tests can pin smaller windows or a
+ * long eligibility TTL without changing production values. The factory creates no timer.
  */
 export function createActivityFeed(options: {
   now: () => number;
   limit?: number;
   minIntervalMs?: number;
+  ttlMs?: number;
 }): ActivityFeed {
   const { now } = options;
   const limit = options.limit ?? ACTIVITY_FEED_LIMIT;
   const minIntervalMs = options.minIntervalMs ?? ACTIVITY_MIN_INTERVAL_MS;
+  const ttlMs = options.ttlMs ?? ACTIVITY_EVENT_TTL_MS;
   const servers = new Map<number, FeedState>();
   let closed = false;
 
@@ -100,6 +110,10 @@ export function createActivityFeed(options: {
       }
       const at = now();
       const existing = servers.get(serverId);
+      if (existing !== undefined) {
+        // Every access drops the always-expired suffix; ids and the gate stay untouched.
+        pruneExpired(existing, at, ttlMs);
+      }
       if (
         existing !== undefined &&
         existing.lastAcceptedAt !== null &&
@@ -129,6 +143,7 @@ export function createActivityFeed(options: {
       if (state === undefined) {
         return [];
       }
+      pruneExpired(state, now(), ttlMs);
       return state.events.map(copyActivityEvent);
     },
 
@@ -147,6 +162,20 @@ export function createActivityFeed(options: {
       servers.clear();
     },
   };
+}
+
+/**
+ * Drops the expired suffix of the ring (`now - event.at >= ttlMs`) in place.
+ *
+ * Events are stored newest first and `at` is non-decreasing down the array, so everything
+ * from the first expired entry to the end is expired too. Only `events` is touched: the id
+ * sequence and the acceptance window survive pruning.
+ */
+function pruneExpired(state: FeedState, now: number, ttlMs: number): void {
+  const expiredFrom = state.events.findIndex((event) => now - event.at >= ttlMs);
+  if (expiredFrom !== -1) {
+    state.events.length = expiredFrom;
+  }
 }
 
 /**

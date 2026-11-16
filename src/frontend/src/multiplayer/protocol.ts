@@ -37,7 +37,12 @@
  * - `encodeClientMessage` serialises one client message into the single JSON text frame;
  * - the diagnostic `ping`/`pong` pair is additive and mirrors the backend exactly: a
  *   `ping` is accepted only with a finite numeric `t`, a `pong` echo is decoded the same
- *   way, and `pongMessage(t)` builds the exact `{"type":"pong","t":…}` frame (AC-23).
+ *   way, and `pongMessage(t)` builds the exact `{"type":"pong","t":…}` frame (AC-23);
+ * - `leave` is the additive, self-only client frame (`presence-and-activity-liveness`):
+ *   `parseClientMessage` accepts exactly `{ type: 'leave' }`, drops extra fields like every
+ *   catalog message and adds no server message variant — the server removes only the
+ *   sending connection's member and reports it through the existing `memberLeft`. The
+ *   shared `ACTIVITY_EVENT_TTL_MS` is mirrored here verbatim from `game/protocol.ts`.
  *
  * Field validation is presence + type only, exactly like the backend: an unknown `type`,
  * a non-JSON frame, a non-object frame, a missing required field or a field of the wrong
@@ -73,6 +78,15 @@ export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
  * `game/protocol.ts`: at most 20 accepted events, newest first (`index 0` is the newest).
  */
 export const ACTIVITY_FEED_LIMIT = 20;
+
+/**
+ * Pinned activity lifetime (`presence-and-activity-liveness`): an event is fresh iff
+ * `serverNow - event.at < ACTIVITY_EVENT_TTL_MS`; at exactly 5000 ms it is expired and never
+ * travels in a `welcome`/`worldEntered` snapshot. On this side it is the display lifetime:
+ * each event stays on screen for 5000 ms from first receipt. Mirrored verbatim from
+ * `game/protocol.ts`.
+ */
+export const ACTIVITY_EVENT_TTL_MS = 5000;
 
 /**
  * Pinned leaderboard row cap (`server-live-leaderboard`), mirrored from
@@ -250,7 +264,8 @@ export type ClientMessage =
   | { type: 'openLootbox' }
   | { type: 'equipPart'; partId: string }
   | { type: 'unequipPart'; slotId: string }
-  | { type: 'ping'; t: number };
+  | { type: 'ping'; t: number }
+  | { type: 'leave' };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -791,6 +806,12 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         return badClientMessage();
       }
       return { ok: true, message: { type: 'ping', t: frame.t } };
+
+    case 'leave':
+      // Additive, self-only close intent (AC-8): exactly `{ type: 'leave' }`; every extra
+      // field (including a forged `playerId`) is dropped, so nothing can select another
+      // member. The server removes only the sending connection's member.
+      return { ok: true, message: { type: 'leave' } };
 
     default:
       return badClientMessage();

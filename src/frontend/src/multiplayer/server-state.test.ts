@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ActivityEvent, LeaderboardSnapshot, MemberState, ServerMessage } from './protocol';
-import { applyWorldSwap, createWorldState, reduceWorldState, type WorldState } from './server-state';
+import {
+  applyWorldSwap,
+  createWorldState,
+  pruneActivity,
+  reduceWorldState,
+  type WorldState,
+} from './server-state';
 
 /**
  * World/roster fixtures on server 1 (X = 10), using the exact ring positions the backend
@@ -856,6 +862,143 @@ describe('reduceWorldState — activity feed (AC-16, AC-17, AC-23)', () => {
     expect(state.pendingWorldSwap!.activity.map((event) => event.id)).toEqual([
       21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
     ]);
+  });
+});
+
+describe('pruneActivity (AC-15, AC-18)', () => {
+  // Both feeds carry the ids 7 and 8: per-server ids restart at 1, so the helper must key
+  // each feed by its own server id and never let a collision cross the feeds.
+  const CURRENT_EVENT: ActivityEvent = {
+    id: 7,
+    at: 1000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p2',
+    name: 'Player 2',
+  };
+  const CURRENT_NEXT_EVENT: ActivityEvent = {
+    id: 8,
+    at: 2000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p3',
+    name: 'Player 3',
+  };
+  const PENDING_EVENT: ActivityEvent = {
+    id: 7,
+    at: 3000,
+    serverId: 2,
+    type: 'memberJoined',
+    playerId: 'p4',
+    name: 'Player 4',
+  };
+  const PENDING_NEXT_EVENT: ActivityEvent = {
+    id: 8,
+    at: 4000,
+    serverId: 2,
+    type: 'memberJoined',
+    playerId: 'p5',
+    name: 'Player 5',
+  };
+
+  /** Current feed `[8, 7]` on server 1 plus a pending server-2 feed `[8, 7]`. */
+  function travelling(): WorldState {
+    const withFeed = reduceWorldState(seeded(), {
+      ...WELCOME,
+      activity: [CURRENT_NEXT_EVENT, CURRENT_EVENT],
+    });
+    return reduceWorldState(withFeed, {
+      ...WORLD_ENTERED,
+      activity: [PENDING_NEXT_EVENT, PENDING_EVENT],
+    });
+  }
+
+  it('returns the same state when nothing expired', () => {
+    const state = travelling();
+
+    expect(pruneActivity(state, () => false)).toBe(state);
+  });
+
+  it('filters a current-feed event and preserves the pending branch identity', () => {
+    const state = travelling();
+    const pending = state.pendingWorldSwap;
+    const pruned = pruneActivity(
+      state,
+      (serverId, eventId) => serverId === 1 && eventId === CURRENT_EVENT.id,
+    );
+
+    expect(pruned).not.toBe(state);
+    expect(pruned.activity).toEqual([CURRENT_NEXT_EVENT]);
+    expect(pruned.activity[0]).toBe(state.activity[0]);
+    expect(pruned.pendingWorldSwap).toBe(pending);
+    expect(pruned.self).toBe(state.self);
+    expect(pruned.members).toBe(state.members);
+    expect(pruned.leaderboard).toBe(state.leaderboard);
+    // The input state is never mutated in place.
+    expect(state.activity).toEqual([CURRENT_NEXT_EVENT, CURRENT_EVENT]);
+  });
+
+  it('filters a pending-feed event and preserves the current feed identity', () => {
+    const state = travelling();
+    const pending = state.pendingWorldSwap!;
+    const pruned = pruneActivity(
+      state,
+      (serverId, eventId) => serverId === 2 && eventId === PENDING_EVENT.id,
+    );
+
+    expect(pruned).not.toBe(state);
+    expect(pruned.activity).toBe(state.activity);
+    expect(pruned.pendingWorldSwap).not.toBe(pending);
+    expect(pruned.pendingWorldSwap!.activity).toEqual([PENDING_NEXT_EVENT]);
+    expect(pruned.pendingWorldSwap!.activity[0]).toBe(pending.activity[0]);
+    expect(pruned.pendingWorldSwap!.roster).toBe(pending.roster);
+    expect(pruned.pendingWorldSwap!.self).toBe(pending.self);
+    expect(pruned.pendingWorldSwap!.leaderboard).toBe(pending.leaderboard);
+  });
+
+  it('filters both feeds and keeps every untouched branch', () => {
+    const state = travelling();
+    const pending = state.pendingWorldSwap!;
+    const pruned = pruneActivity(state, () => true);
+
+    expect(pruned).not.toBe(state);
+    expect(pruned.activity).toEqual([]);
+    expect(pruned.pendingWorldSwap!.activity).toEqual([]);
+    expect(pruned.pendingWorldSwap!.roster).toBe(pending.roster);
+    expect(pruned.pendingWorldSwap!.self).toBe(pending.self);
+    expect(pruned.serverId).toBe(state.serverId);
+    expect(pruned.members).toBe(state.members);
+  });
+
+  it('applies the predicate to each feed’s own server id, so colliding ids expire independently', () => {
+    const state = travelling();
+    const pruned = pruneActivity(
+      state,
+      (serverId, eventId) =>
+        (serverId === 1 && eventId === 7) || (serverId === 2 && eventId === 8),
+    );
+
+    expect(pruned.activity.map((event) => event.id)).toEqual([8]);
+    expect(pruned.pendingWorldSwap!.activity.map((event) => event.id)).toEqual([7]);
+  });
+
+  it('prunes a current feed with no pending swap', () => {
+    const state = reduceWorldState(seeded(), { type: 'activityEvent', event: CURRENT_EVENT });
+    expect(pruneActivity(state, () => false)).toBe(state);
+
+    const pruned = pruneActivity(
+      state,
+      (serverId, eventId) => serverId === 1 && eventId === CURRENT_EVENT.id,
+    );
+    expect(pruned).not.toBe(state);
+    expect(pruned.activity).toEqual([]);
+    expect(pruned.pendingWorldSwap).toBeNull();
+  });
+
+  it('returns the same state for an empty feed (no publish on a no-op)', () => {
+    const state = seeded();
+
+    expect(pruneActivity(state, () => true)).toBe(state);
   });
 });
 

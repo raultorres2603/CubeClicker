@@ -123,6 +123,71 @@ late peer attach is closed, late async continuations return before touching memb
 updating members, scheduling or sending, and both schedulers are discarded so no further
 timer is created. No send or timer callback happens after shutdown.
 
+## Presence and explicit leave
+
+Added by feature `presence-and-activity-liveness` (2026-11-16); the full contract and acceptance
+criteria are in the [feature spec](../features/presence-and-activity-liveness/spec.md), and the
+player-facing term is in the [glossary](../product/glossary.md#presence). Presence stays
+server-authoritative: a member is present iff the hub's registry holds them in one of a server's
+occupied slots. There are exactly two present sub-states — **connected** (a joined socket is
+attached) and **in grace** (the socket closed abruptly and `now < expiresAt`) — and no presence
+field is added to `MemberState`, `welcome.roster`, `LeaderboardEntry` or `memberJoined`, so a
+grace member looks identical to a connected one in every derived view.
+
+### Explicit leave vs abrupt close
+
+The only new client frame is the additive, self-only `leave`:
+
+```ts
+| { type: 'leave' }
+```
+
+`parseClientMessage` accepts exactly `{ "type": "leave" }` and drops extra fields like every
+catalog message; a `leave` before a successful `join`/`rejoin` returns the existing
+`error not_joined` and removes nothing. The hub finalizes **only that connection's member**
+through the existing final-removal path (`removeMember`): the slot is freed, `members` and
+`tokens` lose the member, `memberLeft { playerId, reason: 'left' }` is broadcast to the remaining
+members (the leaver receives none), the server is destroyed immediately when it was the last
+member, and the ring and leaderboard state get the same cleanup as grace expiry. The handler then
+sets the connection's close reason to `client` and closes the socket, so the later close event
+finds no member and starts no grace. The token is deleted: `rejoin { token }` returns
+`error resume_failed` and the next connection uses `join`.
+
+A socket close **without** an accepted `leave` is unchanged: `handleClose` still starts the
+reconnect grace (`RECONNECT_GRACE_MS`, 30 000 ms), the member stays in the roster,
+`Users on Server`, the leaderboard entries/totals and `cubeclicker_members_active` for the window,
+the cube freezes, and `rejoin { token }` inside the window resumes the same member, slot, cube and
+session counters with a fresh `welcome`. The heartbeat (30 s, 2 missed pongs) and the grace
+duration are unchanged.
+
+- **Immediate vs coalesced.** `memberLeft` is the next frame to every remaining member, so the
+  roster and `Users on Server` drop the member at once. The leaderboard is coalesced and drops the
+  member at its next `leaderboardUpdate` (at most 1000 ms later); a `welcome` built in that window
+  is already correct because the snapshot reads live members.
+- **`members_active`.** The gauge is `members.size`: an explicit leave decrements it immediately
+  and a last-member leave also drops `cubeclicker_servers_active`; an abrupt close keeps the grace
+  member counted until expiry.
+- **Multi-tab.** One connection is one member. A `leave` removes only the sending connection's
+  member; the account's other tabs keep their sockets, slots and leaderboard rows.
+- **Reload.** The client sends `leave` on a non-bfcache `pagehide`, so when the frame reaches the
+  server before the reloaded page's `join` the old member is finalized and the reload produces one
+  member and reuses the freed slot. The frame is best-effort during unload: if it is lost or late,
+  or the socket was already closed, the server sees an abrupt close and the accepted grace path
+  applies, so the old member and the new page's member can coexist until expiry (and a full server
+  can overflow). That is the accepted residual, not a new state.
+- **Never a leave.** A tab switch (`visibilitychange` hidden), a backgrounded tab that keeps the
+  socket open, a bfcache `pagehide` (`event.persisted === true`) and `dispose()` (StrictMode or a
+  route teardown) send nothing; a remount inside grace reconnects with the token. The `pagehide`
+  send is exception-safe: a CLOSING/CLOSED socket can throw from `WebSocket.send`, and the session
+  swallows it without sending another frame.
+- **Metrics and rollback.** `leave` is the only new value in the closed `type` allow-list of
+  `cubeclicker_ws_messages_received_total` (the counter throws on an unlisted value); no server
+  message type is added, so this feature adds no encoded/frames catalog value, and the close is
+  counted as `cubeclicker_ws_connections_closed_total{reason="client"}`. Rollback removes `leave`
+  from both catalogs and decoders, the hub case/handler, the page-lifecycle source/subscription and
+  the send, and the received allow-list value; the unconditional grace path returns and nothing is
+  stored.
+
 ## Activity feed
 
 Added by feature `live-activity-feed` (2026-11-16); the full contract and acceptance criteria are
@@ -150,7 +215,7 @@ then offered to the cadence gate, so a candidate is not guaranteed to reach the 
 | `cubeCleared` | accepted full-board completion | not a milestone and not a fast clear | `level` |
 | `epicLoot` | successful account `openLootbox` | the drawn part's rarity is `epic`, new or duplicate; rare draws, failed/in-flight opens and guest local opens never qualify | `partId` |
 | `memberJoined` | fresh `join` | recorded after the `welcome`/`memberJoined` transition; a rejoin and a move-in never qualify | — |
-| `memberLeft` | final grace-expiry removal or move-out | recorded after the `memberLeft` broadcast; a socket close (grace start) and a server-destroying removal never qualify | — |
+| `memberLeft` | final removal (explicit `leave` or grace expiry) or move-out | recorded after the `memberLeft` broadcast; a socket close (grace start) and a server-destroying removal never qualify | — |
 
 One completion produces exactly one candidate, with precedence `levelMilestone` > `fastClear` >
 `cubeCleared`. The fast-clear predicate is the same boolean that doubles the completion's coins,
@@ -187,15 +252,59 @@ moves away — and `hub.close()` clears every ring and closes the feed: after cl
 nothing, `snapshot` returns `[]`, and `dropServer` and a second `clear()` are no-ops. The number of
 rings never exceeds the number of live servers.
 
+### Lifetime
+
+Added by feature `presence-and-activity-liveness` (2026-11-16). An event is **fresh** iff
+`serverNow - event.at < ACTIVITY_EVENT_TTL_MS`, with `ACTIVITY_EVENT_TTL_MS = 5000` in the backend
+catalog (`src/backend/src/game/protocol.ts`) and its frontend mirror; at exactly 5000 ms an event
+is expired. The 20-event ring, the 1 s cadence and the per-server ids are unchanged: the TTL is an
+eligibility filter over the ring, not a new store.
+
+- **Snapshot filter (server eligibility).** `activity.snapshot(serverId)` prunes the expired tail
+  of the ring and returns only fresh events, newest first, as fresh copies; `welcome` (fresh join
+  and rejoin) and `worldEntered` (cross-server move) use it, so an event that is 5000 ms or older
+  at snapshot time can never travel and an expired event cannot reappear on reconnect. `record`
+  also prunes the expired tail before accepting. Pruning changes neither `nextId` nor
+  `lastAcceptedAt`, so ids keep advancing and the 1 s gate is unaffected.
+- **Snapshot size.** Because the cadence is 1/s and the TTL is 5 s, at most five accepted events
+  are fresh at any instant, so a snapshot carries 0–5 events. `ACTIVITY_FEED_LIMIT` (20) remains
+  the ring bound; the `ttlMs` option is a test seam, not a wire contract.
+- **Live frames.** The live `activityEvent` frame is unchanged: it is immediate, encode-once and
+  carries the accepted shape. The hub does not re-send or expire live frames.
+- **Client display expiry (display guarantee).** The frontend shows each event for 5000 ms from
+  its **local receipt** and never uses `event.at` for display (the event clock is the server
+  clock). After every world reduction (`welcome`, `worldEntered`, `activityEvent`,
+  `leaderboardUpdate`, any frame) and after the travel-midpoint `applyWorldSwap`, the session
+  observes the current and pending feeds, records a receipt-anchored deadline for each
+  `serverId:id` key on first sight only, and runs the pure `pruneActivity` **synchronously before
+  any publish** — including the handler-specific `welcome`/`worldEntered` publish — so a seeded or
+  newly expired event never enters the published feed, not even for one tick. A same-server rejoin
+  that re-seeds the same event preserves the remaining lifetime instead of restarting it; server
+  ids are never reused and per-server ids are monotonic, so the key is unique for the process.
+- **Tombstones and the fallback tick.** A key that expired locally is tombstoned for
+  `ACTIVITY_EVENT_TTL_MS`, so a boundary re-seed cannot re-display it. Deadlines and tombstones for
+  servers that are neither current nor pending are dropped, so the state stays bounded by the
+  feeds. One session-owned interval at `ACTIVITY_EXPIRY_TICK_MS = 250` is the fallback for time
+  passing without a reduction: when nothing else happens, a line is removed at the first tick at or
+  after its deadline (at most 250 ms late). Becoming visible prunes immediately before the next
+  frame, and `dispose()` clears the interval so no callback, publish or state change follows.
+- **Mixed versions, accessibility and rollback.** No wire field changed. An old client never
+  expires lines locally (it keeps up to the 20-event reducer cap) and receives the smaller
+  ≤5-event snapshot; a new client against an old backend expires live lines locally and may
+  display older snapshot lines once. Expiry is a state removal with no exit animation, no new
+  motion token and no second live region, so the feed stays a non-live landmark. Rollback removes
+  the constant, the snapshot filter/prune and the whole frontend lifetime module; there is nothing
+  to roll back operationally.
+
 ### Welcome, reconnect and `worldEntered`
 
 `welcome` (fresh join and rejoin) and `worldEntered` (cross-server move) carry the target server's
-current ring as `activity` (newest first, at most 20) as a defensive copy; a server with no
-accepted events sends `[]`. A member that was disconnected while events occurred receives the
-current ring in the rejoin `welcome`: the missed events are included while they fit, and if more
-than 20 were accepted they are evicted by the ring by design. This is the same "presentation
-delta, not state" contract as § Removal batching and § Economy coalescing: the hub keeps no
-per-client outbound queue and never replays one missed frame.
+fresh events as `activity` (newest first, 0–5 by the 1 s cadence and the 5000 ms TTL; § Lifetime)
+as a defensive copy; a server with no fresh events sends `[]`. A member that was disconnected while
+events occurred receives the unexpired events in the rejoin `welcome`: an event that is 5000 ms or
+older at snapshot time never travels, so a long disconnect cannot replay expired lines. This is the
+same "presentation delta, not state" contract as § Removal batching and § Economy coalescing: the
+hub keeps no per-client outbound queue and never replays one missed frame.
 
 **Travel window.** `worldEntered` supplies the target ring without changing the mover's current
 feed. Target-server `activityEvent` frames received between `worldEntered` and the travel midpoint

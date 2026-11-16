@@ -9,6 +9,9 @@ import {
 } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  ACTIVITY_EXPIRY_TICK_MS,
+} from '../multiplayer/activity-lifetime';
 import { leaderboardUpdateMessage, type ActivityEvent, type ClientMessage, type LeaderboardSnapshot, type MemberState, type Position, type ServerMessage } from '../multiplayer/protocol';
 import { pickHoverTarget, pickMiniCube } from '../render/picking';
 import type { QualityTier } from '../render/quality';
@@ -38,6 +41,7 @@ import {
   type MotionSource,
   type OnlineGameSession,
   type OrientationSource,
+  type PageLifecycleSource,
   type RendererAdapter,
   type ResizeSource,
   type RuntimeStatus,
@@ -111,6 +115,14 @@ interface FakeVisibility {
   emit(hidden: boolean): void;
 }
 
+interface FakePageLifecycle {
+  source: PageLifecycleSource;
+  subscribeCount(): number;
+  unsubscribeCount(): number;
+  callbacks(): Array<(persisted: boolean) => void>;
+  emit(persisted: boolean): void;
+}
+
 interface FakeResize {
   source: ResizeSource;
   subscribeCount(): number;
@@ -166,6 +178,7 @@ interface FakeEnv {
   scheduler: FakeScheduler;
   motion: FakeMotion;
   visibility: FakeVisibility;
+  pageLifecycle: FakePageLifecycle;
   resize: FakeResize;
   orientation: FakeOrientation;
   renderer: FakeRendererFactory;
@@ -317,6 +330,32 @@ function createFakeVisibility(initial: boolean): FakeVisibility {
   };
 }
 
+function createFakePageLifecycle(): FakePageLifecycle {
+  const callbacks = new Set<(persisted: boolean) => void>();
+  let subscribes = 0;
+  let unsubscribes = 0;
+  return {
+    source: {
+      subscribe(cb) {
+        subscribes += 1;
+        callbacks.add(cb);
+        return () => {
+          unsubscribes += 1;
+          callbacks.delete(cb);
+        };
+      },
+    },
+    subscribeCount: () => subscribes,
+    unsubscribeCount: () => unsubscribes,
+    callbacks: () => [...callbacks],
+    emit(persisted) {
+      for (const cb of [...callbacks]) {
+        cb(persisted);
+      }
+    },
+  };
+}
+
 function createFakeResize(): FakeResize {
   const callbacks = new Set<() => void>();
   let subscribes = 0;
@@ -437,6 +476,7 @@ function createFakeEnv(
   const scheduler = createFakeScheduler();
   const motion = createFakeMotion(options.reducedMotion ?? false);
   const visibility = createFakeVisibility(options.hidden ?? false);
+  const pageLifecycle = createFakePageLifecycle();
   const resize = createFakeResize();
   const orientation = createFakeOrientation();
   const renderer = createFakeRendererFactory(options.stats);
@@ -448,6 +488,7 @@ function createFakeEnv(
       scheduler: scheduler.scheduler,
       motion: motion.source,
       visibility: visibility.source,
+      pageLifecycle: pageLifecycle.source,
       resize: resize.source,
       orientation: orientation.source,
       rendererFactory: renderer.factory,
@@ -468,6 +509,7 @@ function createFakeEnv(
     scheduler,
     motion,
     visibility,
+    pageLifecycle,
     resize,
     orientation,
     renderer,
@@ -758,7 +800,7 @@ interface FakeTransport {
   emitStatus(status: TransportStatus): void;
 }
 
-function createFakeTransport(): FakeTransport {
+function createFakeTransport(options: { throwOnSend?: boolean } = {}): FakeTransport {
   const messageHandlers = new Set<(message: ServerMessage) => void>();
   const statusHandlers = new Set<(status: TransportStatus) => void>();
   const sent: ClientMessage[] = [];
@@ -790,6 +832,10 @@ function createFakeTransport(): FakeTransport {
       },
       send(message) {
         sent.push(message);
+        if (options.throwOnSend === true) {
+          // A socket in CLOSING/CLOSED throws from `WebSocket.send` (AC-7 fake-socket case).
+          throw new Error('socket is closing');
+        }
       },
       onMessage(handler) {
         events.push('onMessage');
@@ -1043,6 +1089,7 @@ describe('attach', () => {
     expect(fake.keys.listenerCount()).toBe(1);
     expect(fake.motion.subscribeCount()).toBe(1);
     expect(fake.visibility.subscribeCount()).toBe(1);
+    expect(fake.pageLifecycle.subscribeCount()).toBe(1);
     expect(fake.resize.subscribeCount()).toBe(1);
     expect(fake.orientation.subscribeCount()).toBe(1);
   });
@@ -1266,7 +1313,8 @@ describe('diagnostic WebSocket RTT (AC-22)', () => {
     wire.emitStatus('connected');
 
     const pending = session.measureRtt!();
-    expect(vi.getTimerCount()).toBe(1);
+    // The RTT timeout plus the attach cycle's activity-expiry fallback interval (AC-18).
+    expect(vi.getTimerCount()).toBe(2);
 
     session.dispose();
 
@@ -3126,6 +3174,528 @@ describe('activity feed over the wire (AC-16, AC-17, AC-18)', () => {
     expect(swapped.pendingWorldSwap).toBeNull();
 
     session.dispose();
+  });
+});
+
+describe('pagehide leave (AC-7)', () => {
+  /** The browser WebSocket surface the real transport drives (exact encoded frames). */
+  class FakeLeaveSocket {
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+
+    readonly sent: string[] = [];
+
+    constructor(readonly url: string) {}
+
+    send(text: string): void {
+      this.sent.push(text);
+    }
+
+    close(): void {}
+
+    emitOpen(): void {
+      this.onopen?.();
+    }
+
+    emitMessage(data: unknown): void {
+      this.onmessage?.({ data });
+    }
+  }
+
+  it('sends exactly one {"type":"leave"} frame on a non-bfcache pagehide after welcome', () => {
+    const fake = createFakeEnv();
+    const sockets: FakeLeaveSocket[] = [];
+    const transport = createTransport({
+      url: 'ws://test.local/ws',
+      socketFactory: (url) => {
+        const socket = new FakeLeaveSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+    const session = createGameSession({ env: fake.env, transport });
+    session.attach(fake.canvas.surface);
+
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    session.join('guest');
+    socket.emitMessage('{"type":"hello","serverTime":"2026-11-16T00:00:00.000Z"}');
+    socket.emitMessage(JSON.stringify(welcomeMessage({ roster: [selfMember(), member()] })));
+
+    // The transport's own hello handshake wrote the join frame; pagehide adds exactly one.
+    expect(socket.sent).toEqual(['{"type":"join","mode":"guest"}']);
+
+    fake.pageLifecycle.emit(false);
+    expect(socket.sent).toEqual(['{"type":"join","mode":"guest"}', '{"type":"leave"}']);
+
+    // A bfcache entry is not a close: the same page/socket may return, so no frame is sent.
+    fake.pageLifecycle.emit(true);
+    expect(socket.sent).toEqual(['{"type":"join","mode":"guest"}', '{"type":"leave"}']);
+
+    session.dispose();
+  });
+
+  it('sends nothing before welcome, after a disconnect, or on dispose alone', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+
+    // Connected but not welcomed: the server would answer `not_joined`, so no frame at all.
+    wire.emitStatus('connected');
+    fake.pageLifecycle.emit(false);
+    expect(wire.sent).toEqual([]);
+
+    wire.emit(welcomeMessage({ roster: [selfMember()] }));
+
+    // A dropped socket is an abrupt close: the accepted grace/rejoin path applies.
+    wire.emitStatus('disconnected');
+    fake.pageLifecycle.emit(false);
+    expect(wire.sent).toEqual([]);
+
+    // dispose() alone never sends `leave`: a StrictMode/remount teardown keeps the grace.
+    session.dispose();
+    expect(wire.sent).toEqual([]);
+    expect(fake.pageLifecycle.unsubscribeCount()).toBe(1);
+  });
+
+  it('ignores a pagehide callback that escapes after dispose', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember()] }));
+    const escaped = fake.pageLifecycle.callbacks()[0]!;
+
+    session.dispose();
+    escaped(false);
+
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('swallows a throwing socket send: no other frame, handler completes, teardown unaffected', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport({ throwOnSend: true });
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember()] }));
+    expect(vi.getTimerCount()).toBe(1);
+
+    // The fake send records the attempted frame and throws, like a CLOSING/CLOSED socket.
+    fake.pageLifecycle.emit(false);
+    expect(wire.sent).toEqual([{ type: 'leave' }]);
+
+    // The unload handler completed: teardown still unsubscribes and clears every timer.
+    session.dispose();
+    expect(wire.messageHandlerCount()).toBe(0);
+    expect(wire.statusHandlerCount()).toBe(0);
+    expect(fake.pageLifecycle.unsubscribeCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('attaches and stays silent when the environment has no page-lifecycle source', () => {
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const env: SessionEnvironment = { ...fake.env };
+    delete env.pageLifecycle;
+    const session = createGameSession({ env, transport: wire.transport });
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember()] }));
+
+    fake.pageLifecycle.emit(false);
+
+    expect(wire.sent).toEqual([]);
+    expect(fake.pageLifecycle.subscribeCount()).toBe(0);
+    session.dispose();
+  });
+});
+
+describe('activity display expiry in the session (AC-14, AC-15, AC-16, AC-17, AC-18)', () => {
+  const SESSION_JOIN: ActivityEvent = {
+    id: 1,
+    at: 1000,
+    serverId: 1,
+    type: 'memberJoined',
+    playerId: 'p2',
+    name: 'Player 2',
+  };
+
+  const SESSION_CLEAR: ActivityEvent = {
+    id: 2,
+    at: 2000,
+    serverId: 1,
+    type: 'cubeCleared',
+    playerId: 'p2',
+    name: 'Player 2',
+    level: 3,
+  };
+
+  const TARGET_JOIN: ActivityEvent = {
+    id: 1,
+    at: 4000,
+    serverId: 2,
+    type: 'memberJoined',
+    playerId: 'p3',
+    name: 'Player 3',
+  };
+
+  const TARGET_CLEAR: ActivityEvent = {
+    id: 2,
+    at: 5000,
+    serverId: 2,
+    type: 'cubeCleared',
+    playerId: 'p3',
+    name: 'Player 3',
+    level: 6,
+  };
+
+  it('expires a live event exactly 5000 ms after local receipt (AC-14)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    wire.emit({ type: 'activityEvent', event: SESSION_JOIN });
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+
+    fake.clock.now = 4999;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+
+    fake.clock.now = 5000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('expires the current feed at 5000 and the pending feed at 6000/8000 across the travel midpoint (AC-15)', () => {
+    vi.useFakeTimers();
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    // t = 0: the welcome seeds the current feed with e1 and starts the real level travel.
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(16);
+    for (const faceId of FACE_IDS) {
+      for (let row = 0; row < 5; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          if (faceId !== 'front' || row !== 2 || col !== 2) {
+            engine.dispatch({ type: 'explodeMiniCube', id: `${faceId}:${row}:${col}` });
+          }
+        }
+      }
+    }
+    fake.clock.now = 1000;
+    tapOn(fake.canvas, 400, 400);
+    fake.scheduler.tick(416);
+    expect(session.getSnapshot().phase).toBe('travel');
+
+    // t = 1000: worldEntered seeds the pending target feed with e2. No welcome follows.
+    wire.emit(
+      worldEnteredMessage({
+        activity: [TARGET_JOIN],
+        roster: [
+          selfMember({ position: { x: 0, y: 24 }, levelIndex: 1, gridSize: 4 }),
+          member({ playerId: 'p3', name: 'Player 3', position: { x: 24, y: 0 } }),
+        ],
+      }),
+    );
+    const duringTravel = session.getMultiplayerSnapshot().world;
+    expect(duringTravel.activity).toEqual([SESSION_JOIN]);
+    expect(duringTravel.pendingWorldSwap!.serverId).toBe(2);
+    expect(duringTravel.pendingWorldSwap!.activity).toEqual([TARGET_JOIN]);
+
+    // t = 3000: a live target event e3 is prepended to the pending feed only.
+    fake.clock.now = 3000;
+    wire.emit({ type: 'activityEvent', event: TARGET_CLEAR });
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+    expect(session.getMultiplayerSnapshot().world.pendingWorldSwap!.activity).toEqual([
+      TARGET_CLEAR,
+      TARGET_JOIN,
+    ]);
+
+    // t = 4999: e1 is still current, e2/e3 still pending.
+    fake.clock.now = 4999;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+    expect(session.getMultiplayerSnapshot().world.pendingWorldSwap!.activity).toEqual([
+      TARGET_CLEAR,
+      TARGET_JOIN,
+    ]);
+
+    // t = 5000: e1 leaves the current feed; the pending feed is untouched.
+    fake.clock.now = 5000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+    expect(session.getMultiplayerSnapshot().world.pendingWorldSwap!.activity).toEqual([
+      TARGET_CLEAR,
+      TARGET_JOIN,
+    ]);
+
+    // t = 6000: e2 leaves the pending feed; e3 remains.
+    fake.clock.now = 6000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.pendingWorldSwap!.activity).toEqual([
+      TARGET_CLEAR,
+    ]);
+
+    // t = 7000: the midpoint swap makes server 2 current; e3 keeps its 8000 deadline.
+    fake.clock.now = 7000;
+    fake.scheduler.tick(1666);
+    const swapped = session.getMultiplayerSnapshot().world;
+    expect(swapped.serverId).toBe(2);
+    expect(swapped.pendingWorldSwap).toBeNull();
+    expect(swapped.activity).toEqual([TARGET_CLEAR]);
+
+    // t = 8000: e3 leaves the current feed.
+    fake.clock.now = 8000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('keeps the remaining lifetime across a same-server rejoin and anchors new ids at receipt (AC-16)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    // t = 0: e1 gets a 5000 deadline.
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+
+    // t = 1000: the socket drops abruptly — no reduction, the world keeps the event.
+    fake.clock.now = 1000;
+    wire.emitStatus('disconnected');
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+
+    // t = 4000: a same-server rejoin welcome re-seeds e1 and a new id 2. No pending swap.
+    fake.clock.now = 4000;
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_CLEAR, SESSION_JOIN] }),
+    );
+    const rejoined = session.getMultiplayerSnapshot().world;
+    expect(rejoined.pendingWorldSwap).toBeNull();
+    expect(rejoined.activity).toEqual([SESSION_CLEAR, SESSION_JOIN]);
+
+    // e1 keeps its 5000 deadline (not extended to 9000); e2 is anchored at 9000.
+    fake.clock.now = 4999;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([
+      SESSION_CLEAR,
+      SESSION_JOIN,
+    ]);
+
+    fake.clock.now = 5000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_CLEAR]);
+
+    fake.clock.now = 8999;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_CLEAR]);
+
+    fake.clock.now = 9000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('filters a locally expired re-seed synchronously on the next reduction, before any tick (AC-17)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+
+    // t = 0: e1 current; t = 5000: expired and tombstoned.
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    fake.clock.now = 5000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    // Every publish from here on is recorded: an expired seed must never appear, not even
+    // for one tick.
+    const publishedFeeds: ActivityEvent[][] = [];
+    session.subscribeMultiplayer(() => {
+      publishedFeeds.push(session.getMultiplayerSnapshot().world.activity);
+    });
+
+    // t = 5001: the same-server welcome re-seeds e1. No timer runs; the reduction's
+    // synchronous prune filters the tombstoned key before the handler publish.
+    fake.clock.now = 5001;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+    expect(publishedFeeds).toEqual([[]]);
+
+    // Any other reduction (a re-delivered live frame) is filtered the same way.
+    wire.emit({ type: 'activityEvent', event: SESSION_JOIN });
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    // The feed stays empty through the tombstone window.
+    fake.clock.now = 6000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    fake.clock.now = 9999;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    // t = 10000: the tombstone (observed expiry 5000 + 5000) is released; the seed is fresh.
+    fake.clock.now = 10000;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+
+    fake.clock.now = 15000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    // A different server drops server 1's keys; its own id 1 is tracked independently.
+    fake.clock.now = 15001;
+    wire.emit(
+      welcomeMessage({ serverId: 2, roster: [selfMember()], activity: [TARGET_JOIN] }),
+    );
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([TARGET_JOIN]);
+
+    fake.clock.now = 20000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([TARGET_JOIN]);
+
+    fake.clock.now = 20001;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS);
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('owns one 250 ms fallback interval per online attach cycle and clears it on dispose (AC-18)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    expect(vi.getTimerCount()).toBe(1);
+
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+
+    session.attach(fake.canvas.surface);
+    expect(vi.getTimerCount()).toBe(1);
+
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Offline sessions have no activity feed to prune, so they schedule no interval.
+    const offline = attachSession(createFakeEnv());
+    expect(vi.getTimerCount()).toBe(0);
+    offline.dispose();
+  });
+
+  it('publishes nothing while no line is expiring (AC-18)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(welcomeMessage({ roster: [selfMember()] }));
+
+    const publishes: number[] = [];
+    session.subscribeMultiplayer(() => {
+      publishes.push(fake.clock.now);
+    });
+
+    // Four fallback ticks with an empty feed: no publish, no state change.
+    fake.clock.now = 250;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS * 4);
+    expect(publishes).toEqual([]);
+
+    session.dispose();
+  });
+
+  it('prunes immediately when the tab becomes visible, before the next frame (AC-18)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    fake.scheduler.tick(0);
+
+    fake.visibility.emit(true);
+    expect(fake.scheduler.pending()).toBe(0);
+
+    // A throttled background tab: only the local clock passes, no fallback tick runs.
+    fake.clock.now = 5000;
+    const publishes: number[] = [];
+    session.subscribeMultiplayer(() => {
+      publishes.push(fake.clock.now);
+    });
+
+    fake.visibility.emit(false);
+
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([]);
+    expect(publishes).toEqual([5000]);
+    expect(fake.scheduler.pending()).toBe(1);
+
+    session.dispose();
+  });
+
+  it('runs no callback, publish or state change after dispose (AC-18)', () => {
+    vi.useFakeTimers();
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    fake.clock.now = 0;
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()], activity: [SESSION_JOIN] }));
+    const escapedVisibility = fake.visibility.callbacks()[0]!;
+    const escapedPageHide = fake.pageLifecycle.callbacks()[0]!;
+
+    session.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+
+    let publishes = 0;
+    session.subscribeMultiplayer(() => {
+      publishes += 1;
+    });
+    fake.clock.now = 20000;
+    vi.advanceTimersByTime(ACTIVITY_EXPIRY_TICK_MS * 40);
+    escapedVisibility(false);
+    escapedPageHide(false);
+
+    // The disposed session keeps its last published world: no late prune, publish or send.
+    expect(session.getMultiplayerSnapshot().world.activity).toEqual([SESSION_JOIN]);
+    expect(publishes).toBe(0);
+    expect(wire.sent).toEqual([]);
+    expect(fake.scheduler.pending()).toBe(0);
   });
 });
 

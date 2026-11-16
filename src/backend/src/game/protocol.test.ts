@@ -4,6 +4,7 @@ import { helloMessage } from '../app.js';
 import { loadGameConfig } from './config.js';
 import { allIds } from './cubes.js';
 import {
+  ACTIVITY_EVENT_TTL_MS,
   ACTIVITY_FEED_LIMIT,
   type ActivityEvent,
   type CubeState,
@@ -502,6 +503,14 @@ describe('encodeServerMessage', () => {
       identity: { kind: 'guest', playerId: 'p1' },
       economy: { coins: 1.25, clicks: 3, facesDestroyed: 2, cubesDestroyed: 1 },
     });
+  });
+
+  it('keeps the representative welcome frame byte-identical (AC-10)', () => {
+    // No wire-shape change: the `leave` addition and the TTL constant must leave the
+    // accepted `welcome` placement bytes untouched.
+    expect(encodeServerMessage(welcomeMessage(PLACEMENT))).toBe(
+      '{"type":"welcome","playerId":"p1","name":"Player 1","token":"0123456789abcdef0123456789abcdef","serverId":1,"maxUsers":10,"position":{"x":38.197186342054884,"y":0},"self":{"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},"roster":[{"playerId":"p1","name":"Player 1","position":{"x":38.197186342054884,"y":0},"levelIndex":2,"gridSize":5,"styleId":"emerald-crystal","removedIds":["front:0:0","front:0:1"],"yawSteps":0,"pitchSteps":0},{"playerId":"p2","name":"Player 2","position":{"x":-7.639437268410976,"y":9.355612398046502e-16},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}],"activity":[],"identity":{"kind":"guest","playerId":"p1"},"economy":{"coins":1.25,"clicks":3,"facesDestroyed":2,"cubesDestroyed":1}}',
+    );
   });
 });
 
@@ -1234,6 +1243,58 @@ describe('diagnostic ping/pong (AC-23)', () => {
     expect(pongMessage(123)).toEqual({ type: 'pong', t: 123 });
     expect(encodeServerMessage(pongMessage(123))).toBe('{"type":"pong","t":123}');
     expect(pongMessage(0)).toEqual({ type: 'pong', t: 0 });
+  });
+});
+
+describe('client leave — additive self-only frame (AC-8)', () => {
+  it('decodes the exact {type:"leave"} fixture to the empty payload', () => {
+    expect(parseClientMessage('{"type":"leave"}')).toStrictEqual({
+      ok: true,
+      message: { type: 'leave' },
+    });
+  });
+
+  it('drops every extra field, including a forged playerId and reason', () => {
+    expect(
+      parseClientMessage('{"type":"leave","playerId":"p2","reason":"left","nested":{"a":[1]}}'),
+    ).toStrictEqual({ ok: true, message: { type: 'leave' } });
+  });
+
+  it('re-encodes the decoded message as exactly the additive wire frame', () => {
+    const parsed = parseClientMessage('{"type":"leave","playerId":"p2"}');
+    if (!parsed.ok) {
+      throw new Error('expected leave to decode');
+    }
+    expect(JSON.stringify(parsed.message)).toBe('{"type":"leave"}');
+  });
+
+  it.each([
+    '{"type":"leave"',
+    '{"type":"leave"} trailing',
+    '{"type":"LEAVE"}',
+    '{"type":" leave"}',
+    '{"type":"leave "}',
+    '{"type":"leaveMember","playerId":"p2"}',
+  ])('rejects the malformed or unknown frame %j with bad_message', (frame) => {
+    expect(parseClientMessage(frame)).toStrictEqual({ ok: false, error: 'bad_message' });
+  });
+
+  it('adds no client message that can remove another member', () => {
+    // The only removal-shaped client frame is the self-only `leave`; the server broadcast
+    // `memberLeft` stays server-only even with a complete, valid-looking payload.
+    expect(
+      parseClientMessage('{"type":"memberLeft","playerId":"p2","reason":"left"}'),
+    ).toStrictEqual({ ok: false, error: 'bad_message' });
+    expect(parseClientMessage('{"type":"memberLeft"}')).toStrictEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('ACTIVITY_EVENT_TTL_MS (AC-11)', () => {
+  it('pins the 5000 ms activity lifetime', () => {
+    expect(ACTIVITY_EVENT_TTL_MS).toBe(5000);
   });
 });
 

@@ -39,6 +39,11 @@
  *   `leaderboardUpdateMessage` re-validate + copy (throwing `TypeError` on invalid) and an
  *   optional `leaderboard` snapshot travels on `welcome`/`worldEntered` (absence preserved).
  *   The client catalog is unchanged and there is no protocol version bump.
+ * - `leave` is the additive, self-only client frame (feature `presence-and-activity-liveness`):
+ *   `parseClientMessage` accepts exactly `{ type: 'leave' }`, drops extra fields like every
+ *   catalog message and adds no server message variant; the hub removes only the sending
+ *   connection's member. `ACTIVITY_EVENT_TTL_MS` pins the 5000 ms activity eligibility TTL
+ *   shared verbatim with the frontend mirror.
  */
 
 import type { Position } from './servers.js';
@@ -68,6 +73,14 @@ export const MAX_ROTATE_BYTES = MAX_MESSAGE_BYTES;
  * newest first. Shared verbatim with the frontend mirror.
  */
 export const ACTIVITY_FEED_LIMIT = 20;
+
+/**
+ * Pinned activity lifetime (`presence-and-activity-liveness`): an event is fresh iff
+ * `serverNow - event.at < ACTIVITY_EVENT_TTL_MS`; at exactly 5000 ms it is expired and can
+ * never travel in a `welcome`/`worldEntered` snapshot. Shared verbatim with the frontend
+ * mirror, where it is the display lifetime.
+ */
+export const ACTIVITY_EVENT_TTL_MS = 5000;
 
 /**
  * Pinned leaderboard row cap (`server-live-leaderboard`): a snapshot carries at most the
@@ -228,7 +241,8 @@ export type ClientMessage =
   | { type: 'openLootbox' }
   | { type: 'equipPart'; partId: string }
   | { type: 'unequipPart'; slotId: string }
-  | { type: 'ping'; t: number };
+  | { type: 'ping'; t: number }
+  | { type: 'leave' };
 
 /** Server → client catalog (spec § 8). `hello` is the exact retained `app.ts` envelope. */
 export type ServerMessage =
@@ -434,6 +448,12 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
         return badMessage();
       }
       return { ok: true, message: { type: 'ping', t: frame.t } };
+
+    case 'leave':
+      // Additive, self-only close intent (AC-8): exactly `{ type: 'leave' }`; every extra
+      // field (including a forged `playerId`) is dropped, so nothing can select another
+      // member. The hub removes only the sending connection's member.
+      return { ok: true, message: { type: 'leave' } };
 
     default:
       return badMessage();

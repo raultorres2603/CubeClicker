@@ -49,14 +49,14 @@ All names are prefixed `cubeclicker_`. Catalog-declared label names are only `re
 | `cubeclicker_ws_connections_closed_total` | counter | `reason`: `client` `heartbeat` `error` `server` | Connections closed, by reason. |
 | `cubeclicker_ws_connections_rejected_total` | counter | `reason`: `capacity` | Upgrade attempts rejected before a connection was created. |
 | `cubeclicker_ws_heartbeat_timeouts_total` | counter | — | Connections terminated for missing pongs. |
-| `cubeclicker_ws_messages_received_total` | counter | `type`: `join`, `rejoin`, `explode`, `cubeCompleted`, `rotate`, `purchaseUpgrade`, `openLootbox`, `equipPart`, `unequipPart`, `ping`, `invalid`, `oversized` | Client frames received, by decoded type (or invalid/oversized). |
-| `cubeclicker_ws_messages_encoded_total` | counter | `type`: `hello`, `welcome`, `worldEntered`, `memberJoined`, `memberLeft`, `cubeRotated`, `miniCubeRemoved`, `miniCubesRemoved`, `levelAdvanced`, `stateSync`, `economyUpdate`, `upgradesUpdate`, `customizationUpdate`, `lootboxOpened`, `error`, `pong` | Server messages encoded once, by type. |
+| `cubeclicker_ws_messages_received_total` | counter | `type`: `join`, `rejoin`, `explode`, `cubeCompleted`, `rotate`, `purchaseUpgrade`, `openLootbox`, `equipPart`, `unequipPart`, `ping`, `leave`, `invalid`, `oversized` | Client frames received, by decoded type (or invalid/oversized). |
+| `cubeclicker_ws_messages_encoded_total` | counter | `type`: `hello`, `welcome`, `worldEntered`, `memberJoined`, `memberLeft`, `cubeRotated`, `miniCubeRemoved`, `miniCubesRemoved`, `levelAdvanced`, `stateSync`, `economyUpdate`, `upgradesUpdate`, `customizationUpdate`, `lootboxOpened`, `activityEvent`, `leaderboardUpdate`, `error`, `pong` | Server messages encoded once, by type. |
 | `cubeclicker_ws_frames_sent_total` | counter | same as encoded | Successful per-recipient frame deliveries. |
 | `cubeclicker_ws_broadcasts_total` | counter | — | Server broadcasts (one encode per broadcast). |
 | `cubeclicker_ws_broadcast_fanout` | histogram | — | Recipients per server broadcast; buckets `1,2,5,10,25,50,100,200`. |
 | `cubeclicker_ws_connection_duration_seconds` | histogram | — | Connection lifetime; buckets `1,5,15,30,60,120,300,600,1800,3600`. |
 | `cubeclicker_servers_active` | gauge | — | Live servers/rooms. |
-| `cubeclicker_members_active` | gauge | — | Joined members (including grace-window members). |
+| `cubeclicker_members_active` | gauge | — | Joined members. An explicit leave drops the member immediately; an abrupt close keeps the grace-window member counted until expiry. |
 | `cubeclicker_server_capacity` | gauge | — | Configured members per server (`config.maxUsersPerServer`). |
 | `cubeclicker_removal_batch_pending_groups` | gauge | — | Removal batcher groups waiting for the 40 ms window. |
 | `cubeclicker_removal_flushes_total` | counter | — | Removal flushes (timer or boundary). |
@@ -73,6 +73,8 @@ All names are prefixed `cubeclicker_`. Catalog-declared label names are only `re
 | `cubeclicker_db_queries_total` | counter | `result`: `ok`, `error` | Runtime pool queries, by outcome. |
 | `cubeclicker_db_query_duration_seconds` | histogram | — | Runtime pool query duration; buckets `0.001,0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5`. |
 | `cubeclicker_shutdown_total` | counter | `signal`: `SIGTERM`, `SIGINT` | Graceful shutdowns initiated. |
+
+The received `type` allow-list includes `leave`; `cubeclicker_ws_messages_received_total{type="leave"}` increments once per accepted client frame. An explicit leave drops `members_active` immediately; a grace close keeps the member until expiry. The encoded and frame-sent allow-lists include `activityEvent` and `leaderboardUpdate`; one broadcast increments the encoded counter once and the frames-sent counter once per recipient.
 
 The four histograms render cumulative bucket counters plus `_sum` and `_count`. Example scrape lines are `cubeclicker_ws_connections_open 2`, `cubeclicker_ws_messages_received_total{type="join"} 2` and `cubeclicker_db_query_duration_seconds_bucket{le="0.025"} 0`.
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACTIVITY_EVENT_TTL_MS,
   ACTIVITY_FEED_LIMIT,
   type ActivityEvent,
   type CustomizationState,
@@ -2190,5 +2191,95 @@ describe('placement leaderboard field (AC-15)', () => {
     }
 
     expect(result.message.leaderboard).toStrictEqual(LEADERBOARD_SNAPSHOT);
+  });
+});
+
+/**
+ * Parity fixture set copied verbatim from `src/backend/src/game/protocol.test.ts`
+ * (`presence-and-activity-liveness`, AC-8/AC-10/AC-11): the backend's `leave` fixtures and
+ * expectations are replayed here unchanged, and the TTL constant is the mirrored value.
+ */
+describe('client leave — additive self-only frame (AC-8)', () => {
+  it('decodes the exact {type:"leave"} fixture to the empty payload', () => {
+    expect(parseClientMessage('{"type":"leave"}')).toStrictEqual({
+      ok: true,
+      message: { type: 'leave' },
+    });
+  });
+
+  it('drops every extra field, including a forged playerId and reason', () => {
+    expect(
+      parseClientMessage('{"type":"leave","playerId":"p2","reason":"left","nested":{"a":[1]}}'),
+    ).toStrictEqual({ ok: true, message: { type: 'leave' } });
+  });
+
+  it('re-encodes the decoded message as exactly the additive wire frame', () => {
+    const parsed = parseClientMessage('{"type":"leave","playerId":"p2"}');
+    if (!parsed.ok) {
+      throw new Error('expected leave to decode');
+    }
+    expect(JSON.stringify(parsed.message)).toBe('{"type":"leave"}');
+    expect(encodeClientMessage(parsed.message)).toBe('{"type":"leave"}');
+  });
+
+  it.each([
+    '{"type":"leave"',
+    '{"type":"leave"} trailing',
+    '{"type":"LEAVE"}',
+    '{"type":" leave"}',
+    '{"type":"leave "}',
+    '{"type":"leaveMember","playerId":"p2"}',
+  ])('rejects the malformed or unknown frame %j with bad_message', (frame) => {
+    expect(parseClientMessage(frame)).toStrictEqual({ ok: false, error: 'bad_message' });
+  });
+
+  it('adds no client message that can remove another member', () => {
+    // The only removal-shaped client frame is the self-only `leave`; the server broadcast
+    // `memberLeft` stays server-only even with a complete, valid-looking payload.
+    expect(
+      parseClientMessage('{"type":"memberLeft","playerId":"p2","reason":"left"}'),
+    ).toStrictEqual({ ok: false, error: 'bad_message' });
+    expect(parseClientMessage('{"type":"memberLeft"}')).toStrictEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+});
+
+describe('ACTIVITY_EVENT_TTL_MS (AC-11)', () => {
+  it('pins the 5000 ms activity lifetime mirrored from the backend', () => {
+    expect(ACTIVITY_EVENT_TTL_MS).toBe(5000);
+  });
+});
+
+describe('server catalog unchanged by leave and the TTL (AC-10)', () => {
+  it('adds no server message variant for leave', () => {
+    expect(parseServerMessage('{"type":"leave"}')).toStrictEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+    expect(parseServerMessage('{"type":"leave","playerId":"p2"}')).toStrictEqual({
+      ok: false,
+      error: 'bad_message',
+    });
+  });
+
+  it('drops any presence/connected field instead of shaping the welcome', () => {
+    const text = WELCOME_TEXT.replace(
+      '{"type":"welcome"',
+      '{"type":"welcome","presence":"connected","connected":true',
+    );
+
+    expect(parseServerMessage(text)).toStrictEqual({
+      ok: true,
+      message: { type: 'welcome', ...PLACEMENT },
+    });
+  });
+
+  it('still decodes the pinned representative welcome fixture unchanged', () => {
+    expect(parseServerMessage(WELCOME_TEXT)).toStrictEqual({
+      ok: true,
+      message: { type: 'welcome', ...PLACEMENT },
+    });
   });
 });

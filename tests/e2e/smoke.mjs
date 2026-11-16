@@ -29,6 +29,9 @@
 //   7. closing B's socket → A receives `memberLeft { reason: 'left' }` after the grace window
 //   7b. activity leave: A also receives the `activityEvent` `memberLeft` for B with B's name,
 //      A's server id and an id newer than the `memberJoined` snapshot id (no extra wait)
+//   7c. explicit leave: D joins the run's server in B's freed slot 2 and sends `leave` → A
+//      receives `memberLeft { reason: 'left' }` in < 900 ms (no grace window); E then joins
+//      in D's freed slot with `welcome.roster` exactly [A, E] in slot order
 //   8. joined-state metrics: one client opens, reads `hello`, sends `join`, waits for
 //      `welcome`, and while it is still joined a scrape of `BACKEND_URL/metrics` asserts the
 //      Prometheus content type, the `# TYPE cubeclicker_ws_connections_open gauge` line, and
@@ -668,6 +671,10 @@ const ACTIVITY_JOIN_CHECK_LABEL =
   "activity snapshot: A's welcome feed is empty and B's welcome carries exactly A's memberJoined event";
 const ACTIVITY_LEAVE_CHECK_LABEL =
   "activity leave: A receives the memberLeft activity event with B's name and an id newer than the snapshot id";
+const EXPLICIT_LEAVE_CHECK_LABEL =
+  "multiplayer explicit leave: D's leave yields memberLeft(left) on A in under 900ms without the grace window";
+const SLOT_REUSE_CHECK_LABEL =
+  "multiplayer slot reuse: E fills D's freed slot 2 with welcome.roster exactly [A, E]";
 const LEADERBOARD_JOIN_CHECK_LABEL =
   "leaderboard join: A's welcome is a one-entry zero snapshot and B's welcome carries A and B with zero counters and totals";
 const LEADERBOARD_UPDATE_CHECK_LABEL =
@@ -860,6 +867,35 @@ function welcomeProblems(label, welcome, serverId, maxUsers, rosterSize) {
       `${label} welcome.roster expected ${rosterSize} member(s), got ${JSON.stringify(welcome?.roster?.length)}`,
     );
   }
+  return problems;
+}
+
+/**
+ * The exact slot-ordered roster: one entry per expected member, in the given order, with the
+ * server-issued `playerId` and `name` (slot-2 reuse proof for AC-22).
+ */
+function rosterProblems(label, roster, expected) {
+  const problems = [];
+  if (!Array.isArray(roster)) {
+    return [`${label} welcome.roster expected an array, got ${JSON.stringify(roster)}`];
+  }
+  if (roster.length !== expected.length) {
+    problems.push(
+      `${label} welcome.roster expected ${expected.length} member(s), got ${JSON.stringify(roster.length)}`,
+    );
+  }
+  expected.forEach((member, index) => {
+    if (roster[index]?.playerId !== member.playerId) {
+      problems.push(
+        `${label} welcome.roster[${index}].playerId expected ${JSON.stringify(member.playerId)}, got ${JSON.stringify(roster[index]?.playerId)}`,
+      );
+    }
+    if (roster[index]?.name !== member.name) {
+      problems.push(
+        `${label} welcome.roster[${index}].name expected ${JSON.stringify(member.name)}, got ${JSON.stringify(roster[index]?.name)}`,
+      );
+    }
+  });
   return problems;
 }
 
@@ -1421,6 +1457,116 @@ async function checkMultiplayerFlow() {
         ACTIVITY_LEAVE_CHECK_LABEL,
         activityProblem ?? `memberLeft id ${activityId} for ${welcomeB.playerId}`,
       );
+
+      // Explicit leave (AC-22): B's grace expiry freed slot 2, so D joins the run's server in
+      // B's old slot. D's `leave` is finalized immediately, so A must see `memberLeft(left)`
+      // well inside the grace window; E then joins D's freed slot.
+      if (problem !== null) {
+        record(false, EXPLICIT_LEAVE_CHECK_LABEL, 'not run — the abrupt-close grace check failed');
+        record(false, SLOT_REUSE_CHECK_LABEL, 'not run — the abrupt-close grace check failed');
+      } else {
+        let explicitLeaveProblem = null;
+        let leaveElapsedMs = null;
+        let welcomeD = null;
+        let clientD = null;
+        try {
+          clientD = await connectAndJoin('client D');
+          sockets.push(clientD);
+          welcomeD = await waitForMessage(
+            clientD,
+            (message) => message.type === 'welcome',
+            MULTIPLAYER_TIMEOUT_MS,
+            'welcome',
+          );
+          const problems = [
+            ...serverIdProblems('D', welcomeD),
+            ...welcomeProblems('D', welcomeD, welcomeA.serverId, 2, 2),
+            ...rosterProblems('D', welcomeD.roster, [
+              { playerId: welcomeA.playerId, name: welcomeA.name },
+              { playerId: welcomeD.playerId, name: welcomeD.name },
+            ]),
+          ];
+          // A kept slot 1, so D takes B's old slot 2: the slot position must match B's.
+          if (
+            welcomeD.position?.x !== welcomeB.position?.x ||
+            welcomeD.position?.y !== welcomeB.position?.y
+          ) {
+            problems.push(
+              `D welcome.position expected B's slot-2 position ${JSON.stringify(welcomeB.position)}, got ${JSON.stringify(welcomeD.position)}`,
+            );
+          }
+          explicitLeaveProblem = problems.length === 0 ? null : problems.join('; ');
+        } catch (error) {
+          explicitLeaveProblem = problemText(error);
+        }
+
+        if (explicitLeaveProblem === null) {
+          try {
+            const leaveSentAt = Date.now();
+            clientD.send({ type: 'leave' });
+            const left = await waitForMessage(
+              clientA,
+              (message) => message.type === 'memberLeft' && message.playerId === welcomeD.playerId,
+              MEMBER_LEFT_TIMEOUT_MS,
+              `memberLeft for ${welcomeD.playerId}`,
+            );
+            leaveElapsedMs = Date.now() - leaveSentAt;
+            if (left.reason !== 'left') {
+              explicitLeaveProblem = `expected reason "left", got ${JSON.stringify(left.reason)}`;
+            } else if (leaveElapsedMs >= GRACE_LOWER_BOUND_MS) {
+              explicitLeaveProblem = `memberLeft arrived after ${leaveElapsedMs}ms, not inside the immediate-leave budget (< ${GRACE_LOWER_BOUND_MS}ms)`;
+            }
+          } catch (error) {
+            explicitLeaveProblem = problemText(error);
+          }
+        }
+        record(
+          explicitLeaveProblem === null,
+          EXPLICIT_LEAVE_CHECK_LABEL,
+          explicitLeaveProblem ?? `memberLeft(left) received after ${leaveElapsedMs}ms`,
+        );
+
+        if (explicitLeaveProblem !== null) {
+          record(false, SLOT_REUSE_CHECK_LABEL, 'not run — the explicit-leave check failed');
+        } else {
+          let slotReuseProblem = null;
+          let welcomeE = null;
+          try {
+            const clientE = await connectAndJoin('client E');
+            sockets.push(clientE);
+            welcomeE = await waitForMessage(
+              clientE,
+              (message) => message.type === 'welcome',
+              MULTIPLAYER_TIMEOUT_MS,
+              'welcome',
+            );
+            const problems = [
+              ...serverIdProblems('E', welcomeE),
+              ...welcomeProblems('E', welcomeE, welcomeA.serverId, 2, 2),
+              ...rosterProblems('E', welcomeE.roster, [
+                { playerId: welcomeA.playerId, name: welcomeA.name },
+                { playerId: welcomeE.playerId, name: welcomeE.name },
+              ]),
+            ];
+            if (
+              welcomeE.position?.x !== welcomeD.position?.x ||
+              welcomeE.position?.y !== welcomeD.position?.y
+            ) {
+              problems.push(
+                `E welcome.position expected D's freed slot-2 position ${JSON.stringify(welcomeD.position)}, got ${JSON.stringify(welcomeE.position)}`,
+              );
+            }
+            slotReuseProblem = problems.length === 0 ? null : problems.join('; ');
+          } catch (error) {
+            slotReuseProblem = problemText(error);
+          }
+          record(
+            slotReuseProblem === null,
+            SLOT_REUSE_CHECK_LABEL,
+            slotReuseProblem ?? `server ${welcomeE?.serverId}; roster [A, E] in D's freed slot 2`,
+          );
+        }
+      }
     }
   } finally {
     for (const socket of sockets) {

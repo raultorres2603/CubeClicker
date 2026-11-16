@@ -94,6 +94,7 @@ describe('metrics catalog', () => {
         'equipPart',
         'unequipPart',
         'ping',
+        'leave',
         'invalid',
         'oversized',
       ],
@@ -557,6 +558,26 @@ describe('metrics validation', () => {
     );
     expect(metricBlock(rendered, 'cubeclicker_ws_frames_sent_total')).toContain(
       'cubeclicker_ws_frames_sent_total{type="leaderboardUpdate"} 3',
+    );
+    expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
+  });
+
+  it('accepts the leave type on the received counter and creates its series', () => {
+    const metrics = createMetrics();
+    metrics.inc('cubeclicker_ws_messages_received_total', { type: 'leave' });
+
+    expect(metricBlock(metrics.render(), 'cubeclicker_ws_messages_received_total')).toBe(
+      '# HELP cubeclicker_ws_messages_received_total Client frames received, by decoded type.\n' +
+        '# TYPE cubeclicker_ws_messages_received_total counter\n' +
+        'cubeclicker_ws_messages_received_total{type="leave"} 1\n',
+    );
+    // The additive client frame adds no server message, so the outbound allow-lists are
+    // untouched and the catalog stays at exactly 30 metrics (AC-9).
+    expect(METRIC_DEFINITIONS.cubeclicker_ws_messages_encoded_total.labels?.type).not.toContain(
+      'leave',
+    );
+    expect(METRIC_DEFINITIONS.cubeclicker_ws_frames_sent_total.labels?.type).not.toContain(
+      'leave',
     );
     expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
   });

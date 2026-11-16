@@ -24,6 +24,8 @@ class FakePeer implements Peer {
   readonly sent: string[] = [];
   pings = 0;
   closed = false;
+  /** Hub-initiated `close()` calls (an abrupt test drop does not increment it). */
+  closeCalls = 0;
   private readonly messageHandlers: Array<(arg?: unknown) => void> = [];
   private readonly closeHandlers: Array<() => void> = [];
   private readonly pongHandlers: Array<() => void> = [];
@@ -34,6 +36,7 @@ class FakePeer implements Peer {
   }
 
   close(): void {
+    this.closeCalls += 1;
     this.drop();
   }
 
@@ -1298,9 +1301,9 @@ describe('cube completion', () => {
         },
         // The freed slot 1 is the lowest free slot; p2 keeps slot 2 (stable positions).
         roster: [moved, memberOf('p2', 'Player 2', X2_SLOT_2)],
+        // Only the fresh `memberLeft` (age 1000 ms) travels: the `at: 0` join is TTL-expired.
         activity: [
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
-          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
         leaderboard: {
           serverId: 1,
@@ -1430,7 +1433,6 @@ describe('cube completion', () => {
         ],
         activity: [
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p2', 'Player 2').event,
-          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
         leaderboard: {
           serverId: 1,
@@ -1543,7 +1545,6 @@ describe('cube completion', () => {
         roster: [movedThird, memberOf('p2', 'Player 2', X2_SLOT_2)],
         activity: [
           transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1').event,
-          transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
         ],
         leaderboard: {
           serverId: 1,
@@ -1604,9 +1605,9 @@ describe('cube completion', () => {
           pitchSteps: 0,
         },
         roster: [movedFifth, memberOf('p4', 'Player 4', X2_SLOT_2)],
+        // Only the fresh 31 000 `memberLeft` travels; the `at: 0` join is TTL-expired.
         activity: [
           transitionActivity(2, 31_000, 2, 'memberLeft', 'p3', 'Player 3').event,
-          transitionActivity(1, 0, 2, 'memberJoined', 'p3', 'Player 3').event,
         ],
         leaderboard: {
           serverId: 2,
@@ -4946,9 +4947,9 @@ describe('server activity feed (live-activity-feed)', () => {
     ]);
     const verifier = h.connect();
     h.join(verifier);
+    // The 16 000 event is 999 ms old at 16 999; the `at: 0` join is TTL-expired.
     expect(welcomeOf(verifier).activity).toEqual([
       clearedActivity(2, 16_000, 1, 'p1', 'Player 1', 1).event,
-      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
     ]);
   });
 
@@ -5464,7 +5465,7 @@ describe('server activity feed (live-activity-feed)', () => {
     ]);
   });
 
-  it('keeps a 20-event newest-first ring and serves it on reconnect with eviction (AC-10/AC-13)', () => {
+  it('serves only the five fresh events from the ring on reconnect (AC-13)', () => {
     const h = createFeedHarness({ overrides: { maxUsersPerServer: 10, clickRateLimitPerSecond: 1000 } });
     const first = h.connect();
     h.join(first);
@@ -5486,21 +5487,23 @@ describe('server activity feed (live-activity-feed)', () => {
     const resumed = h.connect();
     resumed.receive(JSON.stringify({ type: 'rejoin', token }));
     const welcome = welcomeOf(resumed);
+    // The ring still holds 20 events, but only events younger than 5000 ms travel: the
+    // events at 25 000..21 000 are fresh; ids <= 21 (at <= 20 000) are TTL-expired.
     expect(welcome.activity.map((event) => event.id)).toEqual([
-      26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+      26, 25, 24, 23, 22,
     ]);
     expect(welcome.activity[0]).toEqual(
       milestoneActivity(26, 25_000, 1, 'p2', 'Player 2', 25).event,
     );
-    expect(welcome.activity[19]).toEqual(
-      fastActivity(7, 6000, 1, 'p2', 'Player 2', 6, 1000).event,
+    expect(welcome.activity[4]).toEqual(
+      fastActivity(22, 21_000, 1, 'p2', 'Player 2', 21, 1000).event,
     );
 
     // The rejoin itself records nothing: a fresh join at the same instant sees the same ring.
     const verifier = h.connect();
     h.join(verifier);
     expect(welcomeOf(verifier).activity.map((event) => event.id)).toEqual([
-      26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+      26, 25, 24, 23, 22,
     ]);
   });
 
@@ -6577,5 +6580,538 @@ describe('server live leaderboard (server-live-leaderboard)', () => {
     expect(leaderboardFrames(second)).toEqual([]);
     h.hub.close();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('explicit leave (presence-and-activity-liveness)', () => {
+  /**
+   * A fake peer whose hub-initiated `close()` closes the socket but withholds the transport
+   * close event until the test emits it — the delayed-close window in which a heartbeat tick
+   * could otherwise overwrite the deliberate close reason (F4).
+   */
+  class DelayedClosePeer extends FakePeer {
+    override close(): void {
+      this.closeCalls += 1;
+      this.closed = true;
+    }
+  }
+
+  /**
+   * A hub with the metrics registry, a manual clock and fake timers. `connect` attaches a
+   * fake peer (optionally with an account session), `join` sends the client frame and `leave`
+   * sends the exact `{"type":"leave"}` frame.
+   */
+  function createLeaveHarness(overrides: Partial<GameConfig> = {}) {
+    const config: GameConfig = { ...loadGameConfig({}), ...overrides };
+    const metrics = createMetrics();
+    let clock = 0;
+    let counter = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => () => 0,
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      metrics,
+    });
+    return {
+      config,
+      hub,
+      metrics,
+      connect(session: AccountSession | null = null): FakePeer {
+        counter += 1;
+        const peer = new FakePeer();
+        hub.attach(peer, session, `req-${counter}`);
+        return peer;
+      },
+      join(peer: FakePeer): void {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+      advance(ms: number): void {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      advanceTimersOnly(ms: number): void {
+        vi.advanceTimersByTime(ms);
+      },
+      setNow(ms: number): void {
+        clock = ms;
+      },
+    };
+  }
+
+  /** The numeric value of one exact rendered sample (`name` or `name{labels}`), or `null`. */
+  function sampleValue(metrics: Metrics, sample: string): number | null {
+    const line = metrics
+      .render()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${sample} `));
+    if (line === undefined) {
+      return null;
+    }
+    return Number(line.slice(sample.length + 1));
+  }
+
+  /** Sends the exact client `leave` frame. */
+  function leave(peer: FakePeer): void {
+    peer.receive(JSON.stringify({ type: 'leave' }));
+  }
+
+  it('removes the member immediately on leave, closes the peer and leaves no grace timer (AC-1)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(2);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+    // p1's heartbeat, p2's heartbeat and server 1's coalesced leaderboard timer.
+    expect(vi.getTimerCount()).toBe(3);
+
+    // Leave at 2000 ms opens the 1 s activity gate, so the final removal also records the
+    // normal `memberLeft` candidate in addition to the protocol broadcast.
+    h.setNow(2000);
+    leave(first);
+
+    // The leaver receives nothing; the survivor gets the protocol frame then the activity.
+    expect(first.messages()).toEqual([]);
+    expect(messagesWithoutLeaderboard(second)).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 2000, 1, 'memberLeft', 'p1', 'Player 1'),
+    ]);
+    // The hub closed the leaver's peer exactly once, with no grace timer for p1 remaining.
+    expect(first.closeCalls).toBe(1);
+    expect(first.closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(2);
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(1);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+
+    // One full grace window later there is still exactly one `memberLeft` for p1: the final
+    // removal already happened, so the grace path never runs for this member.
+    h.advance(h.config.reconnectGraceMs);
+    expect(
+      messagesWithoutLeaderboard(second).filter((message) => message.type === 'memberLeft'),
+    ).toEqual([{ type: 'memberLeft', playerId: 'p1', reason: 'left' }]);
+    expect(first.messages()).toEqual([]);
+  });
+
+  it('keeps the accepted grace and resumes identity, cube and counters on rejoin (AC-2)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2, clickRateLimitPerSecond: 1000 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const token = welcomeOf(first).token;
+
+    // A clears a full 3x3 level (54 accepted clicks, 6 faces) without completing the cube.
+    for (const id of allIds(3)) {
+      explode(first, id);
+    }
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+
+    first.drop();
+    expect(messagesWithoutLeaderboard(second)).toEqual([]);
+
+    h.setNow(h.config.reconnectGraceMs - 1);
+    h.advanceTimersOnly(h.config.reconnectGraceMs - 1);
+    const resumed = h.connect();
+    resumed.receive(JSON.stringify({ type: 'rejoin', token }));
+    const welcome = welcomeOf(resumed);
+
+    expect(welcome.playerId).toBe('p1');
+    expect(welcome.serverId).toBe(1);
+    expect(welcome.position).toEqual(X2_SLOT_1);
+    expect(welcome.self).toEqual({
+      levelIndex: 0,
+      gridSize: 3,
+      styleId: 'obsidian-neon',
+      removedIds: allIds(3),
+      yawSteps: 0,
+      pitchSteps: 0,
+    });
+    expect(welcome.roster).toEqual([
+      memberOf('p1', 'Player 1', X2_SLOT_1, {
+        levelIndex: 0,
+        gridSize: 3,
+        styleId: 'obsidian-neon',
+        removedIds: allIds(3),
+      }),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
+    ]);
+    // The resumed session counters travel on the `welcome` leaderboard snapshot.
+    expect(welcome.leaderboard).toEqual({
+      serverId: 1,
+      at: 29_999,
+      entries: [
+        { playerId: 'p1', name: 'Player 1', cubesCompleted: 0, clicks: 54 },
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+      ],
+      totals: { cubesCompleted: 0, clicks: 54, facesDestroyed: 6 },
+    });
+  });
+
+  it('finalizes an unrejoined abrupt close exactly at the grace deadline and frees the slot (AC-2)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.drop();
+    second.clear();
+
+    h.setNow(h.config.reconnectGraceMs - 1);
+    h.advanceTimersOnly(h.config.reconnectGraceMs - 1);
+    expect(
+      messagesWithoutLeaderboard(second).filter((message) => message.type === 'memberLeft'),
+    ).toEqual([]);
+
+    h.setNow(h.config.reconnectGraceMs);
+    h.advanceTimersOnly(1);
+    expect(messagesWithoutLeaderboard(second)).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 30_000, 1, 'memberLeft', 'p1', 'Player 1'),
+    ]);
+
+    const joined = h.connect();
+    h.join(joined);
+    const welcome = welcomeOf(joined);
+    expect(welcome.playerId).toBe('p3');
+    expect(welcome.name).toBe('Player 3');
+    expect(welcome.position).toEqual(X2_SLOT_1);
+  });
+
+  it('destroys the last member server immediately on leave and starts no grace (AC-4)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const only = h.connect();
+    h.join(only);
+    const token = welcomeOf(only).token;
+    only.clear();
+
+    // Only the member heartbeat and server 1's coalesced leaderboard timer exist.
+    expect(vi.getTimerCount()).toBe(2);
+
+    leave(only);
+
+    expect(only.closeCalls).toBe(1);
+    expect(only.messages()).toEqual([]); // no peer receives memberLeft or activityEvent
+    expect(vi.getTimerCount()).toBe(0);
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(0);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(0);
+
+    // The token died with the member: resume fails; the next join creates server 2.
+    const resume = h.connect();
+    resume.receive(JSON.stringify({ type: 'rejoin', token }));
+    expect(resume.messages()).toEqual([{ type: 'error', code: 'resume_failed' }]);
+
+    const joined = h.connect();
+    h.join(joined);
+    expect(welcomeOf(joined).serverId).toBe(2);
+  });
+
+  it('keeps an abruptly closed last member server alive through the grace window (AC-4)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const only = h.connect();
+    h.join(only);
+    only.clear();
+
+    only.drop();
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+    h.setNow(h.config.reconnectGraceMs - 1);
+    h.advanceTimersOnly(h.config.reconnectGraceMs - 1);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+
+    h.setNow(h.config.reconnectGraceMs);
+    h.advanceTimersOnly(1);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(0);
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(0);
+    expect(only.messages()).toEqual([]);
+  });
+
+  it('fails rejoin after leave and creates a fresh member in the freed slot (AC-3)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    const firstToken = welcomeOf(first).token;
+    first.clear();
+    second.clear();
+
+    leave(first);
+    first.clear();
+
+    const resume = h.connect();
+    resume.receive(JSON.stringify({ type: 'rejoin', token: firstToken }));
+    resume.receive(JSON.stringify({ type: 'rejoin', token: firstToken }));
+    expect(resume.messages()).toEqual([
+      { type: 'error', code: 'resume_failed' },
+      { type: 'error', code: 'resume_failed' },
+    ]);
+
+    const joined = h.connect();
+    h.join(joined);
+    const welcome = welcomeOf(joined);
+    expect(welcome.playerId).toBe('p3');
+    expect(welcome.name).toBe('Player 3');
+    expect(welcome.position).toEqual(X2_SLOT_1);
+    expect(welcome.token).not.toBe(firstToken);
+    expect(welcome.roster).toEqual([
+      memberOf('p3', 'Player 3', X2_SLOT_1),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
+    ]);
+  });
+
+  it('rebuilds roster and leaderboard inputs from the surviving members after leave (AC-5)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2, clickRateLimitPerSecond: 1000 });
+    const first = h.connect();
+    h.join(first);
+    const firstPosition = welcomeOf(first).position;
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    explode(first, 'front:0:0');
+    flushRemovals(h);
+    first.clear();
+    second.clear();
+    leave(first);
+
+    // The next coalesced snapshot (<= 1 s) drops A and recomputes totals from live members.
+    h.advance(1000);
+    expect(onlyType(second, 'leaderboardUpdate').leaderboard).toEqual({
+      serverId: 1,
+      at: 1000,
+      entries: [{ playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 }],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+
+    // C fills the freed slot 1; the roster and the welcome leaderboard are exactly [C, B].
+    const third = h.connect();
+    h.join(third);
+    const welcome = welcomeOf(third);
+    expect(firstPosition).toEqual(X2_SLOT_1);
+    expect(welcome.playerId).toBe('p3');
+    expect(welcome.position).toEqual(firstPosition);
+    expect(welcome.roster).toEqual([
+      memberOf('p3', 'Player 3', firstPosition),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
+    ]);
+    expect(welcome.leaderboard).toEqual({
+      serverId: 1,
+      at: 1000,
+      entries: [
+        { playerId: 'p3', name: 'Player 3', cubesCompleted: 0, clicks: 0 },
+        { playerId: 'p2', name: 'Player 2', cubesCompleted: 0, clicks: 0 },
+      ],
+      totals: { cubesCompleted: 0, clicks: 0, facesDestroyed: 0 },
+    });
+  });
+
+  it('leaves only the sending tab and keeps the account other tab playing (AC-6)', () => {
+    const session: AccountSession = { userId: 'u1', username: 'alice', verified: true };
+    const h = createLeaveHarness({ maxUsersPerServer: 3, clickRateLimitPerSecond: 1000 });
+    const firstTab = h.connect(session);
+    h.join(firstTab);
+    const secondTab = h.connect(session);
+    h.join(secondTab);
+    expect(welcomeOf(firstTab).playerId).toBe('p1');
+    expect(welcomeOf(secondTab).playerId).toBe('p2');
+    firstTab.clear();
+    secondTab.clear();
+
+    h.setNow(2000);
+    explode(firstTab, 'front:0:0');
+    flushRemovals(h);
+    firstTab.clear();
+    secondTab.clear();
+
+    leave(firstTab);
+
+    expect(firstTab.closeCalls).toBe(1);
+    expect(secondTab.closed).toBe(false);
+    expect(messagesWithoutLeaderboard(secondTab)).toEqual([
+      { type: 'memberLeft', playerId: 'p1', reason: 'left' },
+      transitionActivity(2, 2000, 1, 'memberLeft', 'p1', 'alice'),
+    ]);
+
+    // The next coalesced snapshot has one row for the account's live tab, excluding the leaver.
+    h.advance(1000);
+    const snapshot = onlyType(secondTab, 'leaderboardUpdate').leaderboard;
+    expect(snapshot.entries).toEqual([
+      { playerId: 'p2', name: 'alice', cubesCompleted: 0, clicks: 0 },
+    ]);
+    expect(snapshot.totals).toEqual({ cubesCompleted: 0, clicks: 0, facesDestroyed: 0 });
+
+    // The surviving tab is still joined: an accepted click is broadcast back to it.
+    secondTab.clear();
+    explode(secondTab, 'front:0:0');
+    flushRemovals(h);
+    expect(secondTab.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' },
+    ]);
+  });
+
+  it('counts the leave frame and the client close reason exactly once (AC-9)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+    ).toBeNull();
+
+    leave(first);
+
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="leave"}'),
+    ).toBe(1);
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(1);
+    expect(sampleValue(h.metrics, 'cubeclicker_servers_active')).toBe(1);
+    expect(sampleValue(h.metrics, 'cubeclicker_ws_connections_open')).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+    ).toBe(1);
+    // No server message type `leave` was added: the encoded allow-list never sees it.
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="leave"}'),
+    ).toBeNull();
+  });
+
+  it('keeps the client close reason when a heartbeat tick fires before the close event (AC-9)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    // The transport close is delayed: the socket is closed but its close event is withheld.
+    const first = new DelayedClosePeer();
+    h.hub.attach(first, null, 'req-delayed');
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    leave(first);
+    expect(first.closeCalls).toBe(1);
+
+    // Without the heartbeat clear, this tick would see the closed peer and call
+    // terminate('heartbeat'), overwriting the deliberate `client` reason before the close.
+    h.advance(h.config.heartbeatIntervalMs);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="heartbeat"}'),
+    ).toBeNull();
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+    ).toBeNull();
+
+    // The delayed close event finally arrives: it is counted exactly once as a client close.
+    first.drop();
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="client"}'),
+    ).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_connections_closed_total{reason="heartbeat"}'),
+    ).toBeNull();
+    expect(first.closeCalls).toBe(1);
+  });
+
+  it('rejects leave from a connection that never joined and removes nothing (AC-8)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2 });
+    const joined = h.connect();
+    h.join(joined);
+    const stranger = h.connect();
+    joined.clear();
+    stranger.clear();
+
+    leave(stranger);
+
+    expect(stranger.messages()).toEqual([{ type: 'error', code: 'not_joined' }]);
+    expect(stranger.closed).toBe(false);
+    expect(stranger.closeCalls).toBe(0);
+    expect(sampleValue(h.metrics, 'cubeclicker_members_active')).toBe(1);
+    expect(joined.messages()).toEqual([]);
+
+    // The joined member is untouched: an accepted click still works.
+    explode(joined, 'front:0:0');
+    flushRemovals(h);
+    expect(joined.messages()).toEqual([
+      { type: 'miniCubeRemoved', playerId: 'p1', id: 'front:0:0' },
+    ]);
+  });
+
+  it('carries only unexpired events on welcome across the 4999/5000 boundary (AC-13)', () => {
+    // At 4999 both events (at 0 and at 1000) are younger than 5000 ms and travel.
+    const before = createLeaveHarness({ maxUsersPerServer: 2 });
+    const beforeFirst = before.connect();
+    before.join(beforeFirst);
+    before.setNow(1000);
+    const beforeSecond = before.connect();
+    before.join(beforeSecond);
+    const beforeToken = welcomeOf(beforeFirst).token;
+    beforeFirst.drop();
+    before.setNow(4999);
+    const beforeResumed = before.connect();
+    beforeResumed.receive(JSON.stringify({ type: 'rejoin', token: beforeToken }));
+    expect(welcomeOf(beforeResumed).activity).toEqual([
+      transitionActivity(2, 1000, 1, 'memberJoined', 'p2', 'Player 2').event,
+      transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'Player 1').event,
+    ]);
+
+    // At exactly 5000 the `at: 0` event is expired, so only the 1000 event travels.
+    const after = createLeaveHarness({ maxUsersPerServer: 2 });
+    const afterFirst = after.connect();
+    after.join(afterFirst);
+    after.setNow(1000);
+    const afterSecond = after.connect();
+    after.join(afterSecond);
+    const afterToken = welcomeOf(afterFirst).token;
+    afterFirst.drop();
+    after.setNow(5000);
+    const afterResumed = after.connect();
+    afterResumed.receive(JSON.stringify({ type: 'rejoin', token: afterToken }));
+    expect(welcomeOf(afterResumed).activity).toEqual([
+      transitionActivity(2, 1000, 1, 'memberJoined', 'p2', 'Player 2').event,
+    ]);
+
+    // At 6000 the 1000 event is 5000 ms old too: a fresh join seeds no activity.
+    after.setNow(6000);
+    const fresh = after.connect();
+    after.join(fresh);
+    expect(welcomeOf(fresh).activity).toEqual([]);
+  });
+
+  it('carries only the target server unexpired events on worldEntered (AC-13)', () => {
+    const h = createLeaveHarness({ maxUsersPerServer: 2, clickRateLimitPerSecond: 1000 });
+    const first = h.connect();
+    h.join(first);
+    const second = h.connect();
+    h.join(second);
+    // Server 1: p1's `at: 0` join. Server 2 gets p3's fresh 1000 ms join below.
+    h.setNow(1000);
+    const third = h.connect();
+    h.join(third);
+    expect(welcomeOf(third).serverId).toBe(2);
+    leave(first);
+    first.clear();
+    second.clear();
+    third.clear();
+
+    // p3's completion at 5500 executes the planned move into server 1. The target snapshot
+    // contains only its fresh 1000 ms `memberLeft`; its 0 ms join is expired, and server 2's
+    // fresh 1000 ms join is not the target server's event.
+    for (const id of allIds(3)) {
+      explode(third, id);
+    }
+    flushRemovals(h);
+    third.clear();
+    h.setNow(5500);
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+    expect(onlyType(third, 'worldEntered').activity).toEqual([
+      transitionActivity(2, 1000, 1, 'memberLeft', 'p1', 'Player 1').event,
+    ]);
   });
 });

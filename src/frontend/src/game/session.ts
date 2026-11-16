@@ -27,7 +27,13 @@
  * - the per-server activity feed is presentation state owned by the world reducer:
  *   `welcome`/`worldEntered` seed it (the mover's target ring travels in `pendingWorldSwap`)
  *   and `activityEvent` frames only update the store, so the session has no engine/scene
- *   action for them;
+ *   action for them. The session owns the client-side display lifetime on top of it: every
+ *   world reduction and the travel-midpoint swap run `observe → synchronous prune →
+ *   publish`, and one 250 ms interval is the fallback for time passing without a
+ *   reduction (presence-and-activity-liveness AC-15…AC-18);
+ * - a non-bfcache `pagehide` while welcomed and connected sends the additive, self-only
+ *   `leave` so the server finalizes presence immediately; the send is exception-safe (a
+ *   CLOSING/CLOSED socket may throw) and `dispose()` never sends it (AC-7);
  * - the per-server leaderboard is presentation state owned by the same reducer:
  *   `welcome`/`worldEntered` carry the snapshot (the target ranking travels in
  *   `pendingWorldSwap`) and `leaderboardUpdate` frames only update the store, so the
@@ -99,10 +105,17 @@ import type { PerspectiveCamera, Scene } from 'three';
 
 import { classifyPointer, type PointerGesture } from '../input/gestures';
 import { mapKey } from '../input/keyboard';
+import {
+  ACTIVITY_EXPIRY_TICK_MS,
+  createActivityLifetime,
+  type ActivityFeedSlice,
+} from '../multiplayer/activity-lifetime';
+import { ACTIVITY_EVENT_TTL_MS } from '../multiplayer/protocol';
 import type { ClientMessage, CubeState, ServerMessage } from '../multiplayer/protocol';
 import {
   applyWorldSwap,
   createWorldState,
+  pruneActivity,
   reduceWorldState,
   type WorldState,
 } from '../multiplayer/server-state';
@@ -145,6 +158,16 @@ export interface MotionSource {
 export interface VisibilitySource {
   isHidden(): boolean;
   subscribe(cb: (hidden: boolean) => void): () => void;
+}
+
+/**
+ * Page-lifecycle reader: fires when the page is hidden away (`pagehide`) with the bfcache
+ * flag. `persisted === true` means the page is entering the back/forward cache and may
+ * return with the same socket, so it is never a deliberate close.
+ */
+export interface PageLifecycleSource {
+  /** Subscribes to `pagehide`; the callback receives `event.persisted === true`. */
+  subscribe(cb: (persisted: boolean) => void): () => void;
 }
 
 /** Surface-size reader: fires whenever the element's box changes. */
@@ -215,6 +238,12 @@ export interface SessionEnvironment {
    * the browser environment always provides it.
    */
   orientation?: OrientationSource;
+  /**
+   * The page-lifecycle source (`pagehide` + `persisted`). Optional so custom environments
+   * keep type-checking; the browser environment always provides it. Without it the session
+   * never sends the deliberate-close `leave` (AC-7), which is the safe degradation.
+   */
+  pageLifecycle?: PageLifecycleSource;
   rendererFactory: (canvas: CanvasLike) => RendererAdapter;
   now(): number;
   random(): number;
@@ -435,6 +464,12 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   const spectate = createSpectateController();
   /** The server-authoritative world, reduced from every received frame. */
   let world = createWorldState();
+  /**
+   * The client-side activity display lifetime (AC-15…AC-18): first-seen deadlines and
+   * tombstones for the current and pending feeds. Anchored on local receipt, never on the
+   * server's `at` (the event clock may be skewed).
+   */
+  const activityLifetime = createActivityLifetime({ ttlMs: ACTIVITY_EVENT_TTL_MS });
   /** The transport status the banner reads. */
   let status: TransportStatus = 'connecting';
   /** True between a `welcome` and the next non-connected status (input/travel gate). */
@@ -451,6 +486,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let lastSendMs = 0;
   let pendingOrientation: { yawSteps: number; pitchSteps: number } | null = null;
   let rotateTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The attach cycle's fallback activity-expiry interval (`null` while not scheduled). */
+  let activityExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** The scene of the live attach cycle; `null` while detached. */
   let activeScene: SceneView | null = null;
   /** The environment of the live attach cycle (the owned engine's replacement random). */
@@ -567,6 +604,67 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       return 0;
     }
     return env.now();
+  }
+
+  /** The current feed plus, while a cross-server move travels, the pending target feed. */
+  function activityFeeds(state: WorldState): ActivityFeedSlice[] {
+    const feeds: ActivityFeedSlice[] = [{ serverId: state.serverId, events: state.activity }];
+    if (state.pendingWorldSwap !== null) {
+      feeds.push({
+        serverId: state.pendingWorldSwap.serverId,
+        events: state.pendingWorldSwap.activity,
+      });
+    }
+    return feeds;
+  }
+
+  /**
+   * The pinned order after every world change (AC-15…AC-18): observe the current and
+   * pending feeds with the local clock — recording a first-seen deadline only for keys not
+   * seen before — then remove expired events synchronously, before any handler-specific or
+   * final publish. A tombstoned/expired seed therefore never enters the published feed, not
+   * even for one tick. Returns the same `WorldState` reference when nothing expired.
+   */
+  function pruneWorldActivity(state: WorldState, nowMs: number): WorldState {
+    activityLifetime.observe(activityFeeds(state), nowMs);
+    return pruneActivity(state, (serverId, eventId) =>
+      activityLifetime.isExpired(serverId, eventId, nowMs),
+    );
+  }
+
+  /**
+   * The fallback for time passing without a reduction (AC-18): prune both feeds at the
+   * current local time and publish only when a line actually expired. An empty feed (or a
+   * no-op prune) performs no publish.
+   */
+  function pruneExpiredActivity(): void {
+    const pruned = pruneWorldActivity(world, currentNow());
+    if (pruned === world) {
+      return;
+    }
+    world = pruned;
+    publishMultiplayer();
+  }
+
+  /**
+   * The deliberate-close signal (AC-7): a non-bfcache `pagehide` while welcomed and
+   * connected sends the additive, self-only `leave`. Best-effort during unload — the frame
+   * rides the live socket, and a CLOSING/CLOSED `WebSocket.send` throws — so the send is
+   * guarded: a failed leave must not throw out of the unload handler or skip the remaining
+   * teardown, and no other frame is sent. `dispose()` never sends `leave` (a StrictMode
+   * remount is not a deliberate close), and neither do bfcache, tab switches, a dropped
+   * socket or a disposed session.
+   */
+  function onPageHide(persisted: boolean): void {
+    if (persisted || !active || !welcomed || status !== 'connected' || transport === undefined) {
+      return;
+    }
+    try {
+      transport.send({ type: 'leave' });
+    } catch {
+      // Best-effort unload: the frame is discarded; no other frame is sent.
+      return;
+    }
   }
 
   /** Settles one measurement exactly once: clears its timer and removes it from the list. */
@@ -825,6 +923,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     } else {
       // Defensive fallback (protocol violation): enter the assigned world immediately.
       world = applyWorldSwap(world);
+      // The swap makes the pending feed current: observe → prune before the publish below.
+      world = pruneWorldActivity(world, currentNow());
       activeScene?.enterWorld({
         maxUsers: world.maxUsers,
         ownPosition: world.self.position,
@@ -997,6 +1097,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     }
     const previousSelfId = world.self.playerId;
     world = reduceWorldState(world, message);
+    // Pinned order (AC-15…AC-18): reduce → observe → synchronous prune → the switch below
+    // and its handler-specific publishes, so a welcome/worldEntered seed is already pruned.
+    world = pruneWorldActivity(world, currentNow());
     switch (message.type) {
       case 'welcome':
         handleWelcome(message, previousSelfId);
@@ -1365,6 +1468,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       if (after.levelIndex !== before.levelIndex) {
         // The online level midpoint: the queued cross-server world becomes current.
         world = applyWorldSwap(world);
+        // The pending target feed is now the current feed: observe → prune synchronously
+        // before this frame's publish (AC-15/AC-18).
+        world = pruneWorldActivity(world, currentNow());
       }
       handleTravelArrival(before, after);
       view.applyIntents(engine.drainIntents(), nowMs);
@@ -1536,6 +1642,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         }
         return;
       }
+      // A throttled background tab returns with lines past their deadline: prune immediately
+      // (before the next frame) so it never renders stale activity (AC-18).
+      pruneExpiredActivity();
       frameBaselineMs = env.now();
       scheduleFrame();
     }
@@ -1578,6 +1687,16 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (env.orientation !== undefined) {
       unsubscribers.push(env.orientation.subscribe(onOrientation));
     }
+    if (env.pageLifecycle !== undefined) {
+      unsubscribers.push(env.pageLifecycle.subscribe(onPageHide));
+    }
+
+    // One fallback expiry interval per attach cycle: world reductions already prune
+    // synchronously, so this only covers time passing without a reduction (AC-18). It is
+    // only meaningful online, where the world can carry activity feeds at all.
+    if (online) {
+      activityExpiryTimer = setInterval(pruneExpiredActivity, ACTIVITY_EXPIRY_TICK_MS);
+    }
 
     // The transport shares the attach lifecycle: the session subscribes first, then
     // connects, and teardown removes the handlers before closing the socket.
@@ -1595,6 +1714,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       if (frameHandle !== null) {
         env.scheduler.cancel(frameHandle);
         frameHandle = null;
+      }
+      if (activityExpiryTimer !== null) {
+        clearInterval(activityExpiryTimer);
+        activityExpiryTimer = null;
       }
       clearResizeTimer();
       target.removeEventListener('pointerdown', onPointerDown);
@@ -1628,6 +1751,7 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       latestPerf = null;
       spectate.reset();
       engine.setSpectating?.(false);
+      activityLifetime.clear();
       publishMultiplayer();
       adapter.dispose();
       view.dispose();

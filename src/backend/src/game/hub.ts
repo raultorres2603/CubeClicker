@@ -27,6 +27,9 @@
  * - a socket close starts `RECONNECT_GRACE_MS` of grace: the member stays in the roster and
  *   keeps its cube; expiry removes them, broadcasts `memberLeft (left)` and destroys an
  *   emptied server (AC-3/AC-7);
+ * - an explicit client `leave` finalizes the sender's member immediately through the same
+ *   final-removal path as grace expiry (no grace timer), then the server closes the peer; a
+ *   close without `leave` keeps the accepted grace and token resume (AC-1/AC-2/AC-8);
  * - a transport ping is sent every `WS_HEARTBEAT_INTERVAL_MS`; two unanswered pings terminate
  *   the socket; a pong resets the counter (AC-21);
  * - the connection cap is enforced before anything is sent: `hasCapacity()` lets the route
@@ -875,6 +878,36 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     recomputePlan();
     refreshRoomGauges();
+  }
+
+  /**
+   * Explicit leave (feature `presence-and-activity-liveness`, AC-1/AC-8).
+   *
+   * A joined connection's `leave` finalizes **only its own** member through the same
+   * `removeMember` path as grace expiry (immediate `memberLeft (left)`, activity/leaderboard
+   * cleanup, destroy-if-empty), then the server closes the peer. `closeReason` is pinned to
+   * `client` so the following close event counts/logs the deliberate close. The token is
+   * deleted with the member, so a later `rejoin` fails; only a fresh `join` creates a member.
+   * `handleClose` is untouched: any close without an accepted `leave` keeps the grace path.
+   */
+  function handleLeave(connection: Connection): void {
+    const member = memberFor(connection);
+    if (member === null) {
+      sendError(connection, 'not_joined');
+      return;
+    }
+    connection.closeReason = 'client';
+    // The deliberate-close reason must survive a delayed close event: a heartbeat tick on a
+    // now-closed peer would otherwise call terminate('heartbeat') and overwrite it before the
+    // closed metric/log. Clearing the interval here keeps `handleClose` idempotent (F4).
+    if (connection.heartbeat !== null) {
+      timers.clearInterval(connection.heartbeat);
+      connection.heartbeat = null;
+    }
+    removeMember(member.playerId);
+    // The member is terminal: the server closes the socket, and the later close event finds
+    // no member and starts no grace. This is the Q-9 decision (no orphan connection re-joins).
+    connection.peer.close();
   }
 
   function handleClose(connection: Connection): void {
@@ -1766,6 +1799,10 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     if (message.type === 'rejoin') {
       handleRejoin(connection, message.token);
+      return;
+    }
+    if (message.type === 'leave') {
+      handleLeave(connection);
       return;
     }
     const member = memberFor(connection);

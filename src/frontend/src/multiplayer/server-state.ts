@@ -601,3 +601,50 @@ export function applyWorldSwap(state: WorldState): WorldState {
     pendingWorldSwap: null,
   };
 }
+
+/**
+ * Removes locally expired activity events from the current feed and, while a cross-server
+ * move is travelling, from the pending target feed (`presence-and-activity-liveness`,
+ * AC-15/AC-18).
+ *
+ * Pure: the caller supplies the clock-based predicate (`isExpired(serverId, eventId)`,
+ * normally the session's `ActivityLifetime.isExpired` reader), so this helper never reads
+ * a clock or a timer. Each feed is filtered against its own `serverId` — the current feed
+ * with `state.serverId`, the pending feed with `pendingWorldSwap.serverId` — because
+ * per-server event ids collide across servers (both start at 1).
+ *
+ * **Referential stability (React contract).** When nothing expired the same `WorldState`
+ * reference is returned. When only one feed changed, the other feed's array *and* the
+ * untouched object that owns it keep their identity (`pendingWorldSwap` for a current-only
+ * removal, `activity` for a pending-only removal); surviving events keep their identity in
+ * both cases, so only the changed arrays are replaced.
+ */
+export function pruneActivity(
+  state: WorldState,
+  isExpired: (serverId: number, eventId: number) => boolean,
+): WorldState {
+  const filterFeed = (serverId: number, events: readonly ActivityEvent[]): ActivityEvent[] =>
+    events.filter((event) => !isExpired(serverId, event.id));
+
+  const activity = filterFeed(state.serverId, state.activity);
+  const pending = state.pendingWorldSwap;
+
+  if (pending === null) {
+    if (activity.length === state.activity.length) {
+      return state;
+    }
+    return { ...state, activity };
+  }
+
+  const pendingActivity = filterFeed(pending.serverId, pending.activity);
+  const activityChanged = activity.length !== state.activity.length;
+  const pendingChanged = pendingActivity.length !== pending.activity.length;
+  if (!activityChanged && !pendingChanged) {
+    return state;
+  }
+  return {
+    ...state,
+    activity: activityChanged ? activity : state.activity,
+    pendingWorldSwap: pendingChanged ? { ...pending, activity: pendingActivity } : pending,
+  };
+}

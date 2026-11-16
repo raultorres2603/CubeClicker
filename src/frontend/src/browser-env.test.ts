@@ -53,7 +53,7 @@ interface FakeMediaQuery {
   emit(event: { matches: boolean }): void;
 }
 
-/** The stubbed `window`: a key target plus the two values `browserEnvironment` reads. */
+/** The stubbed `window`: a key target plus the values `browserEnvironment` reads. */
 function createFakeWindow(devicePixelRatio: number): {
   window: {
     devicePixelRatio: number;
@@ -62,8 +62,10 @@ function createFakeWindow(devicePixelRatio: number): {
     removeEventListener: ReturnType<typeof vi.fn>;
   };
   query: FakeMediaQuery;
+  emitPageHide(event: { persisted?: boolean }): void;
 } {
   const mediaListeners = new Set<MediaQueryListener>();
+  const pageHideListeners = new Set<(event: PageTransitionEvent) => void>();
   const query: FakeMediaQuery = {
     matches: false,
     media: '(prefers-reduced-motion: reduce)',
@@ -87,10 +89,23 @@ function createFakeWindow(devicePixelRatio: number): {
     window: {
       devicePixelRatio,
       matchMedia: vi.fn(() => query),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      addEventListener: vi.fn((type: string, listener: (event: PageTransitionEvent) => void) => {
+        if (type === 'pagehide') {
+          pageHideListeners.add(listener);
+        }
+      }),
+      removeEventListener: vi.fn((type: string, listener: (event: PageTransitionEvent) => void) => {
+        if (type === 'pagehide') {
+          pageHideListeners.delete(listener);
+        }
+      }),
     },
     query,
+    emitPageHide(event: { persisted?: boolean }): void {
+      for (const listener of [...pageHideListeners]) {
+        listener(event as unknown as PageTransitionEvent);
+      }
+    },
   };
 }
 
@@ -305,6 +320,34 @@ describe('browserEnvironment', () => {
       'visibilitychange',
       listener,
     );
+  });
+
+  it('forwards pagehide with the strict bfcache flag and removes the exact listener (AC-7)', () => {
+    const host = stubHost({ dpr: 1 });
+
+    const env = browserEnvironment(canvas);
+    const seen: boolean[] = [];
+    const unsubscribe = env.pageLifecycle!.subscribe((persisted) => {
+      seen.push(persisted);
+    });
+
+    expect(host.fakeWindow.window.addEventListener).toHaveBeenCalledTimes(1);
+    const [type, listener] = host.fakeWindow.window.addEventListener.mock.calls[0]!;
+    expect(type).toBe('pagehide');
+
+    // Only `persisted === true` is a bfcache transition; a normal unload and an absent flag
+    // both forward `false` (the deliberate-close signal).
+    host.fakeWindow.emitPageHide({ persisted: false });
+    host.fakeWindow.emitPageHide({});
+    host.fakeWindow.emitPageHide({ persisted: true });
+    expect(seen).toEqual([false, false, true]);
+
+    unsubscribe();
+    expect(host.fakeWindow.window.removeEventListener).toHaveBeenCalledTimes(1);
+    expect(host.fakeWindow.window.removeEventListener).toHaveBeenCalledWith('pagehide', listener);
+
+    host.fakeWindow.emitPageHide({ persisted: false });
+    expect(seen).toEqual([false, false, true]);
   });
 
   it('observes the canvas for resizes and disconnects on unsubscribe (AC-13)', () => {

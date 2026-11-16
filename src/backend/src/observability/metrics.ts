@@ -67,6 +67,7 @@ const CATALOG = {
         'equipPart',
         'unequipPart',
         'ping',
+        'leave',
         'invalid',
         'oversized',
       ],
