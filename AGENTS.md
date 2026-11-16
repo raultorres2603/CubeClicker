@@ -44,7 +44,7 @@ Unit tests are colocated beside the sources they cover (`*.test.ts` / `*.test.ts
 
 - Language: TypeScript (strict) — decided with the application stack (2026-10-17); see docs/architecture/stack.md.
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
-- Branches: `feat/<slug>` for feature work; integration happens on `develop` (the `development` deploy environment) and accepted work merges to `main` (the `production` deploy environment).
+- Branches: `feat/<slug>` for feature work; `main` is the integration branch and a `main` push deploys the `development` environment automatically after CI succeeds; production is manual (`workflow_dispatch`) and unprovisioned. There is no `develop` branch.
 - Tests accompany every behavior change: unit tests and integration tests with concrete expected values (no wildcard matchers), and no useless tests; coverage stays ≥ 80% (statements, branches, functions, lines) per workspace, verified with `npm run coverage`.
 - Documentation: every behavior change updates documentation in the same commit (see docs/architecture/documentation.md).
 - Skills: the six project pipeline skills live in `.opencode/skills/` and are the only skill source; per-agent allow-lists, the `skill` rule contract, and verification are documented in `docs/architecture/skills.md`. Library and platform documentation comes from Context7 MCP.

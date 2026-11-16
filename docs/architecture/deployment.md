@@ -20,7 +20,7 @@ The application itself is unchanged: game logic, server authority, in-memory roo
 - **Game state stays on Render.** Rooms are in-memory, server-authoritative and per process. One instance is the pinned topology; two or more instances would split the room registry. See § Single-instance trade-off. Neon is never used for game/room state, and Vercel owns no application state.
 - **Data flow.** Browser → Vercel for HTML/JS/CSS; browser → Render for `/auth/*` (`fetch`, `credentials: 'include'`) and `/ws` (`wss://`). The session cookie is host-only for the Render API host and is attached on both requests and the WebSocket upgrade; the backend resolves the account from the upgrade cookie exactly as locally.
 - **Diagnostics `/metrics`.** The backend also serves `GET /metrics` (Prometheus text) on its existing port 8080. Render serves the whole backend on one public host with no path filter, so the committed configuration is the control: `render.yaml` sets `METRICS_ENABLED: 'false'` for the service and the live service carries the same value, making the public host return `404`. Local compose keeps `true` on the loopback only. The CORS hook excludes `/metrics`, so the frontend origin receives no allow-origin or credentials on `GET` or `OPTIONS` and cannot read it. Temporary internal scraping sets `METRICS_ENABLED=true` on the service (dashboard) and restarts it, which also resets the per-process metrics; because there is no path filter, that short window is reachable by a non-browser client and is an audited exception. The historical ALB routing table is not the current boundary (see § Superseded AWS deployment (historical) and `observability.md` § Exposure and retention).
-- **Deploy flow.** A push to `main` runs **CI once**; a successful CI run triggers the environment-gated **deploy** job via `workflow_run` (it does not re-run CI). Order: Neon migration (direct URL) → Render deploy hook → health poll → Vercel pull/build/deploy `--prod` → deployed smoke. Backend before frontend, because the frontend build bakes the API/WS URLs and should only point at a live, migrated backend.
+- **Deploy flow.** A push to `main` runs **CI once**; a successful CI run triggers the **deploy** job (`development` environment) via `workflow_run` (it does not re-run CI). Order: Neon migration (direct URL) → Render deploy hook → health poll → Vercel pull/build/deploy `--prod` → deployed smoke. Backend before frontend, because the frontend build bakes the API/WS URLs and should only point at a live, migrated backend.
 
 ## Environments and triggers
 
@@ -31,12 +31,12 @@ The application itself is unchanged: game logic, server authority, in-memory roo
 | Frontend | Vercel production deployment of the only project, updating the stable `cubeclicker-development.vercel.app` host | not provisioned |
 | Backend | Render service `cubeclicker-development` (`srv-dbtcvv9srm7s73au5bag`) | not provisioned |
 | Database | Neon `development` branch | not provisioned (a Neon `production` branch is the intended target) |
-| Approval | none | at least one required reviewer; deployment branches restricted to `main` |
+| Approval | none | none configured: no protection rules and no deployment branch policy yet; both must be added before production is provisioned |
 | Concurrency | `deploy-development`, `cancel-in-progress: false` | `deploy-production`, `cancel-in-progress: false` |
 
-- The effective environment is `github.event.inputs.environment || 'development'`, used identically by the concurrency group and the deploy job's `environment:`. A dispatch chooses production explicitly; environment protection rules still apply.
+- The effective environment is `github.event.inputs.environment || 'development'`, used identically by the concurrency group and the deploy job's `environment:`. A dispatch chooses production explicitly. The `production` Environment has no secrets, variables, protection rules or deployment branch policy today, so nothing pauses the job; provisioning must add the catalog and the protection rules before production is used.
 - There is no third environment. Development and production are intended to be fully isolated (separate GitHub Environment secrets/variables, separate Render services, separate Neon branches and separate frontend hostnames), but **production is not provisioned**: only development has a live Render service, Vercel project and Neon branch. A development deploy can never touch production data because production does not exist yet.
-- There is no `develop` branch. `main` is the deployment branch for development; `ci.yml` also accepts `develop` pushes so the branch name stays available if the workflow is revisited. The branch model is recorded in `../../AGENTS.md` § Conventions.
+- There is no `develop` branch. `main` is both the integration branch and the development deployment branch: CI runs on pull requests and `main` pushes, and a `main` push deploys development after CI succeeds; production is manual (`workflow_dispatch`) and unprovisioned. The branch model is recorded in `../../AGENTS.md` § Conventions.
 
 ## Secrets and variables
 
@@ -52,8 +52,8 @@ All values are per GitHub Environment; values are user-supplied and never commit
 
 ## Deploy pipeline
 
-- `../../.github/workflows/ci.yml` runs on pull requests and pushes to `main`/`develop`: `verify-app` (`npm ci` → lint → typecheck → test → coverage → build), `smoke-e2e` (Mailpit-primed containerized smoke) and `verify-workflows` (pinned `rhysd/actionlint:1.7.12` over both workflows, `src/frontend/vercel.json` JSON parse, `render.yaml` YAML parse with the expected service shape, and a guard that `deploy.yml` never mentions Fly). Workflow-level `permissions: contents: read`; every third-party action is pinned to a full commit SHA.
-- `../../.github/workflows/deploy.yml` triggers on `workflow_run` of `CI` completing on `main`, plus `workflow_dispatch` for production. It runs one environment-gated `deploy` job in this fixed order: checkout/install → Neon migration → Render deploy hook → 45 s wait → `/healthz` poll (180 s) → Vercel pull/build/deploy `--prod` → warm `/healthz` → deployed smoke (`../../tests/e2e/deployed-smoke.mjs`).
+- `../../.github/workflows/ci.yml` runs on pull requests and pushes to `main`: `verify-app` (`npm ci` → lint → typecheck → test → coverage → build), `smoke-e2e` (Mailpit-primed containerized smoke) and `verify-workflows` (`npm ci` on Node 24 → pinned `rhysd/actionlint:1.7.12` over both workflows → `src/frontend/vercel.json` JSON parse → `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared → a guard that `deploy.yml` never mentions Fly). Workflow-level `permissions: contents: read`; every third-party action is pinned to a full commit SHA.
+- `../../.github/workflows/deploy.yml` triggers on `workflow_run` of `CI` completing on `main`, plus `workflow_dispatch` for production. It runs one `deploy` job in the environment selected by the event (`development` after CI, `production` for a dispatch) in this fixed order: checkout/install → Neon migration → Render deploy hook → 45 s wait → `/healthz` poll (180 s) → Vercel pull/build/deploy `--prod` → warm `/healthz` → deployed smoke (`../../tests/e2e/deployed-smoke.mjs`).
 - **No duplicate CI.** The deploy job does not call `ci.yml` and does not run lint/typecheck/test/coverage/build again; those gates run once in the CI workflow that triggered it. The manual production path checks the CI conclusion for the target SHA (`gh run list`) before deploying.
 - **No alias step.** `vercel deploy --prebuilt --prod` updates the project's production domain (`cubeclicker-development.vercel.app`), so the workflow has no separate `vercel alias` command and no duplicate host mapping.
 - Every Vercel command runs from the repository root (the project Root Directory is `src/frontend`, applied once by the project settings). The project's `vercel.json`, build command, output directory, SPA rewrite and cache headers are the ones used.
@@ -92,7 +92,7 @@ Manual, immediate and routing-only where possible; the full runbook is in `verce
 - The backend runs as exactly one free Render instance (`plan: free`, Frankfurt, `512 MB` / `0.1 CPU`). In-memory rooms are the reason: a second instance would serve a different room registry and clients would stop seeing each other.
 - A deploy or cold start restarts the process and closes every WebSocket. Clients reconnect automatically (10 attempts, 500 ms → 5 s backoff) and in-memory rooms reset; there is no zero-downtime deploy, by design and by the room model.
 - Free instances **spin down after 15 minutes without traffic** and cold-start in roughly 30–60 s on the next request or WebSocket connection. The client's ~38 s retry budget can be exhausted by a cold start, in which case the connection banner shows `Connection lost` with a `Retry` button. This is development-only behavior; production is not provisioned on the free plan.
-- Health is `GET /healthz` → `200` `{"status":"ok"}`, configured as the Render health check path and asserted by the deploy job (`200` within 180 s) before the frontend step. The deployed smoke then proves health, CORS (allowed and disallowed), SPA fallback, a real `/assets/*` 404 and a WebSocket hello/join/click plus the disallowed-Origin `403`.
+- Health is `GET /healthz` → `200` `{"status":"ok"}`, asserted by the deploy job (`200` within 180 s) before the frontend step. Render has **no platform health check** configured for the service (`healthCheckPath` is empty) and `render.yaml` declares none, so the deploy job's poll is the health gate. The deployed smoke then proves health, CORS (allowed and disallowed), SPA fallback, a real `/assets/*` 404 and a WebSocket hello/join/click plus the disallowed-Origin `403`.
 
 ## Security and credential posture
 
@@ -104,7 +104,7 @@ Manual, immediate and routing-only where possible; the full runbook is in `verce
   ```
 
   The connection-string audit is scoped to runtime/config trees and excludes colocated test fixtures: `git grep -nE "postgres(ql)?://[^\"' ]+:[^\"' ]+@" -- .github infra src ':(exclude,glob)**/*.test.ts' ':(exclude,glob)**/*.test.tsx'`. The token audit is `git grep -nE "VERCEL_TOKEN=|RENDER_DEPLOY_HOOK_URL=|FLY_API_TOKEN=|FlyV1 " -- . ':(exclude)docs/'`.
-- CORS never uses `*` with credentials; `SameSite=None` requires `Secure`; the WebSocket `Origin` guard is always on for present origins. The `development` and `production` secrets are separate, and production requires a reviewer (once provisioned).
+- CORS never uses `*` with credentials; `SameSite=None` requires `Secure`; the WebSocket `Origin` guard is always on for present origins. The `development` and `production` secrets are separate. Production has no secret or protection configured yet: reviewer/branch protection must be added when it is provisioned.
 
 ## Superseded Fly.io backend (historical)
 
@@ -133,7 +133,7 @@ Everything in this section is **historical and superseded**: it is not provision
 | Terraform (S3 remote state, `verify-infra` fmt/validate gate) | `render.yaml` + `src/frontend/vercel.json`, checked by `verify-workflows` (actionlint + YAML/JSON parse) |
 | GitHub OIDC roles / `id-token: write` AWS deploys | Static `VERCEL_TOKEN`/`RENDER_DEPLOY_HOOK_URL` environment secrets (no OIDC) |
 | AWS CloudWatch `awslogs` logs and alarms | Render logs and the deployed smoke; provider dashboards are user-owned |
-| Manual `workflow_dispatch` deploy; `deploy-services` placeholder | `main` → CI once → development deploy; production manual, reviewer-gated and unprovisioned |
+| Manual `workflow_dispatch` deploy; `deploy-services` placeholder | `main` → CI once → development deploy; production manual and unprovisioned |
 | `PUBLIC_WS_URL` baked into the frontend image at build time | `VITE_CLOUD_DEPLOY=true` + `VITE_API_URL`/optional `VITE_WS_URL` baked by the Vercel build; the nginx image keeps the local/smoke contract |
 
 - The AWS resources, if any were ever created, are untouched. There is no AWS fallback path in the workflows; if DNS still points at an earlier host, reverting DNS is a user-owned operational decision, not a pipeline step.
@@ -144,7 +144,7 @@ Everything in this section is **historical and superseded**: it is not provision
 The authoritative ledger is `../features/vercel-fly-neon-deployment/spec.md` § Supersession ledger, extended by `../features/render-backend-migration/status.md`. This document owns the deployment-side detail:
 
 - `aws-deploy-pipeline` — **superseded** (deploy target and pipeline); the historical table above records the replacements.
-- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, with production manual and reviewer-gated.
+- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, with production manual and unprovisioned.
 - `vercel-fly-neon-deployment` — **partially superseded**: Vercel and Neon are retained; Fly is replaced by Render (`vercel-fly-neon.md` carries the supersession banner).
 - `workflow-hygiene` — **still in force**; the canonical scoped credential audit and SHA pinning are retained above and in the workflows.
 - `frontend-delivery-hardening` — **partially superseded** (cloud edge only): Vercel replaces nginx as the cloud frontend; the hashed-asset immutability, app-shell `no-cache`, SPA fallback and real `/assets/*` 404 semantics are replicated in `src/frontend/vercel.json`, and the nginx image remains for local/smoke/portability.

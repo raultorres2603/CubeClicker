@@ -12,6 +12,10 @@
 # cold-starts on the next request or WebSocket connection. Development only;
 # see `docs/architecture/vercel-render-neon.md` § Cost and limits.
 #
+# The live service has no Render platform health check configured
+# (`healthCheckPath` is empty), so this file declares none. Health is verified
+# by the deploy workflow, which polls `GET /healthz` before the frontend step.
+#
 # Secret-shaped values are declared with `sync: false`: Render prompts for them
 # when a Blueprint creates a service and never stores them in git. On the live
 # service they are set in the Render dashboard instead.
@@ -24,7 +28,6 @@ services:
     plan: free
     region: frankfurt
     branch: main
-    healthCheckPath: /healthz
     autoDeployTrigger: 'off'
     envVars:
       - key: NODE_ENV

@@ -25,6 +25,7 @@ flowchart LR
 - **State ownership.** The Render instance owns every live game/room state in its single process; Neon owns durable account/session/verification/economy/customization rows only; Vercel owns no application state; GitHub Environments own deployment configuration. Game and room state never move into Postgres.
 - **Data flow.** The browser loads HTML/JS/CSS from Vercel, calls `/auth/*` on Render with `fetch` + `credentials: 'include'`, and opens `wss://cubeclicker-development.onrender.com/ws`. The session cookie is host-only for the Render API host and is sent on both requests and the WebSocket handshake; the backend resolves the account from the upgrade cookie with the existing server-authoritative rules.
 - **Backend topology.** Exactly one Docker web service instance (`plan: free`, Frankfurt, `512 MB` / `0.1 CPU`). One instance is mandatory because the in-memory room registry is per process; two instances would split rooms. The service builds `src/backend/Dockerfile` with `dockerContext: .` and is described by the committed `render.yaml`.
+- **No platform health check.** The live service has no Render health-check path configured (`healthCheckPath` is empty), and `render.yaml` reproduces that: it declares no `healthCheckPath`. Health is verified by the deploy workflow, which polls `GET /healthz` for HTTP `200` before the frontend step, and by the deployed smoke; Render itself does not probe the service.
 - **Spin-down and cold start (development-only trade-off).** A free instance hibernates after **15 minutes without traffic**. While at least one WebSocket is connected the instance counts as active and stays up. After hibernation the next HTTP request or WebSocket connection waits for a cold start — tens of seconds, around 30–60 s in practice — and then serves normally. Every restart (cold start, deploy, manual restart) resets the in-memory rooms; clients rejoin fresh.
 - **WebSocket reconnect.** The client's reconnect policy is unchanged: up to **10 attempts** with a 500 ms → 5 s exponential backoff (about 38 s of waiting) before the connection banner shows `Connection lost` with a `Retry` button. A cold start can outlast that budget, so the first visit after idle may need one manual `Retry` click; the retry itself wakes the instance. Presence/heartbeat behavior (30 s server heartbeat, server-side reconnect grace) is identical to local.
 - **TLS and WebSocket edge.** Render terminates TLS, serves `https://` and proxies `wss://` upgrades; no proxy or certificate asset is configured by this repository. Render's free edge may drop a close frame after an upgrade, which is why the backend rejects a disallowed WebSocket `Origin` with an HTTP **403 before** the upgrade (the deployed smoke asserts this). Vercel serves only static assets and never proxies `/auth/*` or `/ws`.
@@ -41,7 +42,7 @@ flowchart LR
 
 ## Environment catalog
 
-All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, requires a reviewer, and fails until its secrets point at a production Render service and a production database.
+All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, has no secrets, variables or protection rules yet, and fails until it is provisioned with a production Render service, a production Vercel project and a production Neon branch.
 
 ### GitHub Environment `development` (provisioned)
 
@@ -67,8 +68,8 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 
 ### GitHub Environment `production` (not provisioned, manual only)
 
-- Trigger: `workflow_dispatch` only, with the single `production` choice. The job first verifies that CI for the target SHA succeeded, then waits on the `production` environment gate (at least one required reviewer, deployments restricted to `main`).
-- Values: the same **names** as `development`, but none are provisioned. Before production can deploy, a user must create a production Render service (with its own deploy hook URL), a production Vercel project/domain, and a Neon `production` branch with protected URL secrets.
+- Trigger: `workflow_dispatch` only, with the single `production` choice. The job first verifies that CI for the target SHA succeeded, then runs the deploy job. The `production` Environment has **no protection rules and no deployment branch policy** today; required reviewers and a `main`-only branch policy must be configured before production is used.
+- Values: the same **names** as `development`, but none are provisioned: the environment has no secrets and no variables. Before production can deploy, a user must create a production Render service (with its own deploy hook URL), a production Vercel project/domain, and a Neon `production` branch with protected URL secrets, then add the catalog and the protection rules.
 - Nothing in the repository hardcodes a production hostname; production has no committed host or credential.
 
 ### Render service environment (committed in `render.yaml`)
@@ -102,7 +103,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 
 - Development branch `br-ancient-smoke-za1pdv7w` on the free plan. `DATABASE_URL` is pooled, `DIRECT_DATABASE_URL` is direct, both `sslmode=require`.
 - The `production` branch is **not protected** on the free plan. This is an **accepted deviation** documented in the feature spec: the free plan does not include protected branches. Protection returns with a paid plan; until then, production is also not provisioned, so nothing can target it.
-- Free-plan compute autosuspends when idle; the first query after suspension waits for a short resume. `/healthz` does not touch the database, so a health check does not force a resume.
+- Free-plan compute autosuspends when idle; the first query after suspension waits for a short resume. `/healthz` does not touch the database, so the deploy workflow's health poll does not force a resume.
 
 ## Runbook
 
@@ -111,13 +112,13 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 - Vercel: project with root `src/frontend` (`prj_9GfusgivGpVJDXeJPi2TnMUCb2RV`), deployment protection off, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and the stable `FRONTEND_ORIGIN` host.
 - Render: one free Docker web service per environment (`cubeclicker-development`, `srv-dbtcvv9srm7s73au5bag`, Frankfurt, branch `main`, auto-deploy off) and its deploy hook URL. The service is described by `render.yaml`.
 - Neon: one project with a `development` branch (and, for production, a `production` branch), pooled and direct URLs, `sslmode=require`.
-- GitHub: the `development` Environment with the catalog above; the `production` Environment with reviewers and `main`-only deployment when production is provisioned. No `develop` branch exists — `main` pushes deploy development.
+- GitHub: the `development` Environment with the catalog above; for production, the `production` Environment with the same catalog and protection rules (required reviewers, deployment branch policy) created before production is used. No `develop` branch exists — `main` is the integration branch and its pushes deploy development.
 - SMTP: a reachable SMTP host for email verification. Development is **guest-only** today; see § SMTP and email.
 
 ### Routine development deploy
 
 1. Push or merge to `main`.
-2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, `render.yaml` YAML parse, and the guard that `deploy.yml` never mentions Fly).
+2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, a `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared, and the guard that `deploy.yml` never mentions Fly).
 3. **Deploy** starts from the `workflow_run` event after that CI run succeeds (no `workflow_call`, no second test run):
    - Neon migration with `DIRECT_DATABASE_URL` (names applied/pending are printed, no connection strings).
    - `POST` to `RENDER_DEPLOY_HOOK_URL`, then a 45 s wait for Render's build to start.
@@ -152,9 +153,9 @@ node tests/e2e/deployed-smoke.mjs
 
 ### Promote to production (currently unprovisioned)
 
-1. Provision the production assets first: a production Render service and deploy hook, a production Vercel project/domain, a Neon `production` branch, and the `production` Environment with the full catalog, at least one required reviewer and `main`-only deployments.
+1. Provision the production assets first: a production Render service and deploy hook, a production Vercel project/domain, a Neon `production` branch, and the `production` Environment with the full catalog plus protection rules (required reviewers and a `main`-only deployment branch policy). Nothing is provisioned today, and the environment has no protection rules yet.
 2. Run Actions → Deploy → Run workflow with `environment: production`. The job first verifies that CI for the target SHA succeeded.
-3. The environment gate pauses the job for a reviewer; after approval the same ordered steps run against the production Render service and Neon branch.
+3. Once the environment protection is configured, the gate pauses the job for a reviewer; until then the job runs immediately and fails on the first missing production secret.
 4. Run the deployed smoke against the production hostnames.
 
 ### Troubleshooting
@@ -242,7 +243,7 @@ The local path is unchanged: one command, `podman compose up`, starts backend + 
 | Email | Mailpit (`mailpit:1025`, UI `:8025`) | guest-only; placeholder SMTP, no Mailpit | not provisioned |
 | Frontend delivery | Vite dev server / nginx `prod` image for smoke | Vercel static build | not provisioned |
 | Backend runtime | container, `tsx watch`, ports 8080 | Render free Docker service, `512 MB` / `0.1 CPU` | not provisioned |
-| Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy | `workflow_dispatch` + reviewer |
+| Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy | `workflow_dispatch` (no protection configured) |
 | Smoke | containerized `npm run smoke` | deployed smoke after deploy | deployed smoke after deploy |
 | Secrets source | shell environment (user) | GitHub Environment + Render dashboard | GitHub Environment + Render dashboard |
 
@@ -272,7 +273,7 @@ Figures are order-of-magnitude and plan-dependent; verify current provider prici
 The authoritative ledger is `../features/vercel-fly-neon-deployment/spec.md` § Supersession ledger, extended by `../features/render-backend-migration/status.md`:
 
 - `aws-deploy-pipeline` — **superseded** (deploy target and pipeline); see `deployment.md` § Superseded AWS deployment.
-- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, with production manual and reviewer-gated.
+- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, with production manual and unprovisioned.
 - `vercel-fly-neon-deployment` — **partially superseded**: Vercel and Neon are retained; the Fly backend is replaced by Render.
 - `workflow-hygiene` — **still in force**; the canonical scoped credential audit and SHA pinning are retained in `deployment.md` and in the workflows.
 - `runtime-observability` — **still in force on Render**; deployed environments keep `METRICS_ENABLED=false` as the exposure control (see `observability.md`).

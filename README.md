@@ -150,24 +150,25 @@ CubeClicker deploys to **Vercel + Render + Neon**, driven by GitHub Actions with
 | PostgreSQL | Neon, `development` branch (production intended, not provisioned) |
 
 - `development` deploys from `main`: a push runs CI once, and a successful CI run triggers the Deploy workflow. It uses the Neon `development` branch, the Render service `cubeclicker-development` and the stable `cubeclicker-development.vercel.app` host.
-- `production` is **not provisioned**. It is `workflow_dispatch` only and stays behind the `production` environment's required reviewers; a production deploy needs a production Render service, a production Vercel project and a Neon `production` branch, all user-owned.
+- `production` is **not provisioned**: `workflow_dispatch` only, with no secrets, variables or protection rules yet. A production deploy needs a production Render service, a production Vercel project, a Neon `production` branch and the environment catalog, and reviewer/branch protection must be added before it is used.
 - The backend keeps all in-memory game/room state; one instance is deliberate. Vercel hosts only the static frontend (no functions, no serverless WebSocket).
 - The Render free instance spins down after 15 minutes without traffic and cold-starts (~30–60 s) on the next request or WebSocket connection. While clients are connected it stays awake. This is development-only; see the deployment reference for the reconnect behavior.
+- Render has no platform health check configured for the service (`healthCheckPath` is empty, and `render.yaml` declares none); the Deploy workflow itself polls `/healthz` before the frontend step.
 
 ### What the pipelines run
 
-- `ci.yml` (runs on pull requests and pushes to `main`/`develop`):
+- `ci.yml` (runs on pull requests and pushes to `main`):
   - `verify-app`: `npm ci` → `npm run lint` → `npm run typecheck` → `npm test` → `npm run coverage` → `npm run build`.
   - `smoke-e2e`: pre-start Mailpit (`docker compose -f compose.yaml -f compose.smoke.yaml up -d mailpit`) **before** `docker compose -f compose.yaml -f compose.smoke.yaml run --rm smoke` (the one-shot run never starts Mailpit and fails 9/12; pre-started passes 12/12).
-  - `verify-workflows`: pinned `rhysd/actionlint:1.7.12` over both workflows, a `node -e` JSON parse of `src/frontend/vercel.json`, a YAML parse of `render.yaml` with the expected service shape, and a guard that `deploy.yml` never mentions Fly.
-- `deploy.yml` (`workflow_run` after a successful CI run on `main`, or `workflow_dispatch` for production): one environment-gated `deploy` job — Neon migration with the direct URL → Render deploy hook → 45 s wait → `/healthz` poll → Vercel build/deploy `--prod` → warm + deployed smoke. It does not re-run CI. Runs for the same environment are serialized (`cancel-in-progress: false`).
+  - `verify-workflows`: `npm ci` on Node 24 → pinned `rhysd/actionlint:1.7.12` over both workflows → a `node -e` JSON parse of `src/frontend/vercel.json` → a YAML parse of `render.yaml` that checks the service name/runtime/plan and that no platform health check is declared → a guard that `deploy.yml` never mentions Fly.
+- `deploy.yml` (`workflow_run` after a successful CI run on `main`, or `workflow_dispatch` for production): one `deploy` job in the environment selected by the event (`development` after CI, `production` for a dispatch) — Neon migration with the direct URL → Render deploy hook → 45 s wait → `/healthz` poll → Vercel build/deploy `--prod` → warm + deployed smoke. It does not re-run CI. Runs for the same environment are serialized (`cancel-in-progress: false`).
 
 ### Deploy flow
 
 1. Merge or push to `main`.
 2. CI runs once (lint, typecheck, test, coverage, build, containerized smoke, workflow/config checks).
 3. After CI succeeds, Deploy applies pending Neon migrations with `DIRECT_DATABASE_URL`.
-4. Deploy `POST`s the Render deploy hook, waits 45 s, then requires `/healthz` to return HTTP `200` within 180 s.
+4. Deploy `POST`s the Render deploy hook, waits 45 s, then requires `/healthz` to return HTTP `200` within 180 s. Render has no platform health check configured; this workflow poll is the health gate.
 5. Vercel builds from `src/frontend` with `VITE_CLOUD_DEPLOY=true` and the environment's API/WS URLs and deploys the prebuilt output to the production target (`--prod` updates `cubeclicker-development.vercel.app`; no separate alias step).
 6. `node tests/e2e/deployed-smoke.mjs` proves health, allowed and disallowed CORS preflight, SPA fallback, a real `/assets/*` 404 and a WebSocket hello/join/click plus the disallowed-Origin `403`.
 
@@ -180,4 +181,4 @@ The `development` GitHub Environment is provisioned with the exact secrets/varia
 - Secrets: `VERCEL_TOKEN`, `RENDER_DEPLOY_HOOK_URL`, `DATABASE_URL`, `DIRECT_DATABASE_URL`, `SMTP_PASS`.
 - Variables: `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE`, `MAX_USERS_PER_SERVER`.
 
-Also required: a Vercel project whose Root Directory is `src/frontend` (Node 24, deployment protection disabled for development), one Render free Docker web service tracked to `main` with auto-deploy off, one Neon project with a `development` branch, and the stable frontend host per environment. Production is not provisioned and requires at least one reviewer and `main`-only deployments when it is. Development email is guest-only: Render free has no private service for Mailpit, so the SMTP values are placeholders. No secret value is committed; the archived AWS tree and the archived Fly configs are not deployed.
+Also required: a Vercel project whose Root Directory is `src/frontend` (Node 24, deployment protection disabled for development), one Render free Docker web service tracked to `main` with auto-deploy off, one Neon project with a `development` branch, and the stable frontend host per environment. Production is not provisioned and has no secrets, variables or protection rules; it must be provisioned — including required reviewers and a deployment branch policy — before use. Development email is guest-only: Render free has no private service for Mailpit, so the SMTP values are placeholders. No secret value is committed; the archived AWS tree and the archived Fly configs are not deployed.

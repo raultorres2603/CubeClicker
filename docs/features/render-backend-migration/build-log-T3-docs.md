@@ -14,10 +14,10 @@ What changed & why (sketch):
 
 1. **`render.yaml` is documentation/reproducibility, not a deployment trigger.** The service already exists (`srv-dbtcvv9srm7s73au5bag`); uncommenting/pointing a Blueprint at it would offer to create or adopt a service and could start a build. The file header states this. No Blueprint sync was triggered; no live Render/Vercel/Neon resource was touched.
 2. **`js-yaml` from the locked eslint tree, no new dependency.** `verify-workflows` parses `render.yaml` with `require('js-yaml')`, which arrives transitively with `eslint@9.39.5` (`@eslint/eslintrc` → `js-yaml@4.3.2`) and is installed by `npm ci`. Adding a direct dependency would need user approval; the workflow comment records the provenance and the step fails loudly if it ever disappears.
-3. **No `develop` branch.** The remote has only `main`; Render tracks `main`, `ci.yml` accepts `develop` pushes for future use, and `deploy.yml` deploys development from `main` via `workflow_run`. Docs state this instead of the stale `develop`-based model.
+3. **No `develop` branch.** The remote has only `main`; Render tracks `main` and `deploy.yml` deploys development from `main` via `workflow_run`. Docs state this instead of the stale `develop`-based model. (r1 fix: `ci.yml` now triggers on `main` only; the earlier `develop` trigger was removed — see § Code-review r1 fixes.)
 4. **Fly archived, not deleted.** `git mv` preserves history for both configs; `infra/archive/fly/README.md` carries the SUPERSEDED banner (credit-card gate, Render free selected, files not deployed, Fly apps have zero machines, deletion is user-owned).
 5. **SMTP guest-only in development.** Render free has no private services, so the Fly `.internal` Mailpit design does not port. The docs record that development email delivery is not relied on and the SMTP values are placeholders; no secret value is named.
-6. **Production is unprovisioned and manual.** Only `development` has a live Render service, Vercel project and Neon branch. Production is `workflow_dispatch`-only, reviewer-gated, and fails until its own assets and catalog are provisioned.
+6. **Production is unprovisioned and manual.** Only `development` has a live Render service, Vercel project and Neon branch. Production is `workflow_dispatch`-only and unprotected (no secrets, variables or protection rules), and fails until its own assets, catalog and protection are provisioned. (r1 fix: the earlier "reviewer-gated" wording described a rule that does not exist — see § Code-review r1 fixes.)
 7. **`CORS_ORIGIN`/`ALLOWED_ORIGIN`/`APP_BASE_URL` are static Render service variables.** The old workflow derived them; the current one does not. The docs say they must equal `FRONTEND_ORIGIN` and that changing the origin is a Render variable change plus a workflow variable change.
 8. **One small extension beyond the enumerated docs:** `infra/README.md` still said the AWS tree is superseded by "Vercel + Fly.io + Neon". Since this task owns the Fly supersession and the archive is linked from that area, the two stale lines were updated to Vercel + Render + Neon. No other out-of-scope edit.
 
@@ -114,7 +114,7 @@ The commit stages exactly the T3 set (see § Acceptance audit). `docs/features/r
 - Step 3 — stage exactly the listed paths, excluding `status.md` and `docs/features/README.md` → met (verify with `git show --stat --oneline HEAD`).
 - Step 4 — commit `docs: document render deployment`, no push → met (one commit on `main` with that message; its SHA is reported in the Subagent Report; no `git push` run).
 - Step 5 — verify commit contents and report `git show --stat --oneline HEAD` → met (see report).
-- `render.yaml` matches the live service: name, runtime, Dockerfile path/context, plan, region, branch, health path, auto-deploy off, 5 non-secret values, 12 `sync: false` names → met.
+- `render.yaml` matches the live service: name, runtime, Dockerfile path/context, plan, region, branch, auto-deploy off, 5 non-secret values, 12 `sync: false` names; the live service has no platform health check and the file declares none (r1 F3 correction), so the deploy workflow's `/healthz` poll is the health gate → met.
 - Fly files moved with `git mv` (rename detection) and a SUPERSEDED README added; nothing deleted → met.
 - `ci.yml` validates `render.yaml` and keeps the no-Fly guard; no Fly re-added → met (actionlint + both step commands).
 - `deployment.md` rewritten for Vercel + Render + Neon; `vercel-render-neon.md` has the six required sections and covers spin-down/cold start, WS reconnect, 750 h, Vercel Hobby/SSO/Node 24/root, Neon free branch + unprotected production deviation, names-only `development` catalog, production unprovisioned/manual, SMTP guest-only, no Mailpit on Render free, CI-once → deploy-after-CI → met (content review + heading checks).
@@ -148,3 +148,68 @@ These are code comments, not docs, so they are outside T3's files-owned set. The
 - `infra/README.md` (2 supersession lines) updated beyond the enumerated docs — in-intent (Fly supersession) and recorded in § Decisions 8.
 - Source comments left untouched — deliberate scope boundary; tracked in § Backlog.
 - No other deviations.
+
+## Code-review r1 fixes (F2/F3/F4/F6)
+
+Review: `reviews/code-review-r1.md` (changes_requested). F1 (the T3 commit is unpushed) is push-owned by the orchestrator; this pass fixes the config/docs findings and leaves the push alone.
+
+1. **F2 — the workflow job installs its parser.** `verify-workflows` now has the same pinned `actions/setup-node` (Node 24, npm cache) and `npm ci` as `verify-app`, before the `js-yaml` Render step. A clean checkout no longer depends on host `node_modules`.
+2. **F3 — Render has no platform health check.** Removed `healthCheckPath: /healthz` from `render.yaml` (the live service's value is `""`) and replaced it with a header note. The CI Render step now asserts the service name/runtime/plan and rejects a non-empty `healthCheckPath`; `vercel-render-neon.md`, `deployment.md` and `README.md` state that Render does not probe the service and the Deploy workflow's `/healthz` poll is the health gate.
+3. **F4 — production is unprotected.** Removed the required-reviewer and `main`-only claims from `vercel-render-neon.md`, `deployment.md` and `README.md`. They now say production is manual `workflow_dispatch` only, with no secrets, variables or protection rules, and that the catalog and protection must be added when it is provisioned.
+4. **F6 — branch model.** `ci.yml` push trigger is `main` only; `AGENTS.md` now defines `main` as the integration branch whose push auto-deploys development, with production manual and unprovisioned; `deployment.md` and `vercel-render-neon.md` state there is no `develop` branch. `main` push → CI once → `workflow_run` Deploy and the no-alias-step shape are unchanged.
+
+This supersedes Decisions 3 (`develop` trigger) and 6 (production reviewer-gated) and the earlier health-path match claim in the acceptance audit; those entries are corrected inline above.
+
+### Evidence — r1 fixes
+
+```
+$ podman run --rm -v "$PWD:/repo:Z" -w /repo docker.io/rhysd/actionlint:1.7.12 .github/workflows/*.yml
+actionlint_exit=0
+
+$ node -e "<exact Validate Render blueprint command from ci.yml>"
+render.yaml: valid YAML (cubeclicker-development, docker, free, no platform health check)
+render_check_exit=0
+
+$ no-Fly deploy guard (same command as the committed step)
+no Fly references in deploy.yml
+fly_guard_exit=0
+
+$ clean checkout test: git archive HEAD + the fixed render.yaml in /tmp/opencode/render-verify-KgSAhh (no host node_modules)
+node=v24.22.3 npm=11.19.1
+npm ci --no-audit --no-fund
+added 399 packages in 2s
+npm_ci_exit=0
+render.yaml: valid YAML (cubeclicker-development, docker, free, no platform health check)
+clean_render_check_exit=0
+js_yaml=4.3.2
+
+$ npm test -w @cubeclicker/frontend
+ Test Files  74 passed (74)
+      Tests  2248 passed (2248)
+frontend_test_exit=0
+
+$ npm run lint
+lint_exit=0
+
+$ npm run typecheck
+typecheck_exit=0
+
+$ git diff --check
+diff_check_exit=0
+
+$ grep -n 'healthCheckPath' render.yaml
+16:# (`healthCheckPath` is empty), so this file declares none. Health is verified
+
+$ grep -nE "branches: \[.*develop|accepts? .develop. pushes|pushes to .main./.develop." .github/workflows/*.yml docs/architecture/vercel-render-neon.md docs/architecture/deployment.md README.md AGENTS.md
+none found
+
+$ grep -nE "requires? (a|at least one) reviewer|stays behind|reviewer-gated|deployments restricted to|at least one required reviewer" docs/architecture/vercel-render-neon.md docs/architecture/deployment.md README.md
+none found
+```
+
+No application source, tests, compose files, Dockerfiles or provider resources changed; no full CI rerun (per the fix brief — the deploy pipeline validates on push). Coverage is unchanged from T3 because no source changed. No secret added; no live Render/Vercel/Neon resource touched.
+
+### Commit
+
+`fix: align render docs with live dev configuration` — stages `.github/workflows/ci.yml`, `render.yaml`, `AGENTS.md`, `README.md`, `docs/architecture/deployment.md`, `docs/architecture/vercel-render-neon.md` and this log. `status.md` stays unstaged (orchestrator-owned) and `docs/features/README.md` was not edited. No push: F1 remains orchestrator-owned.
+
