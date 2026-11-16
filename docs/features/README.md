@@ -55,5 +55,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | realtime-broadcast-batching | Real-Time Broadcast Batching (encode-once fan-out, registry index, 40 ms removal batches, 4 Hz economy coalescing) | accepted | 2026-11-13 |
 | project-only-skills | Project-Only Skills (removed 33 imported packs; kept six pipeline skills; Context7 for library docs) | accepted | 2026-11-15 |
 | runtime-observability | Runtime Observability (structured logs, internal Prometheus metrics, DB latency, dev-only perf overlay) | accepted | 2026-11-15 |
+| live-activity-feed | Live Activity Feed (per-server events, 1/s cadence, 20-event ring, top-center ticker) | accepted | 2026-11-16 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

@@ -1,10 +1,10 @@
 ---
 feature: live-activity-feed
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 1
+build_round: 2
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 # Status — Live Activity Feed
 
@@ -18,7 +18,7 @@ Per-server, server-authoritative activity feed: the hub derives cube completion,
 - [x] T2 — Hub derivation, welcome/reconnect, metrics allow-list `[seq]`
 - [x] T3 — Frontend protocol mirror, reducer and session chain `[seq]`
 - [x] T4 — ActivityFeed UI, App wiring, CSS, smoke proof `[seq]`
-- [ ] T5 — Documentation and final verification `[seq]`
+- [x] T5 — Documentation and final verification `[seq]`
 
 ## Loop log
 
@@ -33,11 +33,15 @@ Per-server, server-authoritative activity feed: the hub derives cube completion,
 - 2026-11-15 — building T2 completed — hub derivation + welcome/reconnect + metrics allow-list; commit `322b291`; backend 1324 tests, coverage 96.13/89.58/99.55/96.13 — `build-log-T2.md`
 - 2026-11-15 — building T3 completed — frontend protocol/reducer/session; commit `2b43f28`; frontend 2053 tests, coverage 96.6/96.29/97.77/96.6 — `build-log-T3.md`
 - 2026-11-16 — building T4 completed — ActivityFeed ticker + App/CSS + smoke; commit `5e546f1`; frontend 2069 tests, coverage 96.61/96.31/97.78/96.61; smoke 24/24 — `build-log-T4.md`
+- 2026-11-16 — building T5 completed — realtime/glossary docs + final gates; commit `2665db6`; full suite 3,393 tests; coverage backend 96.13/89.58/99.55/96.13, frontend 96.61/96.31/97.78/96.61; build + smoke 24/24 — `build-log-T5.md`
+- 2026-11-16 — building → code_review — all T1-T5 verified; acceptance row pending — `build-log-T5.md`
+- 2026-11-16 — code_review → accepted — code review r1 approved (0 blockers); all 28 ACs met; F1 test-timing note in backlog — `reviews/code-review-r1.md`
 
 ## Blockers / open questions
 
-- Q-1 — milestone every 5th cube (recommended).
-- Q-2 — drop-not-queue at 1/s per server (recommended).
-- Q-3 — 20 stored / 5 visible (recommended).
-- Q-4 — top-center ticker (recommended).
+- Q-1 — milestone every 5th cube: approved.
+- Q-2 — drop-not-queue at 1/s per server: approved.
+- Q-3 — 20 stored / 5 visible: approved.
+- Q-4 — top-center ticker: approved.
 - Q-5…Q-14 — builder defaults recorded in `spec.md`/`plan.md`.
+- **Backlog (MINOR):** `app.test.ts` live-socket activity test uses a 250 ms real wait; replace with a deterministic seam in a follow-up. No behavior impact.
