@@ -1,8 +1,8 @@
 ---
 feature: render-backend-migration
-state: building
+state: code_review
 spec_review_round: 0
-build_round: 1
+build_round: 2
 created: 2026-11-16
 updated: 2026-11-16
 ---
@@ -15,9 +15,9 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 ## Task board
 
 - [x] T1 — Render Blueprint and backend service config
-- [ ] T2 — GitHub Actions deploy path (Render deploy hook, remove Fly)
-- [ ] T3 — Environment catalog and docs (README, deployment, Vercel/Render/Neon)
-- [ ] T4 — Local/static verification and live development proof
+- [x] T2 — GitHub Actions deploy path (Render deploy hook, remove Fly)
+- [x] T3 — Environment catalog and docs (README, deployment, Vercel/Render/Neon)
+- [x] T4 — Local/static verification and live development proof
 - [ ] T5 — Acceptance/supersession bookkeeping
 
 ## Loop log
@@ -30,12 +30,18 @@ Supersede the Fly.io backend with a Render **free** web service while keeping th
 - 2026-11-16 — T2 workflow update in progress — replace Fly steps with Render deploy hook + health poll; set GitHub `development` vars/secrets and `develop` branch
 - 2026-11-16 — user directive — push to `main` MUST auto-deploy `development`; production remains manual. Remove `gh workflow run` from the dev path; Vercel dev deploy must update the stable `cubeclicker-development.vercel.app` production target — workflow correction in progress
 - 2026-11-16 — pipeline correction — remove duplicate CI (`ci.yml` + `deploy.yml` workflow_call); deploy must run only after a successful `CI` run via `workflow_run`; no re-running tests in deploy — in progress
+- 2026-11-16 — pipeline green — CI `43852511347` success; Deploy `43852823666` success; Render `dep-dbte1lp5efls73artkb0` live; Vercel `dpl_BrrXU6iMWrDNA5Rb2gnWdUEa2uKj` READY/aliased; deployed smoke 8/8; deploy has no duplicate CI and no alias step
+- 2026-11-16 — T3 docs/acceptance in progress — rewrite README/deployment docs to Vercel/Render/Neon, add `render.yaml`, archive Fly configs; production/SMTP remain explicit blockers
+- 2026-11-16 — T3 docs complete — `74e0b60` `docs: document render deployment`; `render.yaml`, Vercel/Render/Neon runbook, Fly archive; actionlint/link/tests/coverage green
+- 2026-11-16 — T4 live proof complete — CI `43852511347` + Deploy `43852823666` green; deployed smoke 8/8; Render/Vercel/Neon live — `build-log-T2-smoke.md`
+- 2026-11-16 — review r1 fixes — `0d802e4` clean-job Render validation, no platform health check, production unprovisioned docs, main-only branch model; local, pending push — `build-log-T3-docs.md`
 
 ## Blockers / open questions
 
-- Render account/API access: need a Render API key or a service created from `render.yaml` (free web service) plus its deploy hook URL.
-- Vercel CI token: `VERCEL_TOKEN` cannot be minted via MCP; needed for GitHub Actions frontend deploy.
-- Render free spin-down/cold-start semantics must be documented as development-only.
-- Mailpit: Render cannot reach a Fly `.internal` host; use a Render-private service or a free SMTP provider. The Fly Mailpit config is not usable with Render as-is.
-- Vercel SSO protection must be disabled for the dev project.
-- Neon production protection remains an accepted free-plan deviation.
+- Render free spin-down/cold-start semantics documented; deployed workflow polls `/healthz` because Render has **no platform health check configured**.
+- SMTP guest-only in development; no free provider configured and Render free cannot reach Fly Mailpit.
+- Vercel SSO is disabled for the dev project only.
+- Neon production branch is unprotected; accepted free-plan deviation.
+- Production is unprovisioned and unprotected; manual `workflow_dispatch` only.
+- Backlog: stale Fly source comments; T2 workflow log acceptance audit superseded by later follow-ups; CI smoke uses `docker compose` (pre-existing).
+- T3 docs commit `74e0b60` and follow-up fixes must be pushed before acceptance; review r1 changes requested.
