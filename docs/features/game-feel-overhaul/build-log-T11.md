@@ -1,89 +1,53 @@
 # Build log — T11 — Verify & integrate (documentation + full gates)
 
-Task: T11 (2026-11-16)
+Task: T11 (2026-11-16); evidence refreshed at the code-review r1 tip `544cce8` (2026-11-17).
 Feature: game-feel-overhaul
-Branch: `feat/game-feel-overhaul`, merge HEAD `69cd566` — merge of
-`feat/presence-and-activity-liveness` (`36d03e7`) into the feature branch; the T11
-build-log update is committed on top (docs-only).
-**Status: automated gate GREEN on the merged tree. One T11 item remains BLOCKED:** the
-manual `workMs` reveal traces, the main-scene frame trace and the visual/keyboard matrix are
-not executable in this environment (no browser/GUI tooling, and the spec excludes browser
-automation). Nothing that was not run is recorded as passing.
+Branch: `feat/game-feel-overhaul`, HEAD `544cce8` (`8ff8e71` T12 + the r1 code fixes).
+**Status: automated gate GREEN at the reviewed tip. The manual `workMs`, main-scene frame
+trace and visual/keyboard rows are covered by an explicit user waiver (2026-11-17,
+§ Manual trace waiver) recorded in `status.md`; no trace table is claimed as passed.**
 
-Files changed by this task (content):
+Files changed by T11 (content):
 
 - `README.md` — Neon Forge HUD + 3D reveal wording, stale sentences removed.
 - `docs/architecture/frontend-rendering.md` — `## Lootbox reveal stage`,
   `## Game shell layering`, qualified single-loop wording.
 - `docs/product/glossary.md` — `lootbox reveal` updated, `### reveal stage` added,
-  motion-token count 13 → 17; merge resolution keeps both the presence and the reveal terms.
+  motion-token count 13 → 17; restored from `af97f5a` at review r1 (F1), presence terms kept.
 - `docs/features/game-feel-overhaul/build-log-T11.md` (this file).
 
-Also delivered: the feature artifacts (spec, plan, tasks, status, `reviews/`) in a separate
-`docs:` commit, and the presence merge commit `69cd566` (no source/test conflict resolution;
-one both-added-terms conflict in `docs/product/glossary.md`).
+Review r1 docs fixes (F1/F2/F5/F7) are recorded in
+`build-log-review-r1-docs.md`; the gate evidence below is from the reviewed tip.
 
-## What changed & why (documentation pass)
+## Branch provenance and base
 
-1. **README** — the gameplay paragraph now describes `chamfered graphite-glass HUD panels
-   with cyan energy rims and amber reward accents` and the `Neon Forge HUD`; the
-   `wireframe charge-orb reveal` clause is replaced by the `animated 3D lootbox reveal` on
-   the player's own ship and its controls (`Escape`, `Dismiss`, `Equip` closes the stage;
-   `Equip` also equips). `granular spaceship parts` and `detailed blue/orange hero
-   spaceship` are preserved. The feature list names `game-feel-overhaul`.
-2. **`docs/architecture/frontend-rendering.md`** — the unqualified "session owns the only
-   rAF loop" sentence becomes `The session owns the requestAnimationFrame loop for the
-   Three.js game scene` plus the statement that the reveal adds `one additional bounded
-   30 fps loop` in the deferred customization panel, disposed on unmount. Two new
-   sections document the reveal stage (modules, one panel context, 30 fps, deferred chunk,
-   reduced-motion/WebGL fallback, non-modal focus contract) and the shell layering table
-   (canvas 0, ambience 2, panels/controls 3, level 5, reveal 20, toggle 21, auth 100).
-3. **`docs/product/glossary.md`** — `lootbox reveal` now describes the 3D stage, the
-   non-modal controls and the opener-only/server-authoritative split; `### reveal stage`
-   is added (the presence term that arrived with the merge sits between `### prestige` and
-   it); the motion-token definition says 17 CSS-mapped durations (the `game-view.css`
-   `--motion-*` map is 17 entries).
-4. No source, test, CSS, container, package or protocol file was changed by T11.
-
-## Base provenance and merge resolution
-
-`feat/game-feel-overhaul` was forked from an intermediate `presence-and-activity-liveness`
-commit (`e39c378`) that main does not contain; that fork point carried a stale activity-TTL
-expectation in five `src/backend/src/game/hub.test.ts` tests, which the presence branch
-later fixed. The presence branch (`36d03e7`) is the accepted base of this feature, so it is
-now merged into the feature branch and **`BASE=36d03e7`** is the recorded base for every
-protected/doc gate below.
+The branch was squashed onto `main`: `5ef561e` (presence-and-activity-liveness, the squash
+of the earlier presence tip `36d03e7`) → `dcb0573` (the game-feel feature squash, = `main`)
+→ `8ff8e71` (T12 leaderboard/HUD clearance) → `544cce8` (code-review r1 code fixes).
+`git merge-base main HEAD` is now `dcb0573`, so that literal diff is empty at this tip; the
+protected-file gates are proven against the pre-squash presence base **`BASE=5ef561e`**,
+whose tree is equivalent to the `36d03e7` base recorded by the earlier T11 run.
 
 ```text
-$ git log --oneline --graph -5
-*   69cd566 merge: integrate presence-and-activity-liveness into game-feel-overhaul
-|\
-| * 36d03e7 docs: track presence code review r2          (presence tip = BASE)
-* | 80e22cc docs: record the merged-base verification in the T11 build log
-* | 5e5cc0b docs: track game-feel-overhaul feature artifacts
-* | 8d0fc29 docs: document the 3D lootbox reveal and Neon Forge shell
-|/
-* f723b7e fix: honor session reduced motion on the ambience layer
-```
-
-**Merge resolution.** `git merge --no-ff feat/presence-and-activity-liveness` produced
-exactly one conflict: `docs/product/glossary.md`, because both features inserted a term
-after `### prestige` in the same place. Resolved by keeping **both** definitions verbatim
-in the order `### presence` → `### reveal stage`; no definition from either feature was
-dropped or reworded. All other files auto-merged, including
-`docs/architecture/frontend-rendering.md` (presence's page-lifecycle/activity-expiry
-paragraphs plus this feature's reveal-stage/layering sections) and
-`src/frontend/src/game/session.ts`/`session.test.ts`. The merge also carries presence's
-`docs/features/README.md` row; that edit is presence-authored, not a game-feel edit.
-
-```text
-$ grep -n "^### presence$\|^### prestige$\|^### reveal stage$" docs/product/glossary.md
-118:### prestige
-123:### presence
-128:### reveal stage
-$ git diff --stat 36d03e7...HEAD -- src/backend
+$ git log --oneline -5
+544cce8 fix: close game-feel review r1 code findings
+8ff8e71 fix: clear the leaderboard below the HUD
+dcb0573 Squashed commit of the following:          # = main
+5ef561e Squashed commit of the following:          # presence squash = BASE
+294b302 docs: accept render-backend-migration
+$ git rev-parse 5ef561e dcb0573
+5ef561e5b894d30e693e802b04b1023c78e54235
+dcb0573fe7f3981525e41af96080bfb1d85a7694
+$ git merge-base main HEAD
+dcb0573fe7f3981525e41af96080bfb1d85a7694
+$ git diff --stat 5ef561e...HEAD -- src/backend
 (empty; exit 0)
 ```
+
+`docs/product/glossary.md` is restored from `af97f5a` (review r1 F1), so the glossary at
+this tip carries the accepted `lootbox reveal` 3D wording, `### reveal stage`, the 17
+CSS-mapped durations and the presence term; `git diff af97f5a -- docs/product/glossary.md`
+is empty.
 
 ## Environment
 
@@ -118,10 +82,8 @@ matrix.
 
 ## Gate evidence (raw)
 
-Commands run from the repository root on the merged tree `69cd566` (base `36d03e7`). No
-source/test file changed after the merge. The only working-tree modification is the
-orchestrator's pre-existing `docs/features/game-feel-overhaul/status.md` blocked entry,
-which is not part of the T11 commits.
+Commands run from the repository root at `544cce8` with only the docs edits of this fix in
+the working tree (no source/test change).
 
 ### `npm run lint` → exit 0
 
@@ -165,12 +127,8 @@ which is not part of the T11 commits.
 > vitest run
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
  Test Files  78 passed (78)
-      Tests  2432 passed (2432)
+      Tests  2439 passed (2439)
 ```
-
-The five `src/backend/src/game/hub.test.ts` failures recorded in the pre-merge run are gone:
-the presence merge brings the updated `hub.test.ts`/`hub.ts` (186 tests in that file, all
-passing) and the full suite is green in both workspaces.
 
 ### `npm run coverage` → exit 0
 
@@ -192,12 +150,12 @@ All files          |    96.2 |    89.92 |   99.57 |    96.2 |
  RUN  v3.2.7 /var/home/raultorraco/Documents/Projects/CubeClicker/src/frontend
       Coverage enabled with v8
  Test Files  78 passed (78)
-      Tests  2432 passed (2432)
+      Tests  2439 passed (2439)
  % Coverage report from v8
 -------------------|---------|----------|---------|---------|-------------------
 File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
 -------------------|---------|----------|---------|---------|-------------------
-All files          |   96.84 |    96.53 |   98.04 |   96.84 |
+All files          |   96.84 |    96.51 |   98.04 |   96.84 |
  src/game          |    96.5 |    99.4 |   99.02 |    96.5 |
   reveal-motion.ts |     100 |      100 |     100 |     100 |
   session.ts       |   91.31 |    98.84 |   97.43 |   91.31 |
@@ -216,9 +174,9 @@ All files          |   96.84 |    96.53 |   98.04 |   96.84 |
 ```
 
 - **Backend workspace: 96.2 / 89.92 / 99.57 / 96.2 — all four ≥ 80.**
-- **Frontend workspace: 96.84 / 96.53 / 98.04 / 96.84 — all four ≥ 80**, new modules
+- **Frontend workspace: 96.84 / 96.51 / 98.04 / 96.84 — all four ≥ 80**, new modules
   included (`reveal-motion.ts` and `render/lootbox-reveal.ts` 100%,
-  `LootboxReveal.tsx` 98.24). No exclusion or threshold was changed in either workspace.
+  `LootboxReveal.tsx` 98.24). No exclusion or threshold was changed.
 
 ### `npm run build` → exit 0
 
@@ -226,31 +184,37 @@ All files          |   96.84 |    96.53 |   98.04 |   96.84 |
 > build
 > npm run build --workspaces --if-present
 
+
 > build
 > tsc
+
 
 > build
 > vite build && node scripts/check-bundle-budget.mjs
 
 vite v7.3.7 building client environment for production...
-✓ 112 modules transformed.
-dist/index.html                                        0.49 kB │ gzip:   0.30 kB
-dist/assets/index-CoXkPg3Y.css                        38.46 kB │ gzip:   7.25 kB
-dist/assets/cursor-ship-Bj0X9LT6.js                    6.73 kB │ gzip:   2.21 kB
-dist/assets/SpaceshipCustomizationPanel-Tfn2KlzW.js   16.27 kB │ gzip:   5.75 kB
-dist/assets/browser-env-BFzDKYLL.js                   49.34 kB │ gzip:  18.20 kB
-dist/assets/index-6XznO9t4.js                        101.59 kB │ gzip:  31.01 kB
+transforming...
+✓ 113 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                        0.49 kB │ gzip:   0.31 kB
+dist/.vite/manifest.json                               1.37 kB │ gzip:   0.38 kB
+dist/assets/index-BDvF3gy2.css                        38.94 kB │ gzip:   7.29 kB
+dist/assets/cursor-ship-YWEzR2zT.js                    6.73 kB │ gzip:   2.21 kB
+dist/assets/SpaceshipCustomizationPanel-Baxl9jh6.js   15.99 kB │ gzip:   5.67 kB
+dist/assets/browser-env-DX-N50Hx.js                   49.34 kB │ gzip:  18.21 kB
+dist/assets/index-CWLKQMhG.js                        101.64 kB │ gzip:  31.01 kB
 dist/assets/react-BYqCGoBQ.js                        221.70 kB │ gzip:  68.96 kB
 dist/assets/three-4kUmpljF.js                        610.31 kB │ gzip: 154.62 kB
 ✓ built in 1.42s
-entry index assets/index-6XznO9t4.js raw=101588 gzip=31012
-initial files=2 raw=323287 gzip=99968 budget=150000
+entry index assets/index-CWLKQMhG.js raw=101641 gzip=31014
+initial files=2 raw=323340 gzip=99970 budget=150000
 three assets/three-4kUmpljF.js raw=610310 gzip=154617 budget=165000
-total files=6 raw=1005937 gzip=280751 budget=300000
-chunk SpaceshipCustomizationPanel assets/SpaceshipCustomizationPanel-Tfn2KlzW.js raw=16267 gzip=5751 initial=false
-chunk browser-env assets/browser-env-BFzDKYLL.js raw=49344 gzip=18204 initial=false
-chunk cursor-ship assets/cursor-ship-Bj0X9LT6.js raw=6729 gzip=2211 initial=false
-chunk index assets/index-6XznO9t4.js raw=101588 gzip=31012 initial=true
+total files=6 raw=1005710 gzip=280670 budget=300000
+chunk SpaceshipCustomizationPanel assets/SpaceshipCustomizationPanel-Baxl9jh6.js raw=15987 gzip=5666 initial=false
+chunk browser-env assets/browser-env-DX-N50Hx.js raw=49344 gzip=18205 initial=false
+chunk cursor-ship assets/cursor-ship-YWEzR2zT.js raw=6729 gzip=2212 initial=false
+chunk index assets/index-CWLKQMhG.js raw=101641 gzip=31014 initial=true
 chunk react assets/react-BYqCGoBQ.js raw=221699 gzip=68956 initial=true
 chunk three assets/three-4kUmpljF.js raw=610310 gzip=154617 initial=false
 
@@ -258,17 +222,20 @@ Bundle budget OK.
 ```
 
 `dist/bundle-report.json`: **1884 bytes** (`wc -c`). `initial.files` is exactly
-`[assets/index-6XznO9t4.js, assets/react-BYqCGoBQ.js]` — the `three` chunk is
+`[assets/index-CWLKQMhG.js, assets/react-BYqCGoBQ.js]` — the `three` chunk is
 `initial=false`. `dist/index.html` preloads only the react chunk;
 `grep -c 'three-' dist/index.html` = `0`.
 
 ### `npm run smoke` → exit 0 (recorded; not a cross-service acceptance gate)
 
-The smoke-only `frontend-prod` image was **rebuilt from the merged tree**
+F7 provenance: the smoke-only `frontend-prod` image was **rebuilt from the current tip**
 (`podman compose -f compose.yaml -f compose.smoke.yaml build frontend-prod` → exit 0,
-`Successfully tagged cubeclicker-frontend:prod-smoke`) and its container recreated before
-this run, so the production static-delivery checks describe the merged build
-(`/assets/index-Dh282Nod.js`).
+`Successfully tagged cubeclicker-frontend:prod-smoke`), with image id
+**`sha256:4b4d7e12231406c75559e5964f3a0f618a63a16900f371d600e6c696df386de4`**
+(`podman image inspect … --format '{{.Id}}'`) and the `frontend-prod` container recreated
+from that image before the run. The image's own build serves
+**`/assets/index-6XwuB9OH.js`** (101,707 B decompressed, gzip + immutable caching), so the
+28/28 result is tied to the reviewed tip, not a cached T11 image.
 
 ```text
 > smoke
@@ -276,15 +243,15 @@ this run, so the production static-delivery checks describe the merged build
 
 >>>> Executing external compose provider "/usr/local/bin/docker-compose". Please see podman-compose(1) for how to disable this message. <<<<
 
- Container cubeclicker-frontend-prod-1 Running
- Container cubeclicker-mailpit-1 Running
- Container cubeclicker-backend-1 Running
- Container cubeclicker-frontend-1 Running
- Container cubeclicker-db-1 Running
- Container cubeclicker-db-1 Waiting
- Container cubeclicker-db-1 Healthy
- Container cubeclicker-smoke-run-0182ef2404b8 Creating
- Container cubeclicker-smoke-run-0182ef2404b8 Created
+ Container cubeclicker-backend-1 Running 
+ Container cubeclicker-frontend-1 Running 
+ Container cubeclicker-db-1 Running 
+ Container cubeclicker-mailpit-1 Running 
+ Container cubeclicker-frontend-prod-1 Running 
+ Container cubeclicker-db-1 Waiting 
+ Container cubeclicker-db-1 Healthy 
+ Container cubeclicker-smoke-run-08bb5edf964d Creating 
+ Container cubeclicker-smoke-run-08bb5edf964d Created 
 smoke: backend=http://backend:8080 frontend=http://frontend:5173 prodFrontend=http://frontend-prod:8080 ws=ws://backend:8080/ws readyTimeoutMs=30000
 PASS backend http://backend:8080/healthz responds 200 with {"status":"ok"}
 PASS frontend http://frontend:5173/ responds 200 with text/html
@@ -298,9 +265,9 @@ PASS multiplayer sync: A's valid explode yields miniCubeRemoved on A (ack) and B
 PASS multiplayer batching: two explodes in one turn yield one miniCubesRemoved [front:0:1, front:0:2] on A (ack) and B (broadcast)
 PASS multiplayer batching: front:0:1 and front:0:2 never arrive as single miniCubeRemoved frames on A or B
 PASS leaderboard update: the accepted explodes yield a coalesced leaderboardUpdate with A clicks >= 3, B clicks = 0 and totals clicks >= 3 — A clicks 3, B clicks 0, totals clicks 3
-PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1004ms
+PASS multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window — memberLeft(left) received after 1003ms
 PASS activity leave: A receives the memberLeft activity event with B's name and an id newer than the snapshot id — memberLeft id 2 for p9
-PASS multiplayer explicit leave: D's leave yields memberLeft(left) on A in under 900ms without the grace window — memberLeft(left) received after 1ms
+PASS multiplayer explicit leave: D's leave yields memberLeft(left) on A in under 900ms without the grace window — memberLeft(left) received after 0ms
 PASS multiplayer slot reuse: E fills D's freed slot 2 with welcome.roster exactly [A, E] — server 5; roster [A, E] in D's freed slot 2
 PASS auth register: POST /auth/register returns 202
 PASS auth verify: Mailpit delivers a verification email and POST /auth/verify activates the account
@@ -310,24 +277,22 @@ PASS metrics: a joined client sees the Prometheus endpoint with connections_open
 PASS prod frontend http://frontend-prod:8080/ is ready for delivery checks
 PASS prod http://frontend-prod:8080/bundle-report.json serves the build report with no-cache, gzip, and a lazy three chunk
 PASS prod http://frontend-prod:8080/ serves the gzip app shell with no-cache and the report entry script — content-encoding gzip; cache-control no-cache
-PASS prod /assets/index-Dh282Nod.js is served gzip with immutable caching — content-encoding gzip; 101654 B decompressed
+PASS prod /assets/index-6XwuB9OH.js is served gzip with immutable caching — content-encoding gzip; 101707 B decompressed
 PASS prod /assets/three-4kUmpljF.js is served gzip with immutable caching — content-encoding gzip; 610310 B decompressed
 PASS prod http://frontend-prod:8080/assets/missing.js returns 404 and never the app shell — status 404 without a long-cache header
 PASS prod http://frontend-prod:8080/missing/route serves the gzip SPA shell with no-cache — status 200; cache-control no-cache
 SMOKE PASS (28/28 checks)
 ```
 
-The two extra checks over the pre-merge 26 are presence's `multiplayer explicit leave` and
-`multiplayer slot reuse` cases.
-
 ## Protected-file proof
 
-`BASE=36d03e7` (the presence tip merged into this branch). All gates exit 0:
+`BASE=5ef561e` (the presence squash, tree-equivalent to the `36d03e7` presence tip used by
+the earlier T11 run). All gates exit 0:
 
 ```text
-$ BASE=$(git rev-parse feat/presence-and-activity-liveness^{commit})
-BASE=36d03e79cfa0af8b9f6bba9fe90f3533da0c7401
-HEAD=69cd56662e00ff15b235283dc976f1d58f22a7b5
+$ BASE=$(git rev-parse 5ef561e)
+BASE=5ef561e5b894d30e693e802b04b1023c78e54235
+HEAD=544cce8d0dd4a3ae431e3fac423336e1307607c1
 $ git diff --stat "$BASE"...HEAD -- src/backend
 (empty; exit 0)
 $ git diff --exit-code "$BASE"...HEAD -- src/backend compose.yaml compose.smoke.yaml ':(glob)**/Dockerfile' package.json package-lock.json src/frontend/package.json src/backend/package.json
@@ -342,18 +307,17 @@ $ test -z "$(git status --porcelain -- docs/features/README.md)"
 FEATURE_INDEX_STATUS_EXIT=0
 ```
 
-`src/backend` is byte-identical to the merged base (the merge brings presence's backend
-work in as base content; the game-feel commits add none). `src/frontend/src/multiplayer`,
-`browser-env.ts` and `session.ts` differ from the pre-merge branch only because they are
-presence's base content now; against `36d03e7` the game-feel diff is exactly the T1–T10
-frontend files (appendix). `docs/features/README.md` is unchanged in the working tree; the
-presence row arrived with the merge, not from a T11 edit.
+`src/backend` is byte-identical to the pre-squash presence base; the feature-only diff is
+the frontend/DOM/CSS work plus this feature's documentation (appendix). Because the branch
+is now squashed onto `main` (`git merge-base main HEAD` = `dcb0573`), the literal
+merge-base range is empty; `5ef561e` is the presence-tree base the review used, so the
+protected proof is unchanged in substance from the merged-base run.
 
 ## Documentation gates
 
 ```text
-BASE=36d03e79cfa0af8b9f6bba9fe90f3533da0c7401
-HEAD=69cd56662e00ff15b235283dc976f1d58f22a7b5
+BASE=5ef561e5b894d30e693e802b04b1023c78e54235
+HEAD=544cce8d0dd4a3ae431e3fac423336e1307607c1
 PASS grep -F "animated 3D lootbox reveal" README.md
 PASS grep -F "Neon Forge HUD" README.md
 PASS grep -F "chamfered graphite-glass HUD panels with cyan energy rims and amber reward accents" README.md
@@ -368,33 +332,38 @@ PASS grep -F "The session owns the requestAnimationFrame loop for the Three.js g
 PASS absent: The session owns the only
 PASS grep -F "### reveal stage" docs/product/glossary.md
 PASS grep -F "### presence" docs/product/glossary.md
+PASS glossary 17 CSS-mapped durations
 PASS docs/features/README.md not modified in the working tree
 ```
 
-All strings and negatives from the T11 verify list pass on the merged tree; the glossary
-keeps both the presence and the reveal-stage terms. New documentation links resolve:
+All strings and negatives from the T11 verify list pass at `544cce8`; the glossary now
+carries the accepted 3D `lootbox reveal` wording, `### reveal stage`, the 17-duration count
+and the presence term (review r1 F1 fixed). New documentation links resolve:
 `docs/architecture/frontend-rendering.md` links to `src/frontend/src/game/reveal-motion.ts`,
 `src/frontend/src/render/lootbox-reveal.ts` and `src/frontend/src/ui/LootboxReveal.tsx`,
 all present at `HEAD`; the README's `docs/features/game-feel-overhaul/` directory is
-tracked by the feature-artifact commit.
+tracked by the feature-artifact commits.
 
-## Performance — traces (remaining blocker: not executable here) and structural budget
+## Performance — traces (waived) and structural budget
 
-**Reveal `workMs` traces — not executed — environment.** AC-15 requires a 10-second trace
-at 1280×720 and 1920×1080, three clean runs per size, measuring `performance.now()` either
-side of `stage.update()` + `renderer.render()` in the reveal frame callback. No browser
-runs in this environment (§ Environment) and the spec excludes browser automation, so no
-run exists and none is recorded as passing. **This is the only remaining T11 blocker.**
+**Reveal `workMs` traces — not executed — environment (waived by the user, 2026-11-17).**
+AC-15 asks for a 10-second trace at 1280×720 and 1920×1080, three clean runs per size,
+measuring `performance.now()` either side of `stage.update()` + `renderer.render()` in the
+reveal frame callback. No browser runs in this environment (§ Environment) and the spec
+excludes browser automation, so no run exists; per the explicit waiver below, no table is
+claimed as passing:
 
 | Size | Run 1 | Run 2 | Run 3 | Median | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| 1280×720 | not executed — environment | not executed — environment | not executed — environment | — | unverified |
-| 1920×1080 | not executed — environment | not executed — environment | not executed — environment | — | unverified |
+| 1280×720 | not executed — environment | not executed — environment | not executed — environment | — | waived, not passed |
+| 1920×1080 | not executed — environment | not executed — environment | not executed — environment | — | waived, not passed |
 
-**Main-scene traces with the customization panel open — not executed — environment** (same
-reason; AC-34's avg ≤ 16.7 / p95 ≤ 33 requirement is unverified).
+**Main-scene trace with the customization panel open — not executed — environment (same
+waiver).** AC-34's avg ≤ 16.7 / p95 ≤ 33 requirement is waived; the bundle budget is met
+and the main scene adds no loop, render pass, light, post-processing parameter or
+quality-tier input.
 
-**Structural budget pinned by code and tests** (available evidence):
+**Structural budget pinned by code and tests** (the accepted code-pinned evidence):
 
 - Reveal context: one canvas/context besides the main scene's own; 22 draw calls
   (21 cursor meshes + 1 ring) ≤ 24; 872 triangles ≤ 2596; one pre-allocated pose buffer
@@ -409,12 +378,26 @@ reason; AC-34's avg ≤ 16.7 / p95 ≤ 33 requirement is unverified).
   `render/postprocessing.ts`, `render/preview.ts` or `game/session.ts`'s frame loop (all
   protected or unchanged; the reveal loop lives in `ui/LootboxReveal.tsx` inside the
   deferred panel chunk). `game-view.css` adds only compositor-friendly transform/opacity
-  animations (T7 log).
+  animations (T7 log), and the review r1 session reduced-motion fix extends the disables to
+  the session preference (`544cce8`).
+
+## Manual trace waiver (2026-11-17)
+
+**The user explicitly waived the AC-15 `workMs` and AC-34 main-scene trace requirement
+because the build environment is headless.** The waiver accepts the real-browser visual
+pass plus the code-pinned draw/triangle/allocation/30 fps budgets as the evidence for those
+criteria. **No trace table is claimed as passed**; the "not executed — environment" rows
+above remain the honest record. The waiver covers the AC-30 320×568 / 375×667 / 768×1024
+visual rows that share the same environment limitation, and the AC-31/AC-15 real-browser
+keyboard/visual checks. It is recorded in `docs/features/game-feel-overhaul/status.md`
+(2026-11-17 loop-log entry, "explicit user waiver") and in `reviews/code-review-r1.md` §
+Manual-evidence disposition as the accepted alternative to the traces.
 
 ## Manual visual/motion matrix
 
 Recorded from code/tests where possible; the browser-only rows are **not executed —
-environment** and are not claimed as passed.
+environment** and are covered by the 2026-11-17 waiver (§ Manual trace waiver), never
+claimed as passed.
 
 | Check | Evidence | Result |
 | --- | --- | --- |
@@ -470,15 +453,17 @@ evidence is present and green in this run unless stated.
   removes the reveal.
 - **AC-12 — One context, deferred chunk and budget → met.** Panel renders `LootboxReveal`
   and not the preview while revealing (T5/T8 tests); `bundle-report.json` initial files
-  exclude `three`; `index.html` preloads no `three-` asset; build budget 99,968 / 154,617 /
-  280,751 B gzip vs 150,000 / 165,000 / 300,000.
+  exclude `three`; `index.html` preloads no `three-` asset; build budget 99,970 / 154,617 /
+  280,670 B gzip vs 150,000 / 165,000 / 300,000.
 - **AC-13 — Panel close is a dismissal → met.** Unmount dismisses once, reopen normal,
   data attribute true/false; App toggle-click test green.
 - **AC-14 — Rarity, duplicate and epic flourish → met.** Component/panel tests plus the
   exact eight-ray CSS and reduced-motion off-switch.
-- **AC-15 — Reveal per-frame work and budget → structure met, traces unmet.** 22 draw
-  calls ≤ 24, 872 triangles ≤ 2596, one pose buffer, 30 fps cap/hidden pause/dispose tests;
-  the three-run `workMs` traces per size are **not executed — environment** (no browser).
+- **AC-15 — Reveal per-frame work and budget → met (user waiver).** 22 draw calls ≤ 24,
+  872 triangles ≤ 2596, one pose buffer, 30 fps cap/hidden pause/dispose tests. The
+  three-run `workMs` traces per size are **not executed — environment** (no browser) and
+  are explicitly waived by the user on 2026-11-17 (§ Manual trace waiver); they are not
+  claimed as passed.
 - **AC-16 — Rollback and no persistence → met.** No schema/migration/protocol/storage key
   is added (protected diffs, no persistence code in the change); rollback note below.
 - **AC-17 — Token contract → met.** T6 log: 26 `--gf-*` tokens, accepted `--panel-*`
@@ -499,11 +484,14 @@ evidence is present and green in this run unless stated.
   layering tests canvas 0 / ambience 2 / panels 3 / level 5 / reveal 20 / toggle 21 /
   auth 100; no scrim, no `main[data-reveal-active]`.
 - **AC-28 — Control states → met.** T6/T7/T9 logs: `.gf-cta` states, 44 px secondary
-  controls, focus rings, disabled states.
+  controls, focus rings, disabled states. AC-28 now states explicitly that `.users-badge`
+  intentionally keeps the capsule `border-radius: 999px` while the other badge/control
+  surfaces use `--gf-radius-control` (review r1 F5 wording clarification; no CSS change).
 - **AC-29 — Typography and headings → met.** T6 owns the block; T8/T9/T10 assert the real
   `h2` elements and classes.
-- **AC-30 — Responsive fit → CSS met, manual matrix unmet.** 720/721/short-viewport rule
-  tests pass; the 320/375/768 visual fit checks are **not executed — environment**.
+- **AC-30 — Responsive fit → met (CSS + user waiver).** 720/721/short-viewport rule tests
+  pass; the 320/375/768 visual fit rows are **not executed — environment** and are covered
+  by the same 2026-11-17 waiver (§ Manual trace waiver).
 - **AC-31 — Accessibility, single live region and contrast → met.** Contrast table,
   aria-hidden decoration, single polite region tests, non-modal focus contract, 24 px
   minimize retained.
@@ -511,20 +499,23 @@ evidence is present and green in this run unless stated.
   `${MOTION.<token>}ms`; 13 accepted mappings unchanged.
 - **AC-33 — No external assets or dependencies → met.** Stylesheet hygiene tests (T6/T7);
   package/lockfile/workspace manifests byte-identical under the protected gates.
-- **AC-34 — Render and bundle budget preserved → bundle met, main-scene traces unmet.**
-  Build budget green (see AC-12); no main-scene loop/render/light/post/tier change; the
-  main-scene frame trace is **not executed — environment**.
-- **AC-35 — Documentation → met.** All new-string greps pass, both stale phrases are
-  absent, both preserved phrases pass, controls are described, the two sections and the
-  qualified single-loop wording exist, the glossary has the new term (and the merge keeps
-  the presence term), and `docs/features/README.md` is untouched by this task.
-- **AC-36 — Coverage → met.** `npm run coverage` exits 0 on the merged tree: backend
-  96.2 / 89.92 / 99.57 / 96.2 and frontend 96.84 / 96.53 / 98.04 / 96.84 — all four
+- **AC-34 — Render and bundle budget preserved → met (bundle + user waiver).** Build
+  budget green (see AC-12); no main-scene loop/render/light/post/tier change. The
+  main-scene frame trace is **not executed — environment** and is explicitly waived by the
+  user on 2026-11-17 (§ Manual trace waiver); it is not claimed as passed.
+- **AC-35 — Documentation → met.** All new-string greps pass at `544cce8`, both stale
+  phrases are absent, both preserved phrases pass, controls are described, the two sections
+  and the qualified single-loop wording exist. The glossary is restored from `af97f5a`
+  (review r1 F1): 3D `lootbox reveal` wording, `### reveal stage`, 17 CSS-mapped durations,
+  and the presence term kept; `docs/features/README.md` is untouched by this task.
+- **AC-36 — Coverage → met.** `npm run coverage` exits 0 at `544cce8`: backend
+  96.2 / 89.92 / 99.57 / 96.2 and frontend 96.84 / 96.51 / 98.04 / 96.84 — all four
   metrics ≥ 80 in both workspaces, new modules included. No threshold or exclusion was
   changed.
 - **AC-37 — Full gates → met.** `npm run lint`, `npm run typecheck`, `npm test`,
-  `npm run coverage` and `npm run build` all exit 0 on the merged tree; `npm run smoke` was
-  run (28/28 PASS) and is recorded, not a cross-service acceptance gate.
+  `npm run coverage` and `npm run build` all exit 0 at `544cce8`; `npm run smoke` was run
+  against the rebuilt tip image (28/28 PASS) and is recorded, not a cross-service
+  acceptance gate.
 - **AC-38 — Containerization impact: none → met.** `compose.yaml`, `compose.smoke.yaml`,
   both Dockerfiles and `/ws` are unchanged under the protected gate; no service, port, env
   var or health signal is added.
@@ -544,80 +535,114 @@ version or client cache entry is involved.
 ## Proposed feature-index row (`docs/features/README.md`, orchestrator-owned)
 
 ```markdown
-| game-feel-overhaul | Game-Feel Overhaul (3D lootbox reveal on the player's ship + Neon Forge game shell) | code_review | 2026-11-16 |
+| game-feel-overhaul | Game-Feel Overhaul (3D lootbox reveal on the player's ship + Neon Forge game shell) | code_review | 2026-11-17 |
 ```
 
-The automated gate is green on the merged tree; the only open item is the manual
-`workMs`/visual evidence (not executable here). The orchestrator should set the row to
-`code_review` (or `accepted` with a recorded manual-evidence waiver) per its own state
-rules. No other row is touched.
+The automated gate is green at `544cce8`; the manual `workMs`/main-scene/visual evidence is
+covered by the explicit 2026-11-17 user waiver (§ Manual trace waiver). The orchestrator
+sets the row/state per its own rules. No other row is touched.
 
-## Merge outcome and remaining blocker
+## Review close-out (code-review r1 docs/evidence fixes)
 
-**Merge outcome.** `69cd566` merges the accepted `feat/presence-and-activity-liveness`
-tip (`36d03e7`) into the feature branch. One conflict existed —
-`docs/product/glossary.md`, both-added-terms after `### prestige` — resolved by keeping
-both definitions verbatim (`### presence`, then `### reveal stage`). No source/test
-conflict occurred: `src/frontend/src/game/session.ts` and `session.test.ts` auto-merged, as
-did `docs/architecture/frontend-rendering.md` and every other file. The merge commit is on
-the feature branch and is not pushed.
+- **F1 (BLOCKER) — fixed.** `docs/product/glossary.md` is restored from `af97f5a`;
+  `git diff af97f5a -- docs/product/glossary.md` is empty, so `lootbox reveal` is the
+  accepted 3D wording, `### reveal stage` exists and `motion token` says 17 CSS-mapped
+  durations. The presence term is preserved. The glossary greps in § Documentation gates
+  pass.
+- **F2 (BLOCKER) — fixed by explicit user waiver (2026-11-17).** § Manual trace waiver
+  records the waiver of AC-15 `workMs` and the AC-34 main-scene trace; `status.md` records
+  it in the loop log; no trace table is claimed as passed. The AC-15/AC-34 findings are met
+  under that waiver, not silently relaxed.
+- **F5 (MINOR) — fixed.** AC-28 and the per-surface Users row in `spec.md` now state the
+  capsule `border-radius: 999px` for `.users-badge`; the other badge/control surfaces use
+  `--gf-radius-control`; revision-history r3a records a wording clarification only. No CSS
+  change.
+- **F7 (INFO) — fixed.** The smoke image was rebuilt from `544cce8`
+  (`sha256:4b4d7e12231406c75559e5964f3a0f618a63a16900f371d600e6c696df386de4`), the
+  `frontend-prod` container recreated from it, the served prod asset is
+  `/assets/index-6XwuB9OH.js`, and `npm run smoke` passes 28/28 (raw block above).
+- **F3/F4/F6/F8** are code/spec findings closed in `544cce8` and this docs commit; this
+  log records the re-run gate and does not re-review them.
 
-**Automated gates.** Green on the merged tree: lint, typecheck, tests (backend 37/1538,
-frontend 78/2432), coverage (backend 96.2/89.92/99.57/96.2, frontend
-96.84/96.53/98.04/96.84), build (99,968 / 154,617 / 280,751 B gzip), smoke (28/28), and
-the protected/doc gates with `BASE=36d03e7`. This satisfies AC-36 and AC-37.
-
-**Remaining blocker — manual evidence only.** AC-15 (reveal `workMs`, three runs per size),
-AC-34's main-scene frame trace, and the AC-30/AC-31 visual/keyboard matrix require a real
-browser session. This environment has no browser on `PATH` and no Playwright/Puppeteer, and
-the spec excludes browser automation, so they are recorded as **not executable in this
-environment** — never as passed. The code/test-pinned structure evidence (22 draw calls,
-872 triangles, one pose buffer, 30 fps cap, one panel context, deferred chunk) is recorded
-in § Performance. Resolution options: run the manual matrix and traces on a GUI host and
-append the raw values here, or have the orchestrator explicitly accept the environment
-deferral for the human-visible evidence (the disposition used by
-`adaptive-render-budget-v2`).
+**Remaining manual-evidence status.** The 2026-11-17 user waiver is the recorded
+disposition for the headless environment: the real-browser visual pass and the code-pinned
+budgets are accepted, and the trace rows stay honest as "not executed — environment".
 
 ## Deviations from spec
 
 - None in the documentation content or the owned files.
-- The merge resolution is the one both-added-terms glossary conflict; both features'
-  definitions are kept and no source/test assertion was changed by the merge.
-- The manual visual/motion and frame-trace evidence is not executable in this environment
-  and is recorded honestly above; nothing is recorded as passed that was not run.
+- This fix changes only documentation (glossary restore, spec wording clarification, build
+  log evidence/waiver and the new review-docs log). No source, test, CSS or container file
+  is changed.
+- The manual visual/motion and frame-trace evidence is waived by the user (2026-11-17) and
+  remains recorded as not executed; nothing is claimed as passed that was not run.
 
 ## Appendix — `BASE...HEAD` file list
 
 ```text
-$ git diff --name-status 36d03e7...HEAD
-A  docs/features/game-feel-overhaul/build-log-T1.md … build-log-T10.md
-M  src/frontend/src/App.test.tsx
-M  src/frontend/src/App.tsx
-M  src/frontend/src/game/motion.test.ts
-M  src/frontend/src/game/motion.ts
-A  src/frontend/src/game/reveal-motion.test.ts
-A  src/frontend/src/game/reveal-motion.ts
-M  src/frontend/src/game/session.test.ts
-M  src/frontend/src/game/session.ts
-A  src/frontend/src/render/lootbox-reveal.test.ts
-A  src/frontend/src/render/lootbox-reveal.ts
-M  src/frontend/src/ui/ActivityFeed.test.tsx / ActivityFeed.tsx
-M  src/frontend/src/ui/ConnectionBanner.test.tsx / ConnectionBanner.tsx
-M  src/frontend/src/ui/Hud.test.tsx / Hud.tsx
-M  src/frontend/src/ui/Leaderboard.test.tsx / Leaderboard.tsx
-A  src/frontend/src/ui/LootboxReveal.test.tsx
-A  src/frontend/src/ui/LootboxReveal.tsx
-M  src/frontend/src/ui/SpaceshipCustomizationPanel.test.tsx / .tsx
-M  src/frontend/src/ui/UpgradesPanel.test.tsx / .tsx
-M  src/frontend/src/ui/UserPanel.test.tsx / .tsx
-M  src/frontend/src/ui/app.css / app.css.test.ts
-M  src/frontend/src/ui/game-view.css / game-view.css.test.ts
-M  src/frontend/src/ui/icons.test.tsx / icons.tsx
-M  src/frontend/src/ui/theme.test.ts / theme.ts
+$ git diff --name-status 5ef561e...HEAD
+M	README.md
+M	docs/architecture/frontend-rendering.md
+A	docs/features/game-feel-overhaul/build-log-T1.md
+A	docs/features/game-feel-overhaul/build-log-T10.md
+A	docs/features/game-feel-overhaul/build-log-T11.md
+A	docs/features/game-feel-overhaul/build-log-T12.md
+A	docs/features/game-feel-overhaul/build-log-T2.md
+A	docs/features/game-feel-overhaul/build-log-T3.md
+A	docs/features/game-feel-overhaul/build-log-T4.md
+A	docs/features/game-feel-overhaul/build-log-T5.md
+A	docs/features/game-feel-overhaul/build-log-T6.md
+A	docs/features/game-feel-overhaul/build-log-T7.md
+A	docs/features/game-feel-overhaul/build-log-T8.md
+A	docs/features/game-feel-overhaul/build-log-T9.md
+A	docs/features/game-feel-overhaul/build-log-review-r1-code.md
+A	docs/features/game-feel-overhaul/plan.md
+A	docs/features/game-feel-overhaul/reviews/spec-review-r1.md
+A	docs/features/game-feel-overhaul/reviews/spec-review-r2.md
+A	docs/features/game-feel-overhaul/reviews/spec-review-r2a.md
+A	docs/features/game-feel-overhaul/spec.md
+A	docs/features/game-feel-overhaul/status.md
+A	docs/features/game-feel-overhaul/tasks.md
+M	src/frontend/src/App.test.tsx
+M	src/frontend/src/App.tsx
+M	src/frontend/src/game/motion.test.ts
+M	src/frontend/src/game/motion.ts
+A	src/frontend/src/game/reveal-motion.test.ts
+A	src/frontend/src/game/reveal-motion.ts
+M	src/frontend/src/game/session.test.ts
+M	src/frontend/src/game/session.ts
+A	src/frontend/src/render/lootbox-reveal.test.ts
+A	src/frontend/src/render/lootbox-reveal.ts
+M	src/frontend/src/ui/ActivityFeed.test.tsx
+M	src/frontend/src/ui/ActivityFeed.tsx
+M	src/frontend/src/ui/ConnectionBanner.test.tsx
+M	src/frontend/src/ui/ConnectionBanner.tsx
+M	src/frontend/src/ui/Hud.test.tsx
+M	src/frontend/src/ui/Hud.tsx
+M	src/frontend/src/ui/Leaderboard.test.tsx
+M	src/frontend/src/ui/Leaderboard.tsx
+A	src/frontend/src/ui/LootboxReveal.test.tsx
+A	src/frontend/src/ui/LootboxReveal.tsx
+M	src/frontend/src/ui/SpaceshipCustomizationPanel.test.tsx
+M	src/frontend/src/ui/SpaceshipCustomizationPanel.tsx
+M	src/frontend/src/ui/UpgradesPanel.test.tsx
+M	src/frontend/src/ui/UpgradesPanel.tsx
+M	src/frontend/src/ui/UserPanel.test.tsx
+M	src/frontend/src/ui/UserPanel.tsx
+M	src/frontend/src/ui/app.css
+M	src/frontend/src/ui/app.css.test.ts
+M	src/frontend/src/ui/game-view.css
+M	src/frontend/src/ui/game-view.css.test.ts
+M	src/frontend/src/ui/icons.test.tsx
+M	src/frontend/src/ui/icons.tsx
+M	src/frontend/src/ui/theme.test.ts
+M	src/frontend/src/ui/theme.ts
 ```
 
-No file outside `src/frontend/src/{App.tsx,App.test.tsx,game/motion*,game/reveal-motion*,
-game/session*,render/lootbox-reveal*,ui/**,}` and `docs/features/game-feel-overhaul/` is
-modified against `BASE=36d03e7`. The T11 documentation files (README, frontend-rendering,
-glossary, build log) are added on top of this list by the T11 commits. Presence’s
-`docs/features/README.md` row and presence’s own files are base content, not a T11 edit.
+No protected file is modified: `src/backend`, `compose.yaml`, `compose.smoke.yaml`, both
+Dockerfiles, the root/workspace package files, and
+`src/frontend/src/render/{preview,cursor-ship,spaceship,scene,webgl,postprocessing}.ts`,
+`src/frontend/src/game/engine.ts`, `src/frontend/src/multiplayer/**`,
+`src/frontend/src/main.tsx` and the four auth component modules are byte-identical to
+`5ef561e` (§ Protected-file proof). `docs/features/README.md` carries only the
+presence-authored row; the game-feel row remains orchestrator-owned.

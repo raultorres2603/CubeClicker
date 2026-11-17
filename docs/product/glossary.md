@@ -82,8 +82,8 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### lootbox reveal
 
-**Definition:** The client-local panel animation that presents a lootbox opening to the connection that opened it: a 1290 ms sequence of 420 ms wireframe charge, 250 ms orb pulse with overshoot, 120 ms flash, 360 ms card reveal and 140 ms settle, followed by the granted **part**'s name, **part slot**, rarity (rare or epic) and new/duplicate status. The server remains authoritative and sends the grant plus the absolute inventory; other connections of the account receive the inventory update without replaying the reveal. Under reduced motion the settled result appears instantly.
-**Example:** Opening a lootbox charges the wireframe orb, flashes, and reveals `Port Silver Wing` for the `wing-left` slot marked `Rare · New`.
+**Definition:** The client-local, non-modal animation that presents a lootbox opening to the connection that opened it. It plays the accepted 1290 ms timeline (420 ms charge, 250 ms orb pulse with overshoot, 120 ms flash, 360 ms reveal and 140 ms settle) as a **reveal stage**: the granted **part** is staged in 3D on the player's own ship in the customization visualizer, with a rarity-coloured ring, a slot pulse and a key-light flash, alongside the card that names the part, **part slot**, rarity (rare or epic), new/duplicate status and owned count. The reveal is client-local presentation: the server remains authoritative and sends the opener-only grant plus the absolute inventory, and other connections of the account receive the inventory update without replaying the reveal. `Escape`, `Dismiss` and `Equip` close it (`Equip` also equips the part), closing the customization panel is a dismissal, and a `welcome` or a lost connection clears it. Under reduced motion the settled result appears instantly; without WebGL an inline ship fallback replaces the stage.
+**Example:** Opening a lootbox plays the 3D reveal with `Port Silver Wing` staged on the port wing, the blue rarity ring and the `Rare · New` card; pressing `Equip` closes the stage and equips the part.
 
 ### mini-cube
 
@@ -92,7 +92,7 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### motion token
 
-**Definition:** A named, pinned presentation constant — a duration, count, distance, scale, speed or angle — in the `MOTION` table (`src/frontend/src/game/motion.ts`) that the 3D renderer, React UI and CSS animations share, so one motion language has a single source of truth. The 13 CSS-mapped durations are declared as `--motion-*` custom properties on `main` in `game-view.css` and asserted equal to their `MOTION` values by tests; all other tokens stay JS-only.
+**Definition:** A named, pinned presentation constant — a duration, count, distance, scale, speed or angle — in the `MOTION` table (`src/frontend/src/game/motion.ts`) that the 3D renderer, React UI and CSS animations share, so one motion language has a single source of truth. The 17 CSS-mapped durations are declared as `--motion-*` custom properties on `main` in `game-view.css` and asserted equal to their `MOTION` values by tests; all other tokens stay JS-only.
 **Example:** `MOTION.coinPopMs` (1100 ms) drives the coin popup, and its CSS mirror is `--motion-coin-pop-ms: 1100ms`.
 
 ### offline progress
@@ -124,6 +124,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** Whether a user currently owns a slot on a **game server** as a **server member**, and therefore appears in that server's roster, `Users on Server` panel and live leaderboard. Presence has exactly two sub-states — **connected** (a joined socket is attached) and **in grace** (the socket closed abruptly and the 30-second reconnect grace has not expired) — and they are indistinguishable in the UI: no presence field is sent and there is no "reconnecting" marker. A deliberate close — closing the tab or reloading the page — sends the additive, self-only `leave` frame on a non-bfcache `pagehide`, and the server finalizes the member immediately: no grace, an immediate `memberLeft (left)` to the remaining members, the slot freed and the server destroyed when it was the last member. An **abrupt close** — a network drop, a crash, a killed tab or a `leave` that never arrived — keeps the member and slot for `RECONNECT_GRACE_MS` (30 000 ms) so a `rejoin` can resume the same member. Presence is per connection: two tabs are two members, and closing one tab removes only that tab. The deliberate-close path is best-effort during unload, so a lost or late `leave` falls back to grace and a reload can briefly show two members until expiry.
 **Example:** Closing the game tab sends `leave`, so the player disappears from the other players' `Users on Server` panel at once and from the leaderboard at the next coalesced update instead of lingering for 30 seconds.
+
+### reveal stage
+
+**Definition:** The 3D presentation inside a **lootbox reveal**: a second, small three.js scene built from the same cursor-ship model and appearance mapping as the pointer ship and the customization preview. It shows the player's ship with only the granted **part slot** staged with the won part (the stored **appearance** is not mutated), one rarity-coloured ring, the slot pulse and a key-light flash, driven by the pure 1290 ms pose timeline. The stage is built on demand in the deferred customization chunk, owns exactly one WebGL context in addition to the main scene's own context (the panel does not render its preview while the stage is shown) and one bounded 30 fps loop, and is disposed on dismissal, grant replacement or unmount; the main game scene's loop and quality tier are untouched. Under reduced motion it renders one static rest frame.
+**Example:** The reveal stage yaws the ship to the port wing, pulses that slot by 10 % and fades the rarity ring out by the settle beat at 1150 ms.
 
 ### save
 
