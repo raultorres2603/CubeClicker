@@ -1415,6 +1415,16 @@ describe('reduced motion (AC-14, AC-27, AC-31)', () => {
     expect(reduced.some((rule) => rule.selector.includes('.game-runtime-status'))).toBe(false);
     expect(reduced.some((rule) => rule.selector.includes('.game-runtime-error'))).toBe(false);
   });
+
+  it('disables the same motion under the session reduced-motion marker (AC-31)', () => {
+    // A top-level `findRule` lookup proves the session switch lives outside the OS media
+    // query, so the in-game preference works even when the platform query is unset.
+    const sessionRule = findRule(
+      rules,
+      "main[data-reduced-motion='true'] > section, main[data-reduced-motion='true'] > section button, main[data-reduced-motion='true'] > section[data-blinking='true'], main[data-reduced-motion='true'] .hud-coin-pop, main[data-reduced-motion='true'] .gf-live-dot, main[data-reduced-motion='true'] .connection-dot, main[data-reduced-motion='true'] .customization-toggle, main[data-reduced-motion='true'] .upgrade-buy, main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']",
+    );
+    expect(declarationList(sessionRule.body)).toEqual(['animation: none', 'transition: none']);
+  });
 });
 
 describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
@@ -1516,6 +1526,49 @@ describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
       const panel = root.querySelector('.customization-panel');
       if (panel === null) throw new Error('panel missing');
       expect(window.getComputedStyle(panel).zIndex).toBe('3');
+    });
+  });
+
+  it('cascades the session reduced-motion switches onto real markup', () => {
+    const markup = `
+      <main data-reduced-motion="true">
+        <section class="hud-panel" aria-label="Game statistics" data-blinking="true">
+          <span class="hud-coin-pop" data-coin-pop="1">+1.00</span>
+          <span class="gf-live-dot"></span>
+        </section>
+        <div class="connection-banner"><span class="connection-dot"></span></div>
+        <button class="customization-toggle" type="button">Customize</button>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="true">
+          <div class="lootbox-reveal" data-rarity="rare"></div>
+        </section>
+        <section class="upgrades-panel" aria-label="Upgrades">
+          <button class="upgrade-buy" type="button" aria-label="Buy"></button>
+        </section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      for (const selector of [
+        '.gf-live-dot',
+        '.connection-dot',
+        '.hud-coin-pop',
+        '.customization-panel',
+      ]) {
+        const element = root.querySelector(selector);
+        if (element === null) throw new Error(`${selector} missing`);
+        expect(window.getComputedStyle(element).animationName).toBe('none');
+      }
+
+      const hud = root.querySelector('.hud-panel');
+      if (hud === null) throw new Error('HUD missing');
+      expect(window.getComputedStyle(hud).animationName).toBe('none');
+      expect(window.getComputedStyle(hud).transitionDuration).toBe('0s');
+
+      for (const selector of ['.customization-toggle', '.upgrade-buy']) {
+        const element = root.querySelector(selector);
+        if (element === null) throw new Error(`${selector} missing`);
+        expect(window.getComputedStyle(element).transitionDuration).toBe('0s');
+      }
     });
   });
 });

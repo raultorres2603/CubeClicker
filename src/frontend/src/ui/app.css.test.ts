@@ -646,8 +646,14 @@ describe('responsive fit and reduced motion (AC-31)', () => {
     expect(css).toContain('@keyframes hud-blink');
     const blink = css.match(/main > section\[data-blinking="true"\]\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     expect(blink).toContain('animation: hud-blink 200ms ease;');
-    const glyph = declarations(ruleBody('main > section button::before'));
+    const glyph = declarations(ruleBody('.hud-panel > button::before'));
     expect(glyph.get('content')).toBe("'▾'");
+    expect(glyph.get('pointer-events')).toBe('none');
+    // The glyph is scoped to the HUD minimize control: no direct-section or new control
+    // inherits the '▾' decoration (review F8).
+    expect(css).not.toMatch(/main > section button::before/);
+    expect(css).not.toMatch(/\.gf-cta[^{,]*::before/);
+    expect(css).not.toMatch(/\.customization-reveal-(?:equip|dismiss)[^{,]*::before/);
     const focus = declarations(ruleBody('main > section button:focus-visible'));
     expect(focus.get('outline')).toBe('2px solid var(--accent)');
     expect(focus.get('box-shadow')).toBe('inset 0 0 0 2px var(--accent)');

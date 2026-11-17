@@ -1435,6 +1435,27 @@ main > canvas {
   }
 }
 
+/*
+ * Session reduced-motion preference (AC-31): the same off-switch as the media block below,
+ * driven by `<main data-reduced-motion='true'>` from the session snapshot instead of the OS
+ * query. It covers every new animation/transition the OS block covers on a shell surface
+ * that has no per-component `data-reduced-motion` prop: the three live dots, the connection
+ * dot, the toggle/buy press transitions, the reveal spotlight, the HUD minimize transition
+ * and the coin-pop rise.
+ */
+main[data-reduced-motion='true'] > section,
+main[data-reduced-motion='true'] > section button,
+main[data-reduced-motion='true'] > section[data-blinking='true'],
+main[data-reduced-motion='true'] .hud-coin-pop,
+main[data-reduced-motion='true'] .gf-live-dot,
+main[data-reduced-motion='true'] .connection-dot,
+main[data-reduced-motion='true'] .customization-toggle,
+main[data-reduced-motion='true'] .upgrade-buy,
+main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true'] {
+  animation: none;
+  transition: none;
+}
+
 /* Every motion added or retained by this file is off under reduced motion (AC-31). */
 @media (prefers-reduced-motion: reduce) {
   .hud-panel,

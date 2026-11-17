@@ -524,7 +524,9 @@ function shellHtml({
   const welcomed = serverId > 0;
   const coins = stats.coins ?? 0;
   return (
-    '<main data-customization-open="false">' +
+    '<main data-customization-open="false" data-reduced-motion="' +
+    (reducedMotion ? 'true' : 'false') +
+    '">' +
     `<canvas tabindex="0" aria-label="${ARIA_LABEL}" style="touch-action:none"></canvas>` +
     '<div class="game-ambience" aria-hidden="true" data-reduced-motion="' +
     (reducedMotion ? 'true' : 'false') +
@@ -890,6 +892,7 @@ describe('App', () => {
     const toggle = screen.getByRole('button', { name: 'Spaceship customization' });
 
     expect(main.getAttribute('data-customization-open')).toBe('false');
+    expect(main.getAttribute('data-reduced-motion')).toBe('false');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelectorAll('.customization-panel')).toHaveLength(0);
 
@@ -1633,7 +1636,7 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
     );
 
     const region = await waitFor(() => {
-      const element = document.querySelector<HTMLElement>('[data-reveal-active="true"]');
+      const element = document.querySelector<HTMLElement>('.lootbox-reveal[data-reveal-active="true"]');
       if (element === null) {
         throw new Error('lootbox reveal region not rendered yet');
       }
@@ -1700,10 +1703,10 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
     });
   }
 
-  /** The panel section while it is revealing; a concrete failure when it never mounts. */
-  async function revealingPanel(): Promise<HTMLElement> {
+  /** The reveal root while it is mounted; a concrete failure when it never mounts. */
+  async function revealingReveal(): Promise<HTMLElement> {
     return waitFor(() => {
-      const element = document.querySelector<HTMLElement>('.customization-panel[data-reveal-active="true"]');
+      const element = document.querySelector<HTMLElement>('.lootbox-reveal[data-reveal-active="true"]');
       if (element === null) {
         throw new Error('lootbox reveal region not rendered yet');
       }
@@ -1719,18 +1722,20 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
         session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
       />,
     );
-    const panel = await revealingPanel();
-    const revealRoot = document.querySelector('.lootbox-reveal');
+    const revealRoot = await revealingReveal();
 
-    expect(panel.getAttribute('data-part-id')).toBe('wing-left-silver');
-    expect(panel.getAttribute('data-slot')).toBe('wing-left');
-    expect(panel.getAttribute('data-rarity')).toBe('rare');
-    expect(revealRoot?.getAttribute('role')).toBe('group');
-    expect(revealRoot?.getAttribute('aria-live')).toBe('off');
-    expect(revealRoot?.getAttribute('aria-label')).toBe('Lootbox reveal: Port Silver Wing');
-    expect(revealRoot?.getAttribute('data-reveal-sequence')).toBe('1');
-    expect(revealRoot?.getAttribute('data-reveal-active')).toBe('true');
-    expect(revealRoot?.textContent).toContain('Port Silver Wing');
+    expect(revealRoot.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(revealRoot.getAttribute('data-slot')).toBe('wing-left');
+    expect(revealRoot.getAttribute('data-rarity')).toBe('rare');
+    expect(revealRoot.getAttribute('role')).toBe('group');
+    expect(revealRoot.getAttribute('aria-live')).toBe('off');
+    expect(revealRoot.getAttribute('aria-label')).toBe('Lootbox reveal: Port Silver Wing');
+    expect(revealRoot.getAttribute('data-reveal-sequence')).toBe('1');
+    expect(revealRoot.getAttribute('data-reveal-active')).toBe('true');
+    expect(revealRoot.textContent).toContain('Port Silver Wing');
+    expect(
+      document.querySelector('.customization-panel')?.getAttribute('data-reveal-active'),
+    ).toBe('true');
     opener.unmount();
 
     // The same account's second tab receives only `customizationUpdate`: the absolute
@@ -1759,7 +1764,7 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
       multiplayerFor(),
     );
     render(<App hasChosen customizationOpen session={session} />);
-    await revealingPanel();
+    await revealingReveal();
 
     // `OnlineGameSession.handleStatus` (T4) clears the grant and publishes the engine
     // snapshot before the status publish; the shell keeps no local grant copy, so the
@@ -1790,7 +1795,7 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
         session={{ ...session, dismissLootboxReveal }}
       />,
     );
-    await revealingPanel();
+    await revealingReveal();
     const toggle = screen.getByRole('button', { name: 'Spaceship customization' });
     toggle.focus();
 
@@ -1825,7 +1830,7 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
         session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
       />,
     );
-    await revealingPanel();
+    await revealingReveal();
     const main = screen.getByRole('main');
     const layers = Array.from(main.children).filter((child) =>
       child.classList.contains('game-ambience'),
@@ -1861,7 +1866,26 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
     expect(html).toContain(
       '<div class="game-ambience" aria-hidden="true" data-reduced-motion="true"></div>',
     );
+    expect(html).toContain('<main data-customization-open="false" data-reduced-motion="true">');
     expect(occurrences(html, 'class="game-ambience"')).toBe(1);
+  });
+
+  it('propagates the session reduced-motion marker to the shell main (AC-31)', () => {
+    const { session, setSnapshot } = mutableSession(
+      snapshotFor('playing'),
+      multiplayerFor(),
+    );
+    render(<App hasChosen session={session} />);
+    const main = screen.getByRole('main');
+
+    expect(main.getAttribute('data-reduced-motion')).toBe('false');
+
+    act(() => {
+      setSnapshot(snapshotFor('playing', undefined, 0, { reducedMotion: true }));
+    });
+
+    expect(main.getAttribute('data-reduced-motion')).toBe('true');
+    expect(main.getAttribute('data-customization-open')).toBe('false');
   });
 
   it('keeps exactly one polite live region in the settled welcomed shell (AC-31)', () => {
@@ -1901,7 +1925,7 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
         session={sessionFor(revealSnapshot(GRANT), multiplayerFor())}
       />,
     );
-    await revealingPanel();
+    await revealingReveal();
     const revealRoot = document.querySelector('.lootbox-reveal');
 
     expect(revealRoot?.getAttribute('role')).toBe('group');

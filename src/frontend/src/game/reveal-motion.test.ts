@@ -197,9 +197,21 @@ describe('clamping (AC-6)', () => {
     expect(poseAt(Number.NaN)).toEqual(zeroRow);
   });
 
-  it('treats non-finite time as 0', () => {
+  it('treats negative infinity as 0', () => {
     expect(poseAt(Number.NEGATIVE_INFINITY)).toEqual(zeroRow);
-    expect(poseAt(Number.POSITIVE_INFINITY)).toEqual(zeroRow);
+  });
+
+  it('clamps positive infinity to the 1290 ms rest row', () => {
+    expect(poseAt(Number.POSITIVE_INFINITY)).toEqual({
+      phase: 'rest',
+      yawRad: 0.35,
+      scale: 1,
+      slotPulse: 1,
+      ringScale: 1,
+      ringOpacity: 0,
+      flashOpacity: 0,
+    });
+    expect(poseAt(Number.POSITIVE_INFINITY)).toEqual(poseAt(1290));
   });
 
   it('clamps time beyond 1290 ms to the rest row', () => {
@@ -219,7 +231,7 @@ describe('reduced motion (AC-6)', () => {
     flashOpacity: 0,
   } as const;
 
-  it.each([-50, 0, 420, 670, 730, 970, 1150, 1289, 1290, 5000, Number.NaN])(
+  it.each([-50, 0, 420, 670, 730, 970, 1150, 1289, 1290, 5000, Number.NaN, Number.POSITIVE_INFINITY])(
     'returns the static rest row at %s ms',
     (elapsedMs) => {
       expect(poseAt(elapsedMs, 'tail-fin', true)).toEqual(restRow);

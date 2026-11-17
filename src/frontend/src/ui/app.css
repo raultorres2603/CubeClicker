@@ -548,7 +548,12 @@ main > section button {
   transition: transform 150ms ease, opacity 150ms ease;
 }
 
-main > section button::before {
+/*
+ * The minimize glyph belongs to the HUD's own `Toggle HUD` button only. Scoping it away
+ * from every direct-section button keeps the reveal/CTA equip controls free of the '▾'
+ * while the 24 px HUD affordance keeps its glyph (AC-19, review F8).
+ */
+.hud-panel > button::before {
   content: '▾';
   pointer-events: none;
 }
@@ -964,7 +969,7 @@ main > section::after {
   right: calc(1rem + env(safe-area-inset-right, 0px));
 }
 
-/* Upgrades panel buy icon (upgrades-buy-icon): override inherited '▾' glyph. */
+/* Upgrades panel buy glyph (the HUD '▾' glyph is scoped to `.hud-panel > button`). */
 .upgrades-panel button::before {
   content: '+';
 }

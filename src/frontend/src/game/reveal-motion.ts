@@ -117,9 +117,12 @@ function slotYawFor(slot: SlotId): number {
   return REVEAL_SLOT_YAW_RAD[slot] ?? REVEAL_SLOT_YAW_RAD.hull;
 }
 
-/** Clamps `elapsedMs` to `[0, 1290]`; non-finite and non-positive values become `0`. */
+/**
+ * Clamps `elapsedMs` to `[0, 1290]`: `NaN`/`-Infinity`/non-positive values become `0`,
+ * `+Infinity` resolves to the 1290 ms rest row (AC-6: `> 1290` clamps to 1290).
+ */
 function normalizeElapsed(elapsedMs: number): number {
-  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+  if (Number.isNaN(elapsedMs) || elapsedMs <= 0) {
     return 0;
   }
   return Math.min(elapsedMs, REST_START_MS);

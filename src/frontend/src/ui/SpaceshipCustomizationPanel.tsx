@@ -106,27 +106,10 @@ function isOwned(def: PartDefV2, parts: Record<string, number>): boolean {
 }
 
 /**
- * The section-level identity of the revealed grant (catalog authority; AC-5/AC-7).
- *
- * The panel section is the reveal spotlight shell, so it mirrors the sanitised grant
- * identity next to `data-reveal-active` while `.lootbox-reveal` stays the authoritative card
- * region. The slot is always catalog-derived (`partDefinition(partId).slot`), an unknown part
- * keeps the reveal's `unknown`/`''` values, and the raw wire slot/part string is never copied.
+ * The panel section is the reveal spotlight shell (`data-reveal-active`); the sanitised
+ * grant identity lives only on the authoritative `.lootbox-reveal` root (AC-7), never
+ * mirrored on the section.
  */
-function revealSectionIdentity(grant: LootboxGrant): {
-  partId: string;
-  slot: string;
-  rarity: 'rare' | 'epic';
-  duplicate: 'true' | 'false';
-} {
-  const def = isValidPartId(grant.partId) ? partDefinition(grant.partId) : null;
-  return {
-    partId: def?.id ?? 'unknown',
-    slot: def?.slot ?? '',
-    rarity: grant.rarity,
-    duplicate: grant.duplicate ? 'true' : 'false',
-  };
-}
 
 export function SpaceshipCustomizationPanel(
   props: SpaceshipCustomizationPanelProps,
@@ -289,7 +272,6 @@ export function SpaceshipCustomizationPanel(
   };
 
   const canOpen = lootboxes > 0 && keys > 0 && !(props.pendingOpen ?? false);
-  const sectionIdentity = grant === null ? null : revealSectionIdentity(grant);
 
   return (
     <section
@@ -297,10 +279,6 @@ export function SpaceshipCustomizationPanel(
       className="customization-panel"
       data-mode={mode}
       data-reveal-active={grant === null ? 'false' : 'true'}
-      data-part-id={sectionIdentity?.partId}
-      data-slot={sectionIdentity?.slot}
-      data-rarity={sectionIdentity?.rarity}
-      data-duplicate={sectionIdentity?.duplicate}
     >
       {grant === null ? (
         <>

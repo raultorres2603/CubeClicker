@@ -536,7 +536,10 @@ export function App(props: Record<string, unknown> = {}): ReactElement {
   }
 
   return (
-    <main data-customization-open={customizationOpen ? 'true' : 'false'}>
+    <main
+      data-customization-open={customizationOpen ? 'true' : 'false'}
+      data-reduced-motion={snapshot.reducedMotion ? 'true' : 'false'}
+    >
       <GameCanvas session={session} active={gateState.view === 'closed'} />
       <div
         className="game-ambience"

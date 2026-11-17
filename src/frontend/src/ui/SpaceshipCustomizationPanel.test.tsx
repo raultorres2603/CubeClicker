@@ -585,7 +585,6 @@ describe('SpaceshipCustomizationPanel reveal branch (AC-7, AC-13, AC-14, AC-21)'
     expect(region.textContent).toContain('Hull');
     expect(region.textContent).toContain('Duplicate');
     expect(region.textContent).toContain('Owned ×3');
-    expect(panelRoot(container).getAttribute('data-rarity')).toBe('epic');
   });
 
   it('derives the slot from the catalog and never trusts the wire slot', () => {
@@ -596,7 +595,6 @@ describe('SpaceshipCustomizationPanel reveal branch (AC-7, AC-13, AC-14, AC-21)'
       const region = revealRegion(container);
       expect(region.getAttribute('data-slot')).toBe('wing-left');
       expect(region.textContent).toContain('Port Wing');
-      expect(panelRoot(container).getAttribute('data-slot')).toBe('wing-left');
       if (wireSlot !== '') {
         for (const value of domStrings(container)) {
           expect(value).not.toBe(wireSlot);
@@ -622,13 +620,29 @@ describe('SpaceshipCustomizationPanel reveal branch (AC-7, AC-13, AC-14, AC-21)'
     expect(region.getAttribute('data-reveal-3d')).toBe('unavailable');
     expect(region.getAttribute('aria-label')).toBe('Lootbox reveal: Unknown part');
     expect(region.textContent).toContain('Unknown part');
-    expect(panelRoot(container).getAttribute('data-part-id')).toBe('unknown');
-    expect(panelRoot(container).getAttribute('data-slot')).toBe('');
 
     for (const value of domStrings(container)) {
       expect(value).not.toContain('mystery-part');
       expect(value).not.toContain('warp-core');
     }
+  });
+
+  it('keeps the grant identity on the reveal root, not a section-level mirror (D-1)', () => {
+    const { container } = renderPanel({
+      lastLootboxGrant: grant(),
+      parts: { 'wing-left-silver': 2 },
+    });
+    const section = panelRoot(container);
+    const region = revealRegion(container);
+
+    expect(section.getAttribute('data-reveal-active')).toBe('true');
+    for (const attribute of ['data-part-id', 'data-slot', 'data-rarity', 'data-duplicate']) {
+      expect(section.hasAttribute(attribute)).toBe(false);
+    }
+    expect(region.getAttribute('data-part-id')).toBe('wing-left-silver');
+    expect(region.getAttribute('data-slot')).toBe('wing-left');
+    expect(region.getAttribute('data-rarity')).toBe('rare');
+    expect(region.getAttribute('data-duplicate')).toBe('false');
   });
 
   it('advances through the exact 420 + 250 + 120 + 360 + 140 ms timeline', () => {
