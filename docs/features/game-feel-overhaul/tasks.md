@@ -110,6 +110,14 @@ acceptance: AC-1, AC-12, AC-15, AC-16, AC-30, AC-34, AC-35, AC-36, AC-37, AC-38
 status: [>]
 notes: Record `BASE`; run and paste the full gate output; record the manual visual/motion matrix, the **per-frame `workMs`** reveal traces (three runs, at least two pass, median named, interval as cap evidence), main-scene traces, `dist/bundle-report.json` bytes, and the rollback note. Verify the non-modal reveal (toggle-click close, no scrim, focus may leave), the 721/720 spotlight boundary, the epic flourish, the minimized/pre-welcome states and exactly one polite live region. Update README (3D reveal + controls + Neon Forge; preserve `granular spaceship parts` and `detailed blue/orange hero spaceship`; remove the stale cyan-panel/charge-orb sentences), `frontend-rendering.md` (stage + layering + `The session owns the requestAnimationFrame loop for the Three.js game scene` + `one additional bounded 30 fps loop`; remove the `The session owns the only` wording) and the glossary (`lootbox reveal` + `reveal stage`). Do not edit `docs/features/README.md`; record the proposed row in the build log. If a gate fails, report `blocked` with the raw output — do not relax an AC, budget or coverage threshold.
 
+## T12 — Fix desktop leaderboard/HUD overlap (manual-review fix) `[seq]`
+depends_on: T11
+files_owned: `src/frontend/src/ui/game-view.css`, `src/frontend/src/ui/game-view.css.test.ts`, `docs/features/game-feel-overhaul/build-log-T12.md`
+verify: `npm run lint`, `npm run typecheck`, `npm test --workspace @cubeclicker/frontend`, `npm run coverage --workspace @cubeclicker/frontend`, `git diff --check`
+acceptance: AC-27, AC-30, AC-31 (manual-review regression)
+status: [x]
+notes: The user's 1920×1000 screenshot shows the left-rail leaderboard overlapping the bottom of the Pilot Status HUD. Fix the left-rail placement so the leaderboard clears the HUD at desktop widths (and remains clear at 1280×720 / 1920×1080 / 768×1024), without moving the HUD or changing the accepted panel order. Pin the offset/selector in `game-view.css.test.ts`; keep the mobile stack, reduced motion and z-order contract. No component or `app.css` changes unless proven necessary; if `app.css` is required, stop and report `blocked` with the exact conflict.
+
 ## Documentation impact (up front)
 
 - `README.md` — controls change (Escape/Dismiss/Equip closes), the visual direction, and the stale `rounded translucent cyan HUD panels` / `wireframe charge-orb reveal` sentences replaced; same-change exact phrases and stale-phrase greps in T11.

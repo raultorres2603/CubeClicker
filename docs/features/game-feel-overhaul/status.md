@@ -1,8 +1,8 @@
 ---
 feature: game-feel-overhaul
-state: blocked
+state: accepted
 spec_review_round: 2
-build_round: 0
+build_round: 2
 created: 2026-11-16
 updated: 2026-11-16
 ---
@@ -25,7 +25,8 @@ Raise the game's presentation quality: a 3D lootbox-reveal animation that showca
 - [x] T8 — HUD and app-shell markup `[seq]`
 - [x] T9 — Upgrades, users and connection markup `[P]`
 - [x] T10 — Activity feed and leaderboard markup `[P]` — 2 stale `App.test.tsx` strings belong to T8
-- [>] T11 — Verify & integrate (documentation + full gates) `[seq]`
+- [x] T11 — Verify & integrate (documentation + full gates) `[seq]`
+- [x] T12 — Fix desktop leaderboard/HUD overlap (manual-review fix) `[seq]`
 
 ## Loop log
 
@@ -63,7 +64,24 @@ Raise the game's presentation quality: a 3D lootbox-reveal animation that showca
 - 2026-11-16 — T11 integrated — merged presence tip `36d03e7` as `69cd566` (glossary both-terms conflict resolved), evidence `af97f5a`; full automated gate green: backend 1538 tests / coverage 96.2/89.92/99.57/96.2, frontend 2432 tests / 96.84/96.53/98.04/96.84, build/budget OK, smoke 28/28, protected files unchanged — `build-log-T11.md`
 - 2026-11-16 — building → blocked — remaining T11 evidence is the manual visual/motion matrix and the AC-15 `workMs` / AC-34 main-scene traces; no GUI/browser tooling in the build environment — user decision needed
 - 2026-11-16 — user chose to run the manual matrix on a GUI host — awaiting pass/issues report; automated gate already green
+- 2026-11-17 — user manual review — overall look "awesome"; defect: leaderboard overlaps the Pilot Status HUD at 1920×1000. Requested follow-up (new feature): hangar tabs, menu-open glitch/futuristic animations, other screenshot polish. — user message
+- 2026-11-17 — building → T12 started — fix desktop leaderboard/HUD overlap; T11 automated evidence remains green — `tasks.md` T12
+- 2026-11-17 — T12 completed — commit `8ff8e71`; leaderboard rail top `16rem`, 45 px clearance from HUD; frontend 2433 tests, coverage 96.84/96.53/98.04/96.84 — `build-log-T12.md`
+- 2026-11-17 — building → code_review — T11 automated gate green; user manual visual pass "awesome" with the overlap defect now fixed; manual AC-15/AC-34 frame traces remain unavailable in the headless environment — `build-log-T11.md`/`build-log-T12.md`
+- 2026-11-17 — code_review → building — changes_requested r1 (2 BLOCKER: glossary regression lost in squash, manual traces unrecorded; 1 MAJOR: session reduced-motion gaps; MINOR/INFO) — `reviews/code-review-r1.md`
+- 2026-11-17 — review fixes started — reapply glossary, AC-31 session motion, D-1 retarget, Infinity clamp, scope the button glyph, rebuild smoke — `reviews/code-review-r1.md`
+- 2026-11-17 — **explicit user waiver** — the user waived the manual AC-15 `workMs` and AC-34 main-scene trace requirement because the environment is headless; the real-browser visual pass and the code-pinned draw/triangle/allocation/30 fps budgets are accepted as the evidence, and no trace table is claimed as passed — user decision
+- 2026-11-17 — review code fixes completed — commit `544cce8`; `<main data-reduced-motion>` + full session animation block, D-1 mirror removed/retargeted, `+Infinity` clamp, scoped HUD glyph; frontend 2439 tests, coverage 96.84/96.51/98.04/96.84 — `build-log-review-r1-code.md`
+- 2026-11-17 — review docs/evidence fixes completed — commit `713081f`; glossary restored from `af97f5a`, waiver recorded, AC-28 capsule clarified, prod rebuilt at tip + smoke 28/28, full root gate green — `build-log-review-r1-docs.md`
+- 2026-11-17 — building → code_review — r1 findings closed; round 2 review started — `reviews/code-review-r1.md`
+- 2026-11-17 — code_review → accepted — code review r2 approved (0 blocking, 2 MINOR); all AC-1…AC-38 met, manual trace waiver recorded, docs pass complete; index row updated — `reviews/code-review-r2.md`
 
 ## Blockers / open questions
 
 - none
+- **Backlog (MINOR/INFO):** R1 nine trailing-whitespace lines in `build-log-T11.md`; R2 the session reduced-motion block does not cover the remaining app.css secondary/auth hover/press transitions (OS media block still does); R3 index/status/artifact tracking in the acceptance commit; R4 T11 log's waiver cross-reference; R5 prod image tied to the source tip `544cce8` (later docs-only commits are source-identical).
+
+## Review history
+
+- Spec: r1 changes requested (2 BLOCKER, 13 MAJOR, 5 MINOR) → r2 changes requested (2 MAJOR, 8 MINOR) → targeted r2a approved (0 blocking, 1 INFO).
+- Code: r1 changes requested (2 BLOCKER, 1 MAJOR, 4 MINOR/INFO) → r2 approved (0 blocking, 2 MINOR, 3 INFO).
