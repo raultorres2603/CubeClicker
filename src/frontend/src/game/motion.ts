@@ -116,6 +116,11 @@ export const MOTION = {
   uiButtonPressScale: 0.97,
   uiGlowPulseMs: 2400,
   uiRevealSpotlightMs: 260,
+  // Hangar tabs + menu boot (spec AC-11).
+  menuBootMs: 320,
+  menuFlickerMs: 120,
+  menuChromaMs: 90,
+  tabSwitchMs: 140,
 } as const;
 
 /** Standard cubic ease-out: `1 − (1 − t)³` (AC-34; the app's only implementation). */

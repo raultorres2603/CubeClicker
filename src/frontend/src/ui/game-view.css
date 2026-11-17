@@ -29,10 +29,10 @@
 }
 
 /*
- * Motion map (AC-32). The 13 accepted CSS-mapped presentation tokens plus the four Neon
- * Forge UI durations live on `main`, never on `:root`; every other motion token is
- * intentionally JS-only. `lootbox-reveal` sums the five loot phases (420 + 250 + 120 +
- * 360 + 140 = 1290 ms).
+ * Motion map (AC-32). The 13 accepted CSS-mapped presentation tokens, the four Neon Forge
+ * UI durations and the four hangar-tab/menu-boot durations live on `main`, never on
+ * `:root` (21 mappings); every other motion token is intentionally JS-only.
+ * `lootbox-reveal` sums the five loot phases (420 + 250 + 120 + 360 + 140 = 1290 ms).
  */
 main {
   --motion-coin-pop-ms: 1100ms;
@@ -52,6 +52,10 @@ main {
   --motion-ui-button-press-ms: 90ms;
   --motion-ui-glow-pulse-ms: 2400ms;
   --motion-ui-reveal-spotlight-ms: 260ms;
+  --motion-menu-boot-ms: 320ms;
+  --motion-menu-flicker-ms: 120ms;
+  --motion-menu-chroma-ms: 90ms;
+  --motion-tab-switch-ms: 140ms;
 }
 
 /* Every non-auth surface sits one layer above the ambience; the reveal and toggle sit above. */
@@ -127,6 +131,35 @@ main > section {
 /* Minimized HUD: header and resources stay visible, only the stat grid collapses (AC-19). */
 .hud-panel[data-minimized='true'] .hud-grid {
   display: none;
+}
+
+/*
+ * Compact HUD minimize control (AC-21). The screenshot's full-width grey bar becomes a
+ * right-aligned 24 px chevron: the accepted 1.5rem (24 px) target stays, it is not
+ * promoted to 44 px, and `app.css` keeps the base `▾` glyph and the ARIA wiring.
+ */
+.hud-panel > button {
+  align-self: flex-end;
+  width: 1.5rem;
+  height: 1.5rem;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0;
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+  color: var(--gf-rim-strong);
+}
+
+.hud-panel > button:hover,
+.hud-panel > button:focus-visible {
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-focus);
+}
+
+/* Collapsed chevron: `▴` replaces the expanded `▾` from `app.css` (AC-21). */
+.hud-panel[data-minimized='true'] > button::before {
+  content: '▴';
 }
 
 /* Stat rows: icon, label and value on one line. */
@@ -209,26 +242,26 @@ main > section {
 }
 
 /* ---------------------------------------------------------------------------------------
- * Users-on-Server crew chrome (AC-24). The red pill and its tokens stay accepted; the
- * stale metallic resets are gone, the count badge and live dot are Neon Forge.
+ * Users-on-Server crew chrome (AC-24, AC-20). The screenshot's warm-red pill becomes Neon
+ * Forge glass with a cyan rim; the accepted `--users-badge-*` gradient moves to the count
+ * badge, so both tokens stay consumed and the count is the only warm surface in the shell.
  * ------------------------------------------------------------------------------------- */
 
 .user-panel > .users-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  border: 1px solid var(--gf-rim-warm);
+  border: 1px solid var(--gf-rim);
   border-radius: 999px;
-  background: linear-gradient(180deg, var(--users-badge-top), var(--users-badge-bottom));
-  color: #ffffff;
+  background: var(--gf-surface-raised);
+  color: var(--gf-text);
   min-height: 44px;
   padding: 0.5rem 1rem;
   cursor: pointer;
 }
 
 .user-panel > .users-badge:hover {
-  color: #ffffff;
-  box-shadow: inset 0 0 0 1px var(--gf-rim-warm);
+  border-color: var(--gf-rim-strong);
   filter: brightness(1.08);
 }
 
@@ -241,8 +274,8 @@ main > section {
   height: 1.4rem;
   padding: 0 0.35rem;
   border-radius: 999px;
-  background: var(--gf-void);
-  color: var(--gf-rim-strong);
+  background: linear-gradient(180deg, var(--users-badge-top), var(--users-badge-bottom));
+  color: #ffffff;
   font-size: 0.72rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
@@ -411,6 +444,95 @@ main > section {
 
 .customization-panel {
   pointer-events: auto;
+}
+
+/*
+ * Hangar tab strip (AC-7, AC-9, AC-22): a sticky auto-fit grid over the Neon Forge
+ * gradient, so all five part groups stay reachable while the `60vh` panel scrolls. The
+ * 5rem track minimum keeps every label and badge unclipped (three columns at 320 px).
+ */
+.customization-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr));
+  gap: 0.25rem;
+  padding: 0.15rem 0 0.35rem;
+  background: linear-gradient(180deg, var(--gf-surface-top), var(--gf-surface-bottom));
+}
+
+/* One 44 px chip per group: label and owned-count badge, uppercase, never wrapped. */
+.customization-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 44px;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+  color: var(--gf-text-muted);
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.customization-tab:hover {
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-text);
+}
+
+/* Selected group: the inset underline is the non-colour cue beside `aria-selected`. */
+.customization-tab[aria-selected='true'] {
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-text);
+  box-shadow: inset 0 -2px 0 var(--gf-rim-strong);
+}
+
+.customization-tab:focus-visible {
+  outline: 2px solid var(--gf-focus);
+  outline-offset: 2px;
+}
+
+/* Owned/total badge: fixed height, never clipped beside the label. */
+.customization-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.2rem;
+  border-radius: 999px;
+  background: var(--gf-void);
+  color: var(--gf-rim-strong);
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The keyed panel fades in on every switch; the strip and the preview stay mounted (AC-15). */
+.customization-tabpanel {
+  animation: tab-panel-in var(--motion-tab-switch-ms) ease-out both;
+}
+
+/* The 12 rem `app.css` base shrinks with the viewport so the panel fits 720p (AC-7). */
+.customization-panel .spaceship-preview {
+  height: min(12rem, 26vh);
+}
+
+/* Short viewports: the preview yields more height to the rows (AC-7). */
+@media (max-height: 760px) {
+  .customization-panel .spaceship-preview {
+    height: 8rem;
+  }
 }
 
 .customization-counts {
@@ -1344,6 +1466,163 @@ main > canvas {
 }
 
 /* ---------------------------------------------------------------------------------------
+ * Menu boot (AC-12…AC-18). A CSS-only four-beat "power up" on the two menus the player
+ * opens — the hangar panel (normal state) and the crew list — plus the keyed tab-panel
+ * fade (AC-15). Open-only: closing unmounts the element, so the sequence replays on every
+ * mount and there is no exit animation. The beats animate only `opacity`, `border-color`
+ * and `text-shadow` on the surfaces and `right`/`height` on the two existing 1–2 px
+ * decorative pseudo-elements (`::before` light edge, `::after` left rail); never
+ * `transform`, `filter`, `backdrop-filter` or `clip-path` on a chamfered panel. Nothing is
+ * disabled while it runs (no `pointer-events`, no delayed handler), and the reveal keeps
+ * its own 260 ms spotlight because the boot is gated to `:not([data-reveal-active='true'])`.
+ *
+ * Declared BEFORE the reduced-motion blocks below: the boot rules are (0,2,0) and the
+ * scoped off-switches there are equal-or-higher specificity, so the later source wins.
+ * ------------------------------------------------------------------------------------- */
+
+.customization-panel:not([data-reveal-active='true']),
+.user-panel .users-list {
+  animation: menu-boot var(--motion-menu-boot-ms) linear both;
+}
+
+.customization-panel:not([data-reveal-active='true'])::before,
+.user-panel .users-list::before {
+  animation: menu-scan var(--motion-menu-boot-ms) linear both;
+}
+
+.customization-panel:not([data-reveal-active='true'])::after,
+.user-panel .users-list::after {
+  animation: menu-rail var(--motion-menu-flicker-ms) steps(2, end) both;
+}
+
+.customization-panel:not([data-reveal-active='true']) .customization-title,
+.user-panel .users-list .users-list-title {
+  animation: menu-chroma var(--motion-menu-chroma-ms) steps(3, end) both;
+}
+
+/* Beat 1 — opacity flicker off the strong rim into the settled rim (spec § Sequence). */
+@keyframes menu-boot {
+  0% {
+    opacity: 0;
+    border-color: var(--gf-rim-strong);
+  }
+  12% {
+    opacity: 0.62;
+  }
+  22% {
+    opacity: 0.14;
+  }
+  34% {
+    opacity: 0.86;
+  }
+  46% {
+    opacity: 0.48;
+  }
+  60% {
+    opacity: 1;
+    border-color: var(--gf-rim);
+  }
+  100% {
+    opacity: 1;
+    border-color: var(--gf-rim);
+  }
+}
+
+/* Beat 2 — the top light edge sweeps left-to-right, then settles lit. */
+@keyframes menu-scan {
+  0% {
+    right: 100%;
+    opacity: 0.15;
+  }
+  45% {
+    right: 0;
+    opacity: 1;
+  }
+  70% {
+    right: 0;
+    opacity: 0.4;
+  }
+  100% {
+    right: 0;
+    opacity: 1;
+  }
+}
+
+/* Beat 3 — the left status rail powers up from 8% to its accepted 40%. */
+@keyframes menu-rail {
+  0% {
+    height: 8%;
+    opacity: 0.1;
+  }
+  100% {
+    height: 40%;
+    opacity: 1;
+  }
+}
+
+/* Beat 4 — stepped chromatic split of the menu title, settling with no shadow. */
+@keyframes menu-chroma {
+  0% {
+    text-shadow: -1px 0 var(--gf-rare), 1px 0 var(--gf-rim-strong);
+  }
+  50% {
+    text-shadow: 1px 0 var(--gf-amber), -1px 0 var(--gf-rare);
+  }
+  100% {
+    text-shadow: none;
+  }
+}
+
+/* Tab swap (AC-15): the tabpanel is keyed by the active tab, so each switch replays it. */
+@keyframes tab-panel-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------------------------
+ * Themed scrollbars (AC-19). A separate additive rule set: the accepted
+ * `.customization-panel`/`.upgrades-panel`/`.user-panel .users-list` bodies are untouched,
+ * so `app.css` keeps owning the one scroll container per surface.
+ * ------------------------------------------------------------------------------------- */
+
+.customization-panel,
+.upgrades-panel,
+.user-panel .users-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--gf-rim) transparent;
+}
+
+.customization-panel::-webkit-scrollbar,
+.upgrades-panel::-webkit-scrollbar,
+.user-panel .users-list::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.customization-panel::-webkit-scrollbar-track,
+.upgrades-panel::-webkit-scrollbar-track,
+.user-panel .users-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.customization-panel::-webkit-scrollbar-thumb,
+.upgrades-panel::-webkit-scrollbar-thumb,
+.user-panel .users-list::-webkit-scrollbar-thumb {
+  background: rgba(124, 246, 255, 0.35);
+  border-radius: 999px;
+}
+
+.customization-panel::-webkit-scrollbar-thumb:hover,
+.upgrades-panel::-webkit-scrollbar-thumb:hover,
+.user-panel .users-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 246, 255, 0.55);
+}
+
+/* ---------------------------------------------------------------------------------------
  * Mobile bands (AC-30). Top band: reserve the users pill's width in the HUD with sizing
  * only, keeping both base corners unchanged. Bottom band: both panels span the viewport
  * above the always-visible bottom-left toggle; while customization is open the upgrades
@@ -1388,6 +1667,15 @@ main > canvas {
     max-width: none;
     max-height: 45vh;
     overflow-y: auto;
+  }
+
+  /* Stacked label/badge so `IGNITIONS` never clips in the narrowest 5rem track (AC-22). */
+  .customization-tab {
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.25rem 0.3rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
   }
 
   /* Non-modal reveal bottom sheet: complete override of the desktop spotlight (AC-21/AC-30). */
@@ -1436,12 +1724,13 @@ main > canvas {
 }
 
 /*
- * Session reduced-motion preference (AC-31): the same off-switch as the media block below,
- * driven by `<main data-reduced-motion='true'>` from the session snapshot instead of the OS
- * query. It covers every new animation/transition the OS block covers on a shell surface
- * that has no per-component `data-reduced-motion` prop: the three live dots, the connection
- * dot, the toggle/buy press transitions, the reveal spotlight, the HUD minimize transition
- * and the coin-pop rise.
+ * Session reduced-motion preference (AC-31, AC-17): the same off-switch as the media block
+ * below, driven by `<main data-reduced-motion='true'>` from the session snapshot instead of
+ * the OS query. It covers every new animation/transition the OS block covers on a shell
+ * surface that has no per-component `data-reduced-motion` prop: the three live dots, the
+ * connection dot, the toggle/buy press transitions, the reveal spotlight, the HUD minimize
+ * transition, the coin-pop rise and the menu boot (scoped selectors, so the (0,2,0) boot
+ * rules lose to this (0,3,0) block).
  */
 main[data-reduced-motion='true'] > section,
 main[data-reduced-motion='true'] > section button,
@@ -1451,12 +1740,23 @@ main[data-reduced-motion='true'] .gf-live-dot,
 main[data-reduced-motion='true'] .connection-dot,
 main[data-reduced-motion='true'] .customization-toggle,
 main[data-reduced-motion='true'] .upgrade-buy,
+main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true']),
+main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])::before,
+main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])::after,
+main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true']) .customization-title,
+main[data-reduced-motion='true'] .customization-tabs,
+main[data-reduced-motion='true'] .customization-tab,
+main[data-reduced-motion='true'] .customization-tabpanel,
+main[data-reduced-motion='true'] .user-panel .users-list,
+main[data-reduced-motion='true'] .user-panel .users-list::before,
+main[data-reduced-motion='true'] .user-panel .users-list::after,
+main[data-reduced-motion='true'] .user-panel .users-list .users-list-title,
 main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true'] {
   animation: none;
   transition: none;
 }
 
-/* Every motion added or retained by this file is off under reduced motion (AC-31). */
+/* Every motion added or retained by this file is off under reduced motion (AC-31, AC-17). */
 @media (prefers-reduced-motion: reduce) {
   .hud-panel,
   .hud-panel::before,
@@ -1464,6 +1764,8 @@ main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']
   .user-panel > .users-badge,
   .user-panel .users-list,
   .user-panel .users-list::before,
+  .user-panel .users-list::after,
+  .user-panel .users-list .users-list-title,
   .upgrades-panel,
   .upgrades-panel::before,
   .upgrades-panel::after,
@@ -1473,6 +1775,14 @@ main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']
   .customization-panel,
   .customization-panel::before,
   .customization-panel::after,
+  .customization-panel:not([data-reveal-active='true']),
+  .customization-panel:not([data-reveal-active='true'])::before,
+  .customization-panel:not([data-reveal-active='true'])::after,
+  .customization-panel:not([data-reveal-active='true']) .customization-title,
+  .customization-panel[data-reveal-active='true'],
+  .customization-tabs,
+  .customization-tab,
+  .customization-tabpanel,
   .activity-feed li,
   .leaderboard li,
   .hud-coin-pop,

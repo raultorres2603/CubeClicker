@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +9,7 @@ import { UserPanel } from './UserPanel';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 /**
@@ -345,5 +346,44 @@ describe('UserPanel interactions (AC-24)', () => {
     await user.click(screen.getByRole('button', { name: 'Return to my cube' }));
 
     expect(onReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the crew boot on every open without scheduling a timer (AC-13, AC-16)', () => {
+    vi.useFakeTimers();
+    render(
+      <UserPanel
+        welcomed
+        selfName="Player 1"
+        members={[member('p2', 'Player 2', 0)]}
+        spectating={false}
+        onSpectate={() => {}}
+        onReturn={() => {}}
+      />,
+    );
+
+    const toggle = screen.getByRole('button', { name: 'Users on Server' });
+    expect(screen.queryByRole('heading', { level: 2, name: 'Crew' })).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Open: the list mounts (so the CSS boot replays), with no timer and no delayed teardown.
+    fireEvent.click(toggle);
+    const firstList = screen.getByRole('heading', { level: 2, name: 'Crew' }).parentElement;
+    expect(firstList?.className).toBe('users-list');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Close: the list unmounts in the same commit (open-only animation, no close state).
+    fireEvent.click(toggle);
+    expect(screen.queryByRole('heading', { level: 2, name: 'Crew' })).toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Re-open: a fresh element remounts, so the boot replays.
+    fireEvent.click(toggle);
+    const secondList = screen.getByRole('heading', { level: 2, name: 'Crew' }).parentElement;
+    expect(secondList?.className).toBe('users-list');
+    expect(secondList).not.toBe(firstList);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

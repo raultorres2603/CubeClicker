@@ -60,6 +60,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** A player with no account, using the ephemeral identity (a server-issued id plus an in-memory token, no persistence) exactly as before. Guest play is first-class and remains available now that accounts exist; no game state is persisted for guests.
 **Example:** Selecting `Play as guest` starts immediately with an ephemeral identity and no account.
 
+### hangar tab
+
+**Definition:** One of the five UI groups that split the ten **part slots** in the **Spaceship Customization** menu: `Frame` (`hull`, `tail-fin`), `Front` (`nose`, `cockpit`), `Wings` (`wing-left`, `wing-right`), `Engines` (`engine-left`, `engine-right`) and `Ignitions` (`ignition-left`, `ignition-right`), in that order, two slots each. A hangar tab is a presentation grouping over the **part slot** catalog — not a domain term and not a second kind of slot — and it owns no game state: the selected tab is panel-local, resets to `Frame` on every open, is never persisted or sent over the wire, and after a lootbox reveal the panel lands on the tab containing the granted slot. Each tab shows an `owned/4` badge over its lootable (rare + epic) parts and is announced as `<Label>, <owned> of 4 parts owned`.
+**Example:** Equipping `wing-left-silver` happens under the `Wings` tab, whose badge reads `1/4` when that is the only looted part of the group.
+
 ### idle progress
 
 **Definition:** Progress that accrues while the game is open and the player is present but not clicking; it is distinct from offline progress. Earning mechanics for this accrual remain to be defined by a future feature.
@@ -92,7 +97,7 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### motion token
 
-**Definition:** A named, pinned presentation constant — a duration, count, distance, scale, speed or angle — in the `MOTION` table (`src/frontend/src/game/motion.ts`) that the 3D renderer, React UI and CSS animations share, so one motion language has a single source of truth. The 17 CSS-mapped durations are declared as `--motion-*` custom properties on `main` in `game-view.css` and asserted equal to their `MOTION` values by tests; all other tokens stay JS-only.
+**Definition:** A named, pinned presentation constant — a duration, count, distance, scale, speed or angle — in the `MOTION` table (`src/frontend/src/game/motion.ts`) that the 3D renderer, React UI and CSS animations share, so one motion language has a single source of truth. The 21 CSS-mapped durations are declared as `--motion-*` custom properties on `main` in `game-view.css` and asserted equal to their `MOTION` values by tests; all other tokens stay JS-only. Four of them drive the hangar and menu presentation: `menuBootMs` (`320`, `--motion-menu-boot-ms`), `menuFlickerMs` (`120`, `--motion-menu-flicker-ms`), `menuChromaMs` (`90`, `--motion-menu-chroma-ms`) and `tabSwitchMs` (`140`, `--motion-tab-switch-ms`).
 **Example:** `MOTION.coinPopMs` (1100 ms) drives the coin popup, and its CSS mirror is `--motion-coin-pop-ms: 1100ms`.
 
 ### offline progress

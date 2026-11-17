@@ -109,6 +109,11 @@ describe('MOTION tokens (AC-34)', () => {
       uiButtonPressScale: 0.97,
       uiGlowPulseMs: 2400,
       uiRevealSpotlightMs: 260,
+      // Hangar tabs + menu boot (spec AC-11).
+      menuBootMs: 320,
+      menuFlickerMs: 120,
+      menuChromaMs: 90,
+      tabSwitchMs: 140,
     });
   });
 
@@ -127,6 +132,17 @@ describe('MOTION tokens (AC-34)', () => {
     expect(MOTION.uiButtonPressScale).toBe(0.97);
     expect(MOTION.uiGlowPulseMs).toBe(2400);
     expect(MOTION.uiRevealSpotlightMs).toBe(260);
+  });
+
+  it('adds the four hangar-tab and menu-boot tokens with exact values (AC-11)', () => {
+    expect(MOTION.menuBootMs).toBe(320);
+    expect(MOTION.menuFlickerMs).toBe(120);
+    expect(MOTION.menuChromaMs).toBe(90);
+    expect(MOTION.tabSwitchMs).toBe(140);
+    // 92 accepted tokens + exactly the four additive menu-motion tokens: no key was
+    // removed, renamed or added alongside them (every value is pinned by the full-object
+    // `toEqual` above, which covers singular and plural spellings alike).
+    expect(Object.keys(MOTION)).toHaveLength(96);
   });
 
   it('pins the destruction and shot headline sums', () => {

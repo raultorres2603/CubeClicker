@@ -12,7 +12,7 @@ This plan is rebased on the **game-feel-overhaul review fixes (`544cce8`)**. Tha
 - The SSR/jsdom `data-reduced-motion` assertions in `App.test.tsx`.
 - A top-level `main[data-reduced-motion='true']` session block in `game-view.css` (its selector list covers the HUD, the dots, the toggle/buy transitions, the reveal spotlight and the coin pop).
 
-Consequences: **`App.tsx` and `App.test.tsx` are not edited by this feature**, and the session block is **extended**, never duplicated. Only `ui/game-view.css` + `ui/game-view.css.test.ts` (plus the panel, the tab module, the tokens and the docs) change.
+Consequences: **`App.tsx` is not edited by this feature**, the session block is **extended**, never duplicated, and the only `App.test.tsx` changes are the two pre-tab panel assertions T3 owns (AC-29, r2a). Only `ui/game-view.css` + `ui/game-view.css.test.ts` (plus the panel, the tab module, the tokens and the docs) change.
 
 ## Architecture
 
@@ -244,6 +244,7 @@ Rules: every animation rule above is written **before** the media block; each sc
 | `src/frontend/src/game/motion.test.ts` | Edit | Four new tokens + unchanged accepted tokens |
 | `src/frontend/src/ui/SpaceshipCustomizationPanel.tsx` | Edit | Tab strip/tabpanel, roving tabindex + `preventDefault`, badges, render-phase landing, keyed tabpanel; reveal branch untouched |
 | `src/frontend/src/ui/SpaceshipCustomizationPanel.test.tsx` | Edit | Rewritten per-tab suite + tab/badge/keyboard/landing/reveal/control-count assertions |
+| `src/frontend/src/App.test.tsx` | Edit | The two forced pre-tab assertions rewritten for the tab UI (T3, r2a): `:1670` activates the `Wings, 1 of 4 parts owned` tab before the Wings equip click; `:1757` expects the default tab's 6 variants instead of 30. Nothing else changes |
 | `src/frontend/src/ui/game-view.css` | Edit | Tab chrome, preview heights, menu boot keyframes/rules, scrollbars, crew pill, HUD minimize, scoped reduced-motion selectors in **both** existing blocks |
 | `src/frontend/src/ui/game-view.css.test.ts` | Edit | Token map, keyframes, animated-surface sweep, reduced-motion scoping/order/specificity, no-transform, polish declarations, computed 44 px |
 | `src/frontend/src/ui/UserPanel.test.tsx` | Edit | Crew list still mounts/unmounts with no timer; badge markup unchanged |
@@ -252,7 +253,7 @@ Rules: every animation rule above is written **before** the media block; each sc
 | `docs/product/glossary.md` | Edit | `### hangar tab`; `motion token` counts |
 | `docs/features/hangar-tabs-and-menu-motion/build-log-T1..T5.md` | New | Raw evidence per task |
 
-Untouched on purpose: `src/frontend/src/ui/app.css`, `src/frontend/src/ui/app.css.test.ts`, `src/frontend/src/App.tsx`, `src/frontend/src/App.test.tsx`, `ui/SpaceshipPreview.tsx`, `render/**`, `game/engine.ts`, `multiplayer/**`, `src/backend/**`, container assets, package manifests, `docs/features/README.md`.
+Untouched on purpose: `src/frontend/src/ui/app.css`, `src/frontend/src/ui/app.css.test.ts`, `src/frontend/src/App.tsx`, `ui/SpaceshipPreview.tsx`, `render/**`, `game/engine.ts`, `multiplayer/**`, `src/backend/**`, container assets, package manifests, `docs/features/README.md` (T3's two `App.test.tsx` rewrites are the only exception, recorded above and in AC-29/r2a).
 
 ## Key decisions
 

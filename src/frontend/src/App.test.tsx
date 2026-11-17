@@ -1667,8 +1667,11 @@ describe('App — customization panel integration (AC-29, AC-32, AC-43)', () => 
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Equip Port Silver Wing' }));
+    // The Wings row is only mounted on its tab, so activate it before the equip click; the
+    // Unequip Hull control stays on the default Frame tab.
     fireEvent.click(await screen.findByRole('button', { name: 'Unequip Hull' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Wings, 1 of 4 parts owned' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Equip Port Silver Wing' }));
 
     expect(equipPart).toHaveBeenCalledTimes(1);
     expect(equipPart).toHaveBeenCalledWith('wing-left-silver');
@@ -1754,7 +1757,8 @@ describe('App — reveal ownership and shell accessibility (AC-2, AC-11, AC-13, 
       'false',
     );
     expect(document.querySelectorAll('.lootbox-reveal')).toHaveLength(0);
-    expect(document.querySelectorAll('.customization-panel .customization-variant')).toHaveLength(30);
+    // The tabbed panel mounts only the default tab's two rows: 2 rows x 3 variants.
+    expect(document.querySelectorAll('.customization-panel .customization-variant')).toHaveLength(6);
     expect(screen.queryByRole('button', { name: 'Dismiss lootbox reveal' })).toBeNull();
   });
 

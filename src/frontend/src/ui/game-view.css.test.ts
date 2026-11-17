@@ -130,12 +130,107 @@ function declarationList(body: string): string[] {
     .filter((declaration) => declaration.length > 0);
 }
 
+/** Splits a grouped selector list into its trimmed, whitespace-normalized parts. */
+function selectorParts(selector: string): string[] {
+  return selector
+    .split(',')
+    .map((part) => part.trim().replace(/\s+/g, ' '))
+    .filter((part) => part.length > 0);
+}
+
+/**
+ * Minimal CSS specificity as `[ids, classes, elements]` counts. Attribute selectors and
+ * pseudo-classes count as classes, pseudo-elements and type names as elements, and `:not()`
+ * contributes the specificity of its argument (AC-17's specificity guard needs exactly this).
+ */
+function selectorSpecificity(selector: string): readonly [number, number, number] {
+  const skipIdent = (from: number): number => {
+    let cursor = from;
+    while (cursor < selector.length && /[\w-]/.test(selector.charAt(cursor))) {
+      cursor += 1;
+    }
+    return cursor;
+  };
+  let ids = 0;
+  let classes = 0;
+  let elements = 0;
+  let index = 0;
+  while (index < selector.length) {
+    const char = selector.charAt(index);
+    if (char === '#') {
+      ids += 1;
+      index = skipIdent(index + 1);
+    } else if (char === '.') {
+      classes += 1;
+      index = skipIdent(index + 1);
+    } else if (char === '[') {
+      classes += 1;
+      index = selector.indexOf(']', index) + 1;
+    } else if (char === ':') {
+      if (selector.charAt(index + 1) === ':') {
+        elements += 1;
+        index = skipIdent(index + 2);
+      } else if (selector.startsWith(':not(', index)) {
+        const open = index + ':not('.length;
+        const close = selector.indexOf(')', open);
+        const inner = selectorSpecificity(selector.slice(open, close));
+        ids += inner[0];
+        classes += inner[1];
+        elements += inner[2];
+        index = close + 1;
+      } else {
+        classes += 1;
+        index = skipIdent(index + 1);
+      }
+    } else if (/[a-zA-Z]/.test(char)) {
+      elements += 1;
+      index = skipIdent(index);
+    } else {
+      index += 1;
+    }
+  }
+  return [ids, classes, elements];
+}
+
+/** True when `candidate` is equal to or more specific than `reference`. */
+function specificityAtLeast(
+  candidate: readonly [number, number, number],
+  reference: readonly [number, number, number],
+): boolean {
+  if (candidate[0] !== reference[0]) {
+    return candidate[0] > reference[0];
+  }
+  if (candidate[1] !== reference[1]) {
+    return candidate[1] > reference[1];
+  }
+  return candidate[2] >= reference[2];
+}
+
 function themeLiteral(name: string): string {
   const match = themeSource.match(new RegExp(`export const ${name} = '([^']+)';`));
   if (match === null) {
     throw new Error(`theme literal not found: ${name}`);
   }
   return match[1] ?? '';
+}
+
+/** Injects both real stylesheets, mounts `markup` and cleans the DOM up afterwards. */
+function withGameStyles(markup: string, run: (root: HTMLElement) => void): void {
+  const appStyle = document.createElement('style');
+  appStyle.textContent = appCss;
+  const gameStyle = document.createElement('style');
+  gameStyle.textContent = css;
+  document.head.append(appStyle, gameStyle);
+  const root = document.createElement('div');
+  root.innerHTML = markup;
+  document.body.append(root);
+  try {
+    run(root);
+  } finally {
+    root.remove();
+    appStyle.remove();
+    gameStyle.remove();
+  }
 }
 
 const SURFACE_SELECTORS = [
@@ -146,6 +241,90 @@ const SURFACE_SELECTORS = [
   '.leaderboard',
   '.user-panel .users-list',
 ] as const;
+
+/**
+ * The single OS reduced-motion block's exact selector list (AC-17): the accepted shell
+ * selectors plus the scoped hangar-boot/tab/crew selectors, so the (0,2,0) boot rules and
+ * the previously broken (0,2,0) `reveal-spotlight` rule are both stopped by the OS query.
+ */
+const OS_REDUCED_SELECTOR_PARTS = [
+  '.hud-panel',
+  '.hud-panel::before',
+  '.hud-panel::after',
+  '.user-panel > .users-badge',
+  '.user-panel .users-list',
+  '.user-panel .users-list::before',
+  '.user-panel .users-list::after',
+  '.user-panel .users-list .users-list-title',
+  '.upgrades-panel',
+  '.upgrades-panel::before',
+  '.upgrades-panel::after',
+  '.upgrade-row',
+  '.upgrade-buy',
+  '.customization-toggle',
+  '.customization-panel',
+  '.customization-panel::before',
+  '.customization-panel::after',
+  ".customization-panel:not([data-reveal-active='true'])",
+  ".customization-panel:not([data-reveal-active='true'])::before",
+  ".customization-panel:not([data-reveal-active='true'])::after",
+  ".customization-panel:not([data-reveal-active='true']) .customization-title",
+  ".customization-panel[data-reveal-active='true']",
+  '.customization-tabs',
+  '.customization-tab',
+  '.customization-tabpanel',
+  '.activity-feed li',
+  '.leaderboard li',
+  '.hud-coin-pop',
+  '.customization-slot',
+  ".upgrade-row[data-purchased='true']",
+  '.lootbox-reveal',
+  '.lootbox-flash',
+  '.lootbox-reveal-card',
+  '.level-complete',
+  '.level-complete::before',
+  '.level-burst',
+  '.level-banner',
+  '.level-banner-halo',
+  '.level-ray',
+  '.level-ring',
+  '.level-star',
+  '.level-coin',
+  '.game-ambience::before',
+  '.gf-live-dot',
+  '.connection-dot',
+  ".lootbox-reveal[data-rarity='epic'] .lootbox-stage::before",
+] as const;
+const OS_REDUCED_SELECTOR = OS_REDUCED_SELECTOR_PARTS.join(', ');
+
+/**
+ * The extended top-level session block (AC-17): the accepted `<main data-reduced-motion>`
+ * list plus the same scoped boot/tab/crew selectors, each `main[…]`-prefixed so it wins on
+ * specificity and the file keeps exactly one session block.
+ */
+const SESSION_REDUCED_SELECTOR_PARTS = [
+  "main[data-reduced-motion='true'] > section",
+  "main[data-reduced-motion='true'] > section button",
+  "main[data-reduced-motion='true'] > section[data-blinking='true']",
+  "main[data-reduced-motion='true'] .hud-coin-pop",
+  "main[data-reduced-motion='true'] .gf-live-dot",
+  "main[data-reduced-motion='true'] .connection-dot",
+  "main[data-reduced-motion='true'] .customization-toggle",
+  "main[data-reduced-motion='true'] .upgrade-buy",
+  "main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])",
+  "main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])::before",
+  "main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])::after",
+  "main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true']) .customization-title",
+  "main[data-reduced-motion='true'] .customization-tabs",
+  "main[data-reduced-motion='true'] .customization-tab",
+  "main[data-reduced-motion='true'] .customization-tabpanel",
+  "main[data-reduced-motion='true'] .user-panel .users-list",
+  "main[data-reduced-motion='true'] .user-panel .users-list::before",
+  "main[data-reduced-motion='true'] .user-panel .users-list::after",
+  "main[data-reduced-motion='true'] .user-panel .users-list .users-list-title",
+  "main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']",
+] as const;
+const SESSION_REDUCED_SELECTOR = SESSION_REDUCED_SELECTOR_PARTS.join(', ');
 
 describe('accepted gameplay tokens (AC-17)', () => {
   it('declares exactly one :root block with exactly the nine pinned tokens', () => {
@@ -402,25 +581,35 @@ describe('HUD layout and minimized contract (AC-19)', () => {
   });
 });
 
-describe('crew panel chrome (AC-24)', () => {
-  it('keeps the red 44px pill with the warm Neon Forge rim', () => {
+describe('crew panel chrome (AC-24, AC-20)', () => {
+  it('swaps the pill to Neon Forge glass and moves the warm gradient to the count badge', () => {
     expect(declarationList(ruleBody('.user-panel > .users-badge'))).toEqual([
       'display: inline-flex',
       'align-items: center',
       'gap: 0.35rem',
-      'border: 1px solid var(--gf-rim-warm)',
+      'border: 1px solid var(--gf-rim)',
       'border-radius: 999px',
-      'background: linear-gradient(180deg, var(--users-badge-top), var(--users-badge-bottom))',
-      'color: #ffffff',
+      'background: var(--gf-surface-raised)',
+      'color: var(--gf-text)',
       'min-height: 44px',
       'padding: 0.5rem 1rem',
       'cursor: pointer',
     ]);
     expect(declarationList(ruleBody('.user-panel > .users-badge:hover'))).toEqual([
-      'color: #ffffff',
-      'box-shadow: inset 0 0 0 1px var(--gf-rim-warm)',
+      'border-color: var(--gf-rim-strong)',
       'filter: brightness(1.08)',
     ]);
+  });
+
+  it('keeps both accepted warm tokens declared and consumed by the count badge (AC-17)', () => {
+    const root = declarations(ruleBody(':root'));
+    expect(root.get('--users-badge-top')).toBe('#d63a2f');
+    expect(root.get('--users-badge-bottom')).toBe('#a51f1f');
+
+    // The gradient moved from the pill to the count badge: each token is referenced once.
+    expect(cssSource.match(/var\(--users-badge-top\)/g)).toHaveLength(1);
+    expect(cssSource.match(/var\(--users-badge-bottom\)/g)).toHaveLength(1);
+    expect(ruleBody('.user-panel > .users-badge')).not.toContain('users-badge-top');
   });
 
   it('renders the count badge, the Crew heading spacing and the scrolling list', () => {
@@ -433,8 +622,8 @@ describe('crew panel chrome (AC-24)', () => {
       'height: 1.4rem',
       'padding: 0 0.35rem',
       'border-radius: 999px',
-      'background: var(--gf-void)',
-      'color: var(--gf-rim-strong)',
+      'background: linear-gradient(180deg, var(--users-badge-top), var(--users-badge-bottom))',
+      'color: #ffffff',
       'font-size: 0.72rem',
       'font-weight: 800',
       'font-variant-numeric: tabular-nums',
@@ -688,6 +877,471 @@ describe('spaceship hangar chrome (AC-21)', () => {
     expect(cssSource).not.toMatch(/scrim/i);
     expect(cssSource).not.toContain('main[data-reveal-active');
     expect(cssSource).not.toContain("main[data-reveal-active='true']");
+  });
+});
+
+describe('hangar tab chrome (AC-7, AC-9, AC-22)', () => {
+  it('makes the tab strip a sticky auto-fit grid over the Neon Forge gradient', () => {
+    expect(declarationList(ruleBody('.customization-tabs'))).toEqual([
+      'position: sticky',
+      'top: 0',
+      'z-index: 1',
+      'display: grid',
+      'grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr))',
+      'gap: 0.25rem',
+      'padding: 0.15rem 0 0.35rem',
+      'background: linear-gradient(180deg, var(--gf-surface-top), var(--gf-surface-bottom))',
+    ]);
+  });
+
+  it('keeps every track at least 80 px wide and the chips at 44 px', () => {
+    const tabs = declarations(ruleBody('.customization-tabs'));
+    const track = (tabs.get('grid-template-columns') ?? '').match(/minmax\(([\d.]+)rem, 1fr\)/);
+    if (track === null) {
+      throw new Error('auto-fit track minimum not found');
+    }
+    const minTrackRem = Number(track[1]);
+    expect(minTrackRem).toBe(5);
+    expect(minTrackRem * 16).toBe(80);
+
+    const tab = declarations(ruleBody('.customization-tab'));
+    expect(tab.get('min-height')).toBe('44px');
+    expect(Number.parseInt(tab.get('min-height') ?? '', 10)).toBe(44);
+
+    // 320 px -> 20rem; the accepted `app.css` insets and horizontal padding leave a
+    // 16rem content box: three 5rem tracks + two 0.25rem gaps fit, a fourth does not.
+    const panelBase = declarations(findRule(appRules, '.customization-panel').body);
+    const inset = (panelBase.get('left') ?? '').match(/calc\(([\d.]+)rem/);
+    if (inset === null) {
+      throw new Error('panel inset not found');
+    }
+    const insetRem = Number(inset[1]);
+    const paddingParts = (panelBase.get('padding') ?? '').split(' ');
+    expect(insetRem).toBe(1);
+    expect(paddingParts).toEqual(['0.75rem', '1rem']);
+    const horizontalPaddingRem = Number((paddingParts[1] ?? '').replace('rem', ''));
+    expect(horizontalPaddingRem).toBe(1);
+    const phoneContentRem = 20 - 2 * insetRem - 2 * horizontalPaddingRem;
+    expect(phoneContentRem).toBe(16);
+
+    const gapRem = Number((tabs.get('gap') ?? '').replace('rem', ''));
+    expect(gapRem).toBe(0.25);
+    const threeTracksRem = 3 * minTrackRem + 2 * gapRem;
+    expect(threeTracksRem).toBe(15.5);
+    expect(threeTracksRem).toBeLessThan(phoneContentRem);
+    expect(4 * minTrackRem + 3 * gapRem).toBeGreaterThan(phoneContentRem);
+  });
+
+  it('declares the exact tab chip body, hover, selected and focus states', () => {
+    expect(declarationList(ruleBody('.customization-tab'))).toEqual([
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'gap: 0.25rem',
+      'min-height: 44px',
+      'padding: 0.25rem 0.4rem',
+      'border: 1px solid var(--gf-rim)',
+      'border-radius: var(--gf-radius-control)',
+      'background: var(--gf-surface-raised)',
+      'color: var(--gf-text-muted)',
+      'font-family: inherit',
+      'font-size: 0.68rem',
+      'font-weight: 700',
+      'letter-spacing: 0.06em',
+      'text-transform: uppercase',
+      'white-space: nowrap',
+      'cursor: pointer',
+    ]);
+    expect(declarationList(ruleBody('.customization-tab:hover'))).toEqual([
+      'border-color: var(--gf-rim-strong)',
+      'color: var(--gf-text)',
+    ]);
+    expect(declarationList(ruleBody(".customization-tab[aria-selected='true']"))).toEqual([
+      'border-color: var(--gf-rim-strong)',
+      'color: var(--gf-text)',
+      'box-shadow: inset 0 -2px 0 var(--gf-rim-strong)',
+    ]);
+    expect(declarationList(ruleBody('.customization-tab:focus-visible'))).toEqual([
+      'outline: 2px solid var(--gf-focus)',
+      'outline-offset: 2px',
+    ]);
+  });
+
+  it('renders the owned/total badge at the pinned metrics', () => {
+    expect(declarationList(ruleBody('.customization-tab-badge'))).toEqual([
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'flex: none',
+      'min-width: 1.1rem',
+      'height: 1.1rem',
+      'padding: 0 0.2rem',
+      'border-radius: 999px',
+      'background: var(--gf-void)',
+      'color: var(--gf-rim-strong)',
+      'font-size: 0.6rem',
+      'font-weight: 700',
+      'font-variant-numeric: tabular-nums',
+      'white-space: nowrap',
+    ]);
+  });
+
+  it('paints the whole tab chrome with --gf-* tokens and no literal colour', () => {
+    const tabSelectors = rules
+      .map((rule) => rule.selector)
+      .filter((selector) => selector.startsWith('.customization-tab'));
+    expect(tabSelectors).toEqual([
+      '.customization-tabs',
+      '.customization-tab',
+      '.customization-tab:hover',
+      ".customization-tab[aria-selected='true']",
+      '.customization-tab:focus-visible',
+      '.customization-tab-badge',
+      '.customization-tabpanel',
+    ]);
+
+    const literalColours: string[] = [];
+    for (const rule of allCssRules.filter((candidate) =>
+      candidate.selector.startsWith('.customization-tab'),
+    )) {
+      for (const declaration of declarationList(rule.body)) {
+        if (/#[0-9a-fA-F]{3,8}\b/.test(declaration) || /rgba?\(/.test(declaration)) {
+          literalColours.push(`${rule.selector} { ${declaration}; }`);
+        }
+      }
+    }
+    expect(literalColours).toEqual([]);
+  });
+
+  it('fades the keyed tabpanel in and stacks label/badge at 720 px', () => {
+    expect(declarationList(ruleBody('.customization-tabpanel'))).toEqual([
+      'animation: tab-panel-in var(--motion-tab-switch-ms) ease-out both',
+    ]);
+    const panel = declarations(ruleBody('.customization-tabpanel'));
+    expect(panel.has('overflow')).toBe(false);
+    expect(panel.has('height')).toBe(false);
+    expect(panel.has('max-height')).toBe(false);
+
+    const block = mediaRules('@media (max-width: 720px)');
+    expect(declarationList(findRule(block, '.customization-tab').body)).toEqual([
+      'flex-direction: column',
+      'gap: 0.1rem',
+      'padding: 0.25rem 0.3rem',
+      'font-size: 0.66rem',
+      'letter-spacing: 0.04em',
+    ]);
+    // The stacked direction is a phone-only override: the base chip stays a row.
+    expect(declarations(ruleBody('.customization-tab')).has('flex-direction')).toBe(false);
+  });
+
+  it('shrinks the preview on short viewports without a second scroll box', () => {
+    expect(declarationList(ruleBody('.customization-panel .spaceship-preview'))).toEqual([
+      'height: min(12rem, 26vh)',
+    ]);
+    expect(
+      rules.filter((rule) => rule.selector === '@media (max-height: 760px)'),
+    ).toHaveLength(1);
+    expect(
+      declarationList(
+        findRule(
+          mediaRules('@media (max-height: 760px)'),
+          '.customization-panel .spaceship-preview',
+        ).body,
+      ),
+    ).toEqual(['height: 8rem']);
+
+    const panelBase = declarations(findRule(appRules, '.customization-panel').body);
+    expect(panelBase.get('max-width')).toBe('min(22rem, calc(100vw - 2rem))');
+    expect(panelBase.get('max-height')).toBe('60vh');
+    expect(panelBase.get('overflow-x')).toBe('hidden');
+    expect(panelBase.get('overflow-y')).toBe('auto');
+
+    const nestedScroll = allCssRules
+      .filter((rule) => rule.selector.includes('.customization-tab'))
+      .flatMap((rule) =>
+        declarationList(rule.body).filter((declaration) =>
+          /^overflow(?:-[xy])?\s*:/.test(declaration),
+        ),
+      );
+    expect(nestedScroll).toEqual([]);
+  });
+});
+
+describe('menu boot animation (AC-12, AC-13, AC-14, AC-15, AC-16, AC-18)', () => {
+  const keyframeStops = (name: string): CssRule[] =>
+    parseRules(findRule(rules, `@keyframes ${name}`).body);
+
+  const MENU_KEYFRAMES = [
+    [
+      'menu-boot',
+      [
+        ['0%', ['opacity: 0', 'border-color: var(--gf-rim-strong)']],
+        ['12%', ['opacity: 0.62']],
+        ['22%', ['opacity: 0.14']],
+        ['34%', ['opacity: 0.86']],
+        ['46%', ['opacity: 0.48']],
+        ['60%', ['opacity: 1', 'border-color: var(--gf-rim)']],
+        ['100%', ['opacity: 1', 'border-color: var(--gf-rim)']],
+      ],
+    ],
+    [
+      'menu-scan',
+      [
+        ['0%', ['right: 100%', 'opacity: 0.15']],
+        ['45%', ['right: 0', 'opacity: 1']],
+        ['70%', ['right: 0', 'opacity: 0.4']],
+        ['100%', ['right: 0', 'opacity: 1']],
+      ],
+    ],
+    [
+      'menu-rail',
+      [
+        ['0%', ['height: 8%', 'opacity: 0.1']],
+        ['100%', ['height: 40%', 'opacity: 1']],
+      ],
+    ],
+    [
+      'menu-chroma',
+      [
+        ['0%', ['text-shadow: -1px 0 var(--gf-rare), 1px 0 var(--gf-rim-strong)']],
+        ['50%', ['text-shadow: 1px 0 var(--gf-amber), -1px 0 var(--gf-rare)']],
+        ['100%', ['text-shadow: none']],
+      ],
+    ],
+    [
+      'tab-panel-in',
+      [
+        ['0%', ['opacity: 0']],
+        ['100%', ['opacity: 1']],
+      ],
+    ],
+  ] as const;
+
+  it('declares every pinned stop of the four beats and the tab swap', () => {
+    for (const [name, stops] of MENU_KEYFRAMES) {
+      const parsed = keyframeStops(name);
+      expect(parsed.map((stop) => stop.selector)).toEqual(stops.map(([selector]) => selector));
+      expect(parsed.map((stop) => declarationList(stop.body))).toEqual(
+        stops.map(([, expected]) => [...expected]),
+      );
+    }
+  });
+
+  it('never animates transform, filter, backdrop-filter, clip-path, margin or left', () => {
+    const banned = /^(?:transform|filter|backdrop-filter|clip-path|margin(?:-[a-z]+)?|left)\s*:/;
+    const offenders: string[] = [];
+    for (const [name] of MENU_KEYFRAMES) {
+      for (const stop of keyframeStops(name)) {
+        for (const declaration of declarationList(stop.body)) {
+          if (banned.test(declaration)) {
+            offenders.push(`@keyframes ${name} ${stop.selector} { ${declaration}; }`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the only box geometry on the two pseudo-element beats', () => {
+    const geometry = /^(?:width|height|right|left|top|bottom|inset|margin|padding)\b\s*:/;
+    const geometryFor = (name: string): string[] =>
+      keyframeStops(name).flatMap((stop) =>
+        declarationList(stop.body).filter((declaration) => geometry.test(declaration)),
+      );
+
+    expect(geometryFor('menu-boot')).toEqual([]);
+    expect(geometryFor('menu-scan')).toEqual([
+      'right: 100%',
+      'right: 0',
+      'right: 0',
+      'right: 0',
+    ]);
+    expect(geometryFor('menu-rail')).toEqual(['height: 8%', 'height: 40%']);
+    expect(geometryFor('menu-chroma')).toEqual([]);
+    expect(geometryFor('tab-panel-in')).toEqual([]);
+  });
+
+  it('declares no exit keyframe and no reverse direction (AC-16)', () => {
+    const names = rules
+      .filter((rule) => rule.selector.startsWith('@keyframes '))
+      .map((rule) => rule.selector.slice('@keyframes '.length));
+    expect(names.filter((name) => /-(?:out|exit|close|leave)$/.test(name))).toEqual([]);
+    expect(cssSource).not.toContain('animation-direction');
+    expect(cssSource).not.toContain('animation-fill-mode');
+  });
+
+  it('pins the four boot rule sets and the tab-swap rule', () => {
+    expect(
+      declarationList(
+        ruleBody(".customization-panel:not([data-reveal-active='true']), .user-panel .users-list"),
+      ),
+    ).toEqual(['animation: menu-boot var(--motion-menu-boot-ms) linear both']);
+    expect(
+      declarationList(
+        ruleBody(
+          ".customization-panel:not([data-reveal-active='true'])::before, .user-panel .users-list::before",
+        ),
+      ),
+    ).toEqual(['animation: menu-scan var(--motion-menu-boot-ms) linear both']);
+    expect(
+      declarationList(
+        ruleBody(
+          ".customization-panel:not([data-reveal-active='true'])::after, .user-panel .users-list::after",
+        ),
+      ),
+    ).toEqual(['animation: menu-rail var(--motion-menu-flicker-ms) steps(2, end) both']);
+    expect(
+      declarationList(
+        ruleBody(
+          ".customization-panel:not([data-reveal-active='true']) .customization-title, .user-panel .users-list .users-list-title",
+        ),
+      ),
+    ).toEqual(['animation: menu-chroma var(--motion-menu-chroma-ms) steps(3, end) both']);
+    expect(declarationList(ruleBody('.customization-tabpanel'))).toEqual([
+      'animation: tab-panel-in var(--motion-tab-switch-ms) ease-out both',
+    ]);
+  });
+
+  it('animates exactly the two user-opened menus and their titles (AC-12, AC-13, AC-14)', () => {
+    const bootRules = rules.filter(
+      (rule) => !rule.selector.startsWith('@keyframes') && /animation:\s*menu-/.test(rule.body),
+    );
+    expect(bootRules.map((rule) => rule.selector)).toEqual([
+      ".customization-panel:not([data-reveal-active='true']), .user-panel .users-list",
+      ".customization-panel:not([data-reveal-active='true'])::before, .user-panel .users-list::before",
+      ".customization-panel:not([data-reveal-active='true'])::after, .user-panel .users-list::after",
+      ".customization-panel:not([data-reveal-active='true']) .customization-title, .user-panel .users-list .users-list-title",
+    ]);
+
+    // Negative sweep: no other shell surface may reference any menu beat.
+    const bannedSurfaces = [
+      '.hud-panel',
+      '.upgrades-panel',
+      '.activity-feed',
+      '.leaderboard',
+      '.connection-banner',
+      '.phase-announcement',
+      '.auth-menu',
+      '.auth-panel',
+      '.game-runtime-status',
+      '.game-runtime-error',
+    ] as const;
+    const offenders: string[] = [];
+    for (const rule of rules) {
+      if (!/animation:\s*(?:menu-|tab-panel-in)/.test(rule.body)) {
+        continue;
+      }
+      for (const part of selectorParts(rule.selector)) {
+        for (const surface of bannedSurfaces) {
+          if (
+            part === surface ||
+            part.startsWith(`${surface} `) ||
+            part.startsWith(`${surface}:`) ||
+            part.startsWith(`${surface}.`)
+          ) {
+            offenders.push(part);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the reveal branch on its own spotlight and never on a menu beat', () => {
+    expect(declarationList(ruleBody(".customization-panel[data-reveal-active='true']"))).toEqual([
+      'z-index: 20',
+      'animation: reveal-spotlight var(--motion-ui-reveal-spotlight-ms) ease-out both',
+    ]);
+
+    const revealStateRules = rules.filter((rule) =>
+      selectorParts(rule.selector).some(
+        (part) => part.endsWith("[data-reveal-active='true']") && !part.includes(':not('),
+      ),
+    );
+    expect(
+      revealStateRules
+        .filter((rule) => /menu-(?:boot|scan|rail|chroma)/.test(rule.body))
+        .map((rule) => rule.selector),
+    ).toEqual([]);
+  });
+});
+
+describe('HUD minimize control (AC-21)', () => {
+  it('compacts the control to a right-aligned 24 px chevron, not a 44 px target', () => {
+    expect(declarationList(ruleBody('.hud-panel > button'))).toEqual([
+      'align-self: flex-end',
+      'width: 1.5rem',
+      'height: 1.5rem',
+      'min-width: 1.5rem',
+      'min-height: 1.5rem',
+      'padding: 0',
+      'border: 1px solid var(--gf-rim)',
+      'border-radius: var(--gf-radius-control)',
+      'background: var(--gf-surface-raised)',
+      'color: var(--gf-rim-strong)',
+    ]);
+
+    const control = declarations(ruleBody('.hud-panel > button'));
+    expect(control.get('width')).toBe('1.5rem');
+    expect(Number.parseFloat(control.get('width') ?? '') * 16).toBe(24);
+    expect(Number.parseFloat(control.get('min-height') ?? '') * 16).toBe(24);
+    expect(Number.parseFloat(control.get('min-height') ?? '') * 16).toBeLessThan(44);
+
+    expect(
+      declarationList(ruleBody('.hud-panel > button:hover, .hud-panel > button:focus-visible')),
+    ).toEqual(['border-color: var(--gf-rim-strong)', 'color: var(--gf-focus)']);
+
+    expect(
+      declarationList(ruleBody(".hud-panel[data-minimized='true'] > button::before")),
+    ).toEqual(["content: '▴'"]);
+
+    // `app.css` keeps the expanded glyph that the minimized rule flips.
+    expect(
+      declarations(findRule(appRules, '.hud-panel > button::before').body).get('content'),
+    ).toBe("'▾'");
+  });
+});
+
+describe('themed scrollbars (AC-19)', () => {
+  const SCROLLBAR_SURFACES = '.customization-panel, .upgrades-panel, .user-panel .users-list';
+
+  it('adds one thin-scrollbar rule without merging into the accepted surface bodies', () => {
+    expect(declarationList(ruleBody(SCROLLBAR_SURFACES))).toEqual([
+      'scrollbar-width: thin',
+      'scrollbar-color: var(--gf-rim) transparent',
+    ]);
+    expect(rules.filter((rule) => rule.selector === normalizeSelector(SCROLLBAR_SURFACES))).toHaveLength(1);
+
+    // The scrollbar declarations live in their own rule: each surface keeps one base rule.
+    for (const selector of ['.customization-panel', '.upgrades-panel', '.user-panel .users-list']) {
+      expect(rules.filter((rule) => rule.selector === selector)).toHaveLength(1);
+    }
+  });
+
+  it('styles exactly the four WebKit scrollbar parts on the three surfaces', () => {
+    const parts = [
+      [
+        '.customization-panel::-webkit-scrollbar, .upgrades-panel::-webkit-scrollbar, .user-panel .users-list::-webkit-scrollbar',
+        ['width: 6px', 'height: 6px'],
+      ],
+      [
+        '.customization-panel::-webkit-scrollbar-track, .upgrades-panel::-webkit-scrollbar-track, .user-panel .users-list::-webkit-scrollbar-track',
+        ['background: transparent'],
+      ],
+      [
+        '.customization-panel::-webkit-scrollbar-thumb, .upgrades-panel::-webkit-scrollbar-thumb, .user-panel .users-list::-webkit-scrollbar-thumb',
+        ['background: rgba(124, 246, 255, 0.35)', 'border-radius: 999px'],
+      ],
+      [
+        '.customization-panel::-webkit-scrollbar-thumb:hover, .upgrades-panel::-webkit-scrollbar-thumb:hover, .user-panel .users-list::-webkit-scrollbar-thumb:hover',
+        ['background: rgba(124, 246, 255, 0.55)'],
+      ],
+    ] as const;
+
+    for (const [selector, expected] of parts) {
+      expect(declarationList(ruleBody(selector))).toEqual(expected);
+      expect(rules.filter((rule) => rule.selector === normalizeSelector(selector))).toHaveLength(1);
+    }
   });
 });
 
@@ -1187,10 +1841,7 @@ describe('ambience and layering (AC-27)', () => {
 
   it('disables the scanline, dots and flourish under reduced motion', () => {
     const reduced = mediaRules('@media (prefers-reduced-motion: reduce)');
-    const group = findRule(
-      reduced,
-      '.hud-panel, .hud-panel::before, .hud-panel::after, .user-panel > .users-badge, .user-panel .users-list, .user-panel .users-list::before, .upgrades-panel, .upgrades-panel::before, .upgrades-panel::after, .upgrade-row, .upgrade-buy, .customization-toggle, .customization-panel, .customization-panel::before, .customization-panel::after, .activity-feed li, .leaderboard li, .hud-coin-pop, .customization-slot, .upgrade-row[data-purchased=\'true\'], .lootbox-reveal, .lootbox-flash, .lootbox-reveal-card, .level-complete, .level-complete::before, .level-burst, .level-banner, .level-banner-halo, .level-ray, .level-ring, .level-star, .level-coin, .game-ambience::before, .gf-live-dot, .connection-dot, .lootbox-reveal[data-rarity=\'epic\'] .lootbox-stage::before',
-    );
+    const group = findRule(reduced, OS_REDUCED_SELECTOR);
     expect(declarationList(group.body)).toEqual(['animation: none', 'transition: none']);
   });
 });
@@ -1308,7 +1959,7 @@ describe('mobile bands (AC-30)', () => {
 describe('motion map (AC-32)', () => {
   const MAIN_RULE = 'main';
 
-  it('declares exactly the seventeen CSS-mapped tokens on main, not :root', () => {
+  it('declares exactly the twenty-one CSS-mapped tokens on main, not :root', () => {
     expect(declarationList(ruleBody(MAIN_RULE))).toEqual([
       '--motion-coin-pop-ms: 1100ms',
       '--motion-loot-charge-ms: 420ms',
@@ -1327,6 +1978,10 @@ describe('motion map (AC-32)', () => {
       '--motion-ui-button-press-ms: 90ms',
       '--motion-ui-glow-pulse-ms: 2400ms',
       '--motion-ui-reveal-spotlight-ms: 260ms',
+      '--motion-menu-boot-ms: 320ms',
+      '--motion-menu-flicker-ms: 120ms',
+      '--motion-menu-chroma-ms: 90ms',
+      '--motion-tab-switch-ms: 140ms',
     ]);
     expect(
       declarationList(ruleBody(':root')).filter((entry) => entry.startsWith('--motion-')),
@@ -1353,6 +2008,10 @@ describe('motion map (AC-32)', () => {
       ['--motion-ui-button-press-ms', 'uiButtonPressMs'],
       ['--motion-ui-glow-pulse-ms', 'uiGlowPulseMs'],
       ['--motion-ui-reveal-spotlight-ms', 'uiRevealSpotlightMs'],
+      ['--motion-menu-boot-ms', 'menuBootMs'],
+      ['--motion-menu-flicker-ms', 'menuFlickerMs'],
+      ['--motion-menu-chroma-ms', 'menuChromaMs'],
+      ['--motion-tab-switch-ms', 'tabSwitchMs'],
     ] as const;
 
     for (const [cssName, token] of pairs) {
@@ -1419,33 +2078,121 @@ describe('reduced motion (AC-14, AC-27, AC-31)', () => {
   it('disables the same motion under the session reduced-motion marker (AC-31)', () => {
     // A top-level `findRule` lookup proves the session switch lives outside the OS media
     // query, so the in-game preference works even when the platform query is unset.
-    const sessionRule = findRule(
-      rules,
-      "main[data-reduced-motion='true'] > section, main[data-reduced-motion='true'] > section button, main[data-reduced-motion='true'] > section[data-blinking='true'], main[data-reduced-motion='true'] .hud-coin-pop, main[data-reduced-motion='true'] .gf-live-dot, main[data-reduced-motion='true'] .connection-dot, main[data-reduced-motion='true'] .customization-toggle, main[data-reduced-motion='true'] .upgrade-buy, main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']",
-    );
+    const sessionRule = findRule(rules, SESSION_REDUCED_SELECTOR);
     expect(declarationList(sessionRule.body)).toEqual(['animation: none', 'transition: none']);
+  });
+
+  it('keeps exactly one OS block and one extended session block (AC-17)', () => {
+    expect(
+      rules.filter((rule) => rule.selector === '@media (prefers-reduced-motion: reduce)'),
+    ).toHaveLength(1);
+    expect(
+      rules.filter((rule) => rule.selector.startsWith("main[data-reduced-motion='true']")),
+    ).toHaveLength(1);
+
+    const reduced = mediaRules('@media (prefers-reduced-motion: reduce)');
+    expect(declarationList(findRule(reduced, OS_REDUCED_SELECTOR).body)).toEqual([
+      'animation: none',
+      'transition: none',
+    ]);
+    expect(declarationList(findRule(rules, SESSION_REDUCED_SELECTOR).body)).toEqual([
+      'animation: none',
+      'transition: none',
+    ]);
+  });
+
+  it('stops every animated menu selector with equal-or-higher specificity, after its rule (AC-17)', () => {
+    // Hand-counted specificities pin the helper, so the guard cannot pass vacuously.
+    expect(selectorSpecificity(".customization-panel:not([data-reveal-active='true'])")).toEqual([
+      0, 2, 0,
+    ]);
+    expect(
+      selectorSpecificity(
+        ".customization-panel:not([data-reveal-active='true']) .customization-title",
+      ),
+    ).toEqual([0, 3, 0]);
+    expect(selectorSpecificity('.customization-tabpanel')).toEqual([0, 1, 0]);
+    expect(selectorSpecificity(SESSION_REDUCED_SELECTOR_PARTS[8] ?? '')).toEqual([0, 3, 1]);
+
+    // A bare `.customization-panel` (0,1,0) loses to the (0,2,0) boot: the scoped selector is
+    // the fix, not the accepted bare one.
+    expect(
+      specificityAtLeast(
+        selectorSpecificity('.customization-panel'),
+        selectorSpecificity(".customization-panel:not([data-reveal-active='true'])"),
+      ),
+    ).toBe(false);
+    expect(
+      specificityAtLeast(
+        selectorSpecificity('.user-panel .users-list'),
+        selectorSpecificity('.user-panel .users-list .users-list-title'),
+      ),
+    ).toBe(false);
+
+    const guardPairs = [
+      [
+        ".customization-panel:not([data-reveal-active='true'])",
+        ".customization-panel:not([data-reveal-active='true'])",
+      ],
+      [
+        ".customization-panel:not([data-reveal-active='true'])::before",
+        ".customization-panel:not([data-reveal-active='true'])::before",
+      ],
+      [
+        ".customization-panel:not([data-reveal-active='true'])::after",
+        ".customization-panel:not([data-reveal-active='true'])::after",
+      ],
+      [
+        ".customization-panel:not([data-reveal-active='true']) .customization-title",
+        ".customization-panel:not([data-reveal-active='true']) .customization-title",
+      ],
+      ['.customization-tabs', '.customization-tabs'],
+      ['.customization-tab', '.customization-tab'],
+      ['.customization-tabpanel', '.customization-tabpanel'],
+      ['.user-panel .users-list', '.user-panel .users-list'],
+      ['.user-panel .users-list::before', '.user-panel .users-list::before'],
+      ['.user-panel .users-list::after', '.user-panel .users-list::after'],
+      [
+        '.user-panel .users-list .users-list-title',
+        '.user-panel .users-list .users-list-title',
+      ],
+      [
+        ".customization-panel[data-reveal-active='true']",
+        ".customization-panel[data-reveal-active='true']",
+      ],
+    ] as const;
+
+    const mediaStart = cssSource.indexOf('@media (prefers-reduced-motion: reduce)');
+    expect(mediaStart).toBeGreaterThan(0);
+    const osSelectors = mediaRules('@media (prefers-reduced-motion: reduce)').flatMap((rule) =>
+      selectorParts(rule.selector),
+    );
+    const sessionSelectors = selectorParts(SESSION_REDUCED_SELECTOR);
+
+    for (const [producing, offSwitch] of guardPairs) {
+      // (a) The producing rule is written before the OS block (equal specificity → later wins).
+      const producingIndex = cssSource.indexOf(producing);
+      expect(producingIndex).toBeGreaterThan(-1);
+      expect(producingIndex).toBeLessThan(mediaStart);
+
+      // (b) Both off-switches carry a selector with equal or higher specificity.
+      expect(osSelectors).toContain(offSwitch);
+      expect(
+        specificityAtLeast(selectorSpecificity(offSwitch), selectorSpecificity(producing)),
+      ).toBe(true);
+      const sessionOffSwitch = `main[data-reduced-motion='true'] ${offSwitch}`;
+      expect(sessionSelectors).toContain(sessionOffSwitch);
+      expect(
+        specificityAtLeast(
+          selectorSpecificity(sessionOffSwitch),
+          selectorSpecificity(producing),
+        ),
+      ).toBe(true);
+    }
   });
 });
 
 describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
-  function withGameStyles(markup: string, run: (root: HTMLElement) => void): void {
-    const appStyle = document.createElement('style');
-    appStyle.textContent = appCss;
-    const gameStyle = document.createElement('style');
-    gameStyle.textContent = css;
-    document.head.append(appStyle, gameStyle);
-    const root = document.createElement('div');
-    root.innerHTML = markup;
-    document.body.append(root);
-    try {
-      run(root);
-    } finally {
-      root.remove();
-      appStyle.remove();
-      gameStyle.remove();
-    }
-  }
-
   it('cascades the shared frame, the minimized grid and the layer stack onto real markup', () => {
     const markup = `
       <main>
@@ -1541,6 +2288,20 @@ describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
         <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="true">
           <div class="lootbox-reveal" data-rarity="rare"></div>
         </section>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="false" data-active-tab="frame">
+          <h2 class="customization-title">Spaceship hangar</h2>
+          <div class="customization-tabs" role="tablist" aria-label="Spaceship part groups">
+            <button type="button" role="tab" class="customization-tab" id="customization-tab-frame" data-tab="frame" aria-selected="true" tabindex="0">Frame<span class="customization-tab-badge" data-owned="0" data-total="4" aria-hidden="true">0/4</span></button>
+          </div>
+          <div class="customization-tabpanel" role="tabpanel" id="customization-tabpanel" data-tabpanel="frame" aria-labelledby="customization-tab-frame"></div>
+        </section>
+        <section class="user-panel">
+          <button type="button" class="users-badge" aria-expanded="true"><span class="users-count" data-count="1" aria-hidden="true">1</span></button>
+          <section class="users-list" aria-label="Users on server">
+            <h2 class="users-list-title">Crew</h2>
+            <ul></ul>
+          </section>
+        </section>
         <section class="upgrades-panel" aria-label="Upgrades">
           <button class="upgrade-buy" type="button" aria-label="Buy"></button>
         </section>
@@ -1553,6 +2314,12 @@ describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
         '.connection-dot',
         '.hud-coin-pop',
         '.customization-panel',
+        '.customization-title',
+        '.customization-tabs',
+        '.customization-tab',
+        '.customization-tabpanel',
+        '.user-panel .users-list',
+        '.user-panel .users-list .users-list-title',
       ]) {
         const element = root.querySelector(selector);
         if (element === null) throw new Error(`${selector} missing`);
@@ -1569,6 +2336,242 @@ describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
         if (element === null) throw new Error(`${selector} missing`);
         expect(window.getComputedStyle(element).transitionDuration).toBe('0s');
       }
+
+      // The extended session block really selects the boot surfaces: the scoped parts of the
+      // one session rule are the ones that match, which is what stops the (0,2,0) boot.
+      const sessionParts = selectorParts(findRule(rules, SESSION_REDUCED_SELECTOR).selector);
+      const matchingParts = (selector: string): string[] => {
+        const element = root.querySelector(selector);
+        if (element === null) throw new Error(`${selector} missing`);
+        return sessionParts.filter((part) => element.matches(part));
+      };
+
+      expect(matchingParts('.customization-panel[data-reveal-active="false"]')).toEqual([
+        "main[data-reduced-motion='true'] > section",
+        "main[data-reduced-motion='true'] .customization-panel:not([data-reveal-active='true'])",
+      ]);
+      expect(matchingParts('.customization-panel[data-reveal-active="true"]')).toEqual([
+        "main[data-reduced-motion='true'] > section",
+        "main[data-reduced-motion='true'] .customization-panel[data-reveal-active='true']",
+      ]);
+      expect(matchingParts('.customization-tabs')).toEqual([
+        "main[data-reduced-motion='true'] .customization-tabs",
+      ]);
+      expect(matchingParts('.customization-tab')).toEqual([
+        "main[data-reduced-motion='true'] > section button",
+        "main[data-reduced-motion='true'] .customization-tab",
+      ]);
+      expect(matchingParts('.customization-tabpanel')).toEqual([
+        "main[data-reduced-motion='true'] .customization-tabpanel",
+      ]);
+      expect(matchingParts('.user-panel .users-list')).toEqual([
+        "main[data-reduced-motion='true'] .user-panel .users-list",
+      ]);
+      expect(matchingParts('.user-panel .users-list .users-list-title')).toEqual([
+        "main[data-reduced-motion='true'] .user-panel .users-list .users-list-title",
+      ]);
+    });
+  });
+
+  it('gates the menu boot to the normal hangar and the crew list on real markup', () => {
+    const markup = `
+      <main>
+        <section class="hud-panel" aria-label="Game statistics"></section>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="false" data-active-tab="frame">
+          <h2 class="customization-title">Spaceship hangar</h2>
+          <div class="customization-tabpanel" role="tabpanel"></div>
+        </section>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="true">
+          <h2 class="customization-title">Spaceship hangar</h2>
+        </section>
+        <section class="user-panel">
+          <section class="users-list" aria-label="Users on server">
+            <h2 class="users-list-title">Crew</h2>
+          </section>
+        </section>
+        <section class="upgrades-panel" aria-label="Upgrades"></section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      const requirement = (selector: string): Element => {
+        const element = root.querySelector(selector);
+        if (element === null) throw new Error(`${selector} missing`);
+        return element;
+      };
+      const normalPanel = requirement('.customization-panel[data-reveal-active="false"]');
+      const revealPanel = requirement('.customization-panel[data-reveal-active="true"]');
+      const crewList = requirement('.user-panel .users-list');
+      const crewTitle = requirement('.user-panel .users-list .users-list-title');
+      const normalTitle = requirement('.customization-panel[data-reveal-active="false"] .customization-title');
+
+      const [panelBeat, crewBeat] = selectorParts(
+        ".customization-panel:not([data-reveal-active='true']), .user-panel .users-list",
+      );
+      expect(panelBeat).toBe(".customization-panel:not([data-reveal-active='true'])");
+      expect(crewBeat).toBe('.user-panel .users-list');
+      if (panelBeat === undefined || crewBeat === undefined) {
+        throw new Error('boot selector pair missing');
+      }
+      expect(normalPanel.matches(panelBeat)).toBe(true);
+      expect(revealPanel.matches(panelBeat)).toBe(false);
+      expect(crewList.matches(crewBeat)).toBe(true);
+      expect(requirement('.hud-panel').matches(crewBeat)).toBe(false);
+
+      const [titleBeat, crewTitleBeat] = selectorParts(
+        ".customization-panel:not([data-reveal-active='true']) .customization-title, .user-panel .users-list .users-list-title",
+      );
+      if (titleBeat === undefined || crewTitleBeat === undefined) {
+        throw new Error('title beat selector pair missing');
+      }
+      expect(normalTitle.matches(titleBeat)).toBe(true);
+      expect(crewTitle.matches(crewTitleBeat)).toBe(true);
+
+      // The reveal branch never matches the boot, so it keeps only its own spotlight.
+      const bootSelectorParts = selectorParts(
+        ".customization-panel:not([data-reveal-active='true']), .customization-panel:not([data-reveal-active='true'])::before, .customization-panel:not([data-reveal-active='true'])::after, .customization-panel:not([data-reveal-active='true']) .customization-title",
+      ).filter((part) => !part.includes('::'));
+      expect(bootSelectorParts).toEqual([
+        ".customization-panel:not([data-reveal-active='true'])",
+        ".customization-panel:not([data-reveal-active='true']) .customization-title",
+      ]);
+      expect(bootSelectorParts.filter((part) => revealPanel.matches(part))).toEqual([]);
+      expect(
+        selectorParts(".customization-panel[data-reveal-active='true']").filter((part) =>
+          revealPanel.matches(part),
+        ),
+      ).toEqual([".customization-panel[data-reveal-active='true']"]);
+    });
+  });
+
+  it('cascades the glass crew pill and the warm count badge onto real markup (AC-20)', () => {
+    const markup = `
+      <main>
+        <section class="user-panel">
+          <button type="button" class="users-badge" aria-expanded="false">
+            <span class="gf-live-dot" aria-hidden="true"></span>Users on Server
+            <span class="users-count" data-count="3" aria-hidden="true">3</span>
+          </button>
+        </section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      const pill = root.querySelector('.user-panel > .users-badge');
+      const count = root.querySelector('.users-count');
+      if (pill === null || count === null) throw new Error('crew pill missing');
+
+      const pillStyle = window.getComputedStyle(pill);
+      expect(pillStyle.minHeight).toBe('44px');
+      expect(pillStyle.borderRadius).toBe('999px');
+      expect(pillStyle.padding).toBe('8px 16px');
+      expect(pillStyle.cursor).toBe('pointer');
+
+      const countStyle = window.getComputedStyle(count);
+      expect(countStyle.minWidth).toBe('22.4px');
+      expect(countStyle.height).toBe('22.4px');
+      expect(countStyle.fontSize).toBe('11.52px');
+      expect(countStyle.fontWeight).toBe('800');
+      expect(countStyle.color).toBe('rgb(255, 255, 255)');
+    });
+  });
+
+  it('parses both stylesheets with the boot and off-switch rules intact', () => {
+    const appStyle = document.createElement('style');
+    appStyle.textContent = appCss;
+    const gameStyle = document.createElement('style');
+    gameStyle.textContent = css;
+    document.head.append(appStyle, gameStyle);
+    try {
+      const parsed = gameStyle.sheet === null ? [] : Array.from(gameStyle.sheet.cssRules);
+      const selectorTexts = parsed.map((rule) =>
+        rule.cssText.slice(0, rule.cssText.indexOf('{')).trim().replace(/\s+/g, ' '),
+      );
+
+      for (const keyframe of ['menu-boot', 'menu-scan', 'menu-rail', 'menu-chroma', 'tab-panel-in']) {
+        expect(selectorTexts.filter((text) => text === `@keyframes ${keyframe}`)).toHaveLength(1);
+      }
+      expect(selectorTexts).toContain(
+        ".customization-panel:not([data-reveal-active='true']), .user-panel .users-list",
+      );
+      expect(selectorTexts).toContain(SESSION_REDUCED_SELECTOR);
+      expect(selectorTexts).toContain('@media (prefers-reduced-motion: reduce)');
+      expect(selectorTexts.filter((text) => text === '@media (prefers-reduced-motion: reduce)')).toHaveLength(
+        1,
+      );
+    } finally {
+      appStyle.remove();
+      gameStyle.remove();
+    }
+  });
+
+  it('cascades the sticky tab grid, the 44 px chip and the badge metrics', () => {
+    const markup = `
+      <main>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="false" data-active-tab="wings">
+          <div class="customization-tabs" role="tablist" aria-label="Spaceship part groups">
+            <button type="button" role="tab" class="customization-tab" id="customization-tab-wings" data-tab="wings" aria-selected="true" tabindex="0">Wings<span class="customization-tab-badge" data-owned="1" data-total="4" aria-hidden="true">1/4</span></button>
+          </div>
+          <div class="customization-tabpanel" role="tabpanel" id="customization-tabpanel" data-tabpanel="wings" aria-labelledby="customization-tab-wings"></div>
+        </section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      const tabs = root.querySelector('.customization-tabs');
+      if (tabs === null) throw new Error('tab strip missing');
+      const tabsStyle = window.getComputedStyle(tabs);
+      expect(tabsStyle.display).toBe('grid');
+      expect(tabsStyle.gridTemplateColumns).toBe('repeat(auto-fit, minmax(5rem, 1fr))');
+      expect(tabsStyle.gap).toBe('0.25rem');
+      expect(tabsStyle.position).toBe('sticky');
+      expect(tabsStyle.top).toBe('0px');
+      expect(tabsStyle.zIndex).toBe('1');
+
+      const tab = root.querySelector('.customization-tab');
+      if (tab === null) throw new Error('tab missing');
+      const tabStyle = window.getComputedStyle(tab);
+      expect(tabStyle.display).toBe('inline-flex');
+      expect(tabStyle.minHeight).toBe('44px');
+      expect(tabStyle.padding).toBe('4px 6.4px');
+      expect(tabStyle.fontSize).toBe('10.88px');
+      expect(tabStyle.textTransform).toBe('uppercase');
+      expect(tabStyle.whiteSpace).toBe('nowrap');
+      expect(tabStyle.cursor).toBe('pointer');
+
+      const badge = root.querySelector('.customization-tab-badge');
+      if (badge === null) throw new Error('tab badge missing');
+      const badgeStyle = window.getComputedStyle(badge);
+      expect(badgeStyle.display).toBe('inline-flex');
+      expect(badgeStyle.minWidth).toBe('17.6px');
+      expect(badgeStyle.height).toBe('17.6px');
+      expect(badgeStyle.fontSize).toBe('9.6px');
+      expect(badgeStyle.whiteSpace).toBe('nowrap');
+    });
+  });
+
+  it('cascades the compact 24 px HUD chevron onto real markup', () => {
+    const markup = `
+      <main>
+        <section class="hud-panel" aria-label="Game statistics" data-minimized="true">
+          <button type="button" aria-expanded="false" aria-label="Toggle HUD"></button>
+        </section>
+        <section class="customization-panel" aria-label="Spaceship customization">
+          <div class="spaceship-preview"></div>
+        </section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      const button = root.querySelector('.hud-panel > button');
+      if (button === null) throw new Error('HUD minimize control missing');
+      const buttonStyle = window.getComputedStyle(button);
+      expect(buttonStyle.alignSelf).toBe('flex-end');
+      expect(buttonStyle.width).toBe('24px');
+      expect(buttonStyle.height).toBe('24px');
+      expect(buttonStyle.minWidth).toBe('24px');
+      expect(buttonStyle.minHeight).toBe('24px');
+      expect(buttonStyle.padding).toBe('0px');
     });
   });
 });

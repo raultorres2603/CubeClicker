@@ -60,5 +60,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | render-backend-migration | Render Backend Migration (Fly free-tier gate → Render free Docker backend, CI-once deploy, Vercel/Neon retained) | accepted | 2026-11-16 |
 | presence-and-activity-liveness | Presence & Activity Liveness (explicit leave on pagehide; five-second activity lifetime) | accepted | 2026-11-16 |
 | game-feel-overhaul | Game-Feel Overhaul (3D lootbox reveal, Neon Forge game shell) | accepted | 2026-11-17 |
+| hangar-tabs-and-menu-motion | Hangar Tabs & Menu Motion (tabbed spaceship hangar, glitch menu boot, screenshot polish) | accepted | 2026-11-17 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
