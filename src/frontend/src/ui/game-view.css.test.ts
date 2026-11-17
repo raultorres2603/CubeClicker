@@ -920,7 +920,7 @@ describe('leaderboard chrome (AC-23)', () => {
   it('pins the non-interactive desktop left rail', () => {
     expect(declarationList(ruleBody('.leaderboard'))).toEqual([
       'position: absolute',
-      'top: calc(12.5rem + env(safe-area-inset-top, 0px))',
+      'top: calc(16rem + env(safe-area-inset-top, 0px))',
       'left: calc(1rem + env(safe-area-inset-left, 0px))',
       'box-sizing: border-box',
       'width: min(17rem, calc(100vw - 2rem))',
@@ -930,6 +930,28 @@ describe('leaderboard chrome (AC-23)', () => {
       'color: var(--gf-text)',
       'pointer-events: none',
     ]);
+  });
+
+  it('clears the Neon Forge HUD on the desktop left rail (T12 manual-review regression)', () => {
+    const railTop = declarations(ruleBody('.leaderboard')).get('top') ?? '';
+    expect(railTop).toBe('calc(16rem + env(safe-area-inset-top, 0px))');
+
+    // The AC-19 HUD footprint below its 1rem top edge, rounded up to 12.5rem:
+    // header/level chip 1.545 + resource strip 2.145 + stat grid 4.54 + minimize 1.58
+    // + three 0.25 flex gaps + 1.5 block padding + 0.125 rim = 12.185rem; bottom ≈ 13.185rem.
+    const HUD_TOP_REM = 1;
+    const HUD_FOOTPRINT_REM = 12.5;
+    const MIN_CLEARANCE_REM = 1;
+    const railTopRem = Number(railTop.match(/calc\(([\d.]+)rem/)?.[1]);
+
+    expect(railTopRem).toBe(16);
+    expect(railTopRem).toBeGreaterThanOrEqual(
+      HUD_TOP_REM + HUD_FOOTPRINT_REM + MIN_CLEARANCE_REM,
+    );
+
+    // The HUD keeps its accepted top-left placement; only the rail moved down.
+    const hud = declarations(findFirstRule(appRules, 'main > section').body);
+    expect(hud.get('top')).toBe('calc(1rem + env(safe-area-inset-top, 0px))');
   });
 
   it('wraps each row with a medal and a bar', () => {

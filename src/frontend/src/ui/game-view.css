@@ -11,8 +11,9 @@
  *
  * The four base corner placements, the safe-area offsets, the 720 px bottom-band stack and
  * the mobile hide-the-upgrades rule stay as accepted; nothing here is importance-flagged.
- * The nine `:root` custom properties mirror the exported `ui/theme.ts` tokens 1:1;
- * `game-view.css.test.ts` keeps the pair honest.
+ * The left rail keeps its top-left corner but starts at 16rem so it clears the taller
+ * Neon Forge HUD (manual-review fix T12). The nine `:root` custom properties mirror the
+ * exported `ui/theme.ts` tokens 1:1; `game-view.css.test.ts` keeps the pair honest.
  */
 
 :root {
@@ -835,9 +836,19 @@ main > section {
  * Leaderboard (AC-23): live dot, rank medals/bars and the accepted server order.
  * ------------------------------------------------------------------------------------- */
 
+/*
+ * Left rail below the Neon Forge HUD (T12 fix). The AC-19 HUD grows past its old
+ * footprint: a 1.545rem header/level chip, a ~2.145rem resource strip, a ~4.54rem
+ * three-row stat grid, the ~1.58rem minimize control, three 0.25rem flex gaps, the
+ * 1.5rem block padding and the 1 px rim sum to ~12.19rem of content below the
+ * `main > section` top edge at 1rem — a bottom edge near 13.19rem. The rail starts at
+ * 16rem, leaving ~2.8rem of clearance (enough for one wrapped resource line) so the
+ * leaderboard never touches the HUD at desktop widths. The 720 px block keeps the
+ * accepted 17rem mobile band below the feed.
+ */
 .leaderboard {
   position: absolute;
-  top: calc(12.5rem + env(safe-area-inset-top, 0px));
+  top: calc(16rem + env(safe-area-inset-top, 0px));
   left: calc(1rem + env(safe-area-inset-left, 0px));
   box-sizing: border-box;
   width: min(17rem, calc(100vw - 2rem));
