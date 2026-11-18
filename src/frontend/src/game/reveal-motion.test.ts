@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { PREVIEW_REST_ROTATION_RAD } from '../render/preview';
-import type { SlotId } from './parts-v2';
+import type { SlotIdV3 } from './parts-v3';
 import {
   createRevealStagePose,
   REVEAL_RARITY_HEX,
@@ -12,18 +12,44 @@ import {
   type RevealStagePose,
 } from './reveal-motion';
 
+/** A runtime string the catalog does not know, narrowed for the defensive-fallback path. */
+function unknownSlot(id: string): SlotIdV3 {
+  return id as SlotIdV3;
+}
+
 /** One pose at `elapsedMs` in a fresh buffer (the production path reuses one buffer). */
 function poseAt(
   elapsedMs: number,
-  slot: SlotId = 'hull',
+  slot: SlotIdV3 = 'hull',
   reducedMotion = false,
 ): RevealStagePose {
   return revealStagePose(elapsedMs, slot, reducedMotion, createRevealStagePose());
 }
 
-describe('REVEAL_SLOT_YAW_RAD (AC-6)', () => {
-  it('pins the ten slot yaw values exactly', () => {
+describe('REVEAL_SLOT_YAW_RAD (AC-6/AC-31)', () => {
+  it('pins the eleven slot yaw values exactly', () => {
     expect(REVEAL_SLOT_YAW_RAD).toEqual({
+      hull: 0.35,
+      nose: 0.15,
+      cockpit: 0.45,
+      'wing-left': 0.85,
+      'wing-right': -0.85,
+      'engine-left': 0.7,
+      'engine-right': -0.7,
+      'ignition-left': 1.0,
+      'ignition-right': -1.0,
+      'tail-fin': 1.2,
+      shot: 0.9,
+    });
+    expect(Object.keys(REVEAL_SLOT_YAW_RAD)).toHaveLength(11);
+    expect(REVEAL_SLOT_YAW_RAD.shot).toBe(0.9);
+  });
+
+  it('keeps the ten accepted ship-slot yaw values unchanged', () => {
+    const tenShipSlots = Object.fromEntries(
+      Object.entries(REVEAL_SLOT_YAW_RAD).filter(([slot]) => slot !== 'shot'),
+    );
+    expect(tenShipSlots).toEqual({
       hull: 0.35,
       nose: 0.15,
       cockpit: 0.45,
@@ -39,14 +65,30 @@ describe('REVEAL_SLOT_YAW_RAD (AC-6)', () => {
 
   it('yaws the ship to each slot once the charge phase ends', () => {
     for (const [slot, yaw] of Object.entries(REVEAL_SLOT_YAW_RAD)) {
-      expect(poseAt(420, slot as SlotId).yawRad).toBe(yaw);
-      expect(poseAt(1290, slot as SlotId).yawRad).toBe(yaw);
+      expect(poseAt(420, slot as SlotIdV3).yawRad).toBe(yaw);
+      expect(poseAt(1290, slot as SlotIdV3).yawRad).toBe(yaw);
     }
   });
 
+  it('yaws to 0.9 rad for a shot grant with the unchanged timeline', () => {
+    expect(poseAt(0, 'shot').yawRad).toBe(REVEAL_START_YAW_RAD);
+    expect(poseAt(420, 'shot')).toEqual({
+      phase: 'orb',
+      yawRad: 0.9,
+      scale: 1.04,
+      slotPulse: 1,
+      ringScale: 0.4,
+      ringOpacity: 0,
+      flashOpacity: 0,
+    });
+    expect(poseAt(970, 'shot').slotPulse).toBe(1.1);
+    expect(poseAt(1290, 'shot').yawRad).toBe(0.9);
+    expect(poseAt(970, 'shot', true).yawRad).toBe(0.9);
+  });
+
   it('falls back to the hull yaw for an unknown slot instead of throwing', () => {
-    expect(poseAt(420, 'reactor' as SlotId).yawRad).toBe(0.35);
-    expect(poseAt(1290, 'reactor' as SlotId).yawRad).toBe(0.35);
+    expect(poseAt(420, unknownSlot('reactor')).yawRad).toBe(0.35);
+    expect(poseAt(1290, unknownSlot('reactor')).yawRad).toBe(0.35);
   });
 
   it('starts from the preview rest yaw', () => {

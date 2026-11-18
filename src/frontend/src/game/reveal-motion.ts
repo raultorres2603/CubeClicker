@@ -25,15 +25,17 @@
  */
 
 import { easeInOutCubic, easeOutCubic, MOTION } from './motion';
-import type { SlotId } from './parts-v2';
+import type { SlotIdV3 } from './parts-v3';
 
 /**
- * Reveal yaw of the whole ship per slot, in radians (spec AC-6, exact table).
+ * Reveal yaw of the whole ship per slot, in radians (spec AC-6 table plus AC-31's `shot`).
  *
  * The sign turns each slot toward the camera; `wing-right`, `engine-right` and
  * `ignition-right` are negative so their port counterparts stay on the opposite side.
+ * The eleven keys are exactly the v3 slots: `shot` has no mesh, so its yaw is the only
+ * reveal effect of a shot grant.
  */
-export const REVEAL_SLOT_YAW_RAD: Readonly<Record<SlotId, number>> = {
+export const REVEAL_SLOT_YAW_RAD: Readonly<Record<SlotIdV3, number>> = {
   hull: 0.35,
   nose: 0.15,
   cockpit: 0.45,
@@ -44,6 +46,7 @@ export const REVEAL_SLOT_YAW_RAD: Readonly<Record<SlotId, number>> = {
   'ignition-left': 1.0,
   'ignition-right': -1.0,
   'tail-fin': 1.2,
+  shot: 0.9,
 };
 
 /**
@@ -113,7 +116,7 @@ function lerp(from: number, to: number, t: number): number {
 }
 
 /** The granted slot's yaw; an unknown slot falls back to `hull` defensively, never throws. */
-function slotYawFor(slot: SlotId): number {
+function slotYawFor(slot: SlotIdV3): number {
   return REVEAL_SLOT_YAW_RAD[slot] ?? REVEAL_SLOT_YAW_RAD.hull;
 }
 
@@ -168,13 +171,13 @@ export function createRevealStagePose(): RevealStagePose {
  * (and beyond) the static rest row is written; reduced motion writes it for every input.
  *
  * @param elapsedMs milliseconds since the reveal mounted; clamped to `[0, 1290]`.
- * @param slot the granted slot (already validated by the caller).
+ * @param slot the granted v3 slot (already validated by the caller).
  * @param reducedMotion when true, always the rest row.
  * @param out the caller-owned pose record to write.
  */
 export function revealStagePose(
   elapsedMs: number,
-  slot: SlotId,
+  slot: SlotIdV3,
   reducedMotion: boolean,
   out: RevealStagePose,
 ): RevealStagePose {

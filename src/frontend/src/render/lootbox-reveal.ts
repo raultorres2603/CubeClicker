@@ -12,12 +12,13 @@
  * enabled, no texture/loader/sprite/points is created, the module touches no browser global
  * and it consumes no random draw.
  *
- * Try-on staging (AC-5): the stage resolves the slot from the catalog
- * (`partDefinition(grant.partId).slot`, never the wire `slot`), copies the normalized
+ * Try-on staging (AC-5/AC-31): the stage resolves the slot through the v3 catalog
+ * (`partDefinitionV3(grant.partId).slot`, never the wire `slot`), copies the normalized
  * appearance and replaces only that slot, then applies it through the cursor model's single
- * `applyAppearance` path — the same `appearanceToCursorShipParams` mapping the cursor and the
- * preview use, so no second visual mapping exists. The caller's `appearance` object is never
- * mutated.
+ * `applyAppearance` path — the same mapping the cursor and the preview use, so no second
+ * visual mapping exists. The caller's `appearance` object is never mutated. A `shot` grant
+ * stages its `shot` entry only: the model has no mesh for it, so the ship is unchanged and
+ * no slot pulses (the reveal still yaws to `REVEAL_SLOT_YAW_RAD.shot`).
  *
  * Per-frame work (AC-15): {@link RevealStage.update} writes one pre-allocated pose buffer into
  * the scene graph — whole-ship yaw/scale, the granted slot's base scale times the reveal
@@ -37,7 +38,7 @@ import {
   Scene,
 } from 'three';
 
-import { normalizeAppearance, partDefinition } from '../game/parts-v2';
+import { normalizeAppearanceV3, partDefinitionV3 } from '../game/parts-v3';
 import {
   createRevealStagePose,
   REVEAL_RARITY_HEX,
@@ -142,20 +143,20 @@ export interface RevealStage {
  *
  * @param appearance the player's slot→part-id appearance; it is normalized into a copy and
  *   never mutated.
- * @param grant the granted lootbox; its catalog slot (`partDefinition(partId).slot`) is the
- *   only slot the stage replaces. An unknown part id throws `unknown part: <id>` before any
- *   GPU resource is built, so the component can fall back.
+ * @param grant the granted lootbox; its v3 catalog slot (`partDefinitionV3(partId).slot`) is
+ *   the only slot the stage replaces. An unknown part id throws `unknown part: <id>` before
+ *   any GPU resource is built, so the component can fall back.
  */
 export function createRevealStage(
   appearance: Record<string, string>,
   grant: LootboxGrant,
 ): RevealStage {
-  const resolvedSlot = partDefinition(grant.partId).slot;
+  const resolvedSlot = partDefinitionV3(grant.partId).slot;
 
   // A fresh copy: the passed appearance is the player's real customization state and must
   // never be mutated by the reveal (AC-5). The catalog slot wins over any wire slot.
   const stageAppearance: Record<string, string> = {
-    ...normalizeAppearance(appearance),
+    ...normalizeAppearanceV3(appearance),
     [resolvedSlot]: grant.partId,
   };
 
@@ -212,9 +213,10 @@ export function createRevealStage(
     baseRotationY[index] = slotGroup.rotation.y;
     baseRotationZ[index] = slotGroup.rotation.z;
   }
-  // Identity lookup over the model's own slot groups; a slot the model does not build would
-  // simply never pulse (cannot happen for a catalog part).
-  const grantedIndex = slotGroups.indexOf(model.slots[resolvedSlot]);
+  // Identity lookup over the model's own slot groups; `shot` has no mesh (AC-31), so a shot
+  // grant pulses nothing and the stage ship stays exactly as staged.
+  const grantedIndex =
+    resolvedSlot === 'shot' ? -1 : slotGroups.indexOf(model.slots[resolvedSlot]);
 
   const ringGeometry = new RingGeometry(
     REVEAL_RING_INNER_RADIUS,

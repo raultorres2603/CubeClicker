@@ -15,11 +15,12 @@
  * - **Phase mapping.** The panel may still be `idle` on the first grant render; the component
  *   maps `idle → charge` (or `idle → rest` under reduced motion), so `data-reveal-phase` is
  *   never `idle` (AC-7/AC-9).
- * - **Catalog authority.** A valid `grant.partId` resolves its catalog row, and the
- *   **catalog-derived** slot (`partDefinition(partId).slot`) is the only slot rendered or
- *   staged; the wire `slot` is never trusted or displayed. An unknown part never reaches the
- *   stage: the card renders the fixed `unknown` sanitised values and `Unknown part`, with no
- *   raw server string anywhere in the DOM (AC-7/AC-10).
+ * - **Catalog authority.** A valid `grant.partId` resolves its v3 catalog row, and the
+ *   **catalog-derived** slot (`partDefinitionV3(partId).slot`) is the only slot rendered or
+ *   staged; the wire `slot` is never trusted or displayed. A `shot` grant renders
+ *   `data-slot="shot"`, the `Shot` slot name and the catalog part name with no staged mesh.
+ *   An unknown part never reaches the stage: the card renders the fixed `unknown` sanitised
+ *   values and `Unknown part`, with no raw server string anywhere in the DOM (AC-7/AC-10).
  * - **One context, 30 fps.** The renderer and stage are created once per grant sequence and
  *   disposed together on replacement/unmount (stage first, then renderer). The loop renders
  *   at most 30 frames per second and pauses while `document.hidden`; a visible tab resets the
@@ -43,11 +44,11 @@ import {
 import { WebGLRenderer } from 'three';
 
 import {
-  SLOT_CATALOG,
-  isValidPartId,
-  normalizeAppearance,
-  partDefinition,
-} from '../game/parts-v2';
+  SLOT_CATALOG_V3,
+  isValidPartIdV3,
+  normalizeAppearanceV3,
+  partDefinitionV3,
+} from '../game/parts-v3';
 import type { RevealStagePhase, RevealUiPhase } from '../game/reveal-motion';
 import type { LootboxGrant } from '../game/types';
 import { createRevealStage, type RevealStage } from '../render/lootbox-reveal';
@@ -92,9 +93,9 @@ function defaultCreateStage(
   return createRevealStage(appearance, grant);
 }
 
-/** The slot's catalog display name; an unknown slot yields an empty string. */
+/** The slot's v3 catalog display name; an unknown slot yields an empty string. */
 function slotDisplayName(slotId: string): string {
-  return SLOT_CATALOG.find((slot) => slot.id === slotId)?.name ?? '';
+  return SLOT_CATALOG_V3.find((slot) => slot.id === slotId)?.name ?? '';
 }
 
 /** The post-adoption owned count; anything but a non-negative integer reads as `0`. */
@@ -115,12 +116,13 @@ function ownedCountFor(parts: Record<string, number>, partId: string): number {
 export function LootboxReveal(props: LootboxRevealProps): ReactElement {
   const { grant, appearance, parts, phase, reducedMotion = false, onEquip, onDismiss } = props;
 
-  // Catalog authority: only a known part id yields a slot, a name and a stage (AC-7/AC-10).
-  const catalogPart = isValidPartId(grant.partId) ? partDefinition(grant.partId) : null;
+  // Catalog authority: only a known v3 part id yields a slot, a name and a stage
+  // (AC-7/AC-10/AC-31).
+  const catalogPart = isValidPartIdV3(grant.partId) ? partDefinitionV3(grant.partId) : null;
   const resolvedSlot = catalogPart?.slot ?? null;
   const partName = catalogPart?.name ?? REVEAL_UNKNOWN_PART_NAME;
   const slotName = resolvedSlot === null ? '' : slotDisplayName(resolvedSlot);
-  const normalizedAppearance = normalizeAppearance(appearance);
+  const normalizedAppearance = normalizeAppearanceV3(appearance);
   const isEquipped =
     resolvedSlot !== null && normalizedAppearance[resolvedSlot] === grant.partId;
   const ownedCount = catalogPart === null ? 0 : ownedCountFor(parts, catalogPart.id);
@@ -158,7 +160,7 @@ export function LootboxReveal(props: LootboxRevealProps): ReactElement {
     const createStage = latest.createStage ?? defaultCreateStage;
     const sequence = latest.grant.sequence;
     const stagedAppearance: Record<string, string> = {
-      ...normalizeAppearance(latest.appearance),
+      ...normalizeAppearanceV3(latest.appearance),
       [resolvedSlot]: latest.grant.partId,
     };
 

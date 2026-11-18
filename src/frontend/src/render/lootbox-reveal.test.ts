@@ -268,6 +268,113 @@ describe('try-on appearance (AC-5)', () => {
   });
 });
 
+describe('shot grants (AC-31)', () => {
+  /** An epic shot grant: finish `solar` (#f59e0b / #fef3c7), form `kite`, name `Solar Kite Bolt`. */
+  function shotGrant(overrides: Partial<LootboxGrant> = {}): LootboxGrant {
+    return {
+      partId: 'shot-kite-solar',
+      slot: 'shot',
+      rarity: 'epic',
+      duplicate: false,
+      sequence: 1,
+      ...overrides,
+    };
+  }
+
+  /** The ship-side render state: mesh names plus material colour/opacity, in traversal order. */
+  function shipSignature(stage: RevealStage): string[] {
+    const signature: string[] = [];
+    stage.model.group.traverse((object) => {
+      if (!(object instanceof Mesh)) {
+        return;
+      }
+      const material = object.material as MeshPhysicalMaterial | MeshBasicMaterial;
+      signature.push(`${object.name}:${material.color.getHexString()}:${material.opacity}`);
+    });
+    return signature;
+  }
+
+  it('stages only the shot entry and adds no mesh or slot group to the staged ship', () => {
+    const shot = createRevealStage({ hull: 'hull-gold' }, shotGrant());
+    const baseline = createRevealStage({ hull: 'hull-gold' }, rareGrant({ partId: 'hull-gold' }));
+
+    expect(shot.stageAppearance).toEqual({ hull: 'hull-gold', shot: 'shot-kite-solar' });
+    expect(Object.keys(shot.model.slots)).toEqual([
+      'hull',
+      'nose',
+      'cockpit',
+      'wing-left',
+      'wing-right',
+      'engine-left',
+      'engine-right',
+      'ignition-left',
+      'ignition-right',
+      'tail-fin',
+    ]);
+    expect(shot.model.meshes).toHaveLength(21);
+    expect(shot.model.slotGroups).toHaveLength(10);
+    expect(shot.model.triangleCount).toBe(776);
+    expect(shipSignature(shot)).toHaveLength(21);
+    expect(shipSignature(shot)).toEqual(shipSignature(baseline));
+
+    // The granted shot part never overwrites a ship slot: hull-gold stays gold.
+    const hull = shot.scene.getObjectByName('cursor-hull') as Mesh;
+    expect((hull.material as MeshPhysicalMaterial).color.getHex()).toBe(0xccaa44);
+
+    shot.dispose();
+    baseline.dispose();
+  });
+
+  it('yaws to 0.9 rad with the unchanged timeline, pulses no slot and leaves the ship at rest', () => {
+    const stage = createRevealStage({}, shotGrant());
+    const hull = stage.model.slots.hull;
+    const wing = stage.model.slots['wing-left'];
+
+    let pose = stage.update(420, false);
+    expect(pose.phase).toBe('orb');
+    expect(stage.model.group.rotation.y).toBe(0.9);
+    expect(stage.model.group.scale.x).toBe(1.04);
+
+    // Reveal peak: the pose buffer pulses (1.1) but a shot grant owns no slot group.
+    pose = stage.update(970, false);
+    expect(pose.phase).toBe('reveal');
+    expect(pose.slotPulse).toBe(1.1);
+    expect(stage.model.group.rotation.y).toBe(0.9);
+    expect(hull.scale.toArray()).toEqual([1, 1, 1]);
+    expect(wing.scale.toArray()).toEqual([1, 1, 1]);
+
+    pose = stage.update(1290, false);
+    expect(pose.phase).toBe('rest');
+    expect(stage.model.group.rotation.y).toBe(0.9);
+    expect(hull.scale.toArray()).toEqual([1, 1, 1]);
+    expect(wing.scale.toArray()).toEqual([1, 1, 1]);
+
+    stage.dispose();
+  });
+
+  it('resolves a generated v3 id through its v3 catalog slot, never the wire slot', () => {
+    const stage = createRevealStage(
+      {},
+      rareGrant({ partId: 'hull-dart-chrome', slot: 'shot' }),
+    );
+
+    expect(stage.stageAppearance).toEqual({ hull: 'hull-dart-chrome' });
+    // The hull yaw, not the shot yaw: the catalog slot won over the wire `slot`.
+    expect(stage.update(420, false).yawRad).toBe(0.35);
+    expect(stage.model.group.rotation.y).toBe(0.35);
+
+    stage.dispose();
+  });
+
+  it('resolves reveal ids through the v3 catalog, never the v2 catalog', () => {
+    for (const relativePath of ['./lootbox-reveal.ts', '../ui/LootboxReveal.tsx']) {
+      const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+      expect(source).not.toMatch(/parts-v2/);
+      expect(source).toContain("from '../game/parts-v3'");
+    }
+  });
+});
+
 describe('per-frame pose writes (AC-4/AC-15)', () => {
   it('writes the exact charge/orb/flash/reveal/settle/rest values', () => {
     const stage = createRevealStage({}, rareGrant());

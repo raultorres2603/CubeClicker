@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Mesh, PerspectiveCamera, Scene, type WebGLRenderer } from 'three';
+import { Mesh, MeshPhysicalMaterial, PerspectiveCamera, Scene, type WebGLRenderer } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LootboxGrant } from '../game/types';
@@ -154,6 +154,18 @@ function grant(overrides: Partial<LootboxGrant> = {}): LootboxGrant {
     partId: 'wing-left-silver',
     slot: 'wing-left',
     rarity: 'rare',
+    duplicate: false,
+    sequence: 1,
+    ...overrides,
+  };
+}
+
+/** An epic shot grant: finish `solar`, form `kite`, catalog name `Solar Kite Bolt`. */
+function shotGrant(overrides: Partial<LootboxGrant> = {}): LootboxGrant {
+  return {
+    partId: 'shot-kite-solar',
+    slot: 'shot',
+    rarity: 'epic',
     duplicate: false,
     sequence: 1,
     ...overrides,
@@ -708,6 +720,176 @@ describe('LootboxReveal WebGL fallback (AC-10)', () => {
     );
     expect(container.querySelectorAll('canvas')).toHaveLength(0);
     expect(requestFrame).not.toHaveBeenCalled();
+  });
+});
+
+describe('LootboxReveal shot cards (AC-31)', () => {
+  it('renders the v3 shot slot, slot name, catalog name and staged shot entry', () => {
+    const harness = renderReveal({
+      grant: shotGrant({ sequence: 5 }),
+      appearance: { shot: 'shot-default' },
+      parts: { 'shot-kite-solar': 1 },
+    });
+    const root = rootOf(harness.container);
+
+    expect(attributesOf(root)).toEqual({
+      class: 'lootbox-reveal',
+      role: 'group',
+      'aria-live': 'off',
+      'aria-label': 'Lootbox reveal: Solar Kite Bolt',
+      'data-reveal-active': 'true',
+      'data-reveal-phase': 'rest',
+      'data-reveal-sequence': '5',
+      'data-part-id': 'shot-kite-solar',
+      'data-slot': 'shot',
+      'data-rarity': 'epic',
+      'data-duplicate': 'false',
+      'data-owned-count': '1',
+      'data-reveal-3d': 'ready',
+      'data-reduced-motion': 'false',
+    });
+    expect(harness.container.querySelector('.lootbox-reveal-rarity')?.textContent).toBe('Epic');
+    expect(harness.container.querySelector('.lootbox-reveal-part')?.textContent).toBe(
+      'Solar Kite Bolt',
+    );
+    expect(harness.container.querySelector('.lootbox-reveal-slot')?.textContent).toBe('Shot');
+    expect(harness.container.querySelector('.lootbox-reveal-duplicate')?.textContent).toBe('New');
+    expect(harness.container.querySelector('.lootbox-reveal-owned')?.textContent).toBe('Owned ×1');
+    expect(screen.getByRole('button', { name: 'Equip Solar Kite Bolt' }).hasAttribute('disabled')).toBe(
+      false,
+    );
+
+    // Only the shot slot is staged; the catalog slot drives the appearance copy.
+    expect(harness.createStage).toHaveBeenCalledTimes(1);
+    expect(harness.createStage).toHaveBeenCalledWith({ shot: 'shot-kite-solar' }, harness.props.grant);
+  });
+
+  it('equips and dismisses a shot card through the unchanged callbacks', () => {
+    const calls: string[] = [];
+    const onEquip = vi.fn((partId: string): void => {
+      calls.push(`equip:${partId}`);
+    });
+    const onDismiss = vi.fn((): void => {
+      calls.push('dismiss');
+    });
+    renderReveal({ grant: shotGrant(), onEquip, onDismiss });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Equip Solar Kite Bolt' }));
+
+    expect(onEquip).toHaveBeenNthCalledWith(1, 'shot-kite-solar');
+    expect(calls).toEqual(['equip:shot-kite-solar', 'dismiss']);
+  });
+
+  it('disables Equip when the shot part is already equipped', () => {
+    renderReveal({ grant: shotGrant(), appearance: { shot: 'shot-kite-solar' } });
+
+    const equip = screen.getByRole('button', { name: 'Equipped' });
+    expect(equip.hasAttribute('disabled')).toBe(true);
+    expect(equip.hasAttribute('aria-label')).toBe(false);
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Dismiss lootbox reveal' }),
+    );
+  });
+
+  it('renders exactly one static frame under reduced motion without a flash', () => {
+    const harness = renderReveal({ grant: shotGrant(), phase: 'idle', reducedMotion: true });
+    const root = rootOf(harness.container);
+
+    expect(root.getAttribute('data-reveal-phase')).toBe('rest');
+    expect(root.getAttribute('data-reduced-motion')).toBe('true');
+    expect(root.getAttribute('data-slot')).toBe('shot');
+    expect(harness.stage.updates).toEqual([[0, true]]);
+    expect(harness.renderer.renders).toHaveLength(1);
+    expect(requestFrame).not.toHaveBeenCalled();
+    expect(harness.container.querySelector('[data-reveal-flash="true"]')).toBeNull();
+  });
+
+  it('keeps the full shot card and controls when WebGL is unavailable', () => {
+    const createStage = vi.fn((): RevealStage => {
+      throw new Error('the stage must not be built without a renderer');
+    });
+    const onDismiss = vi.fn((): void => undefined);
+    const { container } = render(
+      <LootboxReveal
+        grant={shotGrant({ slot: 'hull' })}
+        appearance={{}}
+        parts={{ 'shot-kite-solar': 2 }}
+        phase="rest"
+        onDismiss={onDismiss}
+        createRenderer={() => {
+          throw new Error('WebGL unavailable');
+        }}
+        createStage={createStage}
+      />,
+    );
+    const root = rootOf(container);
+
+    // The wire slot (`hull`) is ignored: the v3 catalog slot `shot` wins.
+    expect(root.getAttribute('data-reveal-3d')).toBe('unavailable');
+    expect(root.getAttribute('data-slot')).toBe('shot');
+    expect(container.querySelectorAll('canvas')).toHaveLength(0);
+    expect(createStage).not.toHaveBeenCalled();
+
+    const fallback = container.querySelector('svg.lootbox-fallback-ship');
+    expect(fallback?.getAttribute('data-slot')).toBe('shot');
+    expect(container.querySelector('.lootbox-reveal-part')?.textContent).toBe('Solar Kite Bolt');
+    expect(container.querySelector('.lootbox-reveal-slot')?.textContent).toBe('Shot');
+    expect(container.querySelector('.lootbox-reveal-owned')?.textContent).toBe('Owned ×2');
+    expect(screen.getByRole('button', { name: 'Equip Solar Kite Bolt' })).toBeInstanceOf(
+      HTMLButtonElement,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss lootbox reveal' }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(requestFrame).not.toHaveBeenCalled();
+  });
+
+  it('renders the real stage at the 0.9 shot yaw with an unchanged ship', () => {
+    const renderer = fakeRenderer();
+    const { unmount } = render(
+      <LootboxReveal
+        grant={shotGrant()}
+        appearance={{}}
+        parts={{ 'shot-kite-solar': 1 }}
+        phase="rest"
+        onDismiss={vi.fn((): void => undefined)}
+        createRenderer={() => renderer.renderer}
+      />,
+    );
+
+    flushFrame(0);
+    const rendered = renderer.renders[0];
+    if (rendered === undefined) {
+      throw new Error('no frame rendered');
+    }
+    const scene = rendered.scene as Scene;
+    const model = scene.getObjectByName('cursor-ship-model');
+    expect(scene.name).toBe('lootbox-reveal-scene');
+    expect(model?.rotation.y).toBe(0.55);
+    expect(model?.scale.x).toBe(1);
+
+    let meshes = 0;
+    scene.traverse((object) => {
+      if (object instanceof Mesh) {
+        meshes += 1;
+      }
+    });
+    // 21 ship meshes + the rarity ring: a shot grant adds no mesh (AC-31).
+    expect(meshes).toBe(22);
+    const hull = scene.getObjectByName('cursor-hull') as Mesh;
+    expect((hull.material as MeshPhysicalMaterial).color.getHex()).toBe(0x8f9bad);
+
+    // 420 ms: the charge phase has yawed the ship to the shot yaw and the hull is unstaged.
+    flushFrame(420);
+    expect(model?.rotation.y).toBe(0.9);
+    expect((hull.material as MeshPhysicalMaterial).color.getHex()).toBe(0x8f9bad);
+
+    // 1290 ms: the unchanged rest row keeps the shot yaw.
+    flushFrame(1290);
+    expect(model?.rotation.y).toBe(0.9);
+    expect(hull.scale.toArray()).toEqual([1, 1, 1]);
+
+    unmount();
+    expect(renderer.disposeCalls()).toBe(1);
   });
 });
 
