@@ -1852,8 +1852,7 @@ describe('orientation storage and rotate (T2)', () => {
 
     first.clear();
     first.receive(JSON.stringify({ type: 'explode', id: 'front:9:9', level: 1 }));
-    const sync = first.messages().find((m) => m.type === 'stateSync');
-    expect(sync.type).toBe('stateSync');
+    const sync = onlyType(first, 'stateSync');
     expect(sync.yawSteps).toBe(0);
     expect(sync.pitchSteps).toBe(0);
   });
@@ -1880,8 +1879,7 @@ describe('orientation storage and rotate (T2)', () => {
     third.clear();
     third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
 
-    const joined = second.messages().find((m) => m.type === 'memberJoined');
-    expect(joined.type).toBe('memberJoined');
+    const joined = onlyType(second, 'memberJoined');
     expect(joined.member.yawSteps).toBe(0);
     expect(joined.member.pitchSteps).toBe(0);
   });
@@ -2097,8 +2095,7 @@ describe('idle accrual (T4)', () => {
     const stored = await h.repo.findByUserId('u1');
     expect(stored!.coins).toBe(expectedCoins);
     expect(await h.repo.findLastSeenAt('u1')).toBe(120_000);
-    const eu = peer.messages().find((m) => m.type === 'economyUpdate') as ServerMessage;
-    expect(eu.type).toBe('economyUpdate');
+    const eu = onlyType(peer, 'economyUpdate');
     expect(eu.coins).toBe(expectedCoins);
   });
 

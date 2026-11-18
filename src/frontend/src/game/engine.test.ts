@@ -133,7 +133,7 @@ describe('createEngine — initial state', () => {
 
     expect(snapshot.phase).toBe('intro');
     expect(snapshot.phaseProgress).toBe(0);
-    expect(snapshot.stats.clicks).toBe(0); expect(snapshot.stats.facesDestroyed).toBe(0); expect(snapshot.stats.coins).toBe(undefined); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
+    expect(snapshot.stats).toEqual({ clicks: 0, facesDestroyed: 0 });
     expect(snapshot.levelIndex).toBe(0);
     expect(snapshot.style).toBe(CUBE_STYLES[0]);
     expect(snapshot.style.id).toBe('obsidian-neon');
@@ -188,7 +188,7 @@ describe('getSnapshot — referential stability (AC-11)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
     const third = engine.getSnapshot();
     expect(third).not.toBe(second);
-    expect(third.stats.clicks).toBe(1); expect(third.stats.facesDestroyed).toBe(0); expect(third.stats.coins).toBe(0.1); expect(third.stats.cubesDestroyed).toBe(undefined);
+    expect(third.stats).toEqual({ clicks: 1, facesDestroyed: 0, coins: 0.1 });
     expect(engine.getSnapshot()).toBe(third);
 
     // A frame with nothing to advance, and draining the queue, are not state changes.
@@ -279,7 +279,7 @@ describe('clicks, stats and intents (AC-5, AC-11)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:2:2' });
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(1); expect(snapshot.stats.facesDestroyed).toBe(0); expect(snapshot.stats.coins).toBe(0.1); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
+    expect(snapshot.stats).toEqual({ clicks: 1, facesDestroyed: 0, coins: 0.1 });
     expect(snapshot.board.faces[0]?.miniCubes).toHaveLength(24);
     expect(snapshot.board.faces[0]?.miniCubes.some((miniCube) => miniCube.id === 'front:2:2')).toBe(false);
     expect(engine.drainIntents()).toEqual([explosion('front:2:2', 'front')]);
@@ -615,7 +615,7 @@ describe('face destruction and auto-rotation (AC-9)', () => {
     clearFace(engine, 'front', 2);
 
     const snapshot = engine.getSnapshot();
-    expect(snapshot.stats.clicks).toBe(4); expect(snapshot.stats.facesDestroyed).toBe(1); expect(snapshot.stats.coins).toBe(0.4); expect(snapshot.stats.cubesDestroyed).toBe(undefined);
+    expect(snapshot.stats).toEqual({ clicks: 4, facesDestroyed: 1, coins: 0.4 });
     const intents = engine.drainIntents();
     expect(intents).toEqual([
       explosion('front:0:0', 'front'),
@@ -759,7 +759,7 @@ describe('travel and level progression (AC-10)', () => {
 
     let snapshot = engine.getSnapshot();
     expect(snapshot.orientation).toEqual({ yawSteps: 3, pitchSteps: -1 });
-    expect(snapshot.stats.clicks).toBe(150); expect(snapshot.stats.facesDestroyed).toBe(6); expect(snapshot.stats.coins).toBe(25); expect(snapshot.stats.cubesDestroyed).toBe(1);
+    expect(snapshot.stats).toEqual({ clicks: 150, facesDestroyed: 6, coins: 25, cubesDestroyed: 1 });
     expect(snapshot.phase).toBe('playing');
 
     const levelIntents = engine.drainIntents();
@@ -1340,7 +1340,7 @@ describe('authoritative cube adoption (AC-14, AC-22)', () => {
       idsOfFace('front', 3).filter((id) => id !== 'front:0:0'),
     );
     // The authority removal the client had not applied counts, as the accepted reconcile does.
-    expect(adopted.stats.clicks).toBe(1); expect(adopted.stats.facesDestroyed).toBe(0); expect(adopted.stats.coins).toBe(undefined); expect(adopted.stats.cubesDestroyed).toBe(undefined);
+    expect(adopted.stats).toEqual({ clicks: 1, facesDestroyed: 0 });
     expect(engine.drainIntents()).toEqual([replayExplosion('front:0:0', 'front')]);
   });
 
@@ -1888,20 +1888,169 @@ describe('travel cancel (AC-19 d, AC-22)', () => {
 
 
 describe('engine economy awards (AC-1..AC-4, AC-8, AC-21)', () => {
-  it('per-mini: destroying one mini-cube awards COINS_PER_MINI_CUBE', () => {
+  /** Clears every face but `bottom`, so the caller's final bottom clear completes the cube. */
+  function clearFiveFaces(engine: GameEngine, gridSize: number): void {
+    for (const faceId of FACE_IDS) {
+      if (faceId !== 'bottom') {
+        clearFace(engine, faceId, gridSize);
+      }
+    }
+  }
+
+  it('per-mini: one removed mini-cube adds exactly 0.1 coins and one click (AC-1)', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
 
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
 
-    const snap = engine.getSnapshot();
-    expect(snap.stats.clicks).toBe(1);
-    expect(snap.stats.coins).toBe(COINS_PER_MINI_CUBE);
-    expect(snap.stats.cubesDestroyed).toBeUndefined();
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(1);
+    expect(stats.facesDestroyed).toBe(0);
+    expect(stats.coins).toBe(0.1);
+    expect(stats.cubesDestroyed).toBeUndefined();
   });
 
-  it('guest path: earns coins and stats locally without adoptEconomy', () => {
+  it('per-cube: a fast completion adds exactly 5 coins x2 and one cubesDestroyed (AC-2, AC-8)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 2);
+    clearFace(engine, 'bottom', 2);
+
+    // 24 mini-cubes x 0.1 = 2.4, plus the 5-coin cube reward doubled by the speed bonus.
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(24);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(12.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('per-cube: a slow completion adds the 5-coin cube reward without the speed bonus (AC-3)', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 2);
+    engine.advance(100_000);
+    clearFace(engine, 'bottom', 2);
+
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(24);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(7.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('speed-bonus boundary: grid 3 at exactly 15_000ms qualifies (AC-3, AC-4)', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 3);
+    // thresholdSeconds(3) = 3 * 5 = 15 s; the boundary is inclusive.
+    engine.advance(15_000);
+    clearFace(engine, 'bottom', 3);
+
+    // 54 mini-cubes x 0.1 = 5.4, plus 5 coins doubled.
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(54);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(15.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('speed-bonus boundary: grid 3 at 15_001ms misses the bonus (AC-3, AC-4)', () => {
+    const engine = createEngine({ gridSize: 3, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 3);
+    engine.advance(15_001);
+    clearFace(engine, 'bottom', 3);
+
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(54);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(10.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('speed-bonus boundary: grid 7 at exactly 35_000ms qualifies (AC-3, AC-4)', () => {
+    const engine = createEngine({ gridSize: 7, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 7);
+    // thresholdSeconds(7) = 7 * 5 = 35 s; the boundary is inclusive.
+    engine.advance(35_000);
+    clearFace(engine, 'bottom', 7);
+
+    // 294 mini-cubes x 0.1 = 29.4, plus 5 coins doubled.
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(294);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(39.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('speed-bonus boundary: grid 7 at 35_001ms misses the bonus (AC-3, AC-4)', () => {
+    const engine = createEngine({ gridSize: 7, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    clearFiveFaces(engine, 7);
+    engine.advance(35_001);
+    clearFace(engine, 'bottom', 7);
+
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(294);
+    expect(stats.facesDestroyed).toBe(6);
+    expect(stats.coins).toBe(34.4);
+    expect(stats.cubesDestroyed).toBe(1);
+  });
+
+  it('cubesDestroyed increments once per completed cube and the stats carry across the level advance (AC-8)', () => {
+    const engine = createEngine({ gridSize: 2, timings: ARRIVAL_TIMINGS, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.drainIntents();
+
+    for (const faceId of FACE_IDS) {
+      clearFace(engine, faceId, 2);
+    }
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 24,
+      facesDestroyed: 6,
+      coins: 12.4,
+      cubesDestroyed: 1,
+    });
+
+    // The face fade is collapsed, so the next frame enters travel; the midpoint advances.
+    engine.advance(1);
+    expect(engine.getSnapshot().phase).toBe('travel');
+    engine.advance(ARRIVAL_TIMINGS.travelMs);
+    expect(engine.getSnapshot().phase).toBe('playing');
+    expect(engine.getSnapshot().levelIndex).toBe(1);
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 24,
+      facesDestroyed: 6,
+      coins: 12.4,
+      cubesDestroyed: 1,
+    });
+
+    for (const faceId of FACE_IDS) {
+      clearFace(engine, faceId, 2);
+    }
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 48,
+      facesDestroyed: 12,
+      coins: 24.8,
+      cubesDestroyed: 2,
+    });
+  });
+
+  it('guest path: earns coins and stats locally with no server adoption (AC-21)', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
@@ -1909,125 +2058,58 @@ describe('engine economy awards (AC-1..AC-4, AC-8, AC-21)', () => {
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:1' });
 
-    const snap = engine.getSnapshot();
-    expect(snap.stats.clicks).toBe(2);
-    expect(snap.stats.coins).toBe(COINS_PER_MINI_CUBE * 2);
+    // The engine owns no transport: a guest session is exactly this local ledger, and the
+    // account path differs only by the `adoptEconomy` reconciliation applied afterwards.
+    const stats = engine.getSnapshot().stats;
+    expect(stats.clicks).toBe(2);
+    expect(stats.facesDestroyed).toBe(0);
+    expect(stats.coins).toBe(0.2);
+    expect(stats.cubesDestroyed).toBeUndefined();
   });
 
-  it('per-cube: fast completion awards 2x COINS_PER_CUBE', () => {
-    const engine = createEngine({ gridSize: 2, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    engine.drainIntents();
-
-    for (const faceId of FACE_IDS) {
-      if (faceId === 'bottom') continue;
-      clearFace(engine, faceId, 2);
-    }
-    clearFace(engine, 'bottom', 2);
-
-    const snap = engine.getSnapshot();
-    expect(snap.stats.clicks).toBe(24);
-    expect(snap.stats.facesDestroyed).toBe(6);
-    expect(snap.stats.cubesDestroyed).toBe(1);
-    expect(snap.stats.coins).toBe(24 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2);
-  });
-
-  it('per-cube: slow completion awards 1x COINS_PER_CUBE', () => {
-    const engine = createEngine({ gridSize: 2, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    engine.drainIntents();
-
-    for (const faceId of FACE_IDS) {
-      if (faceId === 'bottom') continue;
-      clearFace(engine, faceId, 2);
-    }
-    engine.advance(100_000);
-    clearFace(engine, 'bottom', 2);
-
-    const snap = engine.getSnapshot();
-    expect(snap.stats.cubesDestroyed).toBe(1);
-    expect(snap.stats.coins).toBe(24 * COINS_PER_MINI_CUBE + COINS_PER_CUBE);
-  });
-
-  it('speed bonus boundary: exactly at threshold qualifies (grid 3)', () => {
-    const engine = createEngine({ gridSize: 3, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    engine.drainIntents();
-
-    for (const faceId of FACE_IDS) {
-      if (faceId === 'bottom') continue;
-      clearFace(engine, faceId, 3);
-    }
-    engine.advance(thresholdSeconds(3) * 1000);
-    clearFace(engine, 'bottom', 3);
-
-    const snap = engine.getSnapshot();
-    expect(snap.stats.cubesDestroyed).toBe(1);
-    expect(snap.stats.coins).toBe(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE * 2);
-  });
-
-  it('speed bonus boundary: one ms over threshold does not qualify (grid 3)', () => {
-    const engine = createEngine({ gridSize: 3, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    engine.drainIntents();
-
-    for (const faceId of FACE_IDS) {
-      if (faceId === 'bottom') continue;
-      clearFace(engine, faceId, 3);
-    }
-    engine.advance(thresholdSeconds(3) * 1000 + 1);
-    clearFace(engine, 'bottom', 3);
-
-    const snap = engine.getSnapshot();
-    expect(snap.stats.cubesDestroyed).toBe(1);
-    expect(snap.stats.coins).toBe(54 * COINS_PER_MINI_CUBE + COINS_PER_CUBE);
-  });
-
-  it('size-dependent threshold: grid 7 uses 35s boundary', () => {
-    const engine = createEngine({ gridSize: 7, random: flatRandom });
-    engine.dispatch({ type: 'introSkip' });
-    engine.drainIntents();
-
-    for (const faceId of FACE_IDS) {
-      if (faceId === 'bottom') continue;
-      clearFace(engine, faceId, 7);
-    }
-    engine.advance(thresholdSeconds(7) * 1000);
-    clearFace(engine, 'bottom', 7);
-
-    const snap = engine.getSnapshot();
-    expect(snap.stats.cubesDestroyed).toBe(1);
-    expect(snap.stats.coins).toBe(39.4);
-  });
-});
-
-describe('adoptEconomy (AC-6, AC-16)', () => {
-  it('sets coins and stats to absolute values', () => {
+  it('adoptEconomy: a higher server snapshot replaces the local totals exactly (AC-6, AC-16)', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
     engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    const board = engine.getSnapshot().board;
 
     engine.adoptEconomy({ coins: 99.99, clicks: 5, facesDestroyed: 2, cubesDestroyed: 3 });
 
-    const stats = engine.getSnapshot().stats;
-    expect(stats.coins).toBe(99.99);
-    expect(stats.clicks).toBe(5);
-    expect(stats.facesDestroyed).toBe(2);
-    expect(stats.cubesDestroyed).toBe(3);
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 5,
+      facesDestroyed: 2,
+      cubesDestroyed: 3,
+      coins: 99.99,
+    });
+    // Adoption reconciles the ledger only: progression and the board are untouched.
+    expect(engine.getSnapshot().levelIndex).toBe(0);
+    expect(engine.getSnapshot().board).toBe(board);
   });
 
-  it('overwrites lower local totals with server absolute values', () => {
+  it('adoptEconomy: a lower server snapshot replaces the local totals and earning continues from it (AC-6)', () => {
     const engine = createEngine({ gridSize: 2, random: flatRandom });
     engine.dispatch({ type: 'introSkip' });
     engine.drainIntents();
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:1' });
+    expect(engine.getSnapshot().stats.coins).toBe(0.2);
 
-    engine.adoptEconomy({ coins: 0, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
-    const stats = engine.getSnapshot().stats;
-    expect(stats.coins).toBe(0);
-    expect(stats.clicks).toBe(0);
-    expect(stats.facesDestroyed).toBe(0);
-    expect(stats.cubesDestroyed).toBe(0);
+    engine.adoptEconomy({ coins: 0.05, clicks: 0, facesDestroyed: 0, cubesDestroyed: 0 });
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 0,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+      coins: 0.05,
+    });
+
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:1:0' });
+    expect(engine.getSnapshot().stats).toEqual({
+      clicks: 1,
+      facesDestroyed: 0,
+      cubesDestroyed: 0,
+      coins: 0.15,
+    });
   });
 });
 
