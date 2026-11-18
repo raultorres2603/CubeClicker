@@ -3,6 +3,7 @@
 Task: T9 (2026-11-18)
 Files changed: `src/frontend/src/game/ship-forms.ts` (new), `src/frontend/src/game/ship-forms.test.ts` (new), `src/frontend/src/render/cursor-ship.ts`, `src/frontend/src/render/cursor-ship.test.ts`, `src/frontend/src/render/preview.ts`, `src/frontend/src/render/preview.test.ts`, `docs/features/remote-spaceship-customization/build-log-T9.md` (this log)
 Branch: `feat/remote-spaceship-customization` (from `965c4c9`; T14 committed `17c62ff` + `965c4c9` first, disjoint files)
+Commit: `61191e9` — `feat: add v3 ship forms and chassis math` (feature + build log, committed on the feature branch, not pushed; this hash record lands in the follow-up `docs:` commit, mirroring T1/T2/T14)
 
 ## What changed & why
 
