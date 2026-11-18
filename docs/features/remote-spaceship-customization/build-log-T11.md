@@ -4,7 +4,7 @@ Task: T11 (2026-11-18)
 Files changed: `src/frontend/src/render/remote-ship.ts` (new), `src/frontend/src/render/remote-ship.test.ts` (new), `docs/features/remote-spaceship-customization/build-log-T11.md` (this log)
 Branch: `feat/remote-spaceship-customization` (from `0a1b330`)
 Pre-step commits: `448fbde` — `feat: add v3 shot visuals and pulse composition` (the seven verified T10 files), `2fb1324` — `docs: record T10 build log commit hash` (T10 code/tests untouched)
-Commit: `<pending>` — `feat: add remote spaceship rendering` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T10/T14 — not pushed)
+Commit: `839ca4d` — `feat: add remote spaceship rendering` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T10/T14 — not pushed)
 
 ## What changed & why
 
