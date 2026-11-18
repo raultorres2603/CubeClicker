@@ -1,5 +1,6 @@
 /**
- * Live spaceship preview (T11; spec AC-31; plan § Preview / UI).
+ * Live spaceship preview (T11; spec AC-31; plan § Preview / UI; remote-spaceship-
+ * customization T15 for the v3 attributes).
  *
  * A real single-context WebGL preview of the cursor model with the current slot appearance.
  * The component owns exactly one `WebGLRenderer` and one requestAnimationFrame loop, renders at
@@ -12,15 +13,17 @@
  *
  * The legacy canvas contract is preserved for backward compatibility: the
  * `spaceship-preview` class, the `Spaceship preview` accessible name and the five predecessor
- * `data-*-color` attributes. The ten `data-preview-slot-<slotId>` attributes expose the resolved
- * v2 part id per slot.
+ * `data-*-color` attributes — now derived from the same v3 mapping (hull→body, nose→nose,
+ * wing-left→wings, cockpit→cockpit, ignition-left→engine) so a v3 part never renders a default
+ * colour. The ten `data-preview-slot-<slotId>` attributes expose the resolved v3 part id per
+ * ship slot; the eleventh `shot` entry selects only the shot style and has no preview geometry,
+ * so it publishes no attribute.
  */
 
 import { useEffect, useRef, type ReactElement } from 'react';
 import { WebGLRenderer } from 'three';
 
-import { appearanceToSpaceshipParams } from '../game/parts';
-import { appearanceToCursorShipParams } from '../game/parts-v2';
+import { appearanceToShipParamsV3 } from '../game/parts-v3';
 import {
   PREVIEW_FRAME_INTERVAL_MS,
   createPreviewScene,
@@ -144,29 +147,28 @@ export function SpaceshipPreview({
     }
   }, [appearance]);
 
-  const cursor = appearanceToCursorShipParams(appearance);
-  const legacy = appearanceToSpaceshipParams(appearance);
+  const visuals = appearanceToShipParamsV3(appearance);
 
   return (
     <canvas
       ref={canvasRef}
       className="spaceship-preview"
       aria-label="Spaceship preview"
-      data-nose-color={legacy.noseColor}
-      data-body-color={legacy.bodyColor}
-      data-wing-color={legacy.wingColor}
-      data-cockpit-color={legacy.cockpitColor}
-      data-engine-color={legacy.engineColor}
-      data-preview-slot-hull={cursor.hull.partId}
-      data-preview-slot-nose={cursor.nose.partId}
-      data-preview-slot-cockpit={cursor.cockpit.partId}
-      data-preview-slot-wing-left={cursor['wing-left'].partId}
-      data-preview-slot-wing-right={cursor['wing-right'].partId}
-      data-preview-slot-engine-left={cursor['engine-left'].partId}
-      data-preview-slot-engine-right={cursor['engine-right'].partId}
-      data-preview-slot-ignition-left={cursor['ignition-left'].partId}
-      data-preview-slot-ignition-right={cursor['ignition-right'].partId}
-      data-preview-slot-tail-fin={cursor['tail-fin'].partId}
+      data-nose-color={visuals.nose.color}
+      data-body-color={visuals.hull.color}
+      data-wing-color={visuals['wing-left'].color}
+      data-cockpit-color={visuals.cockpit.color}
+      data-engine-color={visuals['ignition-left'].color}
+      data-preview-slot-hull={visuals.hull.partId}
+      data-preview-slot-nose={visuals.nose.partId}
+      data-preview-slot-cockpit={visuals.cockpit.partId}
+      data-preview-slot-wing-left={visuals['wing-left'].partId}
+      data-preview-slot-wing-right={visuals['wing-right'].partId}
+      data-preview-slot-engine-left={visuals['engine-left'].partId}
+      data-preview-slot-engine-right={visuals['engine-right'].partId}
+      data-preview-slot-ignition-left={visuals['ignition-left'].partId}
+      data-preview-slot-ignition-right={visuals['ignition-right'].partId}
+      data-preview-slot-tail-fin={visuals['tail-fin'].partId}
     />
   );
 }

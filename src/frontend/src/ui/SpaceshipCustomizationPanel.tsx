@@ -1,24 +1,27 @@
 /**
  * Granular spaceship customization panel (T12; spec AC-29, AC-30, AC-31, AC-32, AC-41,
- * AC-43) with the in-panel hangar tabs (hangar-tabs-and-menu-motion T3; spec AC-2…AC-6,
- * AC-8, AC-10, AC-15, AC-16) and the 3D lootbox reveal branch (game-feel-overhaul T5;
- * spec AC-5, AC-7, AC-8, AC-13, AC-14, AC-21).
+ * AC-43) with the six in-panel hangar tabs and the form/finish picker
+ * (remote-spaceship-customization T15; spec AC-5, AC-27…AC-31) and the 3D lootbox reveal
+ * branch (game-feel-overhaul T5; spec AC-5, AC-7, AC-8, AC-13, AC-14, AC-21).
  *
  * The normal state keeps the title, the two chips and `Open lootbox` unchanged, then the
- * five-button `role="tablist"` strip and exactly one keyed `role="tabpanel"` holding the
- * active group's two `SLOT_CATALOG` rows (the grouping comes from `ui/hangar-tabs`). Each row
- * shows the equipped part and the slot's three catalog variants with owned/locked/equipped
- * state, an equip control per owned variant and one unequip control per slot. The live preview
- * sits below the tab panel and is mounted once for the whole normal state, so browsing tabs
- * never remounts it and the panel keeps exactly one WebGL context.
+ * six-button `role="tablist"` strip and exactly one keyed `role="tabpanel"` holding the
+ * active group's `SLOT_CATALOG_V3` rows (the grouping comes from `ui/hangar-tabs`; two rows,
+ * one on `Shots`). Each row shows the equipped part, an eleven-button form strip
+ * (`FORM_CATALOG` order, one roving tab stop per strip) and the selected form's finish cells:
+ * three for a ship slot's `classic`, one for the `shot` classic, twelve for a generated form.
+ * Owned cells expose an equip control, locked cells the `Locked` label; every slot keeps one
+ * unequip control. The live preview sits below the tab panel and is mounted once for the whole
+ * normal state, so browsing tabs or forms never remounts it and the panel keeps exactly one
+ * WebGL context.
  *
  * The active tab is panel-local state: `frame` on mount, never persisted, no live region. When
  * a grant clears while the panel stays mounted, the landing tab is derived **during render**
  * (React's "adjust state during render" pattern) from the departing grant, so the commit that
  * leaves the reveal branch already paints the landing group — no default-tab flash and a
- * single tab-swap fade (AC-6/AC-15). Selection moves focus with a roving `tabIndex` and
+ * single tab-swap fade (AC-6/AC-15). Tab selection moves focus with a roving `tabIndex` and
  * `ArrowRight`/`ArrowLeft`/`Home`/`End`, each `preventDefault`ed because the panel is the 60vh
- * scroll container.
+ * scroll container; the form strips use the same key mapping per row.
  *
  * While `lastLootboxGrant` is present the panel renders the reveal branch — `<LootboxReveal>`
  * only, no title/counts/open control/tablist/tabpanel/slot rows/preview — so the panel owns
@@ -27,12 +30,12 @@
  * result instantly.
  *
  * The panel is presentation-only: it never trusts or mutates catalog/ownership state. It
- * normalizes the supplied maps through the same v2 normalizers as the session so a restored
- * legacy row still renders, and reports every command through its callbacks. Closing the
- * panel while revealing is a dismissal (an unmount-only cleanup reads the latest grant from
- * a ref); a grant-to-grant replacement never dismisses. An in-panel dismissal (Dismiss,
- * Escape or Equip) restores focus to `Open lootbox`; an unmount never does, because that
- * button is gone (AC-13).
+ * normalizes the supplied maps through the same v3 normalizers as the session so a restored
+ * legacy row still renders and a v3 id is never dropped, and reports every command through
+ * its callbacks. Closing the panel while revealing is a dismissal (an unmount-only cleanup
+ * reads the latest grant from a ref); a grant-to-grant replacement never dismisses. An
+ * in-panel dismissal (Dismiss, Escape or Equip) restores focus to `Open lootbox`; an unmount
+ * never does, because that button is gone (AC-13).
  */
 
 import {
@@ -45,23 +48,26 @@ import {
 
 import { MOTION } from '../game/motion';
 import {
-  SLOT_CATALOG,
-  defaultPartForSlot,
-  isValidPartId,
-  normalizeAppearance,
-  normalizePartMap,
-  partDefinition,
-  partsForSlot,
-  type PartDefV2,
-  type SlotDef,
-  type SlotId,
-} from '../game/parts-v2';
+  FORM_CATALOG,
+  SLOT_CATALOG_V3,
+  catalogForSlot,
+  catalogForSlotForm,
+  defaultPartForSlotV3,
+  isValidPartIdV3,
+  normalizeAppearanceV3,
+  normalizePartMapV3,
+  partDefinitionV3,
+  type FormId,
+  type PartDefV3,
+  type SlotDefV3,
+  type SlotIdV3,
+} from '../game/parts-v3';
 import type { RevealUiPhase } from '../game/reveal-motion';
 import type { CustomizationState, LootboxGrant } from '../game/types';
 import {
   HANGAR_DEFAULT_TAB,
   HANGAR_TABS,
-  HANGAR_TAB_LOOTABLE_TOTAL,
+  HANGAR_TAB_LOOTABLE_TOTALS,
   tabForSlot,
   tabOwnedCount,
   type HangarTab,
@@ -111,24 +117,24 @@ function normalize(props: SpaceshipCustomizationPanelProps): NormalizedPanelStat
   return {
     lootboxes: props.lootboxes ?? c?.lootboxes ?? 0,
     keys: props.keys ?? c?.keys ?? 0,
-    parts: normalizePartMap(props.parts ?? c?.parts ?? {}),
-    appearance: normalizeAppearance(props.appearance ?? c?.appearance ?? {}),
+    parts: normalizePartMapV3(props.parts ?? c?.parts ?? {}),
+    appearance: normalizeAppearanceV3(props.appearance ?? c?.appearance ?? {}),
   };
 }
 
 /** The equipped part of one slot; a missing/invalid value resolves to the standard part. */
-function equippedPart(appearance: Record<string, string>, slot: SlotId): PartDefV2 {
+function equippedPart(appearance: Record<string, string>, slot: SlotIdV3): PartDefV3 {
   const equipped = appearance[slot];
-  if (equipped !== undefined && isValidPartId(equipped)) {
-    const def = partDefinition(equipped);
+  if (equipped !== undefined && isValidPartIdV3(equipped)) {
+    const def = partDefinitionV3(equipped);
     if (def.slot === slot) {
       return def;
     }
   }
-  return partDefinition(defaultPartForSlot(slot));
+  return partDefinitionV3(defaultPartForSlotV3(slot));
 }
 
-function isOwned(def: PartDefV2, parts: Record<string, number>): boolean {
+function isOwned(def: PartDefV3, parts: Record<string, number>): boolean {
   if (def.rarity === 'standard') {
     return true;
   }
@@ -136,16 +142,25 @@ function isOwned(def: PartDefV2, parts: Record<string, number>): boolean {
   return typeof count === 'number' && count > 0;
 }
 
+/** The selected form of every slot on mount: `classic` everywhere (AC-29). */
+function initialSelectedForms(): Record<SlotIdV3, FormId> {
+  const selected = {} as Record<SlotIdV3, FormId>;
+  for (const slot of SLOT_CATALOG_V3) {
+    selected[slot.id] = 'classic';
+  }
+  return selected;
+}
+
 /**
  * The landing tab after a reveal (AC-6): the departing grant's catalog slot decides it, and
- * an absent grant or an unknown/invalid part lands on the default tab. `partDefinition`
+ * an absent grant or an unknown/invalid part lands on the default tab. `partDefinitionV3`
  * throws for an unknown id, so the catalog guard runs first — never a raw wire string.
  */
 function landingTabFor(grant: LootboxGrant | null): HangarTabId {
-  if (grant === null || !isValidPartId(grant.partId)) {
+  if (grant === null || !isValidPartIdV3(grant.partId)) {
     return HANGAR_DEFAULT_TAB;
   }
-  return tabForSlot(partDefinition(grant.partId).slot);
+  return tabForSlot(partDefinitionV3(grant.partId).slot);
 }
 
 /** The active tab row; `HANGAR_TABS` stays the single source of the grouping. */
@@ -172,8 +187,10 @@ export function SpaceshipCustomizationPanel(
   const grant = props.lastLootboxGrant ?? null;
   const sequence = grant?.sequence ?? null;
 
-  const [equippingSlot, setEquippingSlot] = useState<SlotId | null>(null);
+  const [equippingSlot, setEquippingSlot] = useState<SlotIdV3 | null>(null);
   const [activeTab, setActiveTab] = useState<HangarTabId>(HANGAR_DEFAULT_TAB);
+  const [selectedForms, setSelectedForms] =
+    useState<Record<SlotIdV3, FormId>>(initialSelectedForms);
   // AC-6: the last rendered reveal sequence plus the departing grant, so the landing tab can
   // be derived while rendering the first normal-state commit (no effect, no second commit).
   const [renderedSequence, setRenderedSequence] = useState<number | null>(sequence);
@@ -183,6 +200,7 @@ export function SpaceshipCustomizationPanel(
   const latestGrantRef = useRef<LootboxGrant | null>(grant);
   const previousGrantRef = useRef<LootboxGrant | null>(null);
   const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const formButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const dismissRef = useRef(props.onDismissReveal);
 
   const [revealPhase, setRevealPhase] = useState<RevealPhase>(() => {
@@ -309,7 +327,7 @@ export function SpaceshipCustomizationPanel(
     }
   };
 
-  const flashSlot = (slot: SlotId): void => {
+  const flashSlot = (slot: SlotIdV3): void => {
     if (reducedMotion) {
       return;
     }
@@ -324,10 +342,10 @@ export function SpaceshipCustomizationPanel(
   };
 
   const handleEquip = (partId: string): void => {
-    if (!isValidPartId(partId)) {
+    if (!isValidPartIdV3(partId)) {
       return;
     }
-    const def = partDefinition(partId);
+    const def = partDefinitionV3(partId);
     flashSlot(def.slot);
     if (props.onEquip !== undefined) {
       props.onEquip(partId);
@@ -336,7 +354,7 @@ export function SpaceshipCustomizationPanel(
     }
   };
 
-  const handleUnequip = (slot: SlotId): void => {
+  const handleUnequip = (slot: SlotIdV3): void => {
     props.onUnequip?.(slot);
   };
 
@@ -345,10 +363,53 @@ export function SpaceshipCustomizationPanel(
     props.onDismissReveal?.();
   };
 
-  // AC-4: roving focus. Every handled key is `preventDefault`ed — the panel is the 60vh
-  // scroll container, so an unprevented `Home`/`End` would scroll it — and selection and
-  // focus move together. Any other key leaves the strip untouched. Selection never reports a
-  // command: it only updates the panel-local tab state.
+  const selectForm = (slot: SlotIdV3, form: FormId): void => {
+    setSelectedForms((previous) => {
+      if (previous[slot] === form) {
+        return previous;
+      }
+      return { ...previous, [slot]: form };
+    });
+  };
+
+  // AC-29: per-strip roving focus. Every handled key is `preventDefault`ed — the panel is
+  // the 60vh scroll container, so an unprevented `Home`/`End` would scroll it — and the form
+  // selection and focus move together. Selection never reports a command: it only updates
+  // the panel-local form state.
+  const handleFormKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    slot: SlotIdV3,
+  ): void => {
+    const currentIndex = FORM_CATALOG.findIndex(
+      (form) => form.id === selectedForms[slot],
+    );
+    let nextIndex: number;
+    switch (event.key) {
+      case 'ArrowRight':
+        nextIndex = (currentIndex + 1) % FORM_CATALOG.length;
+        break;
+      case 'ArrowLeft':
+        nextIndex = (currentIndex - 1 + FORM_CATALOG.length) % FORM_CATALOG.length;
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = FORM_CATALOG.length - 1;
+        break;
+      default:
+        return;
+    }
+    const nextForm = FORM_CATALOG[nextIndex];
+    if (nextForm === undefined) {
+      return;
+    }
+    event.preventDefault();
+    selectForm(slot, nextForm.id);
+    formButtonRefs.current[`${slot}:${nextForm.id}`]?.focus();
+  };
+
+  // AC-4: roving focus. The same mapping drives the tab strip.
   const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     const currentIndex = HANGAR_TABS.findIndex((tab) => tab.id === activeTab);
     let nextIndex: number;
@@ -370,27 +431,40 @@ export function SpaceshipCustomizationPanel(
     }
     event.preventDefault();
     const nextTab = HANGAR_TABS[nextIndex];
+    if (nextTab === undefined) {
+      return;
+    }
     setActiveTab(nextTab.id);
     tabButtonRefs.current[nextTab.id]?.focus();
   };
 
   const canOpen = lootboxes > 0 && keys > 0 && !(props.pendingOpen ?? false);
   const activeTabDefinition = tabDefinition(activeTab);
-  const activeSlots = SLOT_CATALOG.filter((slot) =>
+  const activeSlots = SLOT_CATALOG_V3.filter((slot) =>
     activeTabDefinition.slots.includes(slot.id),
   );
 
-  const renderSlotRow = (slot: SlotDef): ReactElement => {
+  const renderSlotRow = (slot: SlotDefV3): ReactElement => {
     const equipped = equippedPart(appearance, slot.id);
-    const isDefault = equipped.id === defaultPartForSlot(slot.id);
+    const isDefault = equipped.id === defaultPartForSlotV3(slot.id);
+    const selectedForm = selectedForms[slot.id];
+    const slotCatalog = catalogForSlot(slot.id);
+    const lootableCatalog = slotCatalog.filter((part) => part.rarity !== 'standard');
+    const ownedLootable = lootableCatalog.filter((part) => isOwned(part, parts)).length;
+    const variants = catalogForSlotForm(slot.id, selectedForm);
     return (
       <li
         key={slot.id}
         className="customization-slot"
         data-slot={slot.id}
+        data-form={selectedForm}
         {...(equippingSlot === slot.id ? { 'data-equipping': 'true' } : {})}
       >
-        <div className="customization-slot-header">
+        <div
+          className="customization-slot-header"
+          data-owned={ownedLootable}
+          data-total={lootableCatalog.length}
+        >
           <span className="customization-slot-name">{slot.name}</span>
           <span className="customization-equipped-name" data-equipped-part={equipped.id}>
             {equipped.name}
@@ -405,8 +479,38 @@ export function SpaceshipCustomizationPanel(
             Unequip
           </button>
         </div>
-        <ul className="customization-variants">
-          {partsForSlot(slot.id).map((def) => {
+        <div
+          className="customization-forms"
+          role="group"
+          aria-label={`${slot.name} forms`}
+          onKeyDown={(event) => {
+            handleFormKeyDown(event, slot.id);
+          }}
+        >
+          {FORM_CATALOG.map((form) => {
+            const selected = form.id === selectedForm;
+            return (
+              <button
+                key={form.id}
+                type="button"
+                className="customization-form"
+                data-form={form.id}
+                aria-pressed={selected}
+                tabIndex={selected ? 0 : -1}
+                ref={(element) => {
+                  formButtonRefs.current[`${slot.id}:${form.id}`] = element;
+                }}
+                onClick={() => {
+                  selectForm(slot.id, form.id);
+                }}
+              >
+                {form.label}
+              </button>
+            );
+          })}
+        </div>
+        <ul className="customization-variants" key={selectedForm}>
+          {variants.map((def) => {
             const owned = isOwned(def, parts);
             const isEquipped = equipped.id === def.id;
             return (
@@ -414,6 +518,7 @@ export function SpaceshipCustomizationPanel(
                 key={def.id}
                 className="customization-variant"
                 data-part={def.id}
+                data-finish={def.finish}
                 data-rarity={def.rarity}
                 data-owned={owned ? 'true' : 'false'}
                 data-locked={owned ? 'false' : 'true'}
@@ -491,6 +596,7 @@ export function SpaceshipCustomizationPanel(
           >
             {HANGAR_TABS.map((tab) => {
               const owned = tabOwnedCount(tab, parts);
+              const total = HANGAR_TAB_LOOTABLE_TOTALS[tab.id];
               const selected = tab.id === activeTab;
               return (
                 <button
@@ -502,7 +608,7 @@ export function SpaceshipCustomizationPanel(
                   data-tab={tab.id}
                   aria-selected={selected ? 'true' : 'false'}
                   tabIndex={selected ? 0 : -1}
-                  aria-label={`${tab.label}, ${owned} of ${HANGAR_TAB_LOOTABLE_TOTAL} parts owned`}
+                  aria-label={`${tab.label}, ${owned} of ${total} parts owned`}
                   ref={(element) => {
                     tabButtonRefs.current[tab.id] = element;
                   }}
@@ -514,10 +620,10 @@ export function SpaceshipCustomizationPanel(
                   <span
                     className="customization-tab-badge"
                     data-owned={owned}
-                    data-total={HANGAR_TAB_LOOTABLE_TOTAL}
+                    data-total={total}
                     aria-hidden="true"
                   >
-                    {`${owned}/${HANGAR_TAB_LOOTABLE_TOTAL}`}
+                    {`${owned}/${total}`}
                   </span>
                 </button>
               );

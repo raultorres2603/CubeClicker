@@ -122,18 +122,27 @@ describe('SpaceshipPreview (SSR contract)', () => {
     expect(html).toContain('aria-label="Spaceship preview"');
   });
 
-  it('derives the five predecessor legacy color attributes', () => {
+  it('derives the five predecessor legacy color attributes from the v3 mapping', () => {
     const html = renderToString(<SpaceshipPreview appearance={{}} />);
     expect(html).toContain('data-nose-color="#88aaff"');
-    expect(html).toContain('data-body-color="#4466cc"');
+    expect(html).toContain('data-body-color="#8f9bad"');
     expect(html).toContain('data-wing-color="#4466cc"');
-    expect(html).toContain('data-cockpit-color="#ffffff"');
+    expect(html).toContain('data-cockpit-color="#0b2f38"');
     expect(html).toContain('data-engine-color="#ff6600"');
   });
 
   it('reflects an equipped legacy part color', () => {
     const html = renderToString(<SpaceshipPreview appearance={{ nose: 'nose-crimson' }} />);
     expect(html).toContain('data-nose-color="#cc4444"');
+  });
+
+  it('derives a generated v3 part color instead of a default', () => {
+    const html = renderToString(
+      <SpaceshipPreview appearance={{ hull: 'hull-dart-chrome' }} />,
+    );
+    expect(html).toContain('data-body-color="#c9d4e2"');
+    expect(html).toContain('data-nose-color="#88aaff"');
+    expect(html).toContain('data-preview-slot-hull="hull-dart-chrome"');
   });
 
   it('exposes all ten default data-preview-slot attributes', () => {
@@ -151,12 +160,38 @@ describe('SpaceshipPreview (SSR contract)', () => {
     expect((html.match(/data-preview-slot-/g) ?? []).length).toBe(10);
   });
 
-  it('resolves v2 slot ids and independent left/right parts', () => {
+  it('resolves v3 slot ids and independent left/right parts', () => {
     const html = renderToString(
       <SpaceshipPreview appearance={{ 'wing-left': 'wing-left-silver' }} />,
     );
     expect(html).toContain('data-preview-slot-wing-left="wing-left-silver"');
     expect(html).toContain('data-preview-slot-wing-right="wing-right-default"');
+  });
+
+  it('exposes a generated v3 part id per slot (never normalizing to defaults)', () => {
+    const html = renderToString(
+      <SpaceshipPreview
+        appearance={{
+          'wing-right': 'wing-right-kite-solar',
+          cockpit: 'cockpit-kite-aurum',
+        }}
+      />,
+    );
+    expect(html).toContain('data-preview-slot-wing-right="wing-right-kite-solar"');
+    expect(html).toContain('data-preview-slot-cockpit="cockpit-kite-aurum"');
+    expect(html).toContain('data-preview-slot-wing-left="wing-left-default"');
+  });
+
+  it('ignores the shot entry for geometry and keeps exactly ten slot attributes', () => {
+    const html = renderToString(
+      <SpaceshipPreview appearance={{ shot: 'shot-kite-solar' }} />,
+    );
+    expect((html.match(/data-preview-slot-/g) ?? []).length).toBe(10);
+    expect(html).not.toContain('data-preview-slot-shot');
+    // The shot entry selects only the shot style; the five legacy colors stay defaults.
+    expect(html).toContain('data-body-color="#8f9bad"');
+    expect(html).toContain('data-engine-color="#ff6600"');
+    expect(html).toContain('data-preview-slot-hull="hull-default"');
   });
 
   it('normalizes legacy appearance categories for the data attributes', () => {
@@ -261,6 +296,26 @@ describe('SpaceshipPreview (live WebGL contract)', () => {
 
     flushFrame(34);
     expect(record.renders).toHaveLength(2);
+  });
+
+  it('applies a generated v3 hull and ignores the shot entry on the live model', () => {
+    const { rerender } = render(<SpaceshipPreview appearance={{}} />);
+    flushFrame(0);
+    const record = threeMock.instances[0]!;
+    const scene = renderedScene(record);
+
+    rerender(
+      <SpaceshipPreview
+        appearance={{ hull: 'hull-dart-chrome', shot: 'shot-orca-violet' }}
+      />,
+    );
+    const hull = scene.getObjectByName('cursor-hull') as Mesh;
+    expect((hull.material as MeshPhysicalMaterial).color.getHexString()).toBe('c9d4e2');
+    const hullSlot = scene.getObjectByName('slot-hull');
+    expect(hullSlot?.scale.toArray()).toEqual([0.85, 0.9, 1.15]);
+    const model = scene.getObjectByName('cursor-ship-model');
+    expect(model?.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+    expect(threeMock.instances).toHaveLength(1);
   });
 
   it('falls back to the empty labeled canvas when WebGL construction throws', () => {

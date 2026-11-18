@@ -1067,6 +1067,109 @@ describe('hangar tab chrome (AC-7, AC-9, AC-22)', () => {
   });
 });
 
+describe('form and finish picker chrome (AC-28, AC-29, AC-30)', () => {
+  it('lays the form strip out as a wrapping chip group with 44 px buttons', () => {
+    expect(declarationList(ruleBody('.customization-forms'))).toEqual([
+      'display: flex',
+      'flex-wrap: wrap',
+      'gap: 0.2rem',
+    ]);
+
+    expect(declarationList(ruleBody('.customization-form'))).toEqual([
+      'box-sizing: border-box',
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'min-width: 44px',
+      'min-height: 44px',
+      'padding: 0.2rem 0.45rem',
+      'border: 1px solid var(--gf-rim)',
+      'border-radius: var(--gf-radius-control)',
+      'background: var(--gf-surface-raised)',
+      'color: var(--gf-text-muted)',
+      'font-family: inherit',
+      'font-size: 0.68rem',
+      'font-weight: 700',
+      'letter-spacing: 0.04em',
+      'text-transform: uppercase',
+      'white-space: nowrap',
+      'cursor: pointer',
+    ]);
+    const form = declarations(ruleBody('.customization-form'));
+    expect(form.get('min-width')).toBe('44px');
+    expect(form.get('min-height')).toBe('44px');
+
+    expect(declarationList(ruleBody('.customization-form:hover'))).toEqual([
+      'border-color: var(--gf-rim-strong)',
+      'color: var(--gf-text)',
+    ]);
+    expect(declarationList(ruleBody(".customization-form[aria-pressed='true']"))).toEqual([
+      'border-color: var(--gf-rim-strong)',
+      'color: var(--gf-text)',
+      'box-shadow: inset 0 -2px 0 var(--gf-rim-strong)',
+    ]);
+    expect(declarationList(ruleBody('.customization-form:focus-visible'))).toEqual([
+      'outline: 2px solid var(--gf-focus)',
+      'outline-offset: 2px',
+    ]);
+  });
+
+  it('lays the finish cells out in a three-column grid that wraps a twelve-cell form', () => {
+    expect(declarationList(ruleBody('.customization-variants'))).toEqual([
+      'display: grid',
+      'grid-template-columns: repeat(3, minmax(0, 1fr))',
+      'gap: 0.3rem',
+    ]);
+    expect(declarationList(ruleBody('.customization-variant'))).toEqual([
+      'display: flex',
+      'flex-direction: column',
+      'align-items: stretch',
+      'justify-content: flex-start',
+      'gap: 0.2rem',
+      'min-width: 0',
+      'padding: 0.35rem',
+      'border: 1px solid var(--gf-rim)',
+      'border-radius: var(--gf-radius-control)',
+      'background: var(--gf-surface-raised)',
+    ]);
+    expect(declarationList(ruleBody('.customization-variant-name'))).toEqual([
+      'overflow-wrap: anywhere',
+      'line-height: 1.2',
+    ]);
+  });
+
+  it('fits the picker on phones without a second scroll container', () => {
+    const block = mediaRules('@media (max-width: 720px)');
+    expect(declarationList(findRule(block, '.customization-forms').body)).toEqual([
+      'gap: 0.15rem',
+    ]);
+    expect(declarationList(findRule(block, '.customization-form').body)).toEqual([
+      'padding: 0.15rem 0.3rem',
+      'font-size: 0.62rem',
+      'letter-spacing: 0.02em',
+    ]);
+    expect(declarationList(findRule(block, '.customization-variant').body)).toEqual([
+      'padding: 0.25rem',
+    ]);
+    expect(declarationList(findRule(block, '.customization-variant-name').body)).toEqual([
+      'font-size: 0.78rem',
+    ]);
+
+    const nestedScroll = allCssRules
+      .filter((rule) =>
+        ['.customization-forms', '.customization-form', '.customization-variants', '.customization-variant'].some(
+          (selector) => rule.selector.includes(selector),
+        ),
+      )
+      .flatMap((rule) =>
+        declarationList(rule.body).filter((declaration) =>
+          /^overflow(?:-[xy])?\s*:/.test(declaration),
+        ),
+      );
+    expect(nestedScroll).toEqual([]);
+  });
+});
+
 describe('menu boot animation (AC-12, AC-13, AC-14, AC-15, AC-16, AC-18)', () => {
   const keyframeStops = (name: string): CssRule[] =>
     parseRules(findRule(rules, `@keyframes ${name}`).body);
@@ -2547,6 +2650,60 @@ describe('stylesheet integration (AC-18, AC-19, AC-21, AC-27)', () => {
       expect(badgeStyle.height).toBe('17.6px');
       expect(badgeStyle.fontSize).toBe('9.6px');
       expect(badgeStyle.whiteSpace).toBe('nowrap');
+    });
+  });
+
+  it('cascades the form strip and the three-column finish grid onto real markup', () => {
+    const markup = `
+      <main>
+        <section class="customization-panel" aria-label="Spaceship customization" data-reveal-active="false" data-active-tab="frame">
+          <div class="customization-forms" role="group" aria-label="Hull forms">
+            <button type="button" class="customization-form" data-form="classic" aria-pressed="true" tabindex="0">Classic</button>
+            <button type="button" class="customization-form" data-form="dart" aria-pressed="false" tabindex="-1">Dart</button>
+          </div>
+          <ul class="customization-variants">
+            <li class="customization-variant" data-part="hull-default" data-rarity="standard" data-owned="true" data-locked="false" data-equipped="true">
+              <span class="customization-swatch" aria-hidden="true"></span>
+              <span class="customization-variant-name">Steel Hull</span>
+              <button type="button" class="customization-equip" aria-pressed="true">Equipped</button>
+            </li>
+          </ul>
+        </section>
+      </main>
+    `;
+
+    withGameStyles(markup, (root) => {
+      const forms = root.querySelector('.customization-forms');
+      if (forms === null) throw new Error('form strip missing');
+      const formsStyle = window.getComputedStyle(forms);
+      expect(formsStyle.display).toBe('flex');
+      expect(formsStyle.flexWrap).toBe('wrap');
+      expect(formsStyle.gap).toBe('0.2rem');
+
+      const form = root.querySelector('.customization-form');
+      if (form === null) throw new Error('form button missing');
+      const formStyle = window.getComputedStyle(form);
+      expect(formStyle.display).toBe('inline-flex');
+      expect(formStyle.minWidth).toBe('44px');
+      expect(formStyle.minHeight).toBe('44px');
+      expect(formStyle.textTransform).toBe('uppercase');
+      expect(formStyle.cursor).toBe('pointer');
+
+      const selected = root.querySelector('.customization-form[aria-pressed="true"]');
+      if (selected === null) throw new Error('selected form missing');
+      expect(window.getComputedStyle(selected).boxShadow).toBe(
+        'inset 0 -2px 0 var(--gf-rim-strong)',
+      );
+
+      const variants = root.querySelector('.customization-variants');
+      if (variants === null) throw new Error('variant list missing');
+      const variantsStyle = window.getComputedStyle(variants);
+      expect(variantsStyle.display).toBe('grid');
+      expect(variantsStyle.gridTemplateColumns).toBe('repeat(3, minmax(0, 1fr))');
+
+      const variant = root.querySelector('.customization-variant');
+      if (variant === null) throw new Error('variant cell missing');
+      expect(window.getComputedStyle(variant).flexDirection).toBe('column');
     });
   });
 

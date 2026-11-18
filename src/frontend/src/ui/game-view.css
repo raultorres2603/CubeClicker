@@ -523,6 +523,83 @@ main > section {
   animation: tab-panel-in var(--motion-tab-switch-ms) ease-out both;
 }
 
+/*
+ * Form strip (AC-29/AC-30): eleven 44 px form chips per slot row, wrapping in place so the
+ * panel stays the single scroll container. `border-box` keeps the 44 px target inclusive of
+ * the chip border on every engine.
+ */
+.customization-forms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.customization-form {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+  color: var(--gf-text-muted);
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.customization-form:hover {
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-text);
+}
+
+/* Selected form: the inset underline is the non-colour cue beside `aria-pressed`. */
+.customization-form[aria-pressed='true'] {
+  border-color: var(--gf-rim-strong);
+  color: var(--gf-text);
+  box-shadow: inset 0 -2px 0 var(--gf-rim-strong);
+}
+
+.customization-form:focus-visible {
+  outline: 2px solid var(--gf-focus);
+  outline-offset: 2px;
+}
+
+/*
+ * Finish grid (AC-28/AC-30): three cells per row, so the classic set is one row and a
+ * generated form four; the twelve-shot grid keeps the same 3-column shape.
+ */
+.customization-variants {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.customization-variant {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--gf-rim);
+  border-radius: var(--gf-radius-control);
+  background: var(--gf-surface-raised);
+}
+
+.customization-variant-name {
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
+
 /* The 12 rem `app.css` base shrinks with the viewport so the panel fits 720p (AC-7). */
 .customization-panel .spaceship-preview {
   height: min(12rem, 26vh);
@@ -1676,6 +1753,25 @@ main > canvas {
     padding: 0.25rem 0.3rem;
     font-size: 0.66rem;
     letter-spacing: 0.04em;
+  }
+
+  /* Phone fit: tighter form chips and finish tiles, still 44 px targets and one scroller. */
+  .customization-forms {
+    gap: 0.15rem;
+  }
+
+  .customization-form {
+    padding: 0.15rem 0.3rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+  }
+
+  .customization-variant {
+    padding: 0.25rem;
+  }
+
+  .customization-variant-name {
+    font-size: 0.78rem;
   }
 
   /* Non-modal reveal bottom sheet: complete override of the desktop spotlight (AC-21/AC-30). */

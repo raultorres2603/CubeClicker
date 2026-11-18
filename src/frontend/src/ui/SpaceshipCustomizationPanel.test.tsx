@@ -13,7 +13,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MOTION } from '../game/motion';
-import { PART_CATALOG_V2, SLOT_CATALOG, partsForSlot, type SlotId } from '../game/parts-v2';
+import {
+  PART_CATALOG_V3,
+  SLOT_CATALOG_V3,
+  catalogForSlotForm,
+  type SlotIdV3,
+} from '../game/parts-v3';
 import type { CustomizationState, LootboxGrant } from '../game/types';
 import type { HangarTabId } from './hangar-tabs';
 import {
@@ -150,7 +155,7 @@ function domStrings(root: HTMLElement): string[] {
 interface TabFixture {
   readonly id: HangarTabId;
   readonly label: string;
-  readonly slots: readonly SlotId[];
+  readonly slots: readonly SlotIdV3[];
 }
 
 const TABS: readonly TabFixture[] = [
@@ -159,13 +164,24 @@ const TABS: readonly TabFixture[] = [
   { id: 'wings', label: 'Wings', slots: ['wing-left', 'wing-right'] },
   { id: 'engines', label: 'Engines', slots: ['engine-left', 'engine-right'] },
   { id: 'ignitions', label: 'Ignitions', slots: ['ignition-left', 'ignition-right'] },
+  { id: 'shots', label: 'Shots', slots: ['shot'] },
 ];
 
-/** The ten catalog slot ids in `SLOT_CATALOG` order (AC-3's union target). */
-const CATALOG_SLOTS = SLOT_CATALOG.map((slot) => slot.id);
+/** The eleven catalog slot ids in `SLOT_CATALOG_V3` order (AC-27's union target). */
+const CATALOG_SLOTS = SLOT_CATALOG_V3.map((slot) => slot.id);
+
+/** The pinned per-tab badge maxima (AC-27). */
+const TAB_TOTALS: Readonly<Record<HangarTabId, number>> = {
+  frame: 244,
+  front: 244,
+  wings: 244,
+  engines: 244,
+  ignitions: 244,
+  shots: 120,
+};
 
 /** Slot display names pinned independently of the component. */
-const SLOT_NAME: Readonly<Record<SlotId, string>> = {
+const SLOT_NAME: Readonly<Record<SlotIdV3, string>> = {
   hull: 'Hull',
   nose: 'Nose',
   cockpit: 'Cockpit',
@@ -176,10 +192,11 @@ const SLOT_NAME: Readonly<Record<SlotId, string>> = {
   'ignition-left': 'Port Ignition',
   'ignition-right': 'Starboard Ignition',
   'tail-fin': 'Tail Fin',
+  shot: 'Shot',
 };
 
 /** Standard part display names pinned independently of the component. */
-const STANDARD_NAME: Readonly<Record<SlotId, string>> = {
+const STANDARD_NAME: Readonly<Record<SlotIdV3, string>> = {
   hull: 'Steel Hull',
   nose: 'Alloy Nose',
   cockpit: 'Teal Canopy',
@@ -190,7 +207,78 @@ const STANDARD_NAME: Readonly<Record<SlotId, string>> = {
   'ignition-left': 'Port Flame',
   'ignition-right': 'Starboard Flame',
   'tail-fin': 'Standard Fin',
+  shot: 'Standard Bolt',
 };
+
+/** The eleven form labels in `FORM_CATALOG` order (pinned independently). */
+const FORM_LABELS = [
+  'Classic',
+  'Dart',
+  'Lance',
+  'Needle',
+  'Manta',
+  'Hauler',
+  'Bulwark',
+  'Arrow',
+  'Orca',
+  'Talon',
+  'Kite',
+];
+
+const FORM_IDS = [
+  'classic',
+  'dart',
+  'lance',
+  'needle',
+  'manta',
+  'hauler',
+  'bulwark',
+  'arrow',
+  'orca',
+  'talon',
+  'kite',
+];
+
+/** The active row's form strip (the 11-button group). */
+function formStrip(row: HTMLElement): HTMLElement {
+  const strip = row.querySelector<HTMLElement>('.customization-forms');
+  if (strip === null) {
+    throw new Error('form strip missing');
+  }
+  return strip;
+}
+
+/** Every form button of one row, in `FORM_CATALOG` order. */
+function formButtons(row: HTMLElement): HTMLButtonElement[] {
+  return Array.from(
+    formStrip(row).querySelectorAll<HTMLButtonElement>('button.customization-form'),
+  );
+}
+
+/** Selects a form on one row the way a player does. */
+function selectForm(row: HTMLElement, form: string): void {
+  const button = formStrip(row).querySelector<HTMLButtonElement>(
+    `button.customization-form[data-form="${form}"]`,
+  );
+  if (button === null) {
+    throw new Error(`form button missing: ${form}`);
+  }
+  fireEvent.click(button);
+}
+
+/** The rendered variant cells of one row, in finish order. */
+function variantCells(row: HTMLElement): HTMLElement[] {
+  return Array.from(row.querySelectorAll<HTMLElement>('li.customization-variant'));
+}
+
+/** The row of one slot on the active tab. */
+function slotRow(container: HTMLElement, slot: string): HTMLElement {
+  const row = container.querySelector<HTMLElement>(`li[data-slot="${slot}"]`);
+  if (row === null) {
+    throw new Error(`slot row missing: ${slot}`);
+  }
+  return row;
+}
 
 /** The tab strip (the single `role="tablist"`). */
 function tablist(container: HTMLElement): HTMLElement {
@@ -259,9 +347,9 @@ function badgeValues(container: HTMLElement): (string | null)[] {
   return TABS.map((tab) => badge(container, tab.id).getAttribute('data-owned'));
 }
 
-/** The map fixture that owns all 30 catalog parts exactly once (AC-10 all-owned). */
+/** The map fixture that owns all 1,351 v3 catalog parts exactly once. */
 function allOwnedParts(): Record<string, number> {
-  return Object.fromEntries(PART_CATALOG_V2.map((part) => [part.id, 1]));
+  return Object.fromEntries(PART_CATALOG_V3.map((part) => [part.id, 1]));
 }
 
 interface LandingObservation {
@@ -337,8 +425,8 @@ async function observeLanding(
   return { values, oldValues, addedTabpanels, container };
 }
 
-describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
-  it('renders one five-tab tablist with the pinned ARIA contract in the normal state', () => {
+describe('SpaceshipCustomizationPanel hangar tabs (AC-27, AC-30)', () => {
+  it('renders one six-tab tablist with the pinned ARIA contract in the normal state', () => {
     const { container } = renderPanel();
 
     const section = panelRoot(container);
@@ -355,10 +443,25 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
     expect(strip.hasAttribute('aria-labelledby')).toBe(false);
 
     const buttons = tabButtons(container);
-    expect(buttons).toHaveLength(5);
-    expect(buttons.map((button) => button.tagName)).toEqual(['BUTTON', 'BUTTON', 'BUTTON', 'BUTTON', 'BUTTON']);
-    expect(buttons.map((button) => button.type)).toEqual(['button', 'button', 'button', 'button', 'button']);
+    expect(buttons).toHaveLength(6);
+    expect(buttons.map((button) => button.tagName)).toEqual([
+      'BUTTON',
+      'BUTTON',
+      'BUTTON',
+      'BUTTON',
+      'BUTTON',
+      'BUTTON',
+    ]);
+    expect(buttons.map((button) => button.type)).toEqual([
+      'button',
+      'button',
+      'button',
+      'button',
+      'button',
+      'button',
+    ]);
     expect(buttons.map((button) => button.className)).toEqual([
+      'customization-tab',
       'customization-tab',
       'customization-tab',
       'customization-tab',
@@ -375,11 +478,12 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
       TABS.map((tab) => tab.label),
     );
     expect(buttons.map((button) => button.textContent)).toEqual([
-      'Frame0/4',
-      'Front0/4',
-      'Wings0/4',
-      'Engines0/4',
-      'Ignitions0/4',
+      'Frame0/244',
+      'Front0/244',
+      'Wings0/244',
+      'Engines0/244',
+      'Ignitions0/244',
+      'Shots0/120',
     ]);
     expect(buttons.map((button) => button.getAttribute('aria-selected'))).toEqual([
       'true',
@@ -387,14 +491,16 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
       'false',
       'false',
       'false',
+      'false',
     ]);
-    expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, -1, -1, -1]);
+    expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, -1, -1, -1, -1]);
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Frame, 0 of 4 parts owned',
-      'Front, 0 of 4 parts owned',
-      'Wings, 0 of 4 parts owned',
-      'Engines, 0 of 4 parts owned',
-      'Ignitions, 0 of 4 parts owned',
+      'Frame, 0 of 244 parts owned',
+      'Front, 0 of 244 parts owned',
+      'Wings, 0 of 244 parts owned',
+      'Engines, 0 of 244 parts owned',
+      'Ignitions, 0 of 244 parts owned',
+      'Shots, 0 of 120 parts owned',
     ]);
 
     const selected = buttons.filter(
@@ -417,8 +523,8 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
       expect(ownedBadge.tagName).toBe('SPAN');
       expect(ownedBadge.getAttribute('aria-hidden')).toBe('true');
       expect(ownedBadge.getAttribute('data-owned')).toBe('0');
-      expect(ownedBadge.getAttribute('data-total')).toBe('4');
-      expect(ownedBadge.textContent).toBe('0/4');
+      expect(ownedBadge.getAttribute('data-total')).toBe(String(TAB_TOTALS[tab.id]));
+      expect(ownedBadge.textContent).toBe(`0/${TAB_TOTALS[tab.id]}`);
       expect(button.lastElementChild).toBe(ownedBadge);
     }
   });
@@ -429,12 +535,12 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
     expect(panelRoot(container).getAttribute('data-active-tab')).toBe('frame');
     expect(container.querySelectorAll('[role="tablist"]')).toHaveLength(1);
     expect(tablist(container).getAttribute('aria-label')).toBe('Spaceship part groups');
-    expect(tabButtons(container)).toHaveLength(5);
+    expect(tabButtons(container)).toHaveLength(6);
     expect(tabButtons(container).map((button) => button.id)).toEqual(
       TABS.map((tab) => `customization-tab-${tab.id}`),
     );
     expect(tabButtons(container).map((button) => button.getAttribute('aria-label'))).toEqual(
-      TABS.map((tab) => `${tab.label}, 0 of 4 parts owned`),
+      TABS.map((tab) => `${tab.label}, 0 of ${TAB_TOTALS[tab.id]} parts owned`),
     );
     expect(container.querySelectorAll('[aria-controls]')).toHaveLength(0);
     expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
@@ -475,40 +581,41 @@ describe('SpaceshipCustomizationPanel hangar tabs (AC-2, AC-3)', () => {
       );
 
       const rows = slotRows(container);
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(tab.id === 'shots' ? 1 : 2);
       expect(rows.map((row) => row.getAttribute('data-slot'))).toEqual([...tab.slots]);
       seen.push(...rows.map((row) => row.getAttribute('data-slot') ?? ''));
 
       for (const row of rows) {
-        const variants = Array.from(
-          row.querySelectorAll<HTMLElement>('li.customization-variant'),
+        expect(row.getAttribute('data-form')).toBe('classic');
+        expect(formButtons(row)).toHaveLength(11);
+        const variants = variantCells(row);
+        const classicRows = catalogForSlotForm(
+          row.getAttribute('data-slot') as SlotIdV3,
+          'classic',
         );
-        expect(variants).toHaveLength(3);
-        expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual([
-          'true',
-          'false',
-          'false',
-        ]);
-        expect(variants.map((variant) => variant.getAttribute('data-locked'))).toEqual([
-          'false',
-          'true',
-          'true',
-        ]);
-        expect(variants.map((variant) => variant.getAttribute('data-equipped'))).toEqual([
-          'true',
-          'false',
-          'false',
-        ]);
+        expect(variants.map((variant) => variant.getAttribute('data-part'))).toEqual(
+          classicRows.map((part) => part.id),
+        );
+        expect(variants).toHaveLength(tab.id === 'shots' ? 1 : 3);
+        expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual(
+          classicRows.map((part) => (part.rarity === 'standard' ? 'true' : 'false')),
+        );
+        expect(variants.map((variant) => variant.getAttribute('data-locked'))).toEqual(
+          classicRows.map((part) => (part.rarity === 'standard' ? 'false' : 'true')),
+        );
+        expect(variants.map((variant) => variant.getAttribute('data-equipped'))).toEqual(
+          classicRows.map((part) => (part.rarity === 'standard' ? 'true' : 'false')),
+        );
         expect(
           variants.map(
             (variant) =>
               variant.querySelector('.customization-swatch')?.getAttribute('aria-hidden'),
           ),
-        ).toEqual(['true', 'true', 'true']);
+        ).toEqual(classicRows.map(() => 'true'));
       }
     }
 
-    expect(seen).toHaveLength(10);
+    expect(seen).toHaveLength(11);
     expect(seen.slice().sort()).toEqual(CATALOG_SLOTS.slice().sort());
     expect(new Set(seen)).toEqual(new Set(CATALOG_SLOTS));
   });
@@ -532,7 +639,7 @@ describe('SpaceshipCustomizationPanel tab activation (AC-4)', () => {
         `customization-tab-${tab.id}`,
       );
       expect(slotIds(container)).toEqual([...tab.slots]);
-      expect(slotRows(container)).toHaveLength(2);
+      expect(slotRows(container)).toHaveLength(tab.id === 'shots' ? 1 : 2);
     }
   });
 
@@ -594,31 +701,35 @@ describe('SpaceshipCustomizationPanel tab activation (AC-4)', () => {
     expect(press('ArrowRight')).toBe(true);
     expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
     expect(document.activeElement).toBe(tabButton(container, 'ignitions'));
+    expect(press('ArrowRight')).toBe(true);
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
+    expect(document.activeElement).toBe(tabButton(container, 'shots'));
+    expect(slotIds(container)).toEqual(['shot']);
 
-    // Right wraps ignitions → frame.
+    // Right wraps shots → frame.
     expect(press('ArrowRight')).toBe(true);
     expect(panelRoot(container).getAttribute('data-active-tab')).toBe('frame');
     expect(document.activeElement).toBe(tabButton(container, 'frame'));
 
-    // Left wraps frame → ignitions.
+    // Left wraps frame → shots.
     expect(press('ArrowLeft')).toBe(true);
-    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
-    expect(document.activeElement).toBe(tabButton(container, 'ignitions'));
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
+    expect(document.activeElement).toBe(tabButton(container, 'shots'));
 
     expect(press('Home')).toBe(true);
     expect(panelRoot(container).getAttribute('data-active-tab')).toBe('frame');
     expect(document.activeElement).toBe(tabButton(container, 'frame'));
 
     expect(press('End')).toBe(true);
-    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
-    expect(document.activeElement).toBe(tabButton(container, 'ignitions'));
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
+    expect(document.activeElement).toBe(tabButton(container, 'shots'));
 
     // Unhandled keys change nothing and are not prevented.
     expect(press('a')).toBe(false);
-    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
-    expect(document.activeElement).toBe(tabButton(container, 'ignitions'));
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
+    expect(document.activeElement).toBe(tabButton(container, 'shots'));
     expect(press('ArrowDown')).toBe(false);
-    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
 
     // The panel is the 60vh scroll container: every handled key prevented the default, so
     // its scroll offset never moves.
@@ -678,31 +789,33 @@ describe('SpaceshipCustomizationPanel tab swap (AC-15, AC-16)', () => {
   });
 });
 
-describe('SpaceshipCustomizationPanel tab badges (AC-5)', () => {
-  it('renders 0/4 for every tab when nothing is owned', () => {
+describe('SpaceshipCustomizationPanel tab badges (AC-27, AC-30)', () => {
+  it('renders 0/244 for the ship tabs and 0/120 for Shots when nothing is owned', () => {
     const { container } = renderPanel({ parts: {} });
 
-    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '0']);
+    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '0', '0']);
     expect(tabButtons(container).map((button) => button.textContent)).toEqual([
-      'Frame0/4',
-      'Front0/4',
-      'Wings0/4',
-      'Engines0/4',
-      'Ignitions0/4',
+      'Frame0/244',
+      'Front0/244',
+      'Wings0/244',
+      'Engines0/244',
+      'Ignitions0/244',
+      'Shots0/120',
     ]);
     expect(tabButtons(container).map((button) => button.getAttribute('aria-label'))).toEqual(
-      TABS.map((tab) => `${tab.label}, 0 of 4 parts owned`),
+      TABS.map((tab) => `${tab.label}, 0 of ${TAB_TOTALS[tab.id]} parts owned`),
     );
     expect(TABS.map((tab) => badge(container, tab.id).getAttribute('data-total'))).toEqual([
-      '4',
-      '4',
-      '4',
-      '4',
-      '4',
+      '244',
+      '244',
+      '244',
+      '244',
+      '244',
+      '120',
     ]);
   });
 
-  it('counts only owned lootable parts, per tab', () => {
+  it('counts only owned lootable v3 parts, per tab', () => {
     const { container } = renderPanel({
       parts: {
         'hull-gold': 2,
@@ -712,40 +825,62 @@ describe('SpaceshipCustomizationPanel tab badges (AC-5)', () => {
         'engine-right-nova': 3,
         'ignition-right-blue': 1,
         'ignition-right-plasma': 1,
+        'shot-orca-violet': 1,
       },
     });
 
-    expect(badgeValues(container)).toEqual(['1', '2', '1', '1', '2']);
+    expect(badgeValues(container)).toEqual(['1', '2', '1', '1', '2', '1']);
     expect(TABS.map((tab) => badge(container, tab.id).textContent)).toEqual([
-      '1/4',
-      '2/4',
-      '1/4',
-      '1/4',
-      '2/4',
+      '1/244',
+      '2/244',
+      '1/244',
+      '1/244',
+      '2/244',
+      '1/120',
     ]);
     expect(tabButtons(container).map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Frame, 1 of 4 parts owned',
-      'Front, 2 of 4 parts owned',
-      'Wings, 1 of 4 parts owned',
-      'Engines, 1 of 4 parts owned',
-      'Ignitions, 2 of 4 parts owned',
+      'Frame, 1 of 244 parts owned',
+      'Front, 2 of 244 parts owned',
+      'Wings, 1 of 244 parts owned',
+      'Engines, 1 of 244 parts owned',
+      'Ignitions, 2 of 244 parts owned',
+      'Shots, 1 of 120 parts owned',
     ]);
   });
 
-  it('reaches the 4/4 badge maximum when both rare and both epic parts are owned', () => {
+  it('counts generated v3 ids (form-finish) without normalizing them away', () => {
     const { container } = renderPanel({
       parts: {
-        'hull-obsidian': 1,
-        'hull-gold': 1,
-        'tail-fin-split': 1,
-        'tail-fin-comet': 1,
+        'hull-dart-chrome': 1,
+        'tail-fin-dart-chrome': 1,
+        'nose-needle-ivory': 1,
+        'wing-right-kite-solar': 1,
+        'shot-dart-chrome': 1,
       },
     });
 
-    expect(badgeValues(container)).toEqual(['4', '0', '0', '0', '0']);
-    expect(badge(container, 'frame').textContent).toBe('4/4');
+    expect(badgeValues(container)).toEqual(['2', '1', '1', '0', '0', '1']);
+    expect(badge(container, 'frame').textContent).toBe('2/244');
+    expect(badge(container, 'shots').textContent).toBe('1/120');
+  });
+
+  it('reaches every badge maximum for a full 1,351-row inventory', () => {
+    const { container } = renderPanel({ parts: allOwnedParts() });
+
+    expect(badgeValues(container)).toEqual(['244', '244', '244', '244', '244', '120']);
+    expect(TABS.map((tab) => badge(container, tab.id).textContent)).toEqual([
+      '244/244',
+      '244/244',
+      '244/244',
+      '244/244',
+      '244/244',
+      '120/120',
+    ]);
     expect(tabButton(container, 'frame').getAttribute('aria-label')).toBe(
-      'Frame, 4 of 4 parts owned',
+      'Frame, 244 of 244 parts owned',
+    );
+    expect(tabButton(container, 'shots').getAttribute('aria-label')).toBe(
+      'Shots, 120 of 120 parts owned',
     );
   });
 
@@ -756,35 +891,39 @@ describe('SpaceshipCustomizationPanel tab badges (AC-5)', () => {
         'tail-fin-default': 1,
         'nose-crimson': 0,
         'cockpit-oracle': 0,
+        'shot-default': 3,
         'not-a-part': 5,
       },
     });
 
-    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '0']);
+    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '0', '0']);
     expect(tabButton(container, 'frame').getAttribute('aria-label')).toBe(
-      'Frame, 0 of 4 parts owned',
+      'Frame, 0 of 244 parts owned',
+    );
+    expect(tabButton(container, 'shots').getAttribute('aria-label')).toBe(
+      'Shots, 0 of 120 parts owned',
     );
   });
 
   it('counts a bilateral legacy wing id for both wings after normalization', () => {
     const { container } = renderPanel({ parts: { 'wings-silver': 1 } });
 
-    expect(badgeValues(container)).toEqual(['0', '0', '2', '0', '0']);
-    expect(badge(container, 'wings').textContent).toBe('2/4');
+    expect(badgeValues(container)).toEqual(['0', '0', '2', '0', '0', '0']);
+    expect(badge(container, 'wings').textContent).toBe('2/244');
   });
 
   it('counts the legacy engine id for both ignitions after normalization', () => {
     const { container } = renderPanel({ parts: { 'engine-blue': 3 } });
 
-    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '2']);
-    expect(badge(container, 'ignitions').textContent).toBe('2/4');
+    expect(badgeValues(container)).toEqual(['0', '0', '0', '0', '2', '0']);
+    expect(badge(container, 'ignitions').textContent).toBe('2/244');
   });
 
   it('counts a single-slot legacy hull id once after normalization', () => {
     const { container } = renderPanel({ parts: { 'body-obsidian': 1 } });
 
-    expect(badgeValues(container)).toEqual(['1', '0', '0', '0', '0']);
-    expect(badge(container, 'frame').textContent).toBe('1/4');
+    expect(badgeValues(container)).toEqual(['1', '0', '0', '0', '0', '0']);
+    expect(badge(container, 'frame').textContent).toBe('1/244');
   });
 });
 
@@ -852,6 +991,27 @@ describe('SpaceshipCustomizationPanel post-reveal landing (AC-6)', () => {
     expect(slotIds(landing.container)).toEqual(['hull', 'tail-fin']);
   });
 
+  it('lands on the shots tab for a shot grant in that same single mutation (AC-31)', async () => {
+    const landing = await observeLanding(
+      {
+        lastLootboxGrant: grant({
+          partId: 'shot-orca-violet',
+          slot: 'shot',
+          rarity: 'epic',
+          sequence: 6,
+        }),
+      },
+      { lastLootboxGrant: null },
+    );
+
+    expect(landing.values).toEqual(['shots']);
+    expect(landing.oldValues).toEqual([null]);
+    expect(landing.addedTabpanels).toBe(1);
+    expect(panelRoot(landing.container).getAttribute('data-active-tab')).toBe('shots');
+    expect(slotIds(landing.container)).toEqual(['shot']);
+    expect(tabButton(landing.container, 'shots').getAttribute('aria-selected')).toBe('true');
+  });
+
   it('lands on frame for an unknown or invalid part (AC-6)', async () => {
     const landing = await observeLanding(
       {
@@ -866,8 +1026,8 @@ describe('SpaceshipCustomizationPanel post-reveal landing (AC-6)', () => {
   });
 });
 
-describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
-  it('renders two rows for the active tab and reaches all ten catalog slots through the strip', () => {
+describe('SpaceshipCustomizationPanel slots (AC-28, AC-29, AC-30)', () => {
+  it('renders the active tab rows (two, one on Shots) and reaches all eleven catalog slots', () => {
     const { container } = renderPanel();
 
     expect(slotIds(container)).toEqual(['hull', 'tail-fin']);
@@ -876,18 +1036,18 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
     for (const tab of TABS) {
       selectTab(container, tab.id);
       const ids = slotIds(container);
-      expect(ids).toHaveLength(2);
+      expect(ids).toHaveLength(tab.id === 'shots' ? 1 : 2);
       expect(ids).toEqual([...tab.slots]);
       seen.push(...ids);
     }
 
-    expect(seen).toHaveLength(10);
+    expect(seen).toHaveLength(11);
     expect(new Set(seen)).toEqual(new Set(CATALOG_SLOTS));
     expect(seen.slice().sort()).toEqual(CATALOG_SLOTS.slice().sort());
-    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('ignitions');
+    expect(panelRoot(container).getAttribute('data-active-tab')).toBe('shots');
   });
 
-  it('renders exactly three variants per row with catalog rarity and a colour swatch', () => {
+  it('renders the classic finish cells with catalog rarity, finish and colour swatch', () => {
     const { container } = renderPanel();
 
     for (const tab of TABS) {
@@ -895,50 +1055,75 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
       const rows = slotRows(container);
       expect(rows.map((row) => row.getAttribute('data-slot'))).toEqual([...tab.slots]);
 
-      for (const [index, row] of rows.entries()) {
-        const slot = tab.slots[index];
-        if (slot === undefined) throw new Error('slot missing');
-        const catalog = partsForSlot(slot);
-        const variants = Array.from(
-          row.querySelectorAll<HTMLElement>('li.customization-variant'),
-        );
+      for (const row of rows) {
+        const slot = row.getAttribute('data-slot') as SlotIdV3;
+        const catalog = catalogForSlotForm(slot, 'classic');
+        const variants = variantCells(row);
         expect(variants.map((variant) => variant.getAttribute('data-part'))).toEqual(
           catalog.map((part) => part.id),
+        );
+        expect(variants.map((variant) => variant.getAttribute('data-finish'))).toEqual(
+          catalog.map((part) => part.finish),
         );
         expect(variants.map((variant) => variant.getAttribute('data-rarity'))).toEqual(
           catalog.map((part) => part.rarity),
         );
-        expect(variants).toHaveLength(3);
-        expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual([
-          'true',
-          'false',
-          'false',
-        ]);
-        expect(variants.map((variant) => variant.getAttribute('data-locked'))).toEqual([
-          'false',
-          'true',
-          'true',
-        ]);
-        expect(variants.map((variant) => variant.getAttribute('data-equipped'))).toEqual([
-          'true',
-          'false',
-          'false',
-        ]);
+        expect(variants).toHaveLength(slot === 'shot' ? 1 : 3);
+        expect(variants.map((variant) => variant.getAttribute('data-owned'))).toEqual(
+          catalog.map((part) => (part.rarity === 'standard' ? 'true' : 'false')),
+        );
+        expect(variants.map((variant) => variant.getAttribute('data-locked'))).toEqual(
+          catalog.map((part) => (part.rarity === 'standard' ? 'false' : 'true')),
+        );
+        expect(variants.map((variant) => variant.getAttribute('data-equipped'))).toEqual(
+          catalog.map((part) => (part.rarity === 'standard' ? 'true' : 'false')),
+        );
 
         const swatches = variants.map((variant) =>
           variant.querySelector<HTMLElement>('.customization-swatch'),
         );
-        expect(swatches.map((swatch) => swatch?.getAttribute('aria-hidden'))).toEqual([
-          'true',
-          'true',
-          'true',
-        ]);
+        expect(swatches.map((swatch) => swatch?.getAttribute('aria-hidden'))).toEqual(
+          catalog.map(() => 'true'),
+        );
         expect(swatches.map((swatch) => swatch?.style.background)).toEqual(
           catalog.map((part) => cssRgb(part.color)),
         );
-        expect(swatches.map((swatch) => swatch?.textContent)).toEqual(['', '', '']);
+        expect(swatches.map((swatch) => swatch?.textContent)).toEqual(
+          catalog.map(() => ''),
+        );
       }
     }
+  });
+
+  it('carries the per-slot owned lootable count and total (122 ship / 120 shot) on the header', () => {
+    const { container } = renderPanel({
+      parts: {
+        'hull-obsidian': 1,
+        'hull-dart-chrome': 1,
+        'tail-fin-default': 1,
+        'shot-orca-violet': 1,
+      },
+    });
+
+    const frameRows = slotRows(container);
+    expect(frameRows.map((row) => row.querySelector('.customization-slot-header')?.getAttribute('data-owned'))).toEqual([
+      '2',
+      '0',
+    ]);
+    expect(frameRows.map((row) => row.querySelector('.customization-slot-header')?.getAttribute('data-total'))).toEqual([
+      '122',
+      '122',
+    ]);
+
+    selectTab(container, 'shots');
+    const shotRow = slotRows(container)[0];
+    if (shotRow === undefined) throw new Error('shot row missing');
+    expect(shotRow.querySelector('.customization-slot-header')?.getAttribute('data-owned')).toBe(
+      '1',
+    );
+    expect(shotRow.querySelector('.customization-slot-header')?.getAttribute('data-total')).toBe(
+      '120',
+    );
   });
 
   it('shows the slot display name and the equipped part name for every slot', () => {
@@ -966,15 +1151,17 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
       },
     });
 
-    const hullRow = container.querySelector<HTMLElement>('li[data-slot="hull"]');
-    if (hullRow === null) throw new Error('hull row missing');
-    const variants = Array.from(
-      hullRow.querySelectorAll<HTMLElement>('li.customization-variant'),
-    );
+    const hullRow = slotRow(container, 'hull');
+    const variants = variantCells(hullRow);
     expect(variants.map((variant) => variant.getAttribute('data-part'))).toEqual([
       'hull-default',
       'hull-obsidian',
       'hull-gold',
+    ]);
+    expect(variants.map((variant) => variant.getAttribute('data-finish'))).toEqual([
+      'classic',
+      'classic',
+      'classic',
     ]);
     expect(variants.map((variant) => variant.getAttribute('data-rarity'))).toEqual([
       'standard',
@@ -1016,7 +1203,7 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
     ).toBe('Locked');
   });
 
-  it('renders a 44px-capable unequip control per slot, disabled at the standard part', () => {
+  it('renders one unequip control per slot, disabled at the standard part', () => {
     const { container } = renderPanel({
       customization: {
         lootboxes: 0,
@@ -1031,7 +1218,7 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
       const buttons = Array.from(
         container.querySelectorAll<HTMLButtonElement>('button.customization-unequip'),
       );
-      expect(buttons).toHaveLength(2);
+      expect(buttons).toHaveLength(tab.id === 'shots' ? 1 : 2);
       expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(
         tab.slots.map((slot) => `Unequip ${SLOT_NAME[slot]}`),
       );
@@ -1069,7 +1256,7 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
     expect(onUnequip).toHaveBeenCalledWith('hull');
   });
 
-  it('normalizes legacy direct props into the v2 slot rows', () => {
+  it('normalizes legacy direct props into the v3 slot rows', () => {
     const { container } = renderPanel({
       parts: { 'engine-blue': 1 },
       appearance: { engine: 'engine-blue' },
@@ -1089,7 +1276,32 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
     }
   });
 
-  it('keeps every panel control at a 44px minimum pointer target (AC-28, AC-31)', () => {
+  it('keeps a v3 inventory and appearance intact (never normalizing to {})', () => {
+    const { container } = renderPanel({
+      customization: {
+        lootboxes: 0,
+        keys: 0,
+        parts: { 'hull-dart-chrome': 1 },
+        appearance: { hull: 'hull-dart-chrome' },
+      },
+    });
+
+    const row = slotRow(container, 'hull');
+    expect(row.querySelector('.customization-equipped-name')?.textContent).toBe(
+      'Chrome Dart Hull',
+    );
+    expect(row.querySelector('.customization-slot-header')?.getAttribute('data-owned')).toBe(
+      '1',
+    );
+    selectForm(row, 'dart');
+    const variant = row.querySelector<HTMLElement>('li[data-part="hull-dart-chrome"]');
+    expect(variant).not.toBeNull();
+    expect(variant?.getAttribute('data-owned')).toBe('true');
+    expect(variant?.getAttribute('data-finish')).toBe('chrome');
+    expect(badge(container, 'frame').textContent).toBe('1/244');
+  });
+
+  it('keeps every panel control at a 44px minimum pointer target (AC-28, AC-30)', () => {
     withPanelStyles(() => {
       const normal = renderPanel({
         customization: {
@@ -1109,10 +1321,10 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
         selectTab(normal.container, tab.id);
         const targets = Array.from(
           normal.container.querySelectorAll<HTMLElement>(
-            'button.customization-equip, button.customization-unequip',
+            'button.customization-form, button.customization-equip, button.customization-unequip',
           ),
         );
-        expect(targets).toHaveLength(4);
+        expect(targets).toHaveLength(tab.id === 'shots' ? 13 : 26);
         for (const target of targets) {
           const style = window.getComputedStyle(target);
           expect(style.minWidth).toBe('44px');
@@ -1139,17 +1351,236 @@ describe('SpaceshipCustomizationPanel slots (AC-21, AC-29)', () => {
   });
 });
 
-describe('SpaceshipCustomizationPanel control matrix (AC-10)', () => {
+describe('SpaceshipCustomizationPanel form picker (AC-28, AC-29)', () => {
+  it('renders one eleven-button form strip per row in FORM_CATALOG order', () => {
+    const { container } = renderPanel();
+
+    for (const tab of TABS) {
+      selectTab(container, tab.id);
+      for (const row of slotRows(container)) {
+        const slot = row.getAttribute('data-slot') as SlotIdV3;
+        const strip = formStrip(row);
+        expect(strip.getAttribute('role')).toBe('group');
+        expect(strip.getAttribute('aria-label')).toBe(`${SLOT_NAME[slot]} forms`);
+        const buttons = formButtons(row);
+        expect(buttons).toHaveLength(11);
+        expect(buttons.map((button) => button.type)).toEqual([
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+          'button',
+        ]);
+        expect(buttons.map((button) => button.getAttribute('data-form'))).toEqual(FORM_IDS);
+        expect(buttons.map((button) => button.textContent)).toEqual(FORM_LABELS);
+        expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual([
+          'true',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+          'false',
+        ]);
+        expect(buttons.map((button) => button.tabIndex)).toEqual([
+          0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        ]);
+      }
+    }
+  });
+
+  it('selects a form on click: aria-pressed, data-form and a keyed twelve-cell grid', () => {
+    const { container } = renderPanel({ parts: allOwnedParts() });
+    const hullRow = slotRow(container, 'hull');
+    const tailRow = slotRow(container, 'tail-fin');
+    const preview = container.querySelector('.spaceship-preview');
+    const classicList = hullRow.querySelector('.customization-variants');
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+    expect(variantCells(hullRow)).toHaveLength(3);
+
+    selectForm(hullRow, 'dart');
+
+    expect(hullRow.getAttribute('data-form')).toBe('dart');
+    expect(
+      formButtons(hullRow).map((button) => button.getAttribute('aria-pressed')),
+    ).toEqual([
+      'false',
+      'true',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+    ]);
+    expect(formButtons(hullRow).map((button) => button.tabIndex)).toEqual([
+      -1, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    ]);
+    const cells = variantCells(hullRow);
+    expect(cells).toHaveLength(12);
+    expect(cells.map((cell) => cell.getAttribute('data-part'))).toEqual(
+      catalogForSlotForm('hull', 'dart').map((part) => part.id),
+    );
+    expect(cells[0]?.getAttribute('data-part')).toBe('hull-dart-chrome');
+    expect(cells[0]?.getAttribute('data-finish')).toBe('chrome');
+    expect(cells[0]?.getAttribute('data-rarity')).toBe('rare');
+    expect(cells[0]?.getAttribute('data-owned')).toBe('true');
+    expect(cells[11]?.getAttribute('data-part')).toBe('hull-dart-solar');
+    // The list is keyed by the form id: the classic list element is replaced.
+    expect(hullRow.querySelector('.customization-variants')).not.toBe(classicList);
+    // Selection persists per slot: the sibling row keeps its classic form.
+    expect(tailRow.getAttribute('data-form')).toBe('classic');
+    expect(variantCells(tailRow)).toHaveLength(3);
+    // The preview element identity is unchanged across a form selection.
+    expect(container.querySelector('.spaceship-preview')).toBe(preview);
+  });
+
+  it('selects the shot classic (1 cell) and a generated shot form (12 cells)', () => {
+    const { container } = renderPanel({ parts: allOwnedParts() });
+    selectTab(container, 'shots');
+    const row = slotRow(container, 'shot');
+    expect(variantCells(row)).toHaveLength(1);
+    expect(variantCells(row)[0]?.getAttribute('data-part')).toBe('shot-default');
+    expect(variantCells(row)[0]?.getAttribute('data-rarity')).toBe('standard');
+    expect(formStrip(row).getAttribute('aria-label')).toBe('Shot forms');
+
+    selectForm(row, 'orca');
+    expect(row.getAttribute('data-form')).toBe('orca');
+    const cells = variantCells(row);
+    expect(cells).toHaveLength(12);
+    expect(cells.map((cell) => cell.getAttribute('data-part'))).toEqual(
+      catalogForSlotForm('shot', 'orca').map((part) => part.id),
+    );
+    expect(cells[0]?.getAttribute('data-part')).toBe('shot-orca-chrome');
+    expect(cells.map((cell) => cell.getAttribute('data-rarity'))).toEqual(
+      catalogForSlotForm('shot', 'orca').map((part) => part.rarity),
+    );
+    expect(cells.map((cell) => cell.getAttribute('data-owned'))).toEqual(
+      cells.map(() => 'true'),
+    );
+    // One roving tab stop remains in the strip after switching.
+    expect(formButtons(row).filter((button) => button.tabIndex === 0)).toHaveLength(1);
+  });
+
+  it('moves form selection and focus with ArrowRight, ArrowLeft, Home and End', () => {
+    const onOpenLootbox = vi.fn();
+    const onOpen = vi.fn();
+    const onEquip = vi.fn();
+    const onEquipPart = vi.fn();
+    const onUnequip = vi.fn();
+    const onDismissReveal = vi.fn();
+    const { container } = renderPanel({
+      parts: allOwnedParts(),
+      onOpenLootbox,
+      onOpen,
+      onEquip,
+      onEquipPart,
+      onUnequip,
+      onDismissReveal,
+    });
+    const section = panelRoot(container);
+
+    let scrollTop = 40;
+    Object.defineProperty(section, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+
+    const hullRow = slotRow(container, 'hull');
+    const press = (key: string): boolean => {
+      const target = document.activeElement;
+      if (!(target instanceof HTMLElement)) {
+        throw new Error('no focused element');
+      }
+      const event = createEvent.keyDown(target, { key });
+      fireEvent(target, event);
+      return event.defaultPrevented;
+    };
+
+    formButtons(hullRow)[0]?.focus();
+    expect(document.activeElement).toBe(formButtons(hullRow)[0]);
+
+    expect(press('ArrowRight')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('dart');
+    expect(document.activeElement).toBe(formButtons(hullRow)[1]);
+    expect(formButtons(hullRow)[1]?.getAttribute('aria-pressed')).toBe('true');
+    expect(formButtons(hullRow)[0]?.tabIndex).toBe(-1);
+    expect(formButtons(hullRow)[1]?.tabIndex).toBe(0);
+
+    expect(press('ArrowLeft')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+    expect(document.activeElement).toBe(formButtons(hullRow)[0]);
+
+    // Left wraps classic → kite.
+    expect(press('ArrowLeft')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('kite');
+    expect(document.activeElement).toBe(formButtons(hullRow)[10]);
+
+    // Right wraps kite → classic.
+    expect(press('ArrowRight')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+    expect(document.activeElement).toBe(formButtons(hullRow)[0]);
+
+    expect(press('End')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('kite');
+    expect(document.activeElement).toBe(formButtons(hullRow)[10]);
+
+    expect(press('Home')).toBe(true);
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+    expect(document.activeElement).toBe(formButtons(hullRow)[0]);
+
+    // Unhandled keys change nothing and are not prevented.
+    expect(press('a')).toBe(false);
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+    expect(press('ArrowDown')).toBe(false);
+    expect(hullRow.getAttribute('data-form')).toBe('classic');
+
+    // Every handled key prevented the default: the panel's scroll offset never moves.
+    expect(section.scrollTop).toBe(40);
+
+    // Selection never reports a command.
+    for (const handler of [
+      onOpenLootbox,
+      onOpen,
+      onEquip,
+      onEquipPart,
+      onUnequip,
+      onDismissReveal,
+    ]) {
+      expect(handler).toHaveBeenCalledTimes(0);
+    }
+  });
+});
+
+describe('SpaceshipCustomizationPanel control matrix (AC-28, AC-30)', () => {
   interface ControlCounts {
+    forms: number;
     equip: number;
     unequip: number;
+    controls: number;
   }
 
   function counts(container: HTMLElement): ControlCounts {
-    return {
-      equip: container.querySelectorAll('button.customization-equip').length,
-      unequip: container.querySelectorAll('button.customization-unequip').length,
-    };
+    const forms = container.querySelectorAll('button.customization-form').length;
+    const equip = container.querySelectorAll('button.customization-equip').length;
+    const unequip = container.querySelectorAll('button.customization-unequip').length;
+    return { forms, equip, unequip, controls: forms + equip + unequip };
   }
 
   function perTabCounts(container: HTMLElement): ControlCounts[] {
@@ -1159,43 +1590,33 @@ describe('SpaceshipCustomizationPanel control matrix (AC-10)', () => {
     });
   }
 
-  function totals(perTab: ControlCounts[]): ControlCounts {
-    return {
-      equip: perTab.reduce((sum, entry) => sum + entry.equip, 0),
-      unequip: perTab.reduce((sum, entry) => sum + entry.unequip, 0),
-    };
-  }
-
-  it('exposes 10 equip + 10 unequip controls across the five tabs for the empty inventory', () => {
+  it('renders 26 controls per ship tab and 13 on Shots for the empty inventory', () => {
     const { container } = renderPanel({ parts: {} });
 
-    const perTab = perTabCounts(container);
-    expect(perTab).toEqual([
-      { equip: 2, unequip: 2 },
-      { equip: 2, unequip: 2 },
-      { equip: 2, unequip: 2 },
-      { equip: 2, unequip: 2 },
-      { equip: 2, unequip: 2 },
+    expect(perTabCounts(container)).toEqual([
+      { forms: 22, equip: 2, unequip: 2, controls: 26 },
+      { forms: 22, equip: 2, unequip: 2, controls: 26 },
+      { forms: 22, equip: 2, unequip: 2, controls: 26 },
+      { forms: 22, equip: 2, unequip: 2, controls: 26 },
+      { forms: 22, equip: 2, unequip: 2, controls: 26 },
+      { forms: 11, equip: 1, unequip: 1, controls: 13 },
     ]);
-    expect(totals(perTab)).toEqual({ equip: 10, unequip: 10 });
-    expect(totals(perTab).equip + totals(perTab).unequip).toBe(20);
   });
 
-  it('exposes 30 equip + 10 unequip controls across the five tabs when all parts are owned', () => {
+  it('renders 30 controls per ship tab and 13 on Shots with an all-owned classic inventory', () => {
     const { container } = renderPanel({ parts: allOwnedParts() });
 
-    const perTab = perTabCounts(container);
-    expect(perTab).toEqual([
-      { equip: 6, unequip: 2 },
-      { equip: 6, unequip: 2 },
-      { equip: 6, unequip: 2 },
-      { equip: 6, unequip: 2 },
-      { equip: 6, unequip: 2 },
+    expect(perTabCounts(container)).toEqual([
+      { forms: 22, equip: 6, unequip: 2, controls: 30 },
+      { forms: 22, equip: 6, unequip: 2, controls: 30 },
+      { forms: 22, equip: 6, unequip: 2, controls: 30 },
+      { forms: 22, equip: 6, unequip: 2, controls: 30 },
+      { forms: 22, equip: 6, unequip: 2, controls: 30 },
+      { forms: 11, equip: 1, unequip: 1, controls: 13 },
     ]);
-    expect(totals(perTab)).toEqual({ equip: 30, unequip: 10 });
-    expect(totals(perTab).equip + totals(perTab).unequip).toBe(40);
 
-    // Every variant of the inspected tab is owned, and only the equipped one lacks a label.
+    // Every classic variant of the inspected tab is owned, and only the equipped one lacks
+    // a label.
     selectTab(container, 'front');
     const variants = Array.from(
       container.querySelectorAll<HTMLElement>('li.customization-variant'),
@@ -1228,6 +1649,32 @@ describe('SpaceshipCustomizationPanel control matrix (AC-10)', () => {
       null,
       'Equip Amber Razor',
       'Equip Oracle Canopy',
+    ]);
+  });
+
+  it('renders 48 controls per ship tab and 24 on Shots with a generated form on every row', () => {
+    const { container } = renderPanel({ parts: allOwnedParts() });
+
+    for (const tab of TABS) {
+      selectTab(container, tab.id);
+      for (const row of slotRows(container)) {
+        selectForm(row, 'dart');
+        const cells = variantCells(row);
+        expect(cells).toHaveLength(12);
+        expect(cells.map((cell) => cell.getAttribute('data-owned'))).toEqual(
+          cells.map(() => 'true'),
+        );
+        expect(row.getAttribute('data-form')).toBe('dart');
+      }
+    }
+
+    expect(perTabCounts(container)).toEqual([
+      { forms: 22, equip: 24, unequip: 2, controls: 48 },
+      { forms: 22, equip: 24, unequip: 2, controls: 48 },
+      { forms: 22, equip: 24, unequip: 2, controls: 48 },
+      { forms: 22, equip: 24, unequip: 2, controls: 48 },
+      { forms: 22, equip: 24, unequip: 2, controls: 48 },
+      { forms: 11, equip: 12, unequip: 1, controls: 24 },
     ]);
   });
 });
