@@ -16,11 +16,14 @@
  *   equip pulse and the observed 100 ms plume flicker;
  * - the 700 ms/360° fly-by roll on a 1.2-world-unit orbit with a 16-point/700 ms fire
  *   trail;
- * - the unchanged shot list and 180 ms travel, now presented as a glowing tapered bolt
- *   (`shot-bolt`) with an 80 ms additive muzzle flash (`shot-muzzle-flash`) and a 120 ms
- *   model-local recoil (0.12 local units): `Shot.start` stays the ship anchor, `Shot.muzzle`
- *   is the bolt's visual origin, and only `model.group.position.z` moves — the outer group,
- *   camera and HUD never shake. Low tier / reduced motion suppress the flash and recoil.
+ * - the unchanged shot list and 180 ms travel, presented through the prebuilt shot styles
+ *   (T10): the default `shot-bolt` glowing tapered bolt (or the equipped style's `orb`/`wave`/
+ *   `shard` geometry) with an 80 ms additive muzzle flash (`shot-muzzle-flash`, `spark`/`ring`/
+ *   `petal`) and a 120 ms model-local recoil (0.12 local units). A shot captures its geometry,
+ *   scale and muzzle at spawn; the shared projectile/muzzle materials follow the equipped
+ *   style's `color`/`accent`. `Shot.start` stays the ship anchor, `Shot.muzzle` is the visual
+ *   origin, and only `model.group.position.z` moves — the outer group, camera and HUD never
+ *   shake. Low tier / reduced motion suppress the flash and recoil.
  *
  * Reduced motion snaps to the pointer, hides the ignitions, clears the trail and yields
  * exact zero bank/pitch, pulse scale 1 and no fly-by.
@@ -31,12 +34,9 @@ import {
   BufferAttribute,
   BufferGeometry,
   Camera,
-  ConeGeometry,
   DynamicDrawUsage,
   Group,
   Mesh,
-  MeshBasicMaterial,
-  OctahedronGeometry,
   Points,
   PointsMaterial,
   Vector3,
@@ -55,10 +55,22 @@ import {
 import { MOTION, easeInOutCubic, easeOutCubic } from '../game/motion';
 import { type SlotId } from '../game/parts-v2';
 import {
+  normalizeAppearanceV3,
+  shotStyleForPart,
+  type ShotStyleDef,
+} from '../game/parts-v3';
+import {
   createCursorShipModel,
   type CursorShipModel,
   CURSOR_IGNITION_OPACITY,
 } from './cursor-ship';
+import {
+  createShotGeometries,
+  createShotMaterials,
+  SHOT_MUZZLE_COLOR,
+  SHOT_MUZZLE_OPACITY,
+  SHOT_PROJECTILE_COLOR,
+} from './shot-visuals';
 import {
   shipBankRad,
   shipEquipPulseScale,
@@ -83,15 +95,30 @@ export const SHOT_MUZZLE_OFFSET = 0.78;
 /** Lifetime of the additive muzzle flash in ms (`MOTION.shotMuzzleFlashMs`, 80). */
 export const SHOT_MUZZLE_FLASH_MS = MOTION.shotMuzzleFlashMs;
 
-/** Bolt colour: a warm white-hot tracer. */
-export const SHOT_BOLT_COLOR = 0xfff1c8;
+/** Bolt colour: a warm white-hot tracer (the `shot-default` projectile colour). */
+export const SHOT_BOLT_COLOR = SHOT_PROJECTILE_COLOR;
 
-/** Muzzle-flash colour: a warmer amber than the bolt. */
-export const SHOT_MUZZLE_FLASH_COLOR = 0xffd27a;
+/** Muzzle-flash colour: a warmer amber than the bolt (the `shot-default` accent). */
+export const SHOT_MUZZLE_FLASH_COLOR = SHOT_MUZZLE_COLOR;
 
-/** One in-flight shot: a glowing bolt travelling linearly from `muzzle` to `target`. */
+/** Stable comparison key for one shot style (every catalog-derived field). */
+function shotStyleSignatureOf(style: ShotStyleDef): string {
+  return [
+    style.partId,
+    style.geometry,
+    style.scale,
+    style.muzzle,
+    style.color,
+    style.accent,
+  ].join('|');
+}
+
+/** One in-flight shot: a glowing projectile travelling linearly from `muzzle` to `target`. */
 export interface Shot {
-  /** The bolt mesh (a 0.55 × 0.07 cone, `name === 'shot-bolt'`). */
+  /**
+   * The captured projectile mesh (`name === 'shot-<geometry>'`, so the default is
+   * `shot-bolt`); its geometry/scale were captured at spawn.
+   */
   readonly mesh: Mesh;
   /** The ship anchor captured at fire time (`spawnShot`'s `start`). */
   readonly start: Vector3;
@@ -168,6 +195,12 @@ export interface Spaceship {
   updateShots(dtMs: number): Shot[];
   /** Applies a slot→part-id record; returns the slots that actually changed. */
   applyAppearance(appearance: Record<string, string>): readonly SlotId[];
+  /**
+   * Switches the equipped shot style (T10 AC-24): the next shot captures the style's
+   * geometry/scale/muzzle, and the shared projectile/muzzle materials take the style's
+   * `color`/`accent`. Repeating an identical style is a no-op.
+   */
+  applyShotStyle(style: ShotStyleDef): void;
   /** Starts the 700 ms/360° level-complete fly-by. */
   startFlyBy(): void;
   /** Whether a fly-by is running. */
@@ -243,8 +276,9 @@ function createTrailStore(capacity: number): TrailStore {
 /**
  * Builds the cursor ship and its shot manager.
  *
- * @param appearance slot→part-id record (v2 ids; legacy categories are normalized by
- *   `appearanceToCursorShipParams`).
+ * @param appearance slot→part-id record (v3 ids; legacy categories and unknown/wrong-slot
+ *   entries are normalized by `appearanceToShipParamsV3`, and a `shot` entry selects only the
+ *   shot style).
  */
 export function createSpaceship(appearance?: Record<string, string>): Spaceship {
   const group = new Group();
@@ -289,28 +323,13 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
   const deltaScratch = new Vector3();
   const targetScratch = new Vector3();
   const previousPositionScratch = new Vector3();
-  // Shot presentation (spec AC-6): one shared bolt geometry (tip at local +z), one shared
-  // muzzle geometry and their additive materials. One mesh per shot — no new geometry or
-  // material after construction.
-  const boltGeometry = new ConeGeometry(0.07, 0.55, 6);
-  boltGeometry.rotateX(Math.PI / 2);
-  const boltMaterial = new MeshBasicMaterial({
-    color: SHOT_BOLT_COLOR,
-    transparent: true,
-    opacity: 0.95,
-    blending: AdditiveBlending,
-    depthWrite: false,
-    toneMapped: false,
-  });
-  const muzzleGeometry = new OctahedronGeometry(0.22, 0);
-  const muzzleMaterial = new MeshBasicMaterial({
-    color: SHOT_MUZZLE_FLASH_COLOR,
-    transparent: true,
-    opacity: 0.9,
-    blending: AdditiveBlending,
-    depthWrite: false,
-    toneMapped: false,
-  });
+  // Shot presentation (T10 AC-24): one prebuilt geometry set (four projectiles + three
+  // muzzles) and one shared additive material per role, all created once. One mesh per shot
+  // re-uses them — no geometry or material is created after construction.
+  const shotGeometries = createShotGeometries();
+  const shotMaterials = createShotMaterials();
+  const projectileMaterial = shotMaterials.projectile;
+  const muzzleMaterial = shotMaterials.muzzle;
   const shotForward = new Vector3(0, 0, 1);
   const shotDirection = new Vector3();
 
@@ -330,6 +349,17 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
   let recoilOffset = 0;
   let pulseStartMs = Number.NEGATIVE_INFINITY;
   let pulseScale = 1;
+
+  // The equipped shot style. `shot-default` is the accepted bolt/spark look; a style change
+  // only rewrites the shared material colours — geometry/scale/muzzle are captured at spawn.
+  let currentShotStyle: ShotStyleDef = shotStyleForPart('shot-default');
+  let shotStyleSignature = shotStyleSignatureOf(currentShotStyle);
+
+  if (appearance !== undefined) {
+    // Resolve defensively: an absent/unknown/wrong-slot `shot` entry falls back to
+    // `shot-default` through the same v3 normalizer the model already used (never throws).
+    applyShotStyle(resolveShotStyle(appearance));
+  }
 
   let flyByActive = false;
   let flyByElapsedMs = 0;
@@ -460,8 +490,32 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     }
   }
 
+  /** Normalizes an appearance record and resolves its shot style (`shot-default` fallback). */
+  function resolveShotStyle(appearance: Record<string, string>): ShotStyleDef {
+    return shotStyleForPart(normalizeAppearanceV3(appearance).shot ?? 'shot-default');
+  }
+
+  function applyShotStyle(style: ShotStyleDef): void {
+    const signature = shotStyleSignatureOf(style);
+    if (signature === shotStyleSignature) {
+      return;
+    }
+    shotStyleSignature = signature;
+    currentShotStyle = {
+      partId: style.partId,
+      geometry: style.geometry,
+      scale: style.scale,
+      muzzle: style.muzzle,
+      color: style.color,
+      accent: style.accent,
+    };
+    projectileMaterial.color.set(style.color);
+    muzzleMaterial.color.set(style.accent);
+  }
+
   function applyAppearance(appearance: Record<string, string>): readonly SlotId[] {
     const changed = model.applyAppearance(appearance);
+    applyShotStyle(resolveShotStyle(appearance));
     if (changed.length > 0) {
       pulseStartMs = timeMs;
     }
@@ -600,7 +654,9 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     } else {
       pulseScale = shipEquipPulseScale(timeMs - pulseStartMs, false);
     }
-    model.group.scale.setScalar(pulseScale);
+    // The model multiplies its equipped chassis by the pulse (T9 API); never overwrite the
+    // chassis with a scalar (AC-17/R12).
+    model.applyPulseScale(pulseScale);
   }
 
   function updateSpaceship(
@@ -621,16 +677,20 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     const muzzle = new Vector3(0, 0, SHOT_MUZZLE_OFFSET)
       .applyQuaternion(group.quaternion)
       .add(start);
-    const mesh = new Mesh(boltGeometry, boltMaterial);
-    mesh.name = 'shot-bolt';
+    // Capture the equipped style at spawn (AC-24): an in-flight shot keeps its geometry,
+    // scale and muzzle form even if the owner equips another style before it lands.
+    const style = currentShotStyle;
+    const mesh = new Mesh(shotGeometries.projectiles[style.geometry], projectileMaterial);
+    mesh.name = `shot-${style.geometry}`;
     mesh.position.copy(muzzle);
+    mesh.scale.setScalar(style.scale);
     shotDirection.copy(target).sub(muzzle);
     if (shotDirection.lengthSq() > 1e-12) {
       shotDirection.normalize();
       mesh.quaternion.setFromUnitVectors(shotForward, shotDirection);
     }
 
-    const muzzleFlash = new Mesh(muzzleGeometry, muzzleMaterial);
+    const muzzleFlash = new Mesh(shotGeometries.muzzles[style.muzzle], muzzleMaterial);
     muzzleFlash.name = 'shot-muzzle-flash';
     muzzleFlash.position.copy(muzzle);
     muzzleFlash.quaternion.copy(mesh.quaternion);
@@ -638,7 +698,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     const flashEnabled = shotFxEnabled && !reduced;
     if (flashEnabled) {
       muzzleFlash.scale.setScalar(1);
-      muzzleMaterial.opacity = 0.9;
+      muzzleMaterial.opacity = SHOT_MUZZLE_OPACITY;
       shotsGroup.add(muzzleFlash);
       liveMuzzleFlashCount += 1;
       recoilStartMs = timeMs;
@@ -676,7 +736,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
         const flashProgress =
           SHOT_MUZZLE_FLASH_MS > 0 ? flashElapsed / SHOT_MUZZLE_FLASH_MS : 1;
         shot.muzzleFlash.scale.setScalar(1 + 0.4 * easeOutCubic(flashProgress));
-        (shot.muzzleFlash.material as MeshBasicMaterial).opacity = 0.9 * (1 - flashProgress);
+        muzzleMaterial.opacity = SHOT_MUZZLE_OPACITY * (1 - flashProgress);
         if (shot.muzzleRemainingMs <= 0) {
           shotsGroup.remove(shot.muzzleFlash);
           liveMuzzleFlashCount -= 1;
@@ -714,7 +774,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
       model.group.position.set(0, 0, 0);
       model.group.rotation.set(0, 0, 0);
       pulseScale = 1;
-      model.group.scale.setScalar(1);
+      model.applyPulseScale(1);
     }
   }
 
@@ -747,9 +807,8 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     model.dispose();
     trailGeometry.dispose();
     trailMaterial.dispose();
-    boltGeometry.dispose();
-    boltMaterial.dispose();
-    muzzleGeometry.dispose();
+    shotGeometries.dispose();
+    projectileMaterial.dispose();
     muzzleMaterial.dispose();
   }
 
@@ -771,6 +830,7 @@ export function createSpaceship(appearance?: Record<string, string>): Spaceship 
     spawnShot,
     updateShots,
     applyAppearance,
+    applyShotStyle,
     startFlyBy,
     isFlyingBy: () => flyByActive,
     setTrailEnabled,

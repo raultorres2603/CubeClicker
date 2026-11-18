@@ -1,12 +1,17 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it, vi } from 'vitest';
 import {
   AdditiveBlending,
+  BufferGeometry,
   ConeGeometry,
   Mesh,
   MeshBasicMaterial,
   OctahedronGeometry,
   PerspectiveCamera,
   Points,
+  TetrahedronGeometry,
+  TorusGeometry,
   Vector3,
   type Object3D,
 } from 'three';
@@ -21,6 +26,7 @@ import {
   SPACESHIP_SCALE,
 } from '../game/effects';
 import { MOTION } from '../game/motion';
+import { shotStyleForPart } from '../game/parts-v3';
 import {
   CURSOR_SHIP_MATERIAL_COUNT,
   CURSOR_SHIP_MESH_COUNT,
@@ -651,6 +657,277 @@ describe('shots (AC-6)', () => {
   });
 });
 
+describe('shot styles (AC-24, AC-25)', () => {
+  it('fires the accepted bolt/spark default with the shot-default colours', () => {
+    const ship = createSpaceship();
+    const style = shotStyleForPart('shot-default');
+
+    expect(style).toEqual({
+      partId: 'shot-default',
+      geometry: 'bolt',
+      scale: 1,
+      muzzle: 'spark',
+      color: '#fff1c8',
+      accent: '#ffd27a',
+    });
+    const shot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    expect(shot.mesh.name).toBe('shot-bolt');
+    expect(shot.mesh.geometry).toBeInstanceOf(ConeGeometry);
+    expect(shot.mesh.scale.toArray()).toEqual([1, 1, 1]);
+    expect((shot.mesh.material as MeshBasicMaterial).color.getHexString()).toBe('fff1c8');
+    expect(shot.muzzleFlash.geometry).toBeInstanceOf(OctahedronGeometry);
+    expect((shot.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe('ffd27a');
+    ship.dispose();
+  });
+
+  it('switches all four projectile geometries and three muzzle forms with the style colours', () => {
+    const ship = createSpaceship();
+    const cases = [
+      {
+        partId: 'shot-lance-azure',
+        geometry: 'bolt',
+        scale: 1.25,
+        muzzle: 'spark',
+        color: '2f6fd6',
+        accent: '7cf6ff',
+        projectileCtor: ConeGeometry,
+      },
+      {
+        partId: 'shot-hauler-jade',
+        geometry: 'orb',
+        scale: 1.1,
+        muzzle: 'ring',
+        color: '15803d',
+        accent: '86efac',
+        projectileCtor: OctahedronGeometry,
+      },
+      {
+        partId: 'shot-orca-violet',
+        geometry: 'wave',
+        scale: 1.2,
+        muzzle: 'petal',
+        color: '6d28d9',
+        accent: 'c4b5fd',
+        projectileCtor: TorusGeometry,
+      },
+      {
+        partId: 'shot-arrow-crimson',
+        geometry: 'shard',
+        scale: 1,
+        muzzle: 'petal',
+        color: '9f1239',
+        accent: 'fb7185',
+        projectileCtor: TetrahedronGeometry,
+      },
+    ] as const;
+
+    for (const fixture of cases) {
+      const style = shotStyleForPart(fixture.partId);
+      expect(style).toEqual({
+        partId: fixture.partId,
+        geometry: fixture.geometry,
+        scale: fixture.scale,
+        muzzle: fixture.muzzle,
+        color: `#${fixture.color}`,
+        accent: `#${fixture.accent}`,
+      });
+
+      ship.applyShotStyle(style);
+      const shot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+      expect(shot.mesh.name).toBe(`shot-${fixture.geometry}`);
+      expect(shot.mesh.geometry).toBeInstanceOf(fixture.projectileCtor);
+      expect(shot.mesh.scale.toArray()).toEqual([
+        fixture.scale,
+        fixture.scale,
+        fixture.scale,
+      ]);
+      expect((shot.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+        fixture.color,
+      );
+      expect((shot.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe(
+        fixture.accent,
+      );
+
+      if (fixture.muzzle === 'spark') {
+        expect(shot.muzzleFlash.geometry).toBeInstanceOf(OctahedronGeometry);
+      } else if (fixture.muzzle === 'ring') {
+        expect(shot.muzzleFlash.geometry).toBeInstanceOf(TorusGeometry);
+      } else {
+        expect(shot.muzzleFlash.geometry).toBeInstanceOf(BufferGeometry);
+        expect(shot.muzzleFlash.geometry.getAttribute('position').count).toBe(18);
+      }
+    }
+    ship.dispose();
+  });
+
+  it('captures geometry, scale and muzzle at spawn and keeps an in-flight shot after an equip', () => {
+    const ship = createSpaceship();
+    const boltShot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    const boltGeometry = boltShot.mesh.geometry;
+    const boltMuzzleGeometry = boltShot.muzzleFlash.geometry;
+    const projectileMaterial = boltShot.mesh.material;
+    const muzzleMaterial = boltShot.muzzleFlash.material;
+
+    ship.applyShotStyle(shotStyleForPart('shot-orca-violet'));
+    const waveShot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+
+    // The in-flight bolt keeps the geometry/scale/muzzle it captured at spawn.
+    expect(boltShot.mesh.geometry).toBe(boltGeometry);
+    expect(boltShot.mesh.geometry).toBeInstanceOf(ConeGeometry);
+    expect(boltShot.mesh.scale.toArray()).toEqual([1, 1, 1]);
+    expect(boltShot.muzzleFlash.geometry).toBe(boltMuzzleGeometry);
+    expect(boltShot.muzzleFlash.geometry).toBeInstanceOf(OctahedronGeometry);
+
+    // The new shot captures the equipped wave/petal style.
+    expect(waveShot.mesh.geometry).not.toBe(boltGeometry);
+    expect(waveShot.mesh.geometry).toBeInstanceOf(TorusGeometry);
+    expect(waveShot.mesh.scale.toArray()).toEqual([1.2, 1.2, 1.2]);
+    expect(waveShot.muzzleFlash.geometry).not.toBe(boltMuzzleGeometry);
+    expect(waveShot.muzzleFlash.geometry.getAttribute('position').count).toBe(18);
+
+    // The materials are shared, so both live shots follow the equipped style colours.
+    expect(waveShot.mesh.material).toBe(projectileMaterial);
+    expect(waveShot.muzzleFlash.material).toBe(muzzleMaterial);
+    expect((boltShot.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      '6d28d9',
+    );
+    expect(
+      (boltShot.muzzleFlash.material as MeshBasicMaterial).color.getHexString(),
+    ).toBe('c4b5fd');
+    ship.dispose();
+  });
+
+  it('is a no-op for an identical style and writes the colours once on a change', () => {
+    const ship = createSpaceship();
+    ship.applyShotStyle(shotStyleForPart('shot-kite-solar'));
+    const shot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    const projectileMaterial = shot.mesh.material as MeshBasicMaterial;
+    const muzzleMaterial = shot.muzzleFlash.material as MeshBasicMaterial;
+    const projectileColorSet = vi.spyOn(projectileMaterial.color, 'set');
+    const muzzleColorSet = vi.spyOn(muzzleMaterial.color, 'set');
+
+    // A fresh style object with identical values (as `shotStyleForPart` returns) is a no-op.
+    ship.applyShotStyle(shotStyleForPart('shot-kite-solar'));
+    expect(projectileColorSet).not.toHaveBeenCalled();
+    expect(muzzleColorSet).not.toHaveBeenCalled();
+
+    ship.applyShotStyle(shotStyleForPart('shot-lance-ember'));
+    expect(projectileColorSet).toHaveBeenCalledTimes(1);
+    expect(projectileColorSet).toHaveBeenCalledWith('#c2410c');
+    expect(muzzleColorSet).toHaveBeenCalledTimes(1);
+    expect(muzzleColorSet).toHaveBeenCalledWith('#ffb35c');
+    ship.dispose();
+  });
+
+  it('re-uses the one geometry set and the two shared materials for every shot', () => {
+    const ship = createSpaceship();
+    ship.applyShotStyle(shotStyleForPart('shot-hauler-jade'));
+    const first = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    const second = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    const third = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+
+    expect(second.mesh.geometry).toBe(first.mesh.geometry);
+    expect(third.mesh.geometry).toBe(first.mesh.geometry);
+    expect(second.mesh.material).toBe(first.mesh.material);
+    expect(third.mesh.material).toBe(first.mesh.material);
+    expect(second.muzzleFlash.geometry).toBe(first.muzzleFlash.geometry);
+    expect(third.muzzleFlash.geometry).toBe(first.muzzleFlash.geometry);
+    expect(second.muzzleFlash.material).toBe(first.muzzleFlash.material);
+    expect(ship.shotsGroup.children).toHaveLength(6);
+
+    // A style switch re-uses the same two materials, only the captured geometry changes.
+    const projectileMaterial = first.mesh.material;
+    const muzzleMaterial = first.muzzleFlash.material;
+    ship.applyShotStyle(shotStyleForPart('shot-arrow-crimson'));
+    const fourth = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    expect(fourth.mesh.material).toBe(projectileMaterial);
+    expect(fourth.muzzleFlash.material).toBe(muzzleMaterial);
+    expect(fourth.mesh.geometry).not.toBe(first.mesh.geometry);
+    ship.dispose();
+  });
+
+  it('applies the equipped appearance shot style at construction and on a live change (AC-25)', () => {
+    const ship = createSpaceship({ shot: 'shot-orca-violet' });
+    const first = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    expect(first.mesh.geometry).toBeInstanceOf(TorusGeometry);
+    expect(first.mesh.scale.toArray()).toEqual([1.2, 1.2, 1.2]);
+    expect((first.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      '6d28d9',
+    );
+    expect((first.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'c4b5fd',
+    );
+
+    // A shot-only appearance change is applied live (the model reports no ship slot change).
+    expect(ship.applyAppearance({ shot: 'shot-arrow-crimson' })).toEqual([]);
+    const second = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    expect(second.mesh.geometry).toBeInstanceOf(TetrahedronGeometry);
+    expect((second.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      '9f1239',
+    );
+
+    // Unknown/absent shot entries fall back to the accepted shot-default bolt/spark.
+    expect(ship.applyAppearance({ shot: 'shot-not-a-part' })).toEqual([]);
+    const third = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+    expect(third.mesh.geometry).toBeInstanceOf(ConeGeometry);
+    expect(third.mesh.scale.toArray()).toEqual([1, 1, 1]);
+    expect((third.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'fff1c8',
+    );
+    expect((third.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'ffd27a',
+    );
+    ship.dispose();
+  });
+});
+
+describe('chassis x equip pulse composition (AC-17)', () => {
+  it('keeps the generated hull chassis at rest and at the 130 ms pulse peak', () => {
+    const ship = createSpaceship();
+    const camera = cameraAtRest();
+    ship.applyAppearance({ hull: 'hull-dart-chrome' });
+
+    ship.update(camera, 0, 0, false, 0, false);
+    expect(ship.getPulseScale()).toBe(1);
+    expect(ship.model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+
+    ship.update(camera, 0, 0, false, 130, false);
+    expect(ship.getPulseScale()).toBe(1.04);
+    const peak = ship.model.group.scale.toArray();
+    expect(peak).toHaveLength(3);
+    expect(Math.abs(peak[0]! - 0.988)).toBeLessThan(1e-9);
+    expect(Math.abs(peak[1]! - 0.936)).toBeLessThan(1e-9);
+    expect(Math.abs(peak[2]! - 1.3)).toBeLessThan(1e-9);
+    ship.dispose();
+  });
+
+  it('preserves the accepted classic [1, 1, 1] chassis through the 260 ms pulse', () => {
+    const ship = createSpaceship();
+    const camera = cameraAtRest();
+    ship.applyAppearance({ hull: 'hull-gold' });
+
+    ship.update(camera, 0, 0, false, 0, false);
+    expect(ship.model.group.scale.toArray()).toEqual([1, 1, 1]);
+
+    ship.update(camera, 0, 0, false, 130, false);
+    expect(ship.getPulseScale()).toBe(1.04);
+    expect(ship.model.group.scale.toArray()).toEqual([1.04, 1.04, 1.04]);
+
+    ship.update(camera, 0, 0, false, 130, false);
+    expect(ship.getPulseScale()).toBe(1);
+    expect(ship.model.group.scale.toArray()).toEqual([1, 1, 1]);
+    ship.dispose();
+  });
+
+  it('never writes the model scale with a scalar, only through applyPulseScale', () => {
+    const source = readFileSync(new URL('./spaceship.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/model\.group\.scale\.setScalar\(/u);
+    expect(source).not.toMatch(/model\.group\.scale\.set\(/u);
+    expect(source).toContain('model.applyPulseScale(pulseScale)');
+    expect(source).toContain('model.applyPulseScale(1)');
+  });
+});
+
 describe('dispose', () => {
   it('releases the shared bolt and muzzle resources exactly once', () => {
     const ship = createSpaceship();
@@ -676,6 +953,39 @@ describe('dispose', () => {
     expect(ship.shotsGroup.children).toEqual([]);
     expect(ship.getMuzzleFlashCount()).toBe(0);
     expect(ship.getRecoilOffset()).toBe(0);
+  });
+
+  it('releases all seven prebuilt geometries and both shared materials exactly once', () => {
+    const ship = createSpaceship();
+    const geometries = new Set<BufferGeometry>();
+    const materials = new Set<MeshBasicMaterial>();
+    for (const partId of [
+      'shot-default',
+      'shot-hauler-jade',
+      'shot-orca-violet',
+      'shot-arrow-crimson',
+      'shot-lance-azure',
+    ]) {
+      ship.applyShotStyle(shotStyleForPart(partId));
+      const shot = ship.spawnShot(new Vector3(0, 0, 0), new Vector3(0, 0, 10));
+      geometries.add(shot.mesh.geometry);
+      geometries.add(shot.muzzleFlash.geometry);
+      materials.add(shot.mesh.material as MeshBasicMaterial);
+      materials.add(shot.muzzleFlash.material as MeshBasicMaterial);
+    }
+    expect(geometries.size).toBe(7);
+    expect(materials.size).toBe(2);
+    const spies = [
+      ...[...geometries].map((geometry) => vi.spyOn(geometry, 'dispose')),
+      ...[...materials].map((material) => vi.spyOn(material, 'dispose')),
+    ];
+
+    ship.dispose();
+    ship.dispose();
+
+    for (const spy of spies) {
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('empties the group and the shots and is idempotent', () => {

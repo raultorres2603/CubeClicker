@@ -103,6 +103,9 @@ export const MOTION = {
   shotMuzzleFlashMs: 80,
   shotRecoilMs: 120,
   shotRecoilDistance: 0.12,
+  // Remote ship firing (remote-spaceship-customization AC-20/AC-21).
+  remoteShipRecoilMs: 120,
+  remoteShotFlashMs: 120,
   // Game-feel overhaul: 3D reveal stage + Neon Forge UI (spec AC-32).
   revealStageOrbScale: 1.1,
   revealStageFlashOpacity: 0.85,

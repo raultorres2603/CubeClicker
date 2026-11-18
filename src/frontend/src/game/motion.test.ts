@@ -96,6 +96,9 @@ describe('MOTION tokens (AC-34)', () => {
       shotMuzzleFlashMs: 80,
       shotRecoilMs: 120,
       shotRecoilDistance: 0.12,
+      // Remote ship firing (remote-spaceship-customization AC-20/AC-21).
+      remoteShipRecoilMs: 120,
+      remoteShotFlashMs: 120,
       // Game-feel overhaul: 3D reveal stage + Neon Forge UI (spec AC-32).
       revealStageOrbScale: 1.1,
       revealStageFlashOpacity: 0.85,
@@ -139,10 +142,11 @@ describe('MOTION tokens (AC-34)', () => {
     expect(MOTION.menuFlickerMs).toBe(120);
     expect(MOTION.menuChromaMs).toBe(90);
     expect(MOTION.tabSwitchMs).toBe(140);
-    // 92 accepted tokens + exactly the four additive menu-motion tokens: no key was
-    // removed, renamed or added alongside them (every value is pinned by the full-object
-    // `toEqual` above, which covers singular and plural spellings alike).
-    expect(Object.keys(MOTION)).toHaveLength(96);
+    // 92 accepted tokens + exactly the four additive menu-motion tokens + the two additive
+    // remote-firing tokens: no key was removed, renamed or added alongside them (every value
+    // is pinned by the full-object `toEqual` above, which covers singular and plural
+    // spellings alike).
+    expect(Object.keys(MOTION)).toHaveLength(98);
   });
 
   it('pins the destruction and shot headline sums', () => {
@@ -155,6 +159,13 @@ describe('MOTION tokens (AC-34)', () => {
     expect(MOTION.shotMuzzleFlashMs).toBe(80);
     expect(MOTION.shotRecoilMs).toBe(120);
     expect(MOTION.shotRecoilMs).toBeGreaterThan(MOTION.shotMuzzleFlashMs);
+  });
+
+  it('adds the two additive remote-firing tokens with exact 120 ms values (AC-20/AC-21)', () => {
+    expect(MOTION.remoteShipRecoilMs).toBe(120);
+    expect(MOTION.remoteShotFlashMs).toBe(120);
+    // The remote recoil reuses the accepted 120 ms shot-recoil duration.
+    expect(MOTION.remoteShipRecoilMs).toBe(MOTION.shotRecoilMs);
   });
 
   it('pins the observed animation headline values from the brief', () => {
