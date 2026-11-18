@@ -3,7 +3,7 @@
 Task: T15 (2026-11-18)
 Files changed: `src/frontend/src/ui/hangar-tabs.ts`, `src/frontend/src/ui/hangar-tabs.test.ts`, `src/frontend/src/ui/SpaceshipCustomizationPanel.tsx`, `src/frontend/src/ui/SpaceshipCustomizationPanel.test.tsx`, `src/frontend/src/ui/SpaceshipPreview.tsx`, `src/frontend/src/ui/SpaceshipPreview.test.tsx`, `src/frontend/src/ui/game-view.css`, `src/frontend/src/ui/game-view.css.test.ts`, `src/frontend/src/App.test.tsx`, `docs/features/remote-spaceship-customization/build-log-T15.md` (this log)
 Branch: `feat/remote-spaceship-customization` (HEAD before the task commit: `c496600`)
-Commit: `<pending>` — `feat: add hangar tabs and form picker` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T10/T11/T14 — not pushed)
+Commit: `e437a93` — `feat: add hangar tabs and form picker` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T10/T11/T14 — not pushed)
 
 ## Finish-round note
 
