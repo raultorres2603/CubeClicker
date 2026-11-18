@@ -1,5 +1,6 @@
 /**
- * Procedural pointer-ship model factory (spaceship-cursor-loot-animations T8; spec AC-1…AC-4).
+ * Procedural pointer-ship model factory (spaceship-cursor-loot-animations T8; spec AC-1…AC-4;
+ * remote-spaceship-customization T9 for the v3 catalog, form math and chassis).
  *
  * Layer: render adapter (`render/**`) — three.js geometry/materials only. The factory is
  * deterministic and parameter-free: no scene, camera, DOM, light, texture, loader, external
@@ -10,6 +11,14 @@
  * (SLOT_CATALOG order) holding exactly twenty-one named meshes — 32 objects in the model
  * subtree. Local +z is the nose direction and local −z is the exhaust direction; the outer
  * `spaceship` group (T9) owns scale, position and bank/pitch motion.
+ *
+ * Appearance (spec AC-17): the ten ship-slot entries of `appearanceToShipParamsV3` drive the
+ * slot groups; the eleventh (`shot`) entry selects only the shot style and writes no geometry.
+ * A slot's transform resolves in the pinned order — the accepted v2
+ * {@link CURSOR_SLOT_SHAPE_TRANSFORMS} entry, then the `game/ship-forms` formula for a generated
+ * form id, then the slot's `standard` entry — so every v2 visual is unchanged. The equipped hull
+ * form's chassis triple is stored on the model; {@link CursorShipModel.applyPulseScale} is the
+ * model group scale's only writer and multiplies the chassis by the equip pulse.
  *
  * Materials (AC-4): every structural mesh uses one shared finish (`metalness 0.55`,
  * `roughness 0.38`, `clearcoat 0.4`, `clearcoatRoughness 0.2`); rarity changes colour,
@@ -32,12 +41,14 @@ import {
   type Material,
 } from 'three';
 
+import { SLOT_CATALOG, type SlotId } from '../game/parts-v2';
+import { appearanceToShipParamsV3, type PartVisualV3 } from '../game/parts-v3';
 import {
-  SLOT_CATALOG,
-  appearanceToCursorShipParams,
-  type PartVisual,
-  type SlotId,
-} from '../game/parts-v2';
+  chassisPose,
+  isGeneratedFormId,
+  slotFormTransform,
+  type SlotTransform,
+} from '../game/ship-forms';
 
 /** Exactly ten slot groups (AC-1). */
 export const CURSOR_SHIP_SLOT_COUNT = 10;
@@ -177,15 +188,24 @@ export interface CursorShipModel {
   readonly triangleCount: number;
   /** Unique material instances across the meshes (19). */
   readonly materialCount: number;
+  /** The chassis triple of the equipped hull form (classic `[1, 1, 1]`, AC-17). */
+  readonly chassisScale: readonly [number, number, number];
+  /**
+   * Writes `group.scale = chassis × pulseScale` — the model group scale's only writer, so the
+   * accepted equip pulse composes with the form's chassis instead of overwriting it (AC-17).
+   */
+  applyPulseScale(pulseScale: number): void;
   /**
    * Applies one slot's appearance: writes colour/accent to the slot's existing materials and
-   * the shape transform to the slot group. Returns true when anything changed; repeating the
-   * same visual is a no-op.
+   * the slot group's scale/rotation/position; a hull entry also updates the stored chassis.
+   * Returns true when anything changed; repeating the same visual is a no-op. The `shot` entry
+   * carries no geometry and is always a no-op.
    */
-  applySlotVisual(visual: PartVisual): boolean;
+  applySlotVisual(visual: PartVisualV3): boolean;
   /**
-   * Maps a slot→part-id record through `appearanceToCursorShipParams` and applies all ten
-   * slots, returning the slots whose visual changed (in `SLOT_CATALOG` order).
+   * Maps a slot→part-id record through `appearanceToShipParamsV3` and applies the ten ship
+   * slots, returning the slots whose visual changed (in `SLOT_CATALOG` order). The `shot`
+   * entry selects the shot style only and is never returned.
    */
   applyAppearance(appearance: Record<string, string>): readonly SlotId[];
   /** Releases each unique geometry/material once, clears the groups; idempotent. */
@@ -208,18 +228,45 @@ function countGeometryTriangles(geometry: BufferGeometry): number {
   return geometry.getAttribute('position').count / 3;
 }
 
-/** Resolves a shape key to its slot transform, falling back to the slot's standard pose. */
-function cursorShapeTransform(slot: SlotId, shape: string): CursorSlotShapeTransform {
+/**
+ * Resolves one slot visual's group transform in the pinned order (plan § Layering): the accepted
+ * v2 `CURSOR_SLOT_SHAPE_TRANSFORMS[slot][shape]` entry (position-less, so `[0, 0, 0]`), then the
+ * generated `slotFormTransform` formula when `shape` is a generated form id, then the slot's
+ * `standard` entry. The v2 entry wins for every accepted v2 shape key — including `lance`, which
+ * is both a v2 nose shape and a generated form id — so every v2 visual is preserved exactly.
+ */
+function resolveSlotTransform(slot: SlotId, visual: PartVisualV3): SlotTransform {
   const table = CURSOR_SLOT_SHAPE_TRANSFORMS[slot];
-  const found: CursorSlotShapeTransform | undefined = table[shape];
-  return found ?? table.standard;
+  const v2: CursorSlotShapeTransform | undefined = table[visual.shape];
+  if (v2 !== undefined) {
+    return {
+      scale: [v2.scale[0], v2.scale[1], v2.scale[2]],
+      rotation: [v2.rotation[0], v2.rotation[1], v2.rotation[2]],
+      position: [0, 0, 0],
+    };
+  }
+  if (isGeneratedFormId(visual.shape)) {
+    return slotFormTransform(slot, visual.shape);
+  }
+  const standard = table.standard;
+  return {
+    scale: [standard.scale[0], standard.scale[1], standard.scale[2]],
+    rotation: [standard.rotation[0], standard.rotation[1], standard.rotation[2]],
+    position: [0, 0, 0],
+  };
 }
 
 /** Stable comparison key for a slot visual (all catalog-derived fields). */
-function visualSignature(visual: PartVisual): string {
-  return [visual.partId, visual.slot, visual.color, visual.accent, visual.rarity, visual.shape].join(
-    '|',
-  );
+function visualSignature(visual: PartVisualV3): string {
+  return [
+    visual.partId,
+    visual.slot,
+    visual.color,
+    visual.accent,
+    visual.rarity,
+    visual.shape,
+    visual.form,
+  ].join('|');
 }
 
 /** Builds one structural PBR material with the pinned AC-4 finish. */
@@ -241,7 +288,7 @@ function createStructuralMaterial(color: string): MeshPhysicalMaterial {
  * outer `spaceship` group and must call {@link CursorShipModel.dispose} on teardown.
  */
 export function createCursorShipModel(): CursorShipModel {
-  const defaults = appearanceToCursorShipParams({});
+  const defaults = appearanceToShipParamsV3({});
 
   const group = new Group();
   group.name = 'cursor-ship-model';
@@ -523,7 +570,25 @@ export function createCursorShipModel(): CursorShipModel {
     currentSignatures.set(slot.id, visualSignature(defaults[slot.id]));
   }
 
-  function applySlotVisual(visual: PartVisual): boolean {
+  // The equipped hull form's chassis triple and the last applied equip pulse. The model group
+  // scale is only ever written by `applyPulseScale` (AC-17/R12).
+  let chassisScale: readonly [number, number, number] = chassisPose('classic');
+  let pulseScale = 1;
+
+  function applyPulseScale(scale: number): void {
+    pulseScale = scale;
+    group.scale.set(
+      chassisScale[0] * scale,
+      chassisScale[1] * scale,
+      chassisScale[2] * scale,
+    );
+  }
+
+  function applySlotVisual(visual: PartVisualV3): boolean {
+    if (visual.slot === 'shot') {
+      // The `shot` entry selects the shot style only (T10/T11): it has no model geometry.
+      return false;
+    }
     const signature = visualSignature(visual);
     if (currentSignatures.get(visual.slot) === signature) {
       return false;
@@ -543,17 +608,24 @@ export function createCursorShipModel(): CursorShipModel {
       }
     }
 
-    const transform = cursorShapeTransform(visual.slot, visual.shape);
+    const transform = resolveSlotTransform(visual.slot, visual);
     const slotGroup = slots[visual.slot];
     slotGroup.scale.set(transform.scale[0], transform.scale[1], transform.scale[2]);
     slotGroup.rotation.set(transform.rotation[0], transform.rotation[1], transform.rotation[2]);
+    slotGroup.position.set(transform.position[0], transform.position[1], transform.position[2]);
+
+    if (visual.slot === 'hull') {
+      const pose = chassisPose(visual.form);
+      chassisScale = [pose[0], pose[1], pose[2]];
+      applyPulseScale(pulseScale);
+    }
 
     currentSignatures.set(visual.slot, signature);
     return true;
   }
 
   function applyAppearance(appearance: Record<string, string>): readonly SlotId[] {
-    const params = appearanceToCursorShipParams(appearance);
+    const params = appearanceToShipParamsV3(appearance);
     const changed: SlotId[] = [];
     for (const slot of SLOT_CATALOG) {
       if (applySlotVisual(params[slot.id])) {
@@ -610,6 +682,10 @@ export function createCursorShipModel(): CursorShipModel {
     },
     triangleCount,
     materialCount: materials.size,
+    get chassisScale(): readonly [number, number, number] {
+      return chassisScale;
+    },
+    applyPulseScale,
     applySlotVisual,
     applyAppearance,
     dispose,

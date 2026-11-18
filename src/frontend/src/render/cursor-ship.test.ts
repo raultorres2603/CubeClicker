@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import {
   Box3,
   BoxGeometry,
+  Color,
   ConeGeometry,
   CylinderGeometry,
   Group,
@@ -33,10 +34,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  PART_CATALOG_V2,
   SLOT_CATALOG,
-  type PartVisual,
   type SlotId,
 } from '../game/parts-v2';
+import { type PartVisualV3 } from '../game/parts-v3';
 import {
   CURSOR_CANOPY_CLEARCOAT,
   CURSOR_CANOPY_CLEARCOAT_ROUGHNESS,
@@ -59,6 +61,7 @@ import {
   createCursorShipModel,
   type CursorShipModel,
 } from './cursor-ship';
+import { shipEquipPulseScale } from './ship-motion';
 
 /** The exact AC-2 name→count map: 19 distinct names, 21 meshes. */
 const EXPECTED_MESH_COUNTS: Readonly<Record<string, number>> = {
@@ -865,45 +868,341 @@ describe('cursor ship appearance mapping (AC-4, AC-7 seam)', () => {
     expect(physicalMaterialOf(meshNamed(model, 'cursor-hull')).color.getHex()).toBe(hullColor);
     expect(model.slots['wing-left'].scale.toArray()).toEqual(wingScale);
     expect(model.slots['wing-left'].rotation.toArray()).toEqual(wingRotation);
-    const defaultNose: PartVisual = {
+    const defaultNose: PartVisualV3 = {
       partId: 'nose-default',
       slot: 'nose',
       color: '#88aaff',
       accent: '#2f6fd6',
       rarity: 'standard',
       shape: 'standard',
+      form: 'classic',
     };
     expect(model.applySlotVisual(defaultNose)).toBe(true);
     expect(model.applySlotVisual(defaultNose)).toBe(false);
   });
 
   it('falls back to the identity pose for an unknown shape key', () => {
-    const visual: PartVisual = {
+    const visual: PartVisualV3 = {
       partId: 'nose-default',
       slot: 'nose',
       color: '#123456',
       accent: '#654321',
       rarity: 'standard',
       shape: 'unlisted-shape',
+      form: 'classic',
     };
     expect(model.applySlotVisual(visual)).toBe(true);
     expect(physicalMaterialOf(meshNamed(model, 'cursor-nose')).color.getHex()).toBe(0x123456);
     expect(model.slots.nose.scale.toArray()).toEqual([1, 1, 1]);
     expect(model.slots.nose.rotation.toArray()).toEqual([0, 0, 0, 'XYZ']);
+    expect(model.slots.nose.position.toArray()).toEqual([0, 0, 0]);
     expect(model.applySlotVisual(visual)).toBe(false);
   });
 
   it('detects a colour-only change for an otherwise identical visual', () => {
-    const noseVisual: PartVisual = {
+    const noseVisual: PartVisualV3 = {
       partId: 'nose-default',
       slot: 'nose',
       color: '#88aaff',
       accent: '#2f6fd6',
       rarity: 'standard',
       shape: 'standard',
+      form: 'classic',
     };
     expect(model.applySlotVisual({ ...noseVisual, color: '#abcdef' })).toBe(true);
     expect(physicalMaterialOf(meshNamed(model, 'cursor-nose')).color.getHex()).toBe(0xabcdef);
+  });
+});
+
+/** The full 11-entry v3 appearance used by the v3 resolution tests (shot included). */
+const FULL_V3_APPEARANCE: Readonly<Record<string, string>> = {
+  hull: 'hull-dart-chrome',
+  nose: 'nose-needle-ember',
+  cockpit: 'cockpit-kite-jade',
+  'wing-left': 'wing-left-manta-jade',
+  'wing-right': 'wing-right-manta-steel',
+  'engine-left': 'engine-left-arrow-azure',
+  'engine-right': 'engine-right-arrow-azure',
+  'ignition-left': 'ignition-left-hauler-plasma',
+  'ignition-right': 'ignition-right-hauler-steel',
+  'tail-fin': 'tail-fin-kite-ivory',
+  shot: 'shot-orca-violet',
+};
+
+/** The primary material-bearing mesh of each ship slot (ignitions are handled separately). */
+const SLOT_PRIMARY_MESH: Readonly<Record<Exclude<SlotId, 'ignition-left' | 'ignition-right'>, string>> = {
+  hull: 'cursor-hull',
+  nose: 'cursor-nose',
+  cockpit: 'cursor-cockpit',
+  'wing-left': 'cursor-wing-left',
+  'wing-right': 'cursor-wing-right',
+  'engine-left': 'cursor-engine-left',
+  'engine-right': 'cursor-engine-right',
+  'tail-fin': 'cursor-tail-fin',
+};
+
+describe('cursor ship v3 resolution and chassis (AC-17)', () => {
+  it('starts on the classic chassis with an identity model scale', () => {
+    expect(model.chassisScale).toEqual([1, 1, 1]);
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+    expect(model.slots.hull.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('stores the generated hull chassis and applies the hull form transform', () => {
+    expect(model.applyAppearance({ hull: 'hull-dart-chrome' })).toEqual(['hull']);
+
+    expect(model.slots.hull.scale.toArray()).toEqual([0.85, 0.9, 1.15]);
+    expect(model.slots.hull.rotation.toArray()).toEqual([0, 0, 0, 'XYZ']);
+    expect(model.slots.hull.position.toArray()).toEqual([0, 0, 0.02]);
+    expect(model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+    expect(model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-hull')).color.getHex()).toBe(0xc9d4e2);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-hull-seam-1')).color.getHex()).toBe(
+      0xffffff,
+    );
+  });
+
+  it('renders the pinned classic fixture exactly as the accepted v2 look', () => {
+    expect(
+      model.applyAppearance({ hull: 'hull-obsidian', 'wing-left': 'wing-left-gold' }),
+    ).toEqual(['hull', 'wing-left']);
+
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-hull')).color.getHex()).toBe(0x1a2333);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-wing-left')).color.getHex()).toBe(
+      0xccaa44,
+    );
+    expect(model.slots.hull.scale.toArray()).toEqual([1.06, 1.1, 1.02]);
+    expect(model.slots.hull.rotation.toArray()).toEqual([0, 0, 0, 'XYZ']);
+    expect(model.slots.hull.position.toArray()).toEqual([0, 0, 0]);
+    expect(model.chassisScale).toEqual([1, 1, 1]);
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('applies every ship slot of an 11-entry v3 appearance and ignores shot', () => {
+    expect(model.applyAppearance(FULL_V3_APPEARANCE)).toEqual(
+      SLOT_CATALOG.map((slot) => slot.id),
+    );
+
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-hull')).color.getHex()).toBe(0xc9d4e2);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-nose')).color.getHex()).toBe(0xc2410c);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-wing-left')).color.getHex()).toBe(
+      0x15803d,
+    );
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-wing-left-tip')).color.getHex()).toBe(
+      0x86efac,
+    );
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-tail-fin')).color.getHex()).toBe(
+      0xe7e5e4,
+    );
+
+    expect(model.slots['wing-left'].scale.toArray()).toEqual([1.25, 0.85, 1.0]);
+    expect(model.slots['wing-left'].rotation.y).toBe((32 * Math.PI) / 180);
+    expect(model.slots['wing-right'].rotation.y).toBe(-(32 * Math.PI) / 180);
+    expect(model.slots['tail-fin'].scale.toArray()).toEqual([1.05, 1.1, 0.9]);
+    expect(model.slots['tail-fin'].rotation.z).toBe((0.5 * 38 * Math.PI) / 180);
+    expect(model.slots.nose.position.toArray()).toEqual([0, 0, 0.1]);
+    expect(model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+
+    const haulerSteel = physicalMaterialOf(model.ignitions[1]!);
+    expect(haulerSteel.emissive.getHex()).toBe(0x64748b);
+    expect(haulerSteel.color.getHex()).toBe(0xcbd5e1);
+
+    expect(model.group.getObjectByName('slot-shot')).toBeUndefined();
+    expect(model.group.children).toHaveLength(10);
+    expect(model.applyAppearance(FULL_V3_APPEARANCE)).toEqual([]);
+  });
+
+  it('resolves the v2 table before the generated formula for the shared lance shape', () => {
+    const generatedNose = createCursorShipModel();
+    expect(generatedNose.applyAppearance({ nose: 'nose-lance-chrome' })).toEqual(['nose']);
+    // The v2 `lance` nose entry wins over the generated `lance` formula.
+    expect(generatedNose.slots.nose.scale.toArray()).toEqual([0.9, 0.9, 1.18]);
+    expect(generatedNose.slots.nose.position.toArray()).toEqual([0, 0, 0]);
+    generatedNose.dispose();
+
+    const formulaNose = createCursorShipModel();
+    expect(formulaNose.applyAppearance({ nose: 'nose-needle-chrome' })).toEqual(['nose']);
+    expect(formulaNose.slots.nose.scale.toArray()).toEqual([0.7, 0.7, 1.25]);
+    expect(formulaNose.slots.nose.position.toArray()).toEqual([0, 0, 0.1]);
+    formulaNose.dispose();
+  });
+
+  it('composes the chassis with the equip pulse at rest and at the 130 ms peak', () => {
+    expect(model.applyAppearance({ hull: 'hull-dart-chrome' })).toEqual(['hull']);
+
+    model.applyPulseScale(1);
+    expect(model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+
+    const peak = shipEquipPulseScale(130);
+    expect(peak).toBe(1.04);
+    model.applyPulseScale(peak);
+    const peakScale = model.group.scale.toArray();
+    expect(peakScale).toEqual([0.95 * 1.04, 0.9 * 1.04, 1.25 * 1.04]);
+    expect(Math.abs(peakScale[0]! - 0.988)).toBeLessThanOrEqual(1e-9);
+    expect(Math.abs(peakScale[1]! - 0.936)).toBeLessThanOrEqual(1e-9);
+    expect(Math.abs(peakScale[2]! - 1.3)).toBeLessThanOrEqual(1e-9);
+    expect(model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+
+    model.applyPulseScale(shipEquipPulseScale(260));
+    expect(model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+  });
+
+  it('keeps the accepted classic pulse exactly [1, 1, 1] → [1.04, 1.04, 1.04]', () => {
+    model.applyPulseScale(1);
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+
+    model.applyPulseScale(shipEquipPulseScale(130));
+    expect(model.group.scale.toArray()).toEqual([1.04, 1.04, 1.04]);
+
+    model.applyPulseScale(shipEquipPulseScale(260));
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('re-applies the stored pulse when the chassis changes mid-pulse', () => {
+    model.applyPulseScale(1.04);
+    expect(model.applyAppearance({ hull: 'hull-lance-azure' })).toEqual(['hull']);
+    expect(model.chassisScale).toEqual([0.9, 0.85, 1.35]);
+    expect(model.group.scale.toArray()).toEqual([0.9 * 1.04, 0.85 * 1.04, 1.35 * 1.04]);
+  });
+
+  it('restores the classic chassis when a classic hull is equipped again', () => {
+    expect(model.applyAppearance({ hull: 'hull-dart-chrome' })).toEqual(['hull']);
+    expect(model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+
+    expect(model.applyAppearance({ hull: 'hull-obsidian' })).toEqual(['hull']);
+    expect(model.chassisScale).toEqual([1, 1, 1]);
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+    expect(model.slots.hull.scale.toArray()).toEqual([1.06, 1.1, 1.02]);
+  });
+
+  it('writes no material or transform on a repeated generated appearance (AC-18)', () => {
+    const appearance = {
+      hull: 'hull-dart-aurum',
+      'wing-left': 'wing-left-manta-jade',
+      'ignition-right': 'ignition-right-hauler-steel',
+    };
+    expect(model.applyAppearance(appearance)).toEqual(['hull', 'wing-left', 'ignition-right']);
+
+    const colors = new Set<Color>();
+    for (const mesh of model.meshes) {
+      const material = materialOf(mesh);
+      if (material instanceof MeshPhysicalMaterial || material instanceof MeshBasicMaterial) {
+        colors.add(material.color);
+      }
+    }
+    const colorSpies = [...colors].map((color) => vi.spyOn(color, 'set'));
+    const scaleSpies = model.slotGroups.map((group) => vi.spyOn(group.scale, 'set'));
+    const rotationSpies = model.slotGroups.map((group) => vi.spyOn(group.rotation, 'set'));
+    const positionSpies = model.slotGroups.map((group) => vi.spyOn(group.position, 'set'));
+    const chassisSpy = vi.spyOn(model.group.scale, 'set');
+
+    expect(colorSpies).toHaveLength(19);
+    expect(scaleSpies).toHaveLength(10);
+    expect(rotationSpies).toHaveLength(10);
+    expect(positionSpies).toHaveLength(10);
+
+    expect(model.applyAppearance(appearance)).toEqual([]);
+
+    for (const spy of [
+      ...colorSpies,
+      ...scaleSpies,
+      ...rotationSpies,
+      ...positionSpies,
+      chassisSpy,
+    ]) {
+      expect(spy).toHaveBeenCalledTimes(0);
+    }
+  });
+
+  it('falls back to the standard part for missing, unknown and wrong-slot entries', () => {
+    expect(model.applyAppearance({})).toEqual([]);
+    expect(model.chassisScale).toEqual([1, 1, 1]);
+
+    expect(
+      model.applyAppearance({ hull: 'unknown-part', nose: 'hull-obsidian' }),
+    ).toEqual([]);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-hull')).color.getHex()).toBe(0x8f9bad);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-nose')).color.getHex()).toBe(0x88aaff);
+    expect(physicalMaterialOf(meshNamed(model, 'cursor-tail-fin')).color.getHex()).toBe(
+      0x14213d,
+    );
+    expect(model.group.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it('preserves every accepted v2 visual for all 30 classic rows', () => {
+    expect(PART_CATALOG_V2).toHaveLength(30);
+
+    for (const part of PART_CATALOG_V2) {
+      const fresh = createCursorShipModel();
+      // The standard row is already the factory default, so only rare/epic rows change.
+      expect(fresh.applyAppearance({ [part.slot]: part.id })).toEqual(
+        part.rarity === 'standard' ? [] : [part.slot],
+      );
+
+      const v2 = CURSOR_SLOT_SHAPE_TRANSFORMS[part.slot][part.shape];
+      if (v2 === undefined) {
+        throw new Error(`missing v2 shape transform for ${part.slot}/${part.shape}`);
+      }
+      expect(fresh.slots[part.slot].scale.toArray()).toEqual([...v2.scale]);
+      expect(fresh.slots[part.slot].rotation.toArray()).toEqual([...v2.rotation, 'XYZ']);
+      expect(fresh.slots[part.slot].position.toArray()).toEqual([0, 0, 0]);
+      expect(fresh.chassisScale).toEqual([1, 1, 1]);
+      expect(fresh.group.scale.toArray()).toEqual([1, 1, 1]);
+
+      const color = parseInt(part.color.slice(1), 16);
+      const accent = parseInt(part.accent.slice(1), 16);
+      if (part.slot === 'ignition-left' || part.slot === 'ignition-right') {
+        const ignition = physicalMaterialOf(
+          fresh.ignitions[part.slot === 'ignition-left' ? 0 : 1]!,
+        );
+        expect(ignition.emissive.getHex()).toBe(color);
+        expect(ignition.color.getHex()).toBe(accent);
+      } else {
+        const material = physicalMaterialOf(
+          meshNamed(fresh, SLOT_PRIMARY_MESH[part.slot]),
+        );
+        expect(material.color.getHex()).toBe(color);
+      }
+
+      fresh.dispose();
+    }
+  });
+
+  it('handles a shot entry as a no-op with no shot slot group', () => {
+    expect(model.applyAppearance({ shot: 'shot-orca-violet' })).toEqual([]);
+    expect(model.group.children).toHaveLength(10);
+    expect(model.group.getObjectByName('slot-shot')).toBeUndefined();
+
+    const shotVisual: PartVisualV3 = {
+      partId: 'shot-orca-violet',
+      slot: 'shot',
+      color: '#6d28d9',
+      accent: '#c4b5fd',
+      rarity: 'epic',
+      shape: 'orca',
+      form: 'orca',
+    };
+    expect(model.applySlotVisual(shotVisual)).toBe(false);
+
+    expect(
+      model.applyAppearance({ hull: 'hull-dart-chrome', shot: 'shot-kite-solar' }),
+    ).toEqual(['hull']);
+    expect(model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+    expect(model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+  });
+
+  it('writes the model group scale only through applyPulseScale (AC-17/R12)', () => {
+    const source = readFileSync(new URL('./cursor-ship.ts', import.meta.url), 'utf8');
+    expect(source.match(/group\.scale\.set\(/gu)).toHaveLength(1);
+    expect(source).not.toMatch(/\.scale\.setScalar\(/u);
+
+    const applyPulseStart = source.indexOf('function applyPulseScale');
+    expect(applyPulseStart).toBeGreaterThan(0);
+    const applyPulseBody = source.slice(applyPulseStart);
+    expect(applyPulseBody).toMatch(/^function applyPulseScale\(scale: number\): void \{/u);
+    expect(applyPulseBody.indexOf('group.scale.set(')).toBeGreaterThan(0);
+    expect(source.match(/function applyPulseScale/gu)).toHaveLength(1);
   });
 });
 

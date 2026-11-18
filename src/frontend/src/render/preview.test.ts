@@ -96,6 +96,69 @@ describe('createPreviewScene (AC-31)', () => {
     expect(meshColorHex(preview.scene, 'cursor-hull')).toBe('ccaa44');
   });
 
+  it('renders a v3 11-entry appearance on the ten ship slots (shot ignored)', () => {
+    const preview = createPreviewScene({
+      hull: 'hull-dart-chrome',
+      'wing-left': 'wing-left-manta-jade',
+      'ignition-left': 'ignition-left-bulwark-azure',
+      'tail-fin': 'tail-fin-kite-ivory',
+      shot: 'shot-orca-violet',
+    });
+
+    expect(meshColorHex(preview.scene, 'cursor-hull')).toBe('c9d4e2');
+    expect(meshColorHex(preview.scene, 'cursor-hull-seam-1')).toBe('ffffff');
+    expect(meshColorHex(preview.scene, 'cursor-wing-left')).toBe('15803d');
+    expect(meshColorHex(preview.scene, 'cursor-wing-left-tip')).toBe('86efac');
+    expect(meshColorHex(preview.scene, 'cursor-tail-fin')).toBe('e7e5e4');
+
+    const leftIgnition = preview.model.ignitions[0]!;
+    const ignitionMaterial = leftIgnition.material as MeshPhysicalMaterial;
+    expect(ignitionMaterial.color.getHexString()).toBe('7cf6ff');
+    expect(ignitionMaterial.emissive.getHexString()).toBe('2f6fd6');
+
+    // The hull form's chassis and slot transform reach the preview model.
+    expect(preview.model.chassisScale).toEqual([0.95, 0.9, 1.25]);
+    expect(preview.model.group.scale.toArray()).toEqual([0.95, 0.9, 1.25]);
+    expect(preview.model.slots.hull.scale.toArray()).toEqual([0.85, 0.9, 1.15]);
+    expect(preview.model.slots.hull.position.toArray()).toEqual([0, 0, 0.02]);
+    expect(preview.model.slots['wing-left'].rotation.y).toBe((32 * Math.PI) / 180);
+    expect(preview.model.slots['tail-fin'].rotation.z).toBe((0.5 * 38 * Math.PI) / 180);
+
+    // The shot entry adds no slot group: the model keeps its ten geometry groups.
+    expect(preview.model.group.children).toHaveLength(10);
+    expect(preview.scene.getObjectByName('slot-shot')).toBeUndefined();
+    expect(preview.model.meshes).toHaveLength(21);
+  });
+
+  it('selects no geometry for a shot-only appearance', () => {
+    const preview = createPreviewScene({ shot: 'shot-kite-solar' });
+
+    expect(meshColorHex(preview.scene, 'cursor-hull')).toBe('8f9bad');
+    expect(meshColorHex(preview.scene, 'cursor-nose')).toBe('88aaff');
+    expect(preview.model.chassisScale).toEqual([1, 1, 1]);
+    expect(preview.model.group.scale.toArray()).toEqual([1, 1, 1]);
+    for (const group of preview.model.slotGroups) {
+      expect(group.scale.toArray()).toEqual([1, 1, 1]);
+      expect(group.rotation.toArray()).toEqual([0, 0, 0, 'XYZ']);
+      expect(group.position.toArray()).toEqual([0, 0, 0]);
+    }
+    expect(preview.model.group.children).toHaveLength(10);
+  });
+
+  it('falls back to the standard part for unknown and wrong-slot v3 ids', () => {
+    const preview = createPreviewScene({
+      hull: 'unknown-part',
+      nose: 'hull-dart-chrome',
+      'wing-left': 'wing-left-manta-jade',
+    });
+
+    expect(meshColorHex(preview.scene, 'cursor-hull')).toBe('8f9bad');
+    expect(meshColorHex(preview.scene, 'cursor-nose')).toBe('88aaff');
+    expect(meshColorHex(preview.scene, 'cursor-wing-left')).toBe('15803d');
+    expect(preview.model.chassisScale).toEqual([1, 1, 1]);
+    expect(preview.model.group.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
   it('rotates at 0.0004 rad/ms when motion is allowed and holds the pose when reduced', () => {
     const preview = createPreviewScene();
     const start = preview.model.group.rotation.y;

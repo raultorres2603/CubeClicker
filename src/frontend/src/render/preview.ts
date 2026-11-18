@@ -1,11 +1,13 @@
 /**
- * Live spaceship preview scene (T11; spec AC-31; plan § Preview / UI).
+ * Live spaceship preview scene (T11; spec AC-31; plan § Preview / UI; remote-spaceship-
+ * customization T9 for the v3 catalog).
  *
  * Layer: render adapter (`render/**`) — three.js only. The preview reuses the exact cursor
- * model factory and the exact `appearanceToCursorShipParams` mapping as the in-game cursor,
- * wraps it in a small key/ambient-lit scene with a fixed camera, and rotates the model at
- * {@link PREVIEW_ROTATION_RAD_PER_MS} per millisecond while motion is allowed. Reduced motion
- * keeps the static rest pose.
+ * model factory and the exact `appearanceToShipParamsV3` mapping as the in-game cursor,
+ * applies the ten ship slots of the 11-entry appearance (the `shot` entry selects the shot
+ * style only and has no preview geometry), wraps the model in a small key/ambient-lit scene
+ * with a fixed camera, and rotates the model at {@link PREVIEW_ROTATION_RAD_PER_MS} per
+ * millisecond while motion is allowed. Reduced motion keeps the static rest pose.
  *
  * The renderer and the frame loop are deliberately **not** owned here: the React component
  * creates the single WebGL context, renders at most {@link PREVIEW_MAX_FPS} frames per second
@@ -14,6 +16,7 @@
 
 import { AmbientLight, DirectionalLight, PerspectiveCamera, Scene } from 'three';
 
+import { SLOT_CATALOG_V3, appearanceToShipParamsV3 } from '../game/parts-v3';
 import { createCursorShipModel, type CursorShipModel } from './cursor-ship';
 
 /** Hard cap on preview frames per second (AC-31). */
@@ -78,8 +81,9 @@ export interface PreviewScene {
 /**
  * Builds the preview scene for one appearance.
  *
- * @param appearance slot→part-id record (v2 ids; legacy categories/ids are normalized by the
- *   same `appearanceToCursorShipParams` mapping the cursor uses).
+ * @param appearance slot→part-id record (v3 ids; legacy categories/ids are normalized by the
+ *   same `appearanceToShipParamsV3` mapping the cursor uses). The `shot` entry is resolved (it
+ *   is part of the 11-slot record) but selects no preview geometry.
  */
 export function createPreviewScene(
   appearance: Record<string, string> = {},
@@ -117,7 +121,15 @@ export function createPreviewScene(
 
   const model = createCursorShipModel();
   model.group.rotation.y = PREVIEW_REST_ROTATION_RAD;
-  model.applyAppearance(appearance);
+  // The 11-entry v3 record: the ten ship slots drive the geometry (and the hull's chassis),
+  // the `shot` entry selects the shot style only (T10/T11) and has no preview geometry.
+  const visuals = appearanceToShipParamsV3(appearance);
+  for (const slot of SLOT_CATALOG_V3) {
+    if (slot.id === 'shot') {
+      continue;
+    }
+    model.applySlotVisual(visuals[slot.id]);
+  }
 
   scene.add(ambient, keyLight, model.group);
 
