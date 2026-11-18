@@ -19,9 +19,9 @@ Files changed:
 A first pass at these findings exists in history: commit `bfe595d` (`test(coin-economy):
 address code review r1 F1-F4`, log `build-log-codefix2.md`, 2026-10-30). It added the
 economy describe block, paired `coins`/`cubesDestroyed` assertions and `update.type` guards.
-The committed `reviews/code-r1.md` predates that commit (it records "adoptEconomy has 0
-matches in engine.test.ts"), so the findings were re-verified against the current tree and
-the residual weaknesses were closed here:
+The committed `reviews/code-r1.md` reflects the pre-fix tree (it records "adoptEconomy has 0
+matches in engine.test.ts") even though the file itself was committed later, so the findings
+were re-verified against the current tree and the residual weaknesses were closed here:
 
 - F1 expectations were derived from `COINS_PER_MINI_CUBE`/`COINS_PER_CUBE`/`thresholdSeconds`
   imported from the module under test, so an economy-constant regression would have kept the
