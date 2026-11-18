@@ -3,7 +3,7 @@
 Task: T2 (2026-11-18)
 Files changed: `src/frontend/src/game/parts-v3.ts` (new), `src/frontend/src/game/parts-v3.test.ts` (new), `docs/features/remote-spaceship-customization/build-log-T2.md` (this log)
 Branch: `feat/remote-spaceship-customization` (created from `e4fe4b8`, T1's commits already on `main`; no history rewrite)
-Commit: _pending_ — `feat: add frontend spaceship catalog v3`
+Commit: `7c86331` — `feat: add frontend spaceship catalog v3` (feature + build log, committed on `feat/remote-spaceship-customization`, not pushed; this hash record lands in the follow-up `docs:` commit, mirroring T1's two-commit pattern)
 
 ## What changed & why
 
