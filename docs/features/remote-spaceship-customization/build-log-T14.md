@@ -3,7 +3,7 @@
 Task: T14 (2026-11-18)
 Files changed: `src/frontend/src/game/reveal-motion.ts`, `src/frontend/src/game/reveal-motion.test.ts`, `src/frontend/src/render/lootbox-reveal.ts`, `src/frontend/src/render/lootbox-reveal.test.ts`, `src/frontend/src/ui/LootboxReveal.tsx`, `src/frontend/src/ui/LootboxReveal.test.tsx`, `docs/features/remote-spaceship-customization/build-log-T14.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `feat: support shot parts in lootbox reveal` (feature + this log; hash recorded in the follow-up `docs:` commit, mirroring T1/T2)
+Commit: `17c62ff` — `feat: support shot parts in lootbox reveal` (feature + this log, committed on `feat/remote-spaceship-customization`, not pushed; this hash record lands in the follow-up `docs:` commit, mirroring T1/T2)
 
 ## What changed & why
 
