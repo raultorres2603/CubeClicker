@@ -3,7 +3,7 @@
 Task: T10 (2026-11-18)
 Files changed: `src/frontend/src/render/shot-visuals.ts` (new), `src/frontend/src/render/shot-visuals.test.ts` (new), `src/frontend/src/render/spaceship.ts`, `src/frontend/src/render/spaceship.test.ts`, `src/frontend/src/game/motion.ts`, `src/frontend/src/game/motion.test.ts`, `docs/features/remote-spaceship-customization/build-log-T10.md` (this log)
 Branch: `feat/remote-spaceship-customization` (from `61191e9`; the pending one-line T9 hash record was committed first as `0a1b330` — `docs: record T9 build log commit hash`, content unchanged)
-Commit: `feat: add v3 shot visuals and pulse composition` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T14 — not pushed)
+Commit: `448fbde` — `feat: add v3 shot visuals and pulse composition` (feature + this log; the hash record lands in a follow-up `docs:` commit, mirroring T1/T2/T9/T14 — not pushed)
 
 ## What changed & why
 
