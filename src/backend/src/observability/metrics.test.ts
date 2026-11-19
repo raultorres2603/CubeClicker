@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  encodeServerMessage,
+  memberAppearanceMessage,
+  parseClientMessage,
+} from '../game/protocol.js';
+import {
   METRIC_DEFINITIONS,
   Metrics,
   createMetrics,
@@ -93,6 +98,7 @@ describe('metrics catalog', () => {
         'openLootbox',
         'equipPart',
         'unequipPart',
+        'setAppearance',
         'ping',
         'leave',
         'invalid',
@@ -107,6 +113,7 @@ describe('metrics catalog', () => {
         'memberJoined',
         'memberLeft',
         'cubeRotated',
+        'memberAppearance',
         'miniCubeRemoved',
         'miniCubesRemoved',
         'levelAdvanced',
@@ -129,6 +136,7 @@ describe('metrics catalog', () => {
         'memberJoined',
         'memberLeft',
         'cubeRotated',
+        'memberAppearance',
         'miniCubeRemoved',
         'miniCubesRemoved',
         'levelAdvanced',
@@ -580,6 +588,136 @@ describe('metrics validation', () => {
       'leave',
     );
     expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
+  });
+
+  it('accepts memberAppearance on both outbound counters and creates their series', () => {
+    const metrics = createMetrics();
+    metrics.inc('cubeclicker_ws_messages_encoded_total', { type: 'memberAppearance' });
+    metrics.inc('cubeclicker_ws_frames_sent_total', { type: 'memberAppearance' }, 3);
+
+    const rendered = metrics.render();
+    expect(metricBlock(rendered, 'cubeclicker_ws_messages_encoded_total')).toBe(
+      '# HELP cubeclicker_ws_messages_encoded_total Server messages encoded once, by type.\n' +
+        '# TYPE cubeclicker_ws_messages_encoded_total counter\n' +
+        'cubeclicker_ws_messages_encoded_total{type="memberAppearance"} 1\n',
+    );
+    expect(metricBlock(rendered, 'cubeclicker_ws_frames_sent_total')).toBe(
+      '# HELP cubeclicker_ws_frames_sent_total Successful per-recipient frame deliveries, by type.\n' +
+        '# TYPE cubeclicker_ws_frames_sent_total counter\n' +
+        'cubeclicker_ws_frames_sent_total{type="memberAppearance"} 3\n',
+    );
+    // The additive server frame adds no accepted client frame, so the received
+    // allow-list is untouched and the catalog stays at exactly 30 metrics (AC-14c).
+    expect(METRIC_DEFINITIONS.cubeclicker_ws_messages_received_total.labels?.type).not.toContain(
+      'memberAppearance',
+    );
+    expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
+  });
+
+  it('accepts setAppearance on the received counter and creates its series', () => {
+    const metrics = createMetrics();
+    metrics.inc('cubeclicker_ws_messages_received_total', { type: 'setAppearance' });
+
+    expect(metricBlock(metrics.render(), 'cubeclicker_ws_messages_received_total')).toBe(
+      '# HELP cubeclicker_ws_messages_received_total Client frames received, by decoded type.\n' +
+        '# TYPE cubeclicker_ws_messages_received_total counter\n' +
+        'cubeclicker_ws_messages_received_total{type="setAppearance"} 1\n',
+    );
+    // The additive client frame adds no server message, so both outbound allow-lists
+    // are untouched and the catalog stays at exactly 30 metrics (AC-14c).
+    expect(METRIC_DEFINITIONS.cubeclicker_ws_messages_encoded_total.labels?.type).not.toContain(
+      'setAppearance',
+    );
+    expect(METRIC_DEFINITIONS.cubeclicker_ws_frames_sent_total.labels?.type).not.toContain(
+      'setAppearance',
+    );
+    expect(Object.keys(METRIC_DEFINITIONS)).toHaveLength(30);
+  });
+
+  it('rejects each new frame type on the opposite direction and creates no series', () => {
+    const received = createMetrics();
+    expect(() =>
+      received.inc('cubeclicker_ws_messages_received_total', { type: 'memberAppearance' }),
+    ).toThrowError(
+      new Error(
+        'Metric "cubeclicker_ws_messages_received_total" label "type" has invalid value "memberAppearance"',
+      ),
+    );
+    expect(metricBlock(received.render(), 'cubeclicker_ws_messages_received_total')).toBe(
+      '# HELP cubeclicker_ws_messages_received_total Client frames received, by decoded type.\n' +
+        '# TYPE cubeclicker_ws_messages_received_total counter\n',
+    );
+
+    const encoded = createMetrics();
+    expect(() =>
+      encoded.inc('cubeclicker_ws_messages_encoded_total', { type: 'setAppearance' }),
+    ).toThrowError(
+      new Error(
+        'Metric "cubeclicker_ws_messages_encoded_total" label "type" has invalid value "setAppearance"',
+      ),
+    );
+    expect(() =>
+      encoded.inc('cubeclicker_ws_frames_sent_total', { type: 'setAppearance' }),
+    ).toThrowError(
+      new Error(
+        'Metric "cubeclicker_ws_frames_sent_total" label "type" has invalid value "setAppearance"',
+      ),
+    );
+    const rendered = encoded.render();
+    expect(metricBlock(rendered, 'cubeclicker_ws_messages_encoded_total')).toBe(
+      '# HELP cubeclicker_ws_messages_encoded_total Server messages encoded once, by type.\n' +
+        '# TYPE cubeclicker_ws_messages_encoded_total counter\n',
+    );
+    expect(metricBlock(rendered, 'cubeclicker_ws_frames_sent_total')).toBe(
+      '# HELP cubeclicker_ws_frames_sent_total Successful per-recipient frame deliveries, by type.\n' +
+        '# TYPE cubeclicker_ws_frames_sent_total counter\n',
+    );
+  });
+
+  it('counts one encoded memberAppearance frame and one decoded setAppearance frame', () => {
+    const metrics = createMetrics();
+
+    const message = memberAppearanceMessage('player-2', { hull: 'hull-dart-chrome' });
+    expect(message).toEqual({
+      type: 'memberAppearance',
+      playerId: 'player-2',
+      appearance: { hull: 'hull-dart-chrome' },
+    });
+    const text = encodeServerMessage(message);
+    expect(text).toBe(
+      '{"type":"memberAppearance","playerId":"player-2","appearance":{"hull":"hull-dart-chrome"}}',
+    );
+    metrics.inc('cubeclicker_ws_messages_encoded_total', { type: message.type });
+    metrics.inc('cubeclicker_ws_frames_sent_total', { type: message.type });
+
+    const parsed = parseClientMessage(
+      '{"type":"setAppearance","appearance":{"hull":"hull-dart-chrome"}}',
+    );
+    if (!parsed.ok) {
+      throw new Error(`expected setAppearance to decode, got ${parsed.error}`);
+    }
+    expect(parsed.message).toEqual({
+      type: 'setAppearance',
+      appearance: { hull: 'hull-dart-chrome' },
+    });
+    metrics.inc('cubeclicker_ws_messages_received_total', { type: parsed.message.type });
+
+    const rendered = metrics.render();
+    expect(metricBlock(rendered, 'cubeclicker_ws_messages_encoded_total')).toBe(
+      '# HELP cubeclicker_ws_messages_encoded_total Server messages encoded once, by type.\n' +
+        '# TYPE cubeclicker_ws_messages_encoded_total counter\n' +
+        'cubeclicker_ws_messages_encoded_total{type="memberAppearance"} 1\n',
+    );
+    expect(metricBlock(rendered, 'cubeclicker_ws_frames_sent_total')).toBe(
+      '# HELP cubeclicker_ws_frames_sent_total Successful per-recipient frame deliveries, by type.\n' +
+        '# TYPE cubeclicker_ws_frames_sent_total counter\n' +
+        'cubeclicker_ws_frames_sent_total{type="memberAppearance"} 1\n',
+    );
+    expect(metricBlock(rendered, 'cubeclicker_ws_messages_received_total')).toBe(
+      '# HELP cubeclicker_ws_messages_received_total Client frames received, by decoded type.\n' +
+        '# TYPE cubeclicker_ws_messages_received_total counter\n' +
+        'cubeclicker_ws_messages_received_total{type="setAppearance"} 1\n',
+    );
   });
 
   it('rejects a non-finite inc value', () => {
