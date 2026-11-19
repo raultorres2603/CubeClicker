@@ -3,6 +3,7 @@
 Task: T3 (2026-11-18/19)
 Files changed: `src/backend/src/game/protocol.ts`, `src/backend/src/game/protocol.test.ts`, `docs/features/remote-spaceship-customization/build-log-T3.md` (this log)
 Branch: `feat/remote-spaceship-customization`
+Commit: `4825938` — `feat: add public appearance protocol fields` (not pushed; hash recorded in this follow-up `docs:` commit, mirroring T1/T2)
 
 ## Sketch (≤5 lines)
 
