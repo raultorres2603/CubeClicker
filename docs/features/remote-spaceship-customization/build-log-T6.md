@@ -3,7 +3,7 @@
 Task: T6 (2026-11-19)
 Files changed: `src/backend/src/game/hub.ts`, `src/backend/src/game/hub.test.ts`, `src/backend/src/app.test.ts`, `docs/features/remote-spaceship-customization/build-log-T6.md`
 Branch: `feat/remote-spaceship-customization`
-Commit: `<pending>` — recorded in the follow-up `docs:` commit (not pushed)
+Commit: `9129998` — `feat: add hub appearance authority` (not pushed; hash recorded in this follow-up `docs:` commit)
 
 ## What changed & why
 
@@ -182,9 +182,10 @@ p24 memberAppearance bytes: 493
 
 The 16,362 B welcome size is the measurement recorded by the T6 verification fixture run; the
 shipped test (`pins the 24-member full-appearance welcome inside the AC-14 outbound budget`)
-asserts the budget (`≤ 17,408 B`, `≤ 550 B` per member appearance) on the same fixture, and the
-spec's planning-time note records 16,710 B for a slightly different fixture — both are inside the
-same bound, which is the requirement. `MAX_MESSAGE_BYTES` is incoming-only and untouched.
+asserts the budget (`≤ 17,408 B`, `≤ 550 B` per member appearance) on the same fixture. The spec
+records a planning-time measurement of 16,710 B for this fixture; the executing fixture measures
+16,362 B. Both are inside the bound, which is the requirement (the test asserts the bound, not the
+exact byte count). `MAX_MESSAGE_BYTES` is incoming-only and untouched.
 
 ## Acceptance audit
 
