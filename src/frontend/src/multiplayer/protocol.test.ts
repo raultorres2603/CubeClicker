@@ -4,6 +4,9 @@ import {
   ACTIVITY_EVENT_TTL_MS,
   ACTIVITY_FEED_LIMIT,
   type ActivityEvent,
+  APPEARANCE_JSON_MAX_BYTES,
+  APPEARANCE_MAX_ENTRIES,
+  APPEARANCE_VALUE_MAX_LENGTH,
   type CustomizationState,
   type LeaderboardSnapshot,
   type LootboxOpened,
@@ -15,6 +18,7 @@ import {
   UpgradeState,
   activityEventMessage,
   copyActivityEvent,
+  copyAppearance,
   copyCustomizationState,
   copyLeaderboardSnapshot,
   customizationUpdateMessage,
@@ -23,14 +27,18 @@ import {
   encodeServerMessage,
   leaderboardUpdateMessage,
   lootboxOpenedMessage,
+  memberAppearanceMessage,
+  memberAppearanceOf,
   miniCubesRemovedMessage,
   parseActivityEvent,
+  parseAppearance,
   parseClientMessage,
   parseLeaderboardSnapshot,
   parseLootboxOpened,
   parseServerMessage,
   pongMessage,
   purchaseUpgradeMessage,
+  stateSyncMessage,
   upgradesUpdateMessage,
 } from './protocol';
 
@@ -2281,5 +2289,567 @@ describe('server catalog unchanged by leave and the TTL (AC-10)', () => {
       ok: true,
       message: { type: 'welcome', ...PLACEMENT },
     });
+  });
+});
+
+/**
+ * Appearance parity fixtures (`remote-spaceship-customization` T7), copied verbatim from
+ * `src/backend/src/game/protocol.test.ts` (AC-7/AC-8/AC-9): the same records, the same
+ * boundaries and the same rejection matrix, so the two ends cannot drift.
+ */
+const SLOT_KEYS_V3 = [
+  'hull',
+  'nose',
+  'cockpit',
+  'wing-left',
+  'wing-right',
+  'engine-left',
+  'engine-right',
+  'ignition-left',
+  'ignition-right',
+  'tail-fin',
+  'shot',
+] as const;
+
+/** A valid full appearance: one real v3 id per slot, in catalog key order. */
+const FULL_APPEARANCE: Record<string, string> = {
+  hull: 'hull-obsidian',
+  nose: 'nose-crimson',
+  cockpit: 'cockpit-amber',
+  'wing-left': 'wing-left-gold',
+  'wing-right': 'wing-right-silver',
+  'engine-left': 'engine-left-vector',
+  'engine-right': 'engine-right-nova',
+  'ignition-left': 'ignition-left-blue',
+  'ignition-right': 'ignition-right-plasma',
+  'tail-fin': 'tail-fin-comet',
+  shot: 'shot-kite-solar',
+};
+
+/**
+ * The worst-case valid appearance of AC-2/AC-14: every slot equipped with its longest catalog
+ * id (`<slot>-bulwark-crimson`; the longest overall is `ignition-right-bulwark-crimson`, 30
+ * characters). Its JSON encoding is 435 UTF-8 bytes, the `setAppearance` frame is 473 B and the
+ * `memberAppearance` frame is 492 B.
+ */
+const LONGEST_APPEARANCE: Record<string, string> = {
+  hull: 'hull-bulwark-crimson',
+  nose: 'nose-bulwark-crimson',
+  cockpit: 'cockpit-bulwark-crimson',
+  'wing-left': 'wing-left-bulwark-crimson',
+  'wing-right': 'wing-right-bulwark-crimson',
+  'engine-left': 'engine-left-bulwark-crimson',
+  'engine-right': 'engine-right-bulwark-crimson',
+  'ignition-left': 'ignition-left-bulwark-crimson',
+  'ignition-right': 'ignition-right-bulwark-crimson',
+  'tail-fin': 'tail-fin-bulwark-crimson',
+  shot: 'shot-bulwark-crimson',
+};
+
+/**
+ * An appearance whose JSON encoding is exactly {@link APPEARANCE_JSON_MAX_BYTES} (700) bytes:
+ * 20 emoji per value are 40 UTF-16 units / 80 UTF-8 bytes, and the ASCII paddings bring the
+ * 11 values to 537 bytes, which is exactly 700 once the object overhead (163 B) is added.
+ */
+const APPEARANCE_700_BYTES: Record<string, string> = {
+  hull: '🚀'.repeat(20),
+  nose: '🚀'.repeat(20),
+  cockpit: '🚀'.repeat(20),
+  'wing-left': '🚀'.repeat(20),
+  'wing-right': '🚀'.repeat(20),
+  'engine-left': 'a'.repeat(40),
+  'engine-right': 'a'.repeat(40),
+  'ignition-left': 'a'.repeat(40),
+  'ignition-right': 'a'.repeat(15),
+  'tail-fin': 'a',
+  shot: 'a',
+};
+
+/** The same record with one extra ASCII byte: a 701-byte encoded appearance (rejected). */
+const APPEARANCE_701_BYTES: Record<string, string> = {
+  ...APPEARANCE_700_BYTES,
+  'ignition-right': 'a'.repeat(16),
+};
+
+/** The UTF-8 byte length of a JSON-encoded value (the backend uses `Buffer.byteLength`). */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** Every invalid appearance the shared codec must reject (AC-7/AC-9). */
+const INVALID_APPEARANCES: ReadonlyArray<readonly [string, unknown]> = [
+  ['a missing value', undefined],
+  ['a null value', null],
+  ['an array value', ['hull-obsidian']],
+  ['a bare string value', 'hull-obsidian'],
+  ['a number value', 42],
+  ['twelve entries (one slot too many)', { ...FULL_APPEARANCE, drone: 'drone-bulwark-crimson' }],
+  ['an unknown slot key', { hull: 'hull-obsidian', laser: 'laser-bulwark-crimson' }],
+  ['the legacy body alias', { body: 'body-gold' }],
+  ['the legacy wings alias', { wings: 'wings-silver' }],
+  ['an empty part id', { hull: '' }],
+  ['a numeric part id', { hull: 7 }],
+  ['a null part id', { hull: null }],
+  ['an array part id', { hull: ['hull-obsidian'] }],
+  ['a 41-character part id', { hull: 'h'.repeat(APPEARANCE_VALUE_MAX_LENGTH + 1) }],
+  ['a 701-byte encoded appearance', APPEARANCE_701_BYTES],
+];
+
+/** A member that carries the public appearance projection (AC-7). */
+const P3: MemberState = {
+  playerId: 'p3',
+  name: 'Player 3',
+  position: { x: 11.803579717001593, y: 36.32768297475154 },
+  levelIndex: 1,
+  gridSize: 4,
+  styleId: 'crimson-alloy',
+  removedIds: ['front:0:0'],
+  yawSteps: 1,
+  pitchSteps: -1,
+  appearance: FULL_APPEARANCE,
+};
+
+describe('appearance projection bounds (AC-7/AC-9/AC-14)', () => {
+  it('pins the appearance bounds mirrored from the backend', () => {
+    expect(APPEARANCE_MAX_ENTRIES).toBe(11);
+    expect(APPEARANCE_VALUE_MAX_LENGTH).toBe(40);
+    expect(APPEARANCE_JSON_MAX_BYTES).toBe(700);
+  });
+
+  it('accepts the full 11-slot appearance as a fresh copy', () => {
+    expect(Object.keys(FULL_APPEARANCE)).toStrictEqual([...SLOT_KEYS_V3]);
+    expect(Object.keys(FULL_APPEARANCE)).toHaveLength(APPEARANCE_MAX_ENTRIES);
+
+    const parsed = parseAppearance(FULL_APPEARANCE);
+
+    expect(parsed).toStrictEqual({
+      hull: 'hull-obsidian',
+      nose: 'nose-crimson',
+      cockpit: 'cockpit-amber',
+      'wing-left': 'wing-left-gold',
+      'wing-right': 'wing-right-silver',
+      'engine-left': 'engine-left-vector',
+      'engine-right': 'engine-right-nova',
+      'ignition-left': 'ignition-left-blue',
+      'ignition-right': 'ignition-right-plasma',
+      'tail-fin': 'tail-fin-comet',
+      shot: 'shot-kite-solar',
+    });
+    expect(parsed).not.toBe(FULL_APPEARANCE);
+    expect(Object.keys(parsed!)).toStrictEqual([...SLOT_KEYS_V3]);
+
+    parsed!.hull = 'hull-gold';
+    expect(FULL_APPEARANCE.hull).toBe('hull-obsidian');
+  });
+
+  it('accepts the empty appearance record', () => {
+    expect(parseAppearance({})).toStrictEqual({});
+  });
+
+  it('accepts the exact 40-character value boundary', () => {
+    const boundary = 'h'.repeat(APPEARANCE_VALUE_MAX_LENGTH);
+
+    expect(parseAppearance({ hull: boundary })).toStrictEqual({ hull: boundary });
+  });
+
+  it('accepts an encoded appearance of exactly 700 bytes and rejects 701', () => {
+    expect(utf8Bytes(JSON.stringify(APPEARANCE_700_BYTES))).toBe(700);
+    expect(parseAppearance(APPEARANCE_700_BYTES)).toStrictEqual(APPEARANCE_700_BYTES);
+
+    expect(utf8Bytes(JSON.stringify(APPEARANCE_701_BYTES))).toBe(701);
+    expect(parseAppearance(APPEARANCE_701_BYTES)).toBeNull();
+  });
+
+  it.each(INVALID_APPEARANCES)('rejects %s', (_label, value) => {
+    expect(parseAppearance(value)).toBeNull();
+  });
+});
+
+describe('memberAppearanceOf (AC-7)', () => {
+  it('returns the normalized copy for a member that carries a valid appearance', () => {
+    const appearance = memberAppearanceOf(P3);
+
+    expect(appearance).toStrictEqual(FULL_APPEARANCE);
+    expect(appearance).not.toBe(P3.appearance);
+
+    appearance.hull = 'hull-gold';
+    expect(P3.appearance).toStrictEqual(FULL_APPEARANCE);
+  });
+
+  it('returns {} for a member without the optional field', () => {
+    expect(memberAppearanceOf(P1)).toStrictEqual({});
+    expect(memberAppearanceOf({ ...P1, appearance: undefined })).toStrictEqual({});
+  });
+
+  it.each(INVALID_APPEARANCES)(
+    'returns {} for a member whose appearance is %s',
+    (_label, value) => {
+      const member: MemberState = {
+        ...P1,
+        appearance: value as Record<string, string> | undefined,
+      };
+
+      expect(memberAppearanceOf(member)).toStrictEqual({});
+    },
+  );
+});
+
+describe('copyAppearance', () => {
+  it('copies every entry in order without aliasing the source', () => {
+    const copy = copyAppearance(FULL_APPEARANCE);
+
+    expect(copy).toStrictEqual(FULL_APPEARANCE);
+    expect(Object.keys(copy)).toStrictEqual([...SLOT_KEYS_V3]);
+    expect(copy).not.toBe(FULL_APPEARANCE);
+
+    copy.hull = 'hull-gold';
+    expect(FULL_APPEARANCE.hull).toBe('hull-obsidian');
+  });
+});
+
+describe('parseClientMessage — setAppearance (AC-9, backend parity)', () => {
+  it('decodes a two-slot frame to the pinned shape', () => {
+    expect(
+      parseClientMessage(
+        '{"type":"setAppearance","appearance":{"hull":"hull-obsidian","wing-left":"wing-left-gold"}}',
+      ),
+    ).toStrictEqual({
+      ok: true,
+      message: {
+        type: 'setAppearance',
+        appearance: { hull: 'hull-obsidian', 'wing-left': 'wing-left-gold' },
+      },
+    });
+  });
+
+  it('decodes the full 11-slot frame and drops unknown extra fields', () => {
+    const frame = JSON.stringify({
+      type: 'setAppearance',
+      appearance: FULL_APPEARANCE,
+      playerId: 'p9',
+      nested: { a: [1, 2] },
+    });
+
+    expect(parseClientMessage(frame)).toStrictEqual({
+      ok: true,
+      message: { type: 'setAppearance', appearance: FULL_APPEARANCE },
+    });
+  });
+
+  it('accepts an empty appearance record', () => {
+    expect(parseClientMessage('{"type":"setAppearance","appearance":{}}')).toStrictEqual({
+      ok: true,
+      message: { type: 'setAppearance', appearance: {} },
+    });
+  });
+
+  it('accepts the exact 40-character and 700-byte boundaries', () => {
+    const boundary = 'h'.repeat(APPEARANCE_VALUE_MAX_LENGTH);
+
+    expect(
+      parseClientMessage(JSON.stringify({ type: 'setAppearance', appearance: { hull: boundary } })),
+    ).toStrictEqual({
+      ok: true,
+      message: { type: 'setAppearance', appearance: { hull: boundary } },
+    });
+    expect(
+      parseClientMessage(JSON.stringify({ type: 'setAppearance', appearance: APPEARANCE_700_BYTES })),
+    ).toStrictEqual({
+      ok: true,
+      message: { type: 'setAppearance', appearance: APPEARANCE_700_BYTES },
+    });
+  });
+
+  it('keeps the whole worst-case setAppearance frame under MAX_MESSAGE_BYTES', () => {
+    const parsed = parseClientMessage(
+      JSON.stringify({ type: 'setAppearance', appearance: LONGEST_APPEARANCE }),
+    );
+    if (!parsed.ok) {
+      throw new Error('expected setAppearance to decode');
+    }
+    const encoded = JSON.stringify(parsed.message);
+
+    expect(utf8Bytes(JSON.stringify(LONGEST_APPEARANCE))).toBe(435);
+    expect(utf8Bytes(encoded)).toBe(473);
+    expect(utf8Bytes(encoded)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+  });
+
+  const invalidFrames: ReadonlyArray<readonly [string, string]> = [
+    ['a missing appearance', '{"type":"setAppearance"}'],
+    ['a null appearance', '{"type":"setAppearance","appearance":null}'],
+    ['an array appearance', '{"type":"setAppearance","appearance":[]}'],
+    ['a string appearance', '{"type":"setAppearance","appearance":"hull-obsidian"}'],
+    ['a number appearance', '{"type":"setAppearance","appearance":7}'],
+    [
+      'twelve entries',
+      JSON.stringify({ type: 'setAppearance', appearance: { ...FULL_APPEARANCE, drone: 'drone-bulwark-crimson' } }),
+    ],
+    [
+      'an unknown slot key',
+      '{"type":"setAppearance","appearance":{"hull":"hull-obsidian","laser":"laser-bulwark-crimson"}}',
+    ],
+    ['a legacy slot key', '{"type":"setAppearance","appearance":{"body":"body-gold"}}'],
+    ['a __proto__ key', '{"type":"setAppearance","appearance":{"__proto__":"hull-obsidian"}}'],
+    ['an empty part id', '{"type":"setAppearance","appearance":{"hull":""}}'],
+    ['a numeric part id', '{"type":"setAppearance","appearance":{"hull":7}}'],
+    ['a null part id', '{"type":"setAppearance","appearance":{"hull":null}}'],
+    [
+      'a 41-character part id',
+      JSON.stringify({ type: 'setAppearance', appearance: { hull: 'h'.repeat(41) } }),
+    ],
+    [
+      'a 701-byte appearance',
+      JSON.stringify({ type: 'setAppearance', appearance: APPEARANCE_701_BYTES }),
+    ],
+  ];
+
+  it.each(invalidFrames)('rejects %s with bad_message', (_label, frame) => {
+    expect(parseClientMessage(frame)).toStrictEqual({ ok: false, error: 'bad_message' });
+  });
+});
+
+describe('memberAppearanceMessage (AC-8/AC-14)', () => {
+  it('builds the frame with a defensive copy of the appearance', () => {
+    const appearance = { hull: 'hull-obsidian', 'wing-left': 'wing-left-gold' };
+    const message = memberAppearanceMessage('p1', appearance);
+
+    expect(message).toStrictEqual({
+      type: 'memberAppearance',
+      playerId: 'p1',
+      appearance: { hull: 'hull-obsidian', 'wing-left': 'wing-left-gold' },
+    });
+    if (message.type !== 'memberAppearance') {
+      throw new Error('expected a memberAppearance message');
+    }
+    expect(message.appearance).not.toBe(appearance);
+
+    appearance.hull = 'hull-gold';
+    expect(message).toStrictEqual({
+      type: 'memberAppearance',
+      playerId: 'p1',
+      appearance: { hull: 'hull-obsidian', 'wing-left': 'wing-left-gold' },
+    });
+  });
+
+  it('encodes one pinned JSON frame and round-trips through JSON', () => {
+    const encoded = encodeServerMessage(memberAppearanceMessage('p1', { hull: 'hull-obsidian' }));
+
+    expect(encoded).toBe(
+      '{"type":"memberAppearance","playerId":"p1","appearance":{"hull":"hull-obsidian"}}',
+    );
+    expect(JSON.parse(encoded)).toStrictEqual({
+      type: 'memberAppearance',
+      playerId: 'p1',
+      appearance: { hull: 'hull-obsidian' },
+    });
+  });
+
+  it('keeps the measured worst-case frame at 492 bytes (AC-14)', () => {
+    const encoded = encodeServerMessage(memberAppearanceMessage('p1', LONGEST_APPEARANCE));
+
+    expect(utf8Bytes(JSON.stringify(LONGEST_APPEARANCE))).toBe(435);
+    expect(utf8Bytes(encoded)).toBe(492);
+  });
+
+  it('rejects an invalid playerId or appearance instead of encoding it', () => {
+    expect(() => memberAppearanceMessage('', FULL_APPEARANCE)).toThrow(
+      new TypeError('invalid memberAppearance payload'),
+    );
+    expect(() => memberAppearanceMessage(7 as unknown as string, FULL_APPEARANCE)).toThrow(
+      new TypeError('invalid memberAppearance payload'),
+    );
+    expect(() => memberAppearanceMessage('p1', { hull: '' })).toThrow(
+      new TypeError('invalid memberAppearance payload'),
+    );
+    expect(() => memberAppearanceMessage('p1', { laser: 'laser-bulwark-crimson' })).toThrow(
+      new TypeError('invalid memberAppearance payload'),
+    );
+    expect(() => memberAppearanceMessage('p1', APPEARANCE_701_BYTES)).toThrow(
+      new TypeError('invalid memberAppearance payload'),
+    );
+  });
+});
+
+describe('parseServerMessage — memberAppearance (AC-8/AC-9)', () => {
+  it('decodes a pinned frame with a fresh copy of the record', () => {
+    const text =
+      '{"type":"memberAppearance","playerId":"p2","appearance":{"hull":"hull-dart-chrome","shot":"shot-orca-violet"}}';
+
+    expect(parseServerMessage(text)).toStrictEqual({
+      ok: true,
+      message: {
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+      },
+    });
+  });
+
+  it('accepts an empty record (a member that unequipped everything)', () => {
+    expect(
+      parseServerMessage('{"type":"memberAppearance","playerId":"p2","appearance":{}}'),
+    ).toStrictEqual({
+      ok: true,
+      message: { type: 'memberAppearance', playerId: 'p2', appearance: {} },
+    });
+  });
+
+  const invalidFrames: ReadonlyArray<readonly [string, string]> = [
+    ['a missing appearance', '{"type":"memberAppearance","playerId":"p2"}'],
+    ['a null appearance', '{"type":"memberAppearance","playerId":"p2","appearance":null}'],
+    ['an array appearance', '{"type":"memberAppearance","playerId":"p2","appearance":[]}'],
+    ['a missing playerId', '{"type":"memberAppearance","appearance":{"hull":"hull-obsidian"}}'],
+    ['an empty playerId', '{"type":"memberAppearance","playerId":"","appearance":{}}'],
+    ['a numeric playerId', '{"type":"memberAppearance","playerId":7,"appearance":{}}'],
+    [
+      'an unknown slot key',
+      '{"type":"memberAppearance","playerId":"p2","appearance":{"laser":"laser-bulwark-crimson"}}',
+    ],
+    [
+      'an empty part id',
+      '{"type":"memberAppearance","playerId":"p2","appearance":{"hull":""}}',
+    ],
+    [
+      'a 41-character part id',
+      JSON.stringify({
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: { hull: 'h'.repeat(41) },
+      }),
+    ],
+    [
+      'a 701-byte appearance',
+      JSON.stringify({
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: APPEARANCE_701_BYTES,
+      }),
+    ],
+  ];
+
+  it.each(invalidFrames)('rejects %s with bad_message', (_label, frame) => {
+    expect(parseServerMessage(frame)).toStrictEqual({ ok: false, error: 'bad_message' });
+  });
+});
+
+describe('member appearance on placements (AC-7)', () => {
+  it('decodes a memberJoined that carries an appearance with a fresh copy', () => {
+    const text = JSON.stringify({
+      type: 'memberJoined',
+      member: {
+        playerId: 'p3',
+        name: 'Player 3',
+        position: { x: 0, y: 24 },
+        levelIndex: 1,
+        gridSize: 4,
+        styleId: 'crimson-alloy',
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+        appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+      },
+    });
+
+    expect(parseServerMessage(text)).toStrictEqual({
+      ok: true,
+      message: {
+        type: 'memberJoined',
+        member: {
+          playerId: 'p3',
+          name: 'Player 3',
+          position: { x: 0, y: 24 },
+          levelIndex: 1,
+          gridSize: 4,
+          styleId: 'crimson-alloy',
+          removedIds: [],
+          yawSteps: 0,
+          pitchSteps: 0,
+          appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+        },
+      },
+    });
+  });
+
+  it('keeps the field absent on a legacy member (the reducer defaults it to {})', () => {
+    const parsed = parseServerMessage(
+      '{"type":"memberJoined","member":{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0}}',
+    );
+    if (!parsed.ok || parsed.message.type !== 'memberJoined') {
+      throw new Error('the pinned memberJoined frame must decode');
+    }
+
+    expect(parsed.message.member).toStrictEqual(P2);
+    expect(parsed.message.member).not.toHaveProperty('appearance');
+  });
+
+  it('normalizes a malformed present appearance to {} on the member', () => {
+    const parsed = parseServerMessage(
+      '{"type":"memberJoined","member":{"playerId":"p2","name":"Player 2","position":{"x":30.902172888029035,"y":22.45174281092734},"levelIndex":0,"gridSize":3,"styleId":"obsidian-neon","removedIds":[],"yawSteps":0,"pitchSteps":0,"appearance":{"laser":"laser-bulwark-crimson"}}}',
+    );
+    if (!parsed.ok || parsed.message.type !== 'memberJoined') {
+      throw new Error('a malformed appearance must not cost the member');
+    }
+
+    expect(parsed.message.member.appearance).toStrictEqual({});
+  });
+
+  it('decodes the appearance of every welcome roster entry', () => {
+    const text = JSON.stringify({
+      type: 'welcome',
+      playerId: 'p1',
+      name: 'Player 1',
+      token: '0123456789abcdef0123456789abcdef',
+      serverId: 1,
+      maxUsers: 10,
+      position: { x: 38.197186342054884, y: 0 },
+      self: P1_CUBE,
+      roster: [P1, P3],
+      identity: { kind: 'guest', playerId: 'p1' },
+    });
+    const parsed = parseServerMessage(text);
+    if (!parsed.ok || parsed.message.type !== 'welcome') {
+      throw new Error('the pinned welcome frame must decode');
+    }
+
+    // A legacy roster entry keeps the optional field absent (the reducer fills `{}`); a
+    // member that carries a valid record gets a fresh normalized copy.
+    expect(parsed.message.roster[0]).not.toHaveProperty('appearance');
+    expect(parsed.message.roster[1]!.appearance).toStrictEqual(FULL_APPEARANCE);
+  });
+});
+
+describe('stateSync / levelAdvanced bytes are unchanged (AC-7/AC-14)', () => {
+  it('keeps the stateSync frame byte-identical with no appearance field', () => {
+    expect(
+      encodeServerMessage(
+        stateSyncMessage({
+          playerId: 'p2',
+          levelIndex: 1,
+          gridSize: 4,
+          styleId: 'crimson-alloy',
+          removedIds: ['front:0:0', 'back:3:3'],
+          yawSteps: 2,
+          pitchSteps: -1,
+        }),
+      ),
+    ).toBe(
+      '{"type":"stateSync","playerId":"p2","levelIndex":1,"gridSize":4,"styleId":"crimson-alloy","removedIds":["front:0:0","back:3:3"],"yawSteps":2,"pitchSteps":-1}',
+    );
+  });
+
+  it('keeps the levelAdvanced frame byte-identical with no appearance field', () => {
+    expect(
+      encodeServerMessage({
+        type: 'levelAdvanced',
+        playerId: 'p1',
+        levelIndex: 3,
+        gridSize: 7,
+        styleId: 'violet-nebula',
+        position: { x: 38.197186342054884, y: 0 },
+        removedIds: [],
+      }),
+    ).toBe(
+      '{"type":"levelAdvanced","playerId":"p1","levelIndex":3,"gridSize":7,"styleId":"violet-nebula","position":{"x":38.197186342054884,"y":0},"removedIds":[]}',
+    );
   });
 });

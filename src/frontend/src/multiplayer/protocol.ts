@@ -43,6 +43,18 @@
  *   catalog message and adds no server message variant — the server removes only the
  *   sending connection's member and reports it through the existing `memberLeft`. The
  *   shared `ACTIVITY_EVENT_TTL_MS` is mirrored here verbatim from `game/protocol.ts`.
+ * - `MemberState.appearance` is the additive public appearance projection
+ *   (`remote-spaceship-customization` AC-7/AC-8/AC-9), mirrored from `game/protocol.ts`:
+ *   optional in the wire type so every accepted member literal keeps compiling, always
+ *   normalized on this side. {@link parseAppearance} is the single structural codec (plain
+ *   object, ≤ 11 catalog slot keys, non-empty string values ≤ 40 characters, encoded
+ *   appearance ≤ 700 UTF-8 bytes) and {@link memberAppearanceOf} is the one read gate
+ *   (valid record → fresh copy, absent/invalid → `{}`). The transport decoder normalizes a
+ *   present record, the world reducer copies it onto `WorldState.members` and fills `{}` when
+ *   the optional field is absent, and a malformed or absent field can therefore never reach a
+ *   renderer. The additive
+ *   `memberAppearance` server frame replaces one member's record mid-session and
+ *   `setAppearance` is the guest loadout report; `stateSync`/`levelAdvanced` gain no field.
  *
  * Field validation is presence + type only, exactly like the backend: an unknown `type`,
  * a non-JSON frame, a non-object frame, a missing required field or a field of the wrong
@@ -53,6 +65,7 @@
  * check itself belongs to the caller (the transport drops oversized frames).
  */
 
+import { isValidSlotIdV3 } from '../game/parts-v3';
 import type { CustomizationState, EconomyState, FaceId, MiniCubeId, UpgradeState } from '../game/types';
 
 export type { CustomizationState, EconomyState, FaceId, MiniCubeId, UpgradeState };
@@ -94,6 +107,19 @@ export const ACTIVITY_EVENT_TTL_MS = 5000;
  */
 export const LEADERBOARD_TOP_LIMIT = 5;
 
+/**
+ * Pinned public-appearance bounds (`remote-spaceship-customization` AC-7/AC-9/AC-14),
+ * mirrored verbatim from `game/protocol.ts`: at most one entry per catalog slot, part ids of
+ * at most 40 characters (the longest catalog id is 30) and a JSON-encoded appearance of at
+ * most 700 bytes. The whole worst-case `setAppearance` frame (~473 B) stays far below
+ * {@link MAX_MESSAGE_BYTES}.
+ */
+export const APPEARANCE_MAX_ENTRIES = 11;
+
+export const APPEARANCE_VALUE_MAX_LENGTH = 40;
+
+export const APPEARANCE_JSON_MAX_BYTES = 700;
+
 /** A world-plane point (`z = 0`), exactly as it travels on the wire. */
 export interface Position {
   x: number;
@@ -121,6 +147,13 @@ export interface MemberState {
   removedIds: string[];
   yawSteps: number;
   pitchSteps: number;
+  /**
+   * The member's public slot→part-id appearance projection (`remote-spaceship-customization`).
+   * Optional in the wire type so every accepted member literal keeps compiling and an older
+   * backend still decodes; every decode/copy path funnels the field through
+   * {@link memberAppearanceOf}, so the runtime record is always `{}` or a valid 11-entry map.
+   */
+  appearance?: Record<string, string>;
 }
 
 /**
@@ -264,6 +297,7 @@ export type ClientMessage =
   | { type: 'openLootbox' }
   | { type: 'equipPart'; partId: string }
   | { type: 'unequipPart'; slotId: string }
+  | { type: 'setAppearance'; appearance: Record<string, string> }
   | { type: 'ping'; t: number }
   | { type: 'leave' };
 
@@ -309,6 +343,7 @@ export type ServerMessage =
   | { type: 'activityEvent'; event: ActivityEvent }
   | { type: 'leaderboardUpdate'; leaderboard: LeaderboardSnapshot }
   | { type: 'cubeRotated'; playerId: string; yawSteps: number; pitchSteps: number }
+  | { type: 'memberAppearance'; playerId: string; appearance: Record<string, string> }
   | { type: 'miniCubeRemoved'; playerId: string; id: MiniCubeId }
   | { type: 'miniCubesRemoved'; playerId: string; ids: MiniCubeId[] }
   | {
@@ -457,6 +492,64 @@ function badClientMessage(): ClientMessageParseResult {
 
 function badServerMessage(): ServerMessageParseResult {
   return { ok: false, error: 'bad_message' };
+}
+
+/**
+ * Decodes one public appearance projection (AC-7/AC-8/AC-9), mirroring the backend codec.
+ *
+ * A valid appearance is a plain object (never `null` or an array) with at most
+ * {@link APPEARANCE_MAX_ENTRIES} entries, every key one of the 11 v3 catalog slot ids and every
+ * value a non-empty string of at most {@link APPEARANCE_VALUE_MAX_LENGTH} characters. The
+ * encoded object must not exceed {@link APPEARANCE_JSON_MAX_BYTES} UTF-8 bytes (multi-byte
+ * values make the entry/value bounds alone insufficient). Returns a fresh copy in the input key
+ * order, or `null` when any rule fails.
+ *
+ * Part ids are not resolved against the catalog here: the server owns semantic normalization
+ * (unknown/wrong-slot ids) and the renderer resolves via `appearanceToShipParamsV3`.
+ */
+export function parseAppearance(value: unknown): Record<string, string> | null {
+  const record = asJsonObject(value);
+  if (record === null) {
+    return null;
+  }
+  const keys = Object.keys(record);
+  if (keys.length > APPEARANCE_MAX_ENTRIES) {
+    return null;
+  }
+  const appearance: Record<string, string> = {};
+  for (const key of keys) {
+    if (!isValidSlotIdV3(key)) {
+      return null;
+    }
+    const partId = record[key];
+    if (!isNonEmptyString(partId) || partId.length > APPEARANCE_VALUE_MAX_LENGTH) {
+      return null;
+    }
+    appearance[key] = partId;
+  }
+  if (new TextEncoder().encode(JSON.stringify(appearance)).length > APPEARANCE_JSON_MAX_BYTES) {
+    return null;
+  }
+  return appearance;
+}
+
+/** Defensive copy of an appearance record (same key order, fresh object). */
+export function copyAppearance(appearance: Record<string, string>): Record<string, string> {
+  const copy: Record<string, string> = {};
+  for (const key of Object.keys(appearance)) {
+    copy[key] = appearance[key];
+  }
+  return copy;
+}
+
+/**
+ * Normalizes a member's optional appearance (AC-7): the validated copy when the field is a
+ * valid record, otherwise `{}`. This is the single read gate — a member without the optional
+ * field (legacy backend or an accepted literal) and a malformed record both read as `{}`, and a
+ * valid record is always a fresh copy the caller cannot alias.
+ */
+export function memberAppearanceOf(member: MemberState): Record<string, string> {
+  return parseAppearance(member.appearance) ?? {};
 }
 
 /**
@@ -799,6 +892,16 @@ export function parseClientMessage(text: string): ClientMessageParseResult {
       }
       return { ok: true, message: { type: 'unequipPart', slotId: frame.slotId } };
 
+    case 'setAppearance': {
+      // Guest loadout report (AC-9): the whole record is validated and copied here, so a
+      // non-object/oversized/unknown-slot appearance never reaches the server.
+      const appearance = parseAppearance(frame.appearance);
+      if (appearance === null) {
+        return badClientMessage();
+      }
+      return { ok: true, message: { type: 'setAppearance', appearance } };
+    }
+
     case 'ping':
       // Diagnostic RTT echo: one finite number, nothing else (AC-23 parity with the
       // backend decoder). A missing, string, boolean or non-finite `t` is bad_message.
@@ -879,6 +982,11 @@ function parseMemberState(value: unknown): MemberState | null {
   ) {
     return null;
   }
+  // AC-7: a present appearance is normalized through the shared codec (invalid → `{}`), and an
+  // absent field stays absent here — the transport keeps legacy payloads byte-faithful, while
+  // the reducer's copy path is what guarantees every stored member carries a record.
+  const appearance =
+    member.appearance === undefined ? undefined : (parseAppearance(member.appearance) ?? {});
   return {
     playerId: member.playerId,
     name: member.name,
@@ -889,6 +997,7 @@ function parseMemberState(value: unknown): MemberState | null {
     removedIds: [...member.removedIds],
     yawSteps: member.yawSteps,
     pitchSteps: member.pitchSteps,
+    ...(appearance === undefined ? {} : { appearance }),
   };
 }
 
@@ -1260,6 +1369,22 @@ export function parseServerMessage(text: string): ServerMessageParseResult {
         },
       };
 
+    case 'memberAppearance': {
+      // Additive live re-skin frame (AC-8): the record is validated through the shared
+      // appearance codec and copied; an invalid record is the pinned `bad_message`.
+      if (!isNonEmptyString(frame.playerId)) {
+        return badServerMessage();
+      }
+      const appearance = parseAppearance(frame.appearance);
+      if (appearance === null) {
+        return badServerMessage();
+      }
+      return {
+        ok: true,
+        message: { type: 'memberAppearance', playerId: frame.playerId, appearance },
+      };
+    }
+
     case 'miniCubeRemoved':
       if (!isNonEmptyString(frame.playerId) || !isNonEmptyString(frame.id)) {
         return badServerMessage();
@@ -1525,6 +1650,27 @@ export function miniCubesRemovedMessage(
 /** Builds a client `purchaseUpgrade` message. */
 export function purchaseUpgradeMessage(upgradeId: string): ClientMessage {
   return { type: 'purchaseUpgrade', upgradeId };
+}
+
+/**
+ * Builds the additive `memberAppearance` frame (AC-8), mirroring the backend builder.
+ *
+ * The record is re-validated through {@link parseAppearance} and copied, so an invalid payload
+ * (despite the static type) throws `TypeError` instead of being encoded, and mutating the
+ * argument afterwards cannot rewrite an already-built message.
+ */
+export function memberAppearanceMessage(
+  playerId: string,
+  appearance: Record<string, string>,
+): ServerMessage {
+  if (!isNonEmptyString(playerId)) {
+    throw new TypeError('invalid memberAppearance payload');
+  }
+  const parsed = parseAppearance(appearance);
+  if (parsed === null) {
+    throw new TypeError('invalid memberAppearance payload');
+  }
+  return { type: 'memberAppearance', playerId, appearance: parsed };
 }
 
 /** Serialises one client message into the single JSON text frame sent over the wire. */

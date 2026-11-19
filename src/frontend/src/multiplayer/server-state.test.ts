@@ -41,6 +41,7 @@ const P2_MEMBER: MemberState = {
   removedIds: [],
   yawSteps: 0,
   pitchSteps: 0,
+  appearance: {},
 };
 
 const P3_MEMBER: MemberState = {
@@ -53,7 +54,15 @@ const P3_MEMBER: MemberState = {
   removedIds: ['back:1:1'],
   yawSteps: 0,
   pitchSteps: 0,
+  appearance: {},
 };
+
+/** The same member as an older backend sends it: the optional `appearance` field is absent. */
+function withoutAppearance(member: MemberState): MemberState {
+  const copy: MemberState = { ...member };
+  delete copy.appearance;
+  return copy;
+}
 
 /** The mover's next cube after completing on server 1 (a cross-server move). */
 const MOVED_SELF_MEMBER: MemberState = {
@@ -66,6 +75,7 @@ const MOVED_SELF_MEMBER: MemberState = {
   removedIds: [],
   yawSteps: 0,
   pitchSteps: 0,
+  appearance: {},
 };
 
 /** p2 as seen on server 2, where it holds slot 1 (the ring restarts per server). */
@@ -289,6 +299,137 @@ describe('reduceWorldState — roster', () => {
   });
 });
 
+describe('reduceWorldState — public member appearance (AC-7/AC-8/AC-9)', () => {
+  const P2_APPEARANCE: Record<string, string> = {
+    hull: 'hull-obsidian',
+    'wing-left': 'wing-left-gold',
+  };
+
+  it('welcome stores {} for every roster member whose optional field is absent', () => {
+    const state = reduceWorldState(createWorldState(), {
+      ...WELCOME,
+      roster: [SELF_MEMBER, withoutAppearance(P2_MEMBER), withoutAppearance(P3_MEMBER)],
+    });
+
+    expect(state.members).toEqual([P2_MEMBER, P3_MEMBER]);
+    expect(state.members.map((member) => member.appearance)).toEqual([{}, {}]);
+  });
+
+  it('memberJoined stores {} for a member whose optional field is absent', () => {
+    const state = reduceWorldState(seeded(), {
+      type: 'memberJoined',
+      member: { ...withoutAppearance(P3_MEMBER), levelIndex: 4, gridSize: 7, styleId: 'solar-gold' },
+    });
+
+    expect(state.members[1]).toEqual({
+      playerId: 'p3',
+      name: 'Player 3',
+      position: SLOT_3,
+      levelIndex: 4,
+      gridSize: 7,
+      styleId: 'solar-gold',
+      removedIds: ['back:1:1'],
+      yawSteps: 0,
+      pitchSteps: 0,
+      appearance: {},
+    });
+  });
+
+  it('worldEntered and applyWorldSwap store {} for a roster without the optional field', () => {
+    const travelling = reduceWorldState(seeded(), {
+      ...WORLD_ENTERED,
+      roster: [withoutAppearance(P2_MEMBER_SERVER_2), withoutAppearance(MOVED_SELF_MEMBER)],
+    });
+
+    expect(travelling.pendingWorldSwap!.roster).toEqual([
+      P2_MEMBER_SERVER_2,
+      MOVED_SELF_MEMBER,
+    ]);
+
+    const swapped = applyWorldSwap(travelling);
+    expect(swapped.members).toEqual([P2_MEMBER_SERVER_2]);
+  });
+
+  it('memberAppearance updates only the matching member with a defensive copy', () => {
+    const state = seeded();
+    const appearance = { ...P2_APPEARANCE };
+    const next = reduceWorldState(state, {
+      type: 'memberAppearance',
+      playerId: 'p2',
+      appearance,
+    });
+
+    expect(next.members[0]).toEqual({ ...P2_MEMBER, appearance: P2_APPEARANCE });
+    expect(next.members[0]).not.toBe(state.members[0]);
+    expect(next.members[0].appearance).not.toBe(appearance);
+    expect(next.members[1]).toBe(state.members[1]);
+    expect(next.self).toBe(state.self);
+    expect(next.members).not.toBe(state.members);
+
+    // A later mutation of the wire record cannot rewrite the stored projection.
+    appearance.hull = 'hull-dart-chrome';
+    appearance['wing-left'] = 'wing-left-bulwark-crimson';
+    expect(next.members[0].appearance).toEqual(P2_APPEARANCE);
+  });
+
+  it('memberAppearance with an unchanged record returns the same world reference', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, { type: 'memberAppearance', playerId: 'p2', appearance: {} }),
+    ).toBe(state);
+
+    const updated = reduceWorldState(state, {
+      type: 'memberAppearance',
+      playerId: 'p2',
+      appearance: P2_APPEARANCE,
+    });
+    expect(
+      reduceWorldState(updated, {
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: { ...P2_APPEARANCE },
+      }),
+    ).toBe(updated);
+  });
+
+  it('memberAppearance for an unknown member is a no-op', () => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, {
+        type: 'memberAppearance',
+        playerId: 'p9',
+        appearance: P2_APPEARANCE,
+      }),
+    ).toBe(state);
+  });
+
+  it('memberAppearance for the own player is a no-op (SelfState carries no appearance)', () => {
+    const state = seeded();
+    const next = reduceWorldState(state, {
+      type: 'memberAppearance',
+      playerId: 'p1',
+      appearance: P2_APPEARANCE,
+    });
+
+    expect(next).toBe(state);
+    expect(Object.keys(next.self)).toEqual(['playerId', 'name', 'position', 'cube', 'economy']);
+  });
+
+  it.each([
+    ['an empty value', { hull: '' }],
+    ['a value of 41 characters', { hull: 'h'.repeat(41) }],
+    ['an unknown slot key', { hull: 'hull-obsidian', drone: 'drone-bulwark-crimson' }],
+  ])('memberAppearance with %s is a no-op', (_label, appearance) => {
+    const state = seeded();
+
+    expect(
+      reduceWorldState(state, { type: 'memberAppearance', playerId: 'p2', appearance }),
+    ).toBe(state);
+  });
+});
+
 describe('reduceWorldState — miniCubeRemoved', () => {
   it('adds the removed tile to that member’s board', () => {
     const state = reduceWorldState(seeded(), {
@@ -437,6 +578,7 @@ describe('reduceWorldState — levelAdvanced', () => {
       removedIds: [],
       yawSteps: 0,
       pitchSteps: 0,
+      appearance: {},
     });
     expect(state.members[1]).toEqual(P3_MEMBER);
   });
@@ -503,6 +645,7 @@ describe('reduceWorldState — stateSync', () => {
       removedIds: ['front:0:0', 'front:0:1', 'left:3:3'],
       yawSteps: 0,
       pitchSteps: 0,
+      appearance: {},
     });
   });
 

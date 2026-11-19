@@ -2708,6 +2708,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
         {
           playerId: 'p3',
@@ -2719,6 +2720,7 @@ describe('multiplayer authority (AC-14, AC-12, AC-18)', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
       ],
       activity: [],
@@ -4328,6 +4330,7 @@ describe('multiplayer spectate (AC-18, AC-19)', () => {
         removedIds: [],
         yawSteps: 0,
         pitchSteps: 0,
+        appearance: {},
       },
     ]);
 

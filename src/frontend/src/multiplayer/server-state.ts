@@ -11,7 +11,9 @@
  * **Authority.** Every value here comes from a server message; the reducer never invents a
  * position, a board or a member (spec § Real-time impact — the client never trusts
  * reported values). The only derived value is the roster split: the wire `roster` includes
- * the receiver (T5), `members` excludes it.
+ * the receiver (T5), `members` excludes it. Every stored member carries a normalized public
+ * appearance (`{}` when the optional wire field is absent or malformed) and `memberAppearance`
+ * replaces exactly one member's record in place (AC-7/AC-8).
  *
  * **Referential stability (React contract).** A message that changes nothing returns the
  * *same* state object; a message that changes something returns a new state whose untouched
@@ -26,7 +28,7 @@
  */
 
 import type { ActivityEvent, CubeState, EconomyState, LeaderboardSnapshot, MemberState, Position, ServerMessage } from './protocol';
-import { ACTIVITY_FEED_LIMIT, copyActivityEvent, copyLeaderboardSnapshot } from './protocol';
+import { ACTIVITY_FEED_LIMIT, copyActivityEvent, copyLeaderboardSnapshot, memberAppearanceOf, parseAppearance } from './protocol';
 
 export type { ActivityEvent, CubeState, EconomyState, MemberState, Position };
 
@@ -115,6 +117,9 @@ function copyMember(member: MemberState): MemberState {
     ...member,
     position: copyPosition(member.position),
     removedIds: [...member.removedIds],
+    // AC-7: the reducer is a client copy path, so a member without the optional field (or
+    // with a malformed one) stores `{}`; a present valid record is copied fresh.
+    appearance: memberAppearanceOf(member),
   };
 }
 
@@ -261,6 +266,57 @@ function withoutMember(state: WorldState, playerId: string): WorldState {
     return state;
   }
   return { ...state, members: state.members.filter((_, position) => position !== index) };
+}
+
+/** Key-order-independent equality of two normalized appearance records. */
+function appearancesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) {
+    return false;
+  }
+  for (const key of keys) {
+    if (a[key] !== b[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * `memberAppearance` (AC-8): replace one roster member's public slot→part-id projection.
+ *
+ * The incoming record is normalized and copied through the shared appearance codec, so an
+ * invalid payload (despite the static type) stores nothing. An unknown `playerId` is a no-op.
+ * The own `playerId` is also a no-op: `WorldState.self` (a `SelfState`) intentionally carries no
+ * appearance — the engine owns the local loadout and a guest adopts the server record once on
+ * `welcome` — so there is nothing to update. An unchanged record returns the same state
+ * reference (React contract) and a changed one replaces only the target member.
+ */
+function withAppearance(
+  state: WorldState,
+  msg: Extract<ServerMessage, { type: 'memberAppearance' }>,
+): WorldState {
+  if (msg.playerId === state.self.playerId) {
+    return state;
+  }
+  const index = state.members.findIndex((current) => current.playerId === msg.playerId);
+  if (index === -1) {
+    return state;
+  }
+  const nextAppearance = parseAppearance(msg.appearance);
+  if (nextAppearance === null) {
+    return state;
+  }
+  const target = state.members[index]!;
+  if (appearancesEqual(memberAppearanceOf(target), nextAppearance)) {
+    return state;
+  }
+  return {
+    ...state,
+    members: state.members.map((current, position) =>
+      position === index ? { ...current, appearance: nextAppearance } : current,
+    ),
+  };
 }
 
 /**
@@ -420,12 +476,12 @@ function withRotated(state: WorldState, msg: Extract<ServerMessage, { type: 'cub
  *
  * Handled: `welcome` (seed identity/placement/roster/activity, clear any pending swap),
  * `worldEntered` (record the pending swap and its activity ring), `memberJoined`/`memberLeft`
- * (roster), `miniCubeRemoved` (one board delta), `miniCubesRemoved` (every id of a batch, in
- * order), `levelAdvanced` (fresh cube + position), `stateSync` (authoritative board),
- * `cubeRotated` (orientation), `activityEvent` (the per-server feed, or the pending
- * target feed while a swap is pending) and `leaderboardUpdate` (the current server's
- * ranking, or the pending target ranking while a swap is pending). `hello` and `error`
- * carry no world state and return the same reference.
+ * (roster), `memberAppearance` (one member's public appearance projection), `miniCubeRemoved`
+ * (one board delta), `miniCubesRemoved` (every id of a batch, in order), `levelAdvanced` (fresh
+ * cube + position), `stateSync` (authoritative board), `cubeRotated` (orientation),
+ * `activityEvent` (the per-server feed, or the pending target feed while a swap is pending) and
+ * `leaderboardUpdate` (the current server's ranking, or the pending target ranking while a swap
+ * is pending). `hello` and `error` carry no world state and return the same reference.
  */
 export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldState {
   switch (msg.type) {
@@ -524,6 +580,9 @@ export function reduceWorldState(state: WorldState, msg: ServerMessage): WorldSt
 
     case 'memberJoined':
       return withMember(state, msg.member);
+
+    case 'memberAppearance':
+      return withAppearance(state, msg);
 
     case 'memberLeft':
       return withoutMember(state, msg.playerId);
