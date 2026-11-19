@@ -306,6 +306,7 @@ describe('createCubeView', () => {
       'isMiniCubeHidden',
       'removeFace',
       'settlePops',
+      'tileOrigin',
       'update',
     ]);
   });
@@ -504,6 +505,47 @@ describe('seamed tiling (AC-1)', () => {
       expect(instanceAxis(mesh, 24, 0)).toEqual(instanceAxis(mesh, 0, 0));
     }
     expect(TILE_SIZE_F32).toBe(Math.fround(0.95));
+  });
+});
+
+describe('tileOrigin (T12)', () => {
+  it('returns the world-space origin of a live tile on every face', () => {
+    const view = createCubeView(STYLE);
+
+    expect(view.tileOrigin('front:0:0')!.toArray()).toEqual([-2, 2, TILE_DISTANCE]);
+    expect(view.tileOrigin('front:2:2')!.toArray()).toEqual([0, 0, TILE_DISTANCE]);
+    expect(view.tileOrigin('back:0:0')!.toArray()).toEqual([2, 2, -TILE_DISTANCE]);
+    expect(view.tileOrigin('top:0:0')!.toArray()).toEqual([-2, TILE_DISTANCE, -2]);
+    expect(view.tileOrigin('bottom:4:4')!.toArray()).toEqual([2, -TILE_DISTANCE, -2]);
+    // The answer is the same origin the instance matrix stores, carried to world space.
+    expect(view.tileOrigin('front:0:0')!.toArray()).toEqual(
+      instancePosition(faceMesh(view, 'front'), 0),
+    );
+  });
+
+  it('carries the group world position into the origin', () => {
+    const view = createCubeView(STYLE);
+    view.group.position.set(24, -12, 0);
+
+    expect(view.tileOrigin('front:0:0')!.toArray()).toEqual([22, -10, TILE_DISTANCE]);
+    expect(view.tileOrigin('front:2:2')!.toArray()).toEqual([24, -12, TILE_DISTANCE]);
+  });
+
+  it('is null for a hidden tile, a removed face, a malformed id and an off-grid id', () => {
+    const view = createCubeView(STYLE);
+
+    view.hideMiniCube('front:0:0', true);
+    expect(view.tileOrigin('front:0:0')).toBeNull();
+    expect(view.tileOrigin('front:0:1')!.toArray()).toEqual([-1, 2, TILE_DISTANCE]);
+
+    view.removeFace('back');
+    expect(view.tileOrigin('back:0:0')).toBeNull();
+
+    expect(view.tileOrigin('front:0')).toBeNull();
+    expect(view.tileOrigin('front:x:0')).toBeNull();
+    expect(view.tileOrigin('nope:0:0')).toBeNull();
+    expect(view.tileOrigin('front:5:0')).toBeNull();
+    expect(view.tileOrigin('front:-1:0')).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { Group, Mesh, MeshStandardMaterial, Points, Vector3 } from 'three';
+import { ConeGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, OctahedronGeometry, Points, TorusGeometry, Vector3 } from 'three';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createEngine, type EffectIntent, type EngineSnapshot } from '../game/engine';
@@ -536,7 +536,10 @@ describe('scene spaceship appearance', () => {
       ...base,
       customization: { ...base.customization!, appearance: { body: 'body-gold' } },
     });
-    expect(view.lastAppearance).toEqual({ body: 'body-gold' });
+    // The scene applies the v3-normalized record (AC-5/AC-17): the legacy `body` alias and
+    // `body-gold` value resolve to the canonical `hull` slot, and the getter keeps returning
+    // a shallow copy of exactly what was applied.
+    expect(view.lastAppearance).toEqual({ hull: 'hull-gold' });
     first.nose = 'mutated';
     expect(view.lastAppearance).not.toHaveProperty('nose', 'mutated');
     view.dispose();
@@ -647,6 +650,164 @@ describe('scene level-complete fly-by (AC-40)', () => {
 
     view.triggerFlyBy();
     expect(startFlyBy).toHaveBeenCalledTimes(1);
+    view.dispose();
+  });
+});
+
+/** One snapshot whose customization carries `appearance` (the engine base is unchanged). */
+function snapshotWithAppearance(appearance: Record<string, string>): EngineSnapshot {
+  const base = snapshot();
+  return {
+    ...base,
+    customization: { ...base.customization!, appearance },
+  };
+}
+
+describe('own-ship shot style wiring (AC-25)', () => {
+  it('applies the construction appearance shot style before the first snapshot', () => {
+    const view = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      appearance: { shot: 'shot-orca-violet' },
+    });
+    applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+
+    const shot = view.shots[0]!;
+    expect(shot.mesh.name).toBe('shot-wave');
+    expect(shot.mesh.geometry).toBeInstanceOf(TorusGeometry);
+    expect(shot.mesh.scale.toArray()).toEqual([1.2, 1.2, 1.2]);
+    expect((shot.mesh.material as MeshBasicMaterial).color.getHexString()).toBe('6d28d9');
+    expect((shot.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'c4b5fd',
+    );
+    view.dispose();
+  });
+
+  it('switches the next shot when the normalized snapshot appearance changes', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    const first = view.shots[0]!;
+    expect(first.mesh.name).toBe('shot-bolt');
+    expect(first.mesh.geometry).toBeInstanceOf(ConeGeometry);
+    expect(first.mesh.scale.toArray()).toEqual([1, 1, 1]);
+
+    applySnapshot(view, snapshotWithAppearance({ shot: 'shot-kite-solar' }));
+    expect(view.lastAppearance).toEqual({ shot: 'shot-kite-solar' });
+    applyIntents(view, [explosionIntent('front:0:1', 'front')]);
+
+    const second = view.shots[1]!;
+    expect(second.mesh.name).toBe('shot-orb');
+    expect(second.mesh.geometry).toBeInstanceOf(OctahedronGeometry);
+    expect(second.mesh.scale.toArray()).toEqual([0.95, 0.95, 0.95]);
+    expect((second.mesh.material as MeshBasicMaterial).color.getHexString()).toBe('f59e0b');
+    expect((second.muzzleFlash.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'fef3c7',
+    );
+    view.dispose();
+  });
+
+  it('writes the shot palette only when the style really changes', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshotWithAppearance({ shot: 'shot-orca-violet' }));
+    applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    const shot = view.shots[0]!;
+    const projectileMaterial = shot.mesh.material as MeshBasicMaterial;
+    const muzzleMaterial = shot.muzzleFlash.material as MeshBasicMaterial;
+    const projectileSet = vi.spyOn(projectileMaterial.color, 'set');
+    const muzzleSet = vi.spyOn(muzzleMaterial.color, 'set');
+
+    // The identical normalized record is a no-op (no material write at all).
+    applySnapshot(view, snapshotWithAppearance({ shot: 'shot-orca-violet' }));
+    expect(projectileSet).not.toHaveBeenCalled();
+    expect(muzzleSet).not.toHaveBeenCalled();
+
+    // A same-style record with another changed slot is also a no-op for the palette.
+    applySnapshot(
+      view,
+      snapshotWithAppearance({ shot: 'shot-orca-violet', hull: 'hull-gold' }),
+    );
+    expect(projectileSet).not.toHaveBeenCalled();
+    expect(muzzleSet).not.toHaveBeenCalled();
+
+    // A real shot change rewrites each shared material exactly once.
+    applySnapshot(
+      view,
+      snapshotWithAppearance({ shot: 'shot-kite-solar', hull: 'hull-gold' }),
+    );
+    expect(projectileSet).toHaveBeenCalledTimes(1);
+    expect(projectileSet).toHaveBeenCalledWith('#f59e0b');
+    expect(muzzleSet).toHaveBeenCalledTimes(1);
+    expect(muzzleSet).toHaveBeenCalledWith('#fef3c7');
+    view.dispose();
+  });
+
+  it('falls back to shot-default for an absent or unknown shot entry', () => {
+    const constructed = createSceneView({
+      style: STYLE,
+      random: fixedRandom,
+      appearance: { shot: 'not-a-catalog-part' },
+    });
+    applyIntents(constructed, [explosionIntent('front:0:0', 'front')]);
+    const constructedShot = constructed.shots[0]!;
+    expect(constructedShot.mesh.name).toBe('shot-bolt');
+    expect(constructedShot.mesh.geometry).toBeInstanceOf(ConeGeometry);
+    expect(constructedShot.mesh.scale.toArray()).toEqual([1, 1, 1]);
+    expect((constructedShot.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'fff1c8',
+    );
+    expect(
+      (constructedShot.muzzleFlash.material as MeshBasicMaterial).color.getHexString(),
+    ).toBe('ffd27a');
+    constructed.dispose();
+
+    // A live record that normalizes to no shot entry also returns to the default style.
+    const view = createView();
+    applySnapshot(view, snapshotWithAppearance({ shot: 'shot-kite-solar' }));
+    applySnapshot(view, snapshotWithAppearance({ shot: 'not-a-catalog-part' }));
+    expect(view.lastAppearance).toEqual({});
+    applyIntents(view, [explosionIntent('front:0:0', 'front')]);
+    expect(view.shots[0]!.mesh.name).toBe('shot-bolt');
+    expect((view.shots[0]!.mesh.material as MeshBasicMaterial).color.getHexString()).toBe(
+      'fff1c8',
+    );
+    view.dispose();
+  });
+});
+
+describe('own-ship chassis scale through SceneView.update (AC-17)', () => {
+  it('keeps the generated hull chassis at rest and at the 130 ms pulse peak', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshotWithAppearance({ hull: 'hull-dart-chrome' }));
+
+    view.update(0);
+    expect(namedGroup(view, 'cursor-ship-model').scale.toArray()).toEqual([
+      0.95,
+      0.9,
+      1.25,
+    ]);
+
+    view.update(130);
+    const peak = namedGroup(view, 'cursor-ship-model').scale.toArray();
+    expect(peak).toHaveLength(3);
+    expect(Math.abs(peak[0]! - 0.988)).toBeLessThan(1e-9);
+    expect(Math.abs(peak[1]! - 0.936)).toBeLessThan(1e-9);
+    expect(Math.abs(peak[2]! - 1.3)).toBeLessThan(1e-9);
+    view.dispose();
+  });
+
+  it('preserves the accepted classic [1, 1, 1] chassis through the pulse', () => {
+    const view = createView();
+    applySnapshot(view, snapshot());
+    applySnapshot(view, snapshotWithAppearance({ hull: 'hull-gold' }));
+
+    view.update(0);
+    expect(namedGroup(view, 'cursor-ship-model').scale.toArray()).toEqual([1, 1, 1]);
+
+    view.update(130);
+    expect(namedGroup(view, 'cursor-ship-model').scale.toArray()).toEqual([1.04, 1.04, 1.04]);
     view.dispose();
   });
 });

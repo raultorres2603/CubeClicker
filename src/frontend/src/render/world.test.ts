@@ -571,6 +571,115 @@ describe('applyMessage', () => {
   });
 });
 
+describe('member copies and tile origins (T12)', () => {
+  it('returns the stored member with the normalized public appearance', () => {
+    const appearance = { hull: 'hull-obsidian' };
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2, { appearance })]);
+
+    const stored = world.member('p2')!;
+    expect(stored.playerId).toBe('p2');
+    expect(stored.position).toEqual(SLOT_2);
+    expect(stored.appearance).toEqual({ hull: 'hull-obsidian' });
+
+    // The copy is defensive: mutating the caller's record never rewrites the stored one.
+    appearance.hull = 'hull-gold';
+    expect(world.member('p2')!.appearance).toEqual({ hull: 'hull-obsidian' });
+
+    expect(world.member('p9')).toBeNull();
+  });
+
+  it('drops an unknown slot key but keeps a structurally valid wrong-slot value', () => {
+    const world = createWorld();
+    world.applyRoster([
+      member('p2', SLOT_2, { appearance: { bogus: 'nope' } }),
+      member('p3', SLOT_3, { appearance: { hull: 'nose-crimson' } }),
+    ]);
+
+    // `memberAppearanceOf` is the AC-7 structural gate (known slot key, bounded string value);
+    // the wrong-slot part id is dropped later by the renderer's v3 normalizer, not here.
+    expect(world.member('p2')!.appearance).toEqual({});
+    expect(world.member('p3')!.appearance).toEqual({ hull: 'nose-crimson' });
+  });
+
+  it('keeps the appearance across a roster refresh and a levelAdvanced rebuild', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2, { appearance: { hull: 'hull-obsidian' } })]);
+
+    world.applyMessage({
+      type: 'memberJoined',
+      member: member('p2', SLOT_2, { appearance: { hull: 'hull-gold' } }),
+    });
+    expect(world.member('p2')!.appearance).toEqual({ hull: 'hull-gold' });
+
+    world.applyMessage({
+      type: 'levelAdvanced',
+      playerId: 'p2',
+      levelIndex: 1,
+      gridSize: 3,
+      styleId: CRIMSON.id,
+      position: SLOT_3,
+      removedIds: [],
+    });
+    expect(world.member('p2')!.appearance).toEqual({ hull: 'hull-gold' });
+    expect(world.member('p2')!.position).toEqual(SLOT_3);
+
+    world.applyMessage({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+    expect(world.member('p2')).toBeNull();
+  });
+
+  it('reads a live tile origin in world space and null once it is hidden', () => {
+    const world = createWorld();
+    world.applyRoster([member('p2', SLOT_2, { gridSize: 5 })]);
+
+    expect(world.tileOrigin('p2', 'front:0:0')!.toArray()).toEqual([
+      SLOT_2.x - 2,
+      SLOT_2.y + 2,
+      2.625,
+    ]);
+    expect(world.tileOrigin('p2', 'front:2:2')!.toArray()).toEqual([
+      SLOT_2.x,
+      SLOT_2.y,
+      2.625,
+    ]);
+    expect(world.tileOrigin('p2', 'back:0:0')!.toArray()).toEqual([
+      SLOT_2.x + 2,
+      SLOT_2.y + 2,
+      -2.625,
+    ]);
+
+    world.applyMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    expect(world.tileOrigin('p2', 'front:0:0')).toBeNull();
+    // The neighbour is untouched.
+    expect(world.tileOrigin('p2', 'front:0:1')!.toArray()).toEqual([
+      SLOT_2.x - 1,
+      SLOT_2.y + 2,
+      2.625,
+    ]);
+  });
+
+  it('returns null for an unknown member, a removed face, a malformed id and an off-grid id', () => {
+    const world = createWorld();
+    world.applyRoster([
+      member('p2', SLOT_2, { gridSize: 3, removedIds: frontIds(3) }),
+      member('p3', SLOT_3, { gridSize: 5 }),
+    ]);
+
+    expect(world.tileOrigin('p9', 'front:0:0')).toBeNull();
+    expect(world.tileOrigin('p2', 'front:0:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'front:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'front:x:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'nope:0:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'front:5:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'front:-1:0')).toBeNull();
+    expect(world.tileOrigin('p3', 'back:0:0')!.toArray()).toEqual([
+      SLOT_3.x + 2,
+      SLOT_3.y + 2,
+      -2.625,
+    ]);
+  });
+});
+
 describe('dispose', () => {
   it('returns the scene to its pre-world object count and is idempotent', () => {
     const scene = new Scene();

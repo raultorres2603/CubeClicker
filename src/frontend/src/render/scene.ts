@@ -60,6 +60,7 @@
 import {
   AmbientLight,
   DirectionalLight,
+  Group,
   InstancedMesh,
   Matrix4,
   PerspectiveCamera,
@@ -75,8 +76,9 @@ import {
   timingsFor,
   travelSwing,
 } from '../game/effects';
-import type { EffectIntent, EngineSnapshot } from '../game/engine';
+import type { EffectIntent, EngineSnapshot, TravelKind } from '../game/engine';
 import { interpolateRotation } from '../game/rotation';
+import { normalizeAppearanceV3, shotStyleForPart } from '../game/parts-v3';
 import {
   GRID_SIZE,
   type CubeStyle,
@@ -102,6 +104,7 @@ import { createSpaceship, type Shot, type Spaceship } from './spaceship';
 import { createTargeting, type Targeting } from './targeting';
 import { createBackgroundLife, type BackgroundLife } from './background-life';
 import { createCosmicBackdrop, type CosmicBackdrop } from './cosmic-backdrop';
+import { createRemoteShip, remoteShipFallbackTarget, type RemoteShip } from './remote-ship';
 import { createWorldView, type WorldView } from './world';
 
 /** Ambient fill-light intensity. */
@@ -356,8 +359,25 @@ export interface SceneView {
   /**
    * Applies one remote-cube server message (`miniCubeRemoved`, `levelAdvanced`,
    * `memberJoined`, `memberLeft`) to the live {@link WorldView}; a no-op before `welcome`.
+   * A removal for the mounted spectated member also fires their remote ship (AC-20) at the
+   * removed tile's world origin, or at the AC-20 fallback target when the tile is already
+   * hidden; every other member's removal spawns nothing.
    */
   applyWorldMessage(msg: ServerMessage): void;
+  /**
+   * Mounts the one remote ship the scene may render — the member the camera is spectating
+   * (AC-15). `null` unmounts it. The ship is created lazily under the `remote-ships` manager
+   * and disposed exactly once; asking again for the already-mounted member is a no-op, an
+   * unknown id mounts nothing, and no ship exists before `welcome`, during a
+   * spectate/return camera flight, or when the member's cube is not in the rendered world.
+   */
+  setSpectatedMember(playerId: string | null): void;
+  /**
+   * Re-skins the mounted remote ship with a live `memberAppearance` projection (AC-15,
+   * AC-17, AC-26). A no-op unless `playerId` is the mounted member; the model is updated in
+   * place (no remount, no second dispose) and a repeated record writes nothing.
+   */
+  setSpectatedAppearance(playerId: string, appearance: Record<string, string>): void;
   /**
    * Stores the latest pointer NDC so the spaceship can follow it on subsequent frames
    * (spaceship-cursor spec AC-2, AC-7). Both components are clamped to `[-1, 1]`.
@@ -504,7 +524,12 @@ export function createSceneView(options: SceneViewOptions): SceneView {
   const impact: ImpactEffects = createImpactEffects(random);
   const targeting: Targeting = createTargeting();
   particles.group.add(impact.group, targeting.group);
-  const spaceship: Spaceship = createSpaceship(options.appearance);
+  // Own-ship appearance (AC-17/AC-25): the constructor's record is v3-normalized once, and
+  // the shot style it selects is applied through T10's `applyShotStyle` right away, so the
+  // first shot captures the equipped geometry/muzzle even before the first snapshot.
+  const initialAppearance = normalizeAppearanceV3(options.appearance ?? {});
+  const spaceship: Spaceship = createSpaceship(initialAppearance);
+  spaceship.applyShotStyle(shotStyleForPart(initialAppearance.shot ?? 'shot-default'));
   const qualityPolicy: QualityPolicy = createQualityPolicy();
   const backgroundLife: BackgroundLife = createBackgroundLife(random);
   // Created after the starfield, the particle pool and the background life so their seeded
@@ -557,6 +582,22 @@ export function createSceneView(options: SceneViewOptions): SceneView {
   let travelDirection: TravelDirection | null = null;
   /** The live remote-cube world (built after `welcome`); `null` offline / before welcome. */
   let world: WorldView | null = null;
+  /**
+   * The lazy `remote-ships` manager group (AC-22): created on the first mount and removed
+   * with the last disposal, so a scene with no spectated ship keeps the accepted
+   * 135/146/210/322 object counts exactly.
+   */
+  let remoteShips: Group | null = null;
+  /** The one mounted remote ship (the spectated member's), or `null` (AC-15). */
+  let remoteShip: RemoteShip | null = null;
+  /** The member id the last {@link SceneView.setSpectatedMember} asked for. */
+  let spectatedId: string | null = null;
+  /** Kind of the running travel — the spectate/return flight gate for mounting (AC-15). */
+  let retainedTravelKind: TravelKind | null = null;
+  /** The tier's hidden cursor meshes, forwarded to the remote ship each frame (AC-22). */
+  let hiddenCursorMeshes: readonly string[] = [];
+  /** Preallocated AC-20 fallback target for a removal whose tile is already gone. */
+  const remoteTargetScratch = new Vector3();
   /** A `worldEntered` replacement waiting for the next level midpoint (AC-12). */
   let pendingWorld: SceneWorld | null = null;
   /** The last `spectate` target's rest position: the camera rests over it while spectating. */
@@ -581,9 +622,7 @@ export function createSceneView(options: SceneViewOptions): SceneView {
   }
   const pendingExplosions: PendingExplosion[] = [];
   let retainedFrameTime = 0;
-  let lastAppliedAppearance: Record<string, string> = options.appearance
-    ? { ...options.appearance }
-    : {};
+  let lastAppliedAppearance: Record<string, string> = initialAppearance;
   const instanceMatrix = new Matrix4();
   const introPosition = new Vector3();
   const introTarget = new Vector3();
@@ -723,6 +762,84 @@ export function createSceneView(options: SceneViewOptions): SceneView {
   }
 
   /**
+   * Mounts the one spectated member's ship under the lazy `remote-ships` manager (AC-15).
+   * The manager is created on the first mount only, so a scene without a spectated ship
+   * keeps the accepted object counts exactly (AC-22).
+   */
+  function mountRemoteShip(member: MemberState): void {
+    if (remoteShips === null) {
+      remoteShips = new Group();
+      remoteShips.name = 'remote-ships';
+      scene.add(remoteShips);
+    }
+    const ship = createRemoteShip(member);
+    remoteShips.add(ship.group);
+    remoteShip = ship;
+    // Apply the current tier list and motion setting before the first frame, so a ship
+    // mounted on a medium/low tier never renders its hidden detail meshes for a frame.
+    ship.update(0, reducedMotion, hiddenCursorMeshes);
+  }
+
+  /**
+   * Unmounts and disposes the live remote ship exactly once, then removes the now-empty
+   * `remote-ships` manager from the scene (AC-15, AC-22). Every disposal path
+   * (`null`, `memberLeft`, `welcome`/`worldEntered`, scene disposal) funnels through here.
+   */
+  function disposeRemoteShip(): void {
+    if (remoteShip !== null) {
+      const ship = remoteShip;
+      remoteShip = null;
+      ship.dispose();
+    }
+    if (remoteShips !== null) {
+      remoteShips.clear();
+      scene.remove(remoteShips);
+      remoteShips = null;
+    }
+  }
+
+  /** True while the camera is in a spectate/return flight — no ship is shown mid-flight. */
+  function inCameraOnlyFlight(): boolean {
+    return (
+      lastPhase === 'travel' &&
+      (retainedTravelKind === 'spectate' || retainedTravelKind === 'return')
+    );
+  }
+
+  /**
+   * Resolves the AC-20 shot target for one removal: the removed tile's world origin while it
+   * is still live, or the member's fallback point `(px, py, 2.75)` when the tile is already
+   * hidden/unknown. `null` when the member left the world in between.
+   */
+  function removalTargetFor(playerId: string, id: string): Vector3 | null {
+    const origin = world?.tileOrigin(playerId, id) ?? null;
+    if (origin !== null) {
+      return origin;
+    }
+    const member = world?.member(playerId) ?? null;
+    if (member === null) {
+      return null;
+    }
+    const fallback = remoteShipFallbackTarget(member.position);
+    return remoteTargetScratch.set(fallback.x, fallback.y, fallback.z);
+  }
+
+  /**
+   * Re-skins the mounted ship from the world's authoritative member copy (T12/AC-17): used
+   * by roster refreshes, where the appearance is state, not an event. A no-op without a ship;
+   * `applyAppearance` itself is idempotent for an unchanged record.
+   */
+  function reskinMountedMember(): void {
+    if (remoteShip === null) {
+      return;
+    }
+    const member = world?.member(remoteShip.playerId) ?? null;
+    if (member !== null) {
+      remoteShip.applyAppearance(member.appearance ?? {});
+    }
+  }
+
+  /**
    * Enters a server world (welcome/resume): the fresh world is built first (so a rejected
    * roster leaves the current world intact), then the previous world is disposed exactly
    * once, the own cube moves to the server position and the pending swap is cleared.
@@ -733,6 +850,8 @@ export function createSceneView(options: SceneViewOptions): SceneView {
     }
     const replacement = buildWorld(state);
     disposeWorld();
+    disposeRemoteShip();
+    spectatedId = null;
     pendingWorld = null;
     spectateTarget = null;
     cubePosition.set(state.ownPosition.x, state.ownPosition.y, 0);
@@ -754,6 +873,10 @@ export function createSceneView(options: SceneViewOptions): SceneView {
     pendingWorld = null;
     const replacement = buildWorld(next);
     disposeWorld();
+    // The mounted ship belonged to the world being replaced: unmount it exactly once here,
+    // at the same midpoint that rebuilds the remote cubes (AC-15).
+    disposeRemoteShip();
+    spectatedId = null;
     cubePosition.set(next.ownPosition.x, next.ownPosition.y, 0);
     cube.group.position.copy(cubePosition);
     world = replacement;
@@ -963,6 +1086,9 @@ export function createSceneView(options: SceneViewOptions): SceneView {
     appliedQualityTier = tier;
     appliedQualityReduced = reducedMotion;
     const features = qualityFeatures(tier, reducedMotion);
+    // The remote ship consumes the same tier list each frame (T12/AC-22); store the exact
+    // array the feature matrix hands out so no per-frame list is rebuilt.
+    hiddenCursorMeshes = features.hiddenCursorMeshes;
     spaceship.setTrailEnabled(features.trail);
     spaceship.setCursorMotionEnabled(features.cursorMotion);
     spaceship.setHiddenMeshes(features.hiddenCursorMeshes);
@@ -1091,7 +1217,84 @@ export function createSceneView(options: SceneViewOptions): SceneView {
     },
 
     applyWorldMessage(msg: ServerMessage): void {
+      if (disposed) {
+        return;
+      }
+      // Resolve the AC-20 shot target *before* the world applies the removal: after the
+      // apply the tile is hidden and `tileOrigin` answers `null`, which selects the fallback.
+      const ship = remoteShip;
+      let target: Vector3 | null = null;
+      if (ship !== null) {
+        if (msg.type === 'miniCubeRemoved' && msg.playerId === ship.playerId) {
+          target = removalTargetFor(ship.playerId, msg.id);
+        } else if (msg.type === 'miniCubesRemoved' && msg.playerId === ship.playerId) {
+          const firstId = msg.ids[0];
+          target = firstId === undefined ? null : removalTargetFor(ship.playerId, firstId);
+        }
+      }
       world?.applyMessage(msg);
+      if (target !== null && ship !== null) {
+        // At most one shot per member message; the ship's own 90 ms interval and two-shot
+        // cap decide acceptance, and a dropped shot starts no recoil (AC-20).
+        ship.fire(target, retainedFrameTime);
+      }
+      if (msg.type === 'memberLeft' && msg.playerId === spectatedId) {
+        // The spectated member left: dispose the ship exactly once and forget the request,
+        // so a later rejoin with the same id can mount again (AC-15).
+        disposeRemoteShip();
+        spectatedId = null;
+        return;
+      }
+      if (
+        remoteShip !== null &&
+        msg.type === 'memberJoined' &&
+        msg.member.playerId === remoteShip.playerId
+      ) {
+        // A roster refresh re-skins the mounted model in place (no remount, idempotent): the
+        // member's public projection is the authority for their ship (AC-15/AC-17/AC-26).
+        reskinMountedMember();
+      }
+      if (
+        remoteShip !== null &&
+        msg.type === 'levelAdvanced' &&
+        msg.playerId === remoteShip.playerId
+      ) {
+        // The member kept their appearance across the advance: re-apply the stored copy.
+        reskinMountedMember();
+      }
+    },
+
+    setSpectatedMember(playerId: string | null): void {
+      if (disposed) {
+        return;
+      }
+      if (playerId === spectatedId && (playerId === null || remoteShip !== null)) {
+        // Already showing exactly this member: no remount, no second dispose (AC-15).
+        return;
+      }
+      disposeRemoteShip();
+      spectatedId = playerId;
+      if (playerId === null) {
+        return;
+      }
+      if (world === null || inCameraOnlyFlight()) {
+        // No ship before the first `welcome` and none during a spectate/return flight: a
+        // later call (the arrival) mounts it once the world and camera are settled.
+        return;
+      }
+      const member = world.member(playerId);
+      if (member === null) {
+        // Unknown id, the own member, or a member whose cube is not in the rendered world.
+        return;
+      }
+      mountRemoteShip(member);
+    },
+
+    setSpectatedAppearance(playerId: string, appearance: Record<string, string>): void {
+      if (disposed || remoteShip === null || remoteShip.playerId !== playerId) {
+        return;
+      }
+      remoteShip.applyAppearance(appearance);
     },
 
     applyIntents(intents: EffectIntent[], nowMs: number): void {
@@ -1152,8 +1355,9 @@ export function createSceneView(options: SceneViewOptions): SceneView {
       }
       lastLevelIndex = levelIndex;
       const nextAppearance = snapshot.customization?.appearance;
-      const nextRecord: Record<string, string> =
-        nextAppearance === undefined ? {} : { ...nextAppearance };
+      // AC-17/AC-25: the own ship renders the v3-normalized projection, and the `shot` entry
+      // (or its fallback) selects the shot style through T10's `applyShotStyle`.
+      const nextRecord: Record<string, string> = normalizeAppearanceV3(nextAppearance ?? {});
       const appearanceChanged =
         Object.keys(nextRecord).length !== Object.keys(lastAppliedAppearance).length ||
         Object.keys(nextRecord).some(
@@ -1161,6 +1365,7 @@ export function createSceneView(options: SceneViewOptions): SceneView {
         );
       if (appearanceChanged) {
         spaceship.applyAppearance(nextRecord);
+        spaceship.applyShotStyle(shotStyleForPart(nextRecord.shot ?? 'shot-default'));
         lastAppliedAppearance = nextRecord;
       }
       rebuildCubeIfNeeded(snapshot);
@@ -1178,6 +1383,7 @@ export function createSceneView(options: SceneViewOptions): SceneView {
       }
       applyQuality();
       lastPhase = snapshot.phase;
+      retainedTravelKind = snapshot.travelKind ?? null;
     },
 
     update(dtMs: number): void {
@@ -1227,6 +1433,9 @@ export function createSceneView(options: SceneViewOptions): SceneView {
       // A face whose removal completes this frame drops its destroy records with the
       // detached mesh, so no write ever follows its disposal.
       world?.update(dtMs);
+      // The spectated member's ship advances with the same delta and the tier's hidden-mesh
+      // list; it never follows the pointer, travels or owns a trail/reticle (AC-19, AC-22).
+      remoteShip?.update(dtMs, reducedMotion, hiddenCursorMeshes);
     },
 
     dispose(): void {
@@ -1247,6 +1456,8 @@ export function createSceneView(options: SceneViewOptions): SceneView {
       targeting.dispose();
       particles.dispose();
       disposeWorld();
+      // The mounted remote ship (and its lazy manager) is released exactly once (AC-15).
+      disposeRemoteShip();
       spaceship.dispose();
       backgroundLife.dispose();
       scene.clear();

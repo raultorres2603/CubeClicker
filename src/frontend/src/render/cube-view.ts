@@ -105,6 +105,14 @@ export interface CubeView {
   /** Whether {@link CubeView.hideMiniCube} already hid that id (used by picking). */
   isMiniCubeHidden(id: MiniCubeId): boolean;
   /**
+   * World-space centre of one mini-cube instance, or `null` when there is no origin left to
+   * read (T12; remote-spaceship-customization AC-20): the tile is hidden (its conceal already
+   * started), its face was removed, the id is malformed/off-grid, or the face is unknown.
+   * The matrix read is the same one {@link CubeView.hideMiniCube} writes, carried through the
+   * live group world matrix, so a moved or rotated cube answers with world space.
+   */
+  tileOrigin(id: string): Vector3 | null;
+  /**
    * Advances every live destroy record by `dtMs` (`dtMs <= 0` advances nothing), writing the
    * instance matrix and colour from the pinned scale/brightness curves. A record reaching
    * 140 ms is zero-scaled, its colour restored to 1 and dropped.
@@ -369,6 +377,30 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     return hiddenIndices.get(faceId)!.has(index);
   }
 
+  /**
+   * World-space origin of one live tile, or `null` when no origin is readable: a malformed /
+   * off-grid / unknown-face id, a hidden tile (its conceal already began, so AC-20's fallback
+   * target applies) or a face that was already detached. A live tile answers from its stored
+   * instance matrix carried through the mesh's world matrix.
+   */
+  function tileOrigin(id: string): Vector3 | null {
+    let parsed: { faceId: FaceId; index: number };
+    try {
+      parsed = parseMiniCubeId(id, gridSize);
+    } catch {
+      return null;
+    }
+    const { faceId, index } = parsed;
+    if (removedFaces.has(faceId) || hiddenIndices.get(faceId)!.has(index)) {
+      return null;
+    }
+    const record = records.get(faceId)!;
+    record.mesh.updateWorldMatrix(true, false);
+    record.mesh.getMatrixAt(index, scratch);
+    scratch.premultiply(record.mesh.matrixWorld);
+    return new Vector3().setFromMatrixPosition(scratch);
+  }
+
   function update(dtMs: number): void {
     if (dtMs <= 0) {
       // A paused/zero frame never skips the flash: records advance by positive deltas only.
@@ -461,6 +493,7 @@ export function createCubeView(style: CubeStyle, gridSize: number = GRID_SIZE): 
     faces,
     hideMiniCube,
     isMiniCubeHidden,
+    tileOrigin,
     update,
     settlePops,
     removeFace,

@@ -2825,6 +2825,10 @@ describe('batched mini-cube removals (AC-17, AC-18)', () => {
       applyWorldMessage(message: ServerMessage): void {
         worldView.applyMessage(message);
       },
+      // T12's spectate hooks are inert in this delegate: the session's spectate wiring is
+      // T13's scope (mechanical compile-compatibility addition; see build-log-T12.md).
+      setSpectatedMember(): void {},
+      setSpectatedAppearance(): void {},
       setPointerTarget(): void {},
       setHoverTarget(): void {},
       triggerFlyBy(): void {},

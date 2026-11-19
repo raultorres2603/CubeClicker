@@ -51,6 +51,7 @@ import { interpolateRotation, type Orientation } from '../game/rotation';
 import { CUBE_STYLES } from '../game/progression';
 import { FACE_IDS, type CubeStyle, type FaceId, type MiniCubeId } from '../game/types';
 import type { MemberState, ServerMessage } from '../multiplayer/protocol';
+import { memberAppearanceOf } from '../multiplayer/protocol';
 import { createCubeView, FACE_NORMALS, type CubeView } from './cube-view';
 import { createParticleSystem, type ParticleSystem } from './particles';
 
@@ -94,6 +95,19 @@ export interface WorldView {
   update(dtMs: number): void;
   /** The live remote views by player id (the local player is never in this map). */
   views(): ReadonlyMap<string, CubeView>;
+  /**
+   * The stored authoritative snapshot of one rendered member, or `null` when the world does
+   * not render that player (T12). The copy carries the member's public appearance projection
+   * normalized through `memberAppearanceOf`, so the scene can mount a remote ship from it.
+   */
+  member(playerId: string): MemberState | null;
+  /**
+   * World-space origin of one live tile of a rendered member (T12; AC-20): the first removed
+   * id's `CubeView` instance origin. `null` when the member is not rendered, the tile is
+   * already hidden (the AC-20 fallback target applies), its face was removed, or the id is
+   * malformed/off-grid.
+   */
+  tileOrigin(playerId: string, id: string): Vector3 | null;
   /** Disposes every view and the particle system exactly once and detaches from the scene. */
   dispose(): void;
 }
@@ -140,6 +154,9 @@ function copyMember(member: MemberState): MemberState {
     removedIds: [...member.removedIds],
     yawSteps: member.yawSteps,
     pitchSteps: member.pitchSteps,
+    // The runtime roster copy always carries `{}` or a valid 11-entry projection (T7/AC-7),
+    // so the scene can mount the spectated member's ship from any world view (T12).
+    appearance: memberAppearanceOf(member),
   };
 }
 
@@ -303,7 +320,7 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
    * cube group's world matrix (the remote cube has no rotation; the position comes from the
    * server). Mirrors `scene.ts`'s local-cube origin read.
    */
-  function tileOrigin(memberCube: MemberCube, mesh: InstancedMesh, id: MiniCubeId): Vector3 {
+  function instanceOrigin(memberCube: MemberCube, mesh: InstancedMesh, id: MiniCubeId): Vector3 {
     const [, rowText, colText] = id.split(':');
     const index = Number(rowText) * memberCube.member.gridSize + Number(colText);
     mesh.updateWorldMatrix(true, false);
@@ -321,7 +338,7 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
     }
     const faceId = id.split(':')[0] as FaceId;
     const mesh = memberCube.view.faces.get(faceId);
-    const origin = mesh === undefined ? null : tileOrigin(memberCube, mesh, id);
+    const origin = mesh === undefined ? null : instanceOrigin(memberCube, mesh, id);
     memberCube.view.hideMiniCube(id);
     memberCube.hidden.add(id);
     const count = (memberCube.hiddenPerFace.get(faceId) ?? 0) + 1;
@@ -399,6 +416,8 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
               removedIds: [],
               yawSteps: 0,
               pitchSteps: 0,
+              // The member keeps their equipped appearance across a level advance (AC-17).
+              appearance: existing.member.appearance ?? {},
             });
           }
           break;
@@ -479,6 +498,52 @@ export function createWorldView(options: { maxUsers: number; random?: () => numb
 
     views(): ReadonlyMap<string, CubeView> {
       return views;
+    },
+
+    member(playerId: string): MemberState | null {
+      return members.get(playerId)?.member ?? null;
+    },
+
+    tileOrigin(playerId: string, id: string): Vector3 | null {
+      if (disposed) {
+        return null;
+      }
+      const memberCube = members.get(playerId);
+      if (memberCube === undefined) {
+        return null;
+      }
+      // Validate the id against this member's own grid before touching any matrices: a
+      // malformed/off-grid id has no origin, exactly like an unknown member.
+      const parts = id.split(':');
+      if (parts.length !== 3) {
+        return null;
+      }
+      const faceId = parts[0] as FaceId;
+      if (!(FACE_IDS as readonly string[]).includes(faceId)) {
+        return null;
+      }
+      const row = Number(parts[1]);
+      const col = Number(parts[2]);
+      const gridSize = memberCube.member.gridSize;
+      if (
+        !Number.isInteger(row) ||
+        !Number.isInteger(col) ||
+        row < 0 ||
+        row >= gridSize ||
+        col < 0 ||
+        col >= gridSize
+      ) {
+        return null;
+      }
+      if (memberCube.hidden.has(id)) {
+        // Already concealed: the caller uses the AC-20 fallback target instead.
+        return null;
+      }
+      const mesh = memberCube.view.faces.get(faceId);
+      if (mesh === undefined) {
+        return null;
+      }
+      return instanceOrigin(memberCube, mesh, id as MiniCubeId);
     },
 
     dispose(): void {

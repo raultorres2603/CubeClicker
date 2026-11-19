@@ -6,16 +6,20 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
   Points,
+  Raycaster,
   Scene,
+  TorusGeometry,
+  Vector2,
   Vector3,
   type Material,
   type Object3D,
   type WebGLRenderTarget,
 } from 'three';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   BURST_ORIGIN_OFFSET,
@@ -46,6 +50,11 @@ import {
   HERO_SHIP_POSITION,
 } from './cosmic-backdrop';
 import { CUBE_HALF_SIZE } from './cube-view';
+import { pickMiniCube } from './picking';
+import {
+  QUALITY_LOW_HIDDEN_MESHES,
+  QUALITY_MEDIUM_HIDDEN_MESHES,
+} from './quality';
 import {
   AMBIENT_INTENSITY,
   AMBIENT_INTENSITY_MAX,
@@ -66,6 +75,50 @@ import {
   type SceneWorld,
 } from './scene';
 import { createStarfield, STARFIELD_TAN } from './starfield';
+
+/**
+ * T12 seam (AC-15/AC-17/AC-20): `createRemoteShip` is wrapped so every scene-managed ship
+ * records its lifecycle, re-skin and firing calls while T11's real implementation still
+ * runs. Object counts, tier visibility and picking below therefore read the real three.js
+ * subtree; only the call bookkeeping is seamed.
+ */
+const remoteShipSeam = vi.hoisted(() => {
+  interface SeamShip {
+    readonly playerId: string;
+    readonly group: import('three').Group;
+    readonly ship: import('./remote-ship').RemoteShip;
+    readonly dispose: ReturnType<typeof vi.fn>;
+    readonly applyAppearance: ReturnType<typeof vi.fn>;
+    readonly fire: ReturnType<typeof vi.fn>;
+    readonly update: ReturnType<typeof vi.fn>;
+  }
+  return { ships: [] as SeamShip[] };
+});
+
+vi.mock('./remote-ship', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./remote-ship')>();
+  return {
+    ...actual,
+    createRemoteShip: (member: Parameters<typeof actual.createRemoteShip>[0]) => {
+      const ship = actual.createRemoteShip(member);
+      const entry = {
+        playerId: ship.playerId,
+        group: ship.group,
+        ship,
+        dispose: vi.fn(ship.dispose),
+        applyAppearance: vi.fn(ship.applyAppearance),
+        fire: vi.fn(ship.fire),
+        update: vi.fn(ship.update),
+      };
+      ship.dispose = entry.dispose;
+      ship.applyAppearance = entry.applyAppearance;
+      ship.fire = entry.fire;
+      ship.update = entry.update;
+      remoteShipSeam.ships.push(entry);
+      return ship;
+    },
+  };
+});
 
 /**
  * Integration tier the spec pins for `render/**`: the scene is exercised against real
@@ -2830,5 +2883,486 @@ describe('shadow quality constants (AC-2)', () => {
 
   it('pins KEY_SHADOW_RADIUS', () => {
     expect(KEY_SHADOW_RADIUS).toBe(2);
+  });
+});
+
+/**
+ * The lazy `remote-ships` manager group, or `null` before the first mount (AC-22).
+ */
+function remoteShipsGroup(view: SceneView): Group | null {
+  return (
+    view.scene.children.find(
+      (child): child is Group => child instanceof Group && child.name === 'remote-ships',
+    ) ?? null
+  );
+}
+
+/** Every mesh under `root` — the draw-count unit the render fixtures pin (AC-22). */
+function meshesIn(root: Object3D): Mesh[] {
+  const meshes: Mesh[] = [];
+  root.traverse((object) => {
+    if (object instanceof Mesh) {
+      meshes.push(object);
+    }
+  });
+  return meshes;
+}
+
+describe('spectated remote ship (T12: AC-15, AC-17, AC-20, AC-22, AC-25, AC-26)', () => {
+  beforeEach(() => {
+    remoteShipSeam.ships.length = 0;
+  });
+
+  /** One server world with `remoteCount` remote members in distinct slots. */
+  function enterRoster(view: SceneView, remoteCount: number): void {
+    view.enterWorld({
+      maxUsers: remoteCount + 1,
+      ownPosition: { x: 120, y: 120 },
+      roster: Array.from({ length: remoteCount }, (_, index) =>
+        member(
+          `p${index + 2}`,
+          `Player ${index + 2}`,
+          (index % 5) * 24 - 48,
+          Math.floor(index / 5) * 24 - 48,
+        ),
+      ),
+    });
+  }
+
+  it('mounts nothing before welcome, during a camera flight, or for a non-spectated member', () => {
+    const view = createView();
+    // No welcome yet: the world is null and no manager/ship exists.
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(0);
+    expect(remoteShipsGroup(view)).toBeNull();
+
+    enterRoster(view, 3);
+    // Spectate flight: the camera is still travelling, so the request waits for the arrival.
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        travelKind: 'spectate',
+        travelDestination: { x: 0, y: 24 },
+        phaseProgress: 0.5,
+      }),
+    );
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(0);
+    expect(remoteShipsGroup(view)).toBeNull();
+
+    // Return flight: same gate for the way back.
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        travelKind: 'return',
+        travelDestination: { x: 120, y: 120 },
+        phaseProgress: 0.5,
+      }),
+    );
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(0);
+
+    // Arrival: the same request now mounts exactly the requested member.
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(1);
+    expect(remoteShipSeam.ships[0]!.playerId).toBe('p2');
+    const manager = remoteShipsGroup(view)!;
+    expect(manager.children.map((child) => child.name)).toEqual(['remote-ship']);
+    // Only the spectated member ever got a ship: p3/p4 were in the world the whole time.
+    expect(remoteShipSeam.ships.map((entry) => entry.playerId)).toEqual(['p2']);
+
+    // Same id twice: no remount and no second dispose.
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(1);
+    expect(remoteShipSeam.ships[0]!.dispose).not.toHaveBeenCalled();
+
+    // Unknown id: the previous ship is released and nothing is mounted.
+    view.setSpectatedMember('p9');
+    expect(remoteShipSeam.ships).toHaveLength(1);
+    expect(remoteShipSeam.ships[0]!.dispose).toHaveBeenCalledTimes(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+
+    view.setSpectatedMember(null);
+    expect(remoteShipSeam.ships).toHaveLength(1);
+
+    // Teardown is final: a late broadcast or spectate request mounts nothing.
+    view.dispose();
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+  });
+
+  it('disposes exactly once on memberLeft, welcome, worldEntered and scene disposal', () => {
+    const view = createView();
+    enterRoster(view, 3);
+    view.setSpectatedMember('p2');
+    const first = remoteShipSeam.ships[0]!;
+    expect(first.dispose).not.toHaveBeenCalled();
+
+    // A different member leaving never touches the mounted ship.
+    view.applyWorldMessage({ type: 'memberLeft', playerId: 'p3', reason: 'left' });
+    expect(first.dispose).not.toHaveBeenCalled();
+    expect(remoteShipsGroup(view)).not.toBeNull();
+
+    // The spectated member leaving disposes exactly once; a repeat is a no-op.
+    view.applyWorldMessage({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+    view.applyWorldMessage({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+
+    // A resume/welcome rebuild disposes the ship of the world being replaced.
+    view.setSpectatedMember('p4');
+    expect(remoteShipSeam.ships).toHaveLength(2);
+    const second = remoteShipSeam.ships[1]!;
+    enterRoster(view, 1);
+    expect(second.dispose).toHaveBeenCalledTimes(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+
+    // A cross-server worldEntered swap at the level midpoint disposes it exactly once too.
+    view.setSpectatedMember('p2');
+    expect(remoteShipSeam.ships).toHaveLength(3);
+    const third = remoteShipSeam.ships[2]!;
+    view.queueWorldSwap({
+      maxUsers: 2,
+      ownPosition: { x: 0, y: 24 },
+      roster: [member('p3', 'Player 3', 12, 12)],
+    });
+    applyIntents(view, [{ kind: 'levelChanged', style: NEXT_STYLE }]);
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        phaseProgress: 0.5,
+        travelKind: 'nextLevel',
+        travelDestination: { x: 0, y: 24 },
+        style: NEXT_STYLE,
+        levelIndex: 1,
+      }),
+    );
+    expect(third.dispose).toHaveBeenCalledTimes(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+
+    // Scene disposal releases the live ship (mounted again in the replacement world) once.
+    view.setSpectatedMember('p3');
+    expect(remoteShipSeam.ships).toHaveLength(4);
+    const fourth = remoteShipSeam.ships[3]!;
+    view.dispose();
+    view.dispose();
+    expect(fourth.dispose).toHaveBeenCalledTimes(1);
+    expect(remoteShipsGroup(view)).toBeNull();
+  });
+
+  it('re-skins the mounted model in place for a live memberAppearance and roster refresh', () => {
+    const view = createView();
+    view.enterWorld({
+      maxUsers: 3,
+      ownPosition: { x: 120, y: 120 },
+      roster: [
+        member('p2', 'Player 2', 12, 12, { appearance: { hull: 'hull-obsidian' } }),
+        member('p3', 'Player 3', 0, 24),
+      ],
+    });
+    view.setSpectatedMember('p2');
+    const entry = remoteShipSeam.ships[0]!;
+    const model = entry.ship.body.getObjectByName('cursor-ship-model');
+    expect(model).not.toBeUndefined();
+
+    // An unknown/other id is a no-op.
+    view.setSpectatedAppearance('p3', { hull: 'hull-gold' });
+    expect(entry.applyAppearance).not.toHaveBeenCalled();
+
+    // The mounted member's live frame re-skins the same model (no remount, no dispose).
+    view.setSpectatedAppearance('p2', { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' });
+    expect(entry.applyAppearance).toHaveBeenCalledTimes(1);
+    expect(entry.applyAppearance).toHaveBeenCalledWith({
+      hull: 'hull-dart-aurum',
+      shot: 'shot-orca-violet',
+    });
+    expect(entry.applyAppearance.mock.results[0]!.value).toEqual(['hull', 'shot']);
+    expect(entry.ship.body.getObjectByName('cursor-ship-model')).toBe(model);
+    expect(remoteShipSeam.ships).toHaveLength(1);
+    expect(entry.dispose).not.toHaveBeenCalled();
+
+    // The same record again performs no material/transform write (empty changed list).
+    view.setSpectatedAppearance('p2', { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' });
+    expect(entry.applyAppearance).toHaveBeenCalledTimes(2);
+    expect(entry.applyAppearance.mock.results[1]!.value).toEqual([]);
+
+    // AC-26: the next remote shot captures the live owner style (wave/1.2/violet palette).
+    applySnapshot(view, snapshot({ phase: 'playing' }));
+    view.applyIntents([], 0);
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    const wave = entry.ship.shotsGroup.children.find((child) => child.name === 'shot-wave') as
+      | Mesh
+      | undefined;
+    expect(wave).not.toBeUndefined();
+    expect(wave!.geometry).toBeInstanceOf(TorusGeometry);
+    expect(wave!.scale.toArray()).toEqual([1.2, 1.2, 1.2]);
+    expect((wave!.material as MeshBasicMaterial).color.getHexString()).toBe('6d28d9');
+
+    // A roster refresh of the mounted member re-reads the world's authoritative copy.
+    view.applyWorldMessage({
+      type: 'memberJoined',
+      member: member('p2', 'Player 2', 12, 12, { appearance: { hull: 'hull-gold' } }),
+    });
+    expect(entry.applyAppearance).toHaveBeenCalledTimes(3);
+    expect(entry.applyAppearance).toHaveBeenLastCalledWith({ hull: 'hull-gold' });
+    expect(entry.ship.body.getObjectByName('cursor-ship-model')).toBe(model);
+
+    // A level advance keeps the stored appearance and re-skins from it.
+    view.applyWorldMessage({
+      type: 'levelAdvanced',
+      playerId: 'p2',
+      levelIndex: 1,
+      gridSize: 3,
+      styleId: NEXT_STYLE.id,
+      position: { x: 12, y: 12 },
+      removedIds: [],
+    });
+    expect(entry.applyAppearance).toHaveBeenCalledTimes(4);
+    expect(entry.applyAppearance).toHaveBeenLastCalledWith({ hull: 'hull-gold' });
+    expect(entry.ship.body.getObjectByName('cursor-ship-model')).toBe(model);
+    view.dispose();
+  });
+
+  it('fires at the removed tile origin for the mounted member, at the frame time', () => {
+    const view = createView();
+    view.enterWorld(
+      serverWorld({
+        ownPosition: { x: 120, y: 120 },
+        roster: [
+          member('p2', 'Player 2', 12, 12),
+          member('p3', 'Player 3', 0, 24),
+        ],
+      }),
+    );
+    view.setSpectatedMember('p2');
+    const entry = remoteShipSeam.ships[0]!;
+    view.applySnapshot(snapshot({ phase: 'playing' }), 42);
+
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    expect(entry.fire).toHaveBeenCalledTimes(1);
+    const [target, nowMs] = entry.fire.mock.calls[0]!;
+    expect((target as Vector3).toArray()).toEqual([10, 14, 2.625]);
+    expect(nowMs).toBe(42);
+
+    // A removal of any other member spawns nothing.
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p3', id: 'front:0:0' });
+    expect(entry.fire).toHaveBeenCalledTimes(1);
+    view.dispose();
+  });
+
+  it('takes the first id of a batch and falls back to (px, py, 2.75) for a hidden tile', () => {
+    const view = createView();
+    view.enterWorld(
+      serverWorld({
+        ownPosition: { x: 120, y: 120 },
+        roster: [member('p2', 'Player 2', 12, 12, { removedIds: ['front:0:0'] })],
+      }),
+    );
+    view.setSpectatedMember('p2');
+    const entry = remoteShipSeam.ships[0]!;
+    view.applyIntents([], 7);
+
+    // A batch fires once, toward the world origin of its first id.
+    view.applyWorldMessage({
+      type: 'miniCubesRemoved',
+      playerId: 'p2',
+      ids: ['front:1:1', 'front:2:2'],
+    });
+    expect(entry.fire).toHaveBeenCalledTimes(1);
+    expect((entry.fire.mock.calls[0]![0] as Vector3).toArray()).toEqual([11, 13, 2.625]);
+    expect(entry.fire.mock.calls[0]![1]).toBe(7);
+
+    // `front:0:0` is already hidden in the roster: the AC-20 fallback target applies.
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    expect(entry.fire).toHaveBeenCalledTimes(2);
+    expect((entry.fire.mock.calls[1]![0] as Vector3).toArray()).toEqual([12, 12, 2.75]);
+
+    // An empty batch spawns nothing.
+    view.applyWorldMessage({ type: 'miniCubesRemoved', playerId: 'p2', ids: [] });
+    expect(entry.fire).toHaveBeenCalledTimes(2);
+    view.dispose();
+  });
+
+  it('keeps the accepted 135/146/210/322 counts until a ship mounts, then 182/246/358 (AC-22)', () => {
+    const bare = createView();
+    expect(countObjects(bare.scene)).toBe(135);
+    expect(remoteShipsGroup(bare)).toBeNull();
+    bare.dispose();
+
+    const fixtures: ReadonlyArray<readonly [remoteCount: number, accepted: number]> = [
+      [1, 146],
+      [9, 210],
+      [23, 322],
+    ];
+    for (const [remoteCount, accepted] of fixtures) {
+      const view = createView();
+      enterRoster(view, remoteCount);
+      // The manager is lazy: the accepted world counts are exact while nobody is spectated.
+      expect(countObjects(view.scene)).toBe(accepted);
+      expect(remoteShipsGroup(view)).toBeNull();
+
+      view.setSpectatedMember('p2');
+      const manager = remoteShipsGroup(view)!;
+      expect(countObjects(view.scene)).toBe(accepted + 36);
+      expect(countObjects(manager)).toBe(36);
+      expect(meshesIn(manager)).toHaveLength(21);
+
+      // Unmounting restores the accepted counts exactly (manager removed, no leftovers).
+      view.setSpectatedMember(null);
+      expect(countObjects(view.scene)).toBe(accepted);
+      expect(remoteShipsGroup(view)).toBeNull();
+      view.dispose();
+    }
+  });
+
+  it('reaches the two-bolt 184/248/360 and peak 185/249/361 fixtures (AC-22)', () => {
+    const fixtures: ReadonlyArray<readonly [remoteCount: number, idle: number]> = [
+      [1, 182],
+      [9, 246],
+      [23, 358],
+    ];
+    for (const [remoteCount, idle] of fixtures) {
+      const view = createView();
+      enterRoster(view, remoteCount);
+      view.setSpectatedMember('p2');
+      expect(countObjects(view.scene)).toBe(idle);
+
+      view.applyIntents([], 0);
+      view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+      view.update(80);
+      view.applyIntents([], 90);
+      view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:1' });
+
+      // Peak: two bolts in flight plus the second shot's live muzzle (+1 object/+1 draw each).
+      expect(countObjects(view.scene)).toBe(idle + 3);
+      expect(meshesIn(remoteShipsGroup(view)!)).toHaveLength(24);
+
+      // The muzzle's 80 ms flash expires first: the two-bolt fixture remains.
+      view.update(80);
+      expect(countObjects(view.scene)).toBe(idle + 2);
+      expect(meshesIn(remoteShipsGroup(view)!)).toHaveLength(23);
+
+      // Disposal with shots in flight still restores the accepted world counts exactly.
+      view.setSpectatedMember(null);
+      expect(countObjects(view.scene)).toBe(idle - 36);
+      expect(remoteShipsGroup(view)).toBeNull();
+      view.dispose();
+    }
+  });
+
+  it('forwards the tier hidden-mesh list and never gives the ship a trail or reticle (AC-22)', () => {
+    const view = createView();
+    enterRoster(view, 1);
+    view.setQualityTierForTesting('medium');
+    view.setSpectatedMember('p2');
+    const manager = remoteShipsGroup(view)!;
+    const model = manager.getObjectByName('cursor-ship-model')!;
+
+    // Mounting applies the live medium list before the first frame.
+    expect(QUALITY_MEDIUM_HIDDEN_MESHES).toHaveLength(4);
+    for (const name of QUALITY_MEDIUM_HIDDEN_MESHES) {
+      expect((manager.getObjectByName(name) as Mesh).visible).toBe(false);
+    }
+    expect((manager.getObjectByName('cursor-wing-left-tip') as Mesh).visible).toBe(true);
+    expect(meshesIn(model).filter((mesh) => mesh.visible)).toHaveLength(15);
+
+    // A later tier change reaches the mounted ship on the next frame (six hidden meshes).
+    view.setQualityTierForTesting('low');
+    view.update(16);
+    expect(QUALITY_LOW_HIDDEN_MESHES).toHaveLength(6);
+    for (const name of QUALITY_LOW_HIDDEN_MESHES) {
+      expect((manager.getObjectByName(name) as Mesh).visible).toBe(false);
+    }
+    expect(meshesIn(model).filter((mesh) => mesh.visible)).toHaveLength(13);
+
+    // The remote ship owns no trail and no reticle at any tier.
+    expect(manager.getObjectByName('spaceship-trail')).toBeUndefined();
+    expect(manager.getObjectByName('targeting-reticle')).toBeUndefined();
+    expect(manager.getObjectByName('targeting-outline')).toBeUndefined();
+    expect(meshesIn(manager).some((mesh) => mesh.name.includes('trail'))).toBe(false);
+    expect(meshesIn(manager).some((mesh) => mesh.name.includes('reticle'))).toBe(false);
+    view.dispose();
+  });
+
+  it('fires one reduced-motion impact flash instead of a travelling bolt (AC-21)', () => {
+    const view = createView();
+    enterRoster(view, 1);
+    applySnapshot(view, snapshot({ reducedMotion: true }));
+    view.setSpectatedMember('p2');
+    const entry = remoteShipSeam.ships[0]!;
+    const manager = remoteShipsGroup(view)!;
+
+    view.applyWorldMessage({ type: 'miniCubeRemoved', playerId: 'p2', id: 'front:0:0' });
+    expect(entry.fire).toHaveBeenCalledTimes(1);
+    expect(manager.getObjectByName('shot-impact-flash')).not.toBeUndefined();
+    expect(meshesIn(manager).filter((mesh) => mesh.name === 'shot-bolt')).toHaveLength(0);
+
+    view.update(120);
+    expect(manager.getObjectByName('shot-impact-flash')).toBeUndefined();
+    expect(meshesIn(manager)).toHaveLength(21);
+    view.dispose();
+  });
+
+  it('resolves null when the pick ray hits only the remote ship (AC-22)', () => {
+    const view = createView();
+    view.enterWorld(
+      serverWorld({
+        ownPosition: { x: 24, y: 0 },
+        roster: [member('p2', 'Player 2', 12, 12)],
+      }),
+    );
+    // Rest the camera over the spectated cube so the ship is on screen: fly there, then
+    // apply the playing snapshot (the flight gate waits for the arrival).
+    applySnapshot(
+      view,
+      snapshot({
+        phase: 'travel',
+        travelKind: 'spectate',
+        travelDestination: { x: 12, y: 12 },
+        phaseProgress: 0.5,
+      }),
+    );
+    applySnapshot(view, snapshot({ phase: 'playing', spectating: true }));
+    expect(view.camera.position.toArray()).toEqual([12, 12, 12]);
+    view.setSpectatedMember('p2');
+    const manager = remoteShipsGroup(view)!;
+    // The render loop would refresh the graph before drawing; do it here before raycasting.
+    view.scene.updateMatrixWorld(true);
+    const shipPoint = new Vector3();
+    manager.getObjectByName('cursor-ship-model')!.getWorldPosition(shipPoint);
+
+    view.camera.aspect = 1.6;
+    view.camera.updateProjectionMatrix();
+    view.camera.updateMatrixWorld(true);
+    const ndc = shipPoint.clone().project(view.camera);
+    expect(Math.abs(ndc.x)).toBeLessThan(1);
+    expect(Math.abs(ndc.y)).toBeLessThan(1);
+
+    // The ray really hits the remote ship …
+    const raycaster = new Raycaster();
+    raycaster.setFromCamera(new Vector2(ndc.x, ndc.y), view.camera);
+    const hits = raycaster.intersectObject(manager, true);
+    expect(hits.length).toBeGreaterThan(0);
+    const hit = hits[0]!.object;
+    let underRemoteShips = false;
+    for (let node: Object3D | null = hit; node !== null; node = node.parent) {
+      if (node === manager) {
+        underRemoteShips = true;
+        break;
+      }
+    }
+    expect(underRemoteShips).toBe(true);
+    expect(hit.name).toBe('cursor-hull-underside');
+
+    // … but the accepted pick path only owns the local cube, so it resolves a miss.
+    expect(pickMiniCube(view.camera, view.cubeView, 'front', ndc.x, ndc.y)).toBeNull();
+    view.dispose();
   });
 });
