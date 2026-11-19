@@ -392,8 +392,8 @@ increments `cubesCompleted`. Coins are deliberately excluded and no account tota
 income is upgrade-scaled and only server-authoritative for accounts, while a guest's coins and
 upgrades are local and unknown to the hub, so a coin column would compare unlike values, leak a
 value that is private to each account and rank upgrades rather than play. The snapshot never reads
-`member.economy`, `user_economy`, coins, upgrades, customization or `accountId`; guests and
-accounts compete on exactly the same counters and shape.
+`member.economy`, `member.appearance`, `user_economy`, coins, upgrades, customization or
+`accountId`; guests and accounts compete on exactly the same counters and shape.
 
 ### Ranking and totals
 
@@ -489,10 +489,13 @@ unchanged.
 
 Every field is server-issued or hub-derived: `serverId`, the injected-clock `at`, the
 server-issued `playerId`/`name` already published in the roster (guest `Player N` or the account
-username) and integer session counters. No frame or placement object carries `accountId`, token,
-email, IP, coins, upgrade levels, appearance, free text or any client-supplied string, and the
-client catalog still has no leaderboard message, so no client frame can create, set, add or name a
-counter.
+username) and integer session counters. No **leaderboard or activity** frame — and no leaderboard
+placement field — carries `accountId`, token, email, IP, coins, upgrade levels, appearance, free
+text or any client-supplied string. Appearance is carried only by the public appearance projection
+(§ Public appearance projection): the `MemberState.appearance` field on server-originated rosters,
+the `memberAppearance` server frame and the guest `setAppearance` report; the leaderboard snapshot
+never reads or carries it. The client catalog still has no leaderboard message, so no client frame
+can create, set, add or name a counter.
 
 The frame is a new `ServerMessage` variant and `leaderboard` is optional in the wire type, with no
 protocol version bump, so both deploy orders are safe: an old client drops an unknown
@@ -524,11 +527,20 @@ full-literal fixture and an older client keep working. The backend's `memberStat
 `memberJoined.member` carries the field (an account's seeded record, a guest's `{}` until it reports).
 `stateSync` and `levelAdvanced` gain no field, and their encoded bytes are unchanged.
 
-Every frontend decode/copy path (`copyMember`, `reduceWorldState`, the scene's roster copy) passes the
-member through `memberAppearanceOf(member)`, which returns the field when it is a valid record and
-`{}` when it is absent, not a plain object, has more than 11 entries, an unknown slot key, or a
+Every frontend storage/copy path (`copyMember`, `reduceWorldState`, the scene's roster copy) passes
+the member through `memberAppearanceOf(member)`, which returns the field when it is a valid record
+and `{}` when it is absent, not a plain object, has more than 11 entries, an unknown slot key, or a
 non-string/empty/over-40-character value. A renderer therefore never sees an absent or malformed
 record.
+
+Wire fidelity is separate from that read gate: the member wire paths — `parseMemberState` in
+`multiplayer/protocol.ts` and the backend's `copyMemberState` — preserve an **absent** `appearance`
+instead of injecting `{}`, which keeps legacy payloads and the accepted full-literal fixtures
+byte-faithful. Absence is resolved at the storage/render boundary: `memberAppearanceOf` reads an
+absent or malformed field as `{}`, and the reducer's `copyMember` (used by `welcome`,
+`worldEntered` and `memberJoined`) and the scene's roster copy always store
+`appearance: memberAppearanceOf(member)`, so every member stored in `WorldState` and every copy the
+scene reads carries `{}` or a valid record.
 
 The two frames are additive members of the existing unions:
 
