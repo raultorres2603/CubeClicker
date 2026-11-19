@@ -3,7 +3,7 @@
 Task: T8 (2026-11-19)
 Files changed: `src/frontend/src/game/engine.ts`, `src/frontend/src/game/engine.test.ts`, `docs/features/remote-spaceship-customization/build-log-T8.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `feat: adopt v3 guest appearance in the engine` (feature + this log, not pushed; hash recorded at commit time)
+Commit: `a8acd76` — `feat: adopt v3 guest appearance in the engine` (feature + this log, committed on `feat/remote-spaceship-customization`, not pushed; this hash record lands in the follow-up `docs:` commit, mirroring T1/T2)
 
 ## Sketch (≤5 lines)
 
@@ -103,7 +103,7 @@ EXIT:0
 ```
  Test Files  83 passed (83)
       Tests  2829 passed (2829)
-   Duration  4.16s (transform 10.25s, setup 0ms, collect 27.14s, tests 16.89s, environment 11.77s, prepare 6.73s)
+   Duration  4.04s (transform 10.85s, setup 0ms, collect 27.32s, tests 15.70s, environment 11.35s, prepare 6.25s)
 
 EXIT:0
 ```
@@ -123,8 +123,8 @@ frontend workspace total grew from 2,819 to 2,829).
 ```
  Test Files  83 passed (83)
       Tests  2829 passed (2829)
-   Start at  09:45:48
-   Duration  6.07s (transform 12.13s, setup 0ms, collect 31.04s, tests 25.73s, environment 13.12s, prepare 9.40s)
+   Start at  09:47:13
+   Duration  5.71s (transform 8.01s, setup 0ms, collect 27.18s, tests 25.50s, environment 12.74s, prepare 7.85s)
 
  % Coverage report from v8
 -------------------|---------|----------|---------|---------|-------------------
