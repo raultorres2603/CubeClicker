@@ -3,7 +3,7 @@
 Task: T17 (2026-11-19)
 Files changed: `README.md`, `docs/architecture/realtime.md`, `docs/architecture/frontend-rendering.md`, `docs/architecture/observability.md`, `docs/product/glossary.md`, `docs/features/remote-spaceship-customization/build-log-T17.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `f277b67` — `docs: document remote ships and catalog v3` (not pushed; hash recorded in this follow-up `docs:` commit, mirroring T1/T2/T5/T6/T12/T13/T15/T16)
+Commit: `c99468d` — `docs: document remote ships and catalog v3` (not pushed; hash recorded in this follow-up `docs:` commit, mirroring T1/T2/T5/T6/T12/T13/T15/T16)
 
 ## Sketch (≤5 lines)
 
@@ -193,16 +193,25 @@ This is the task's one non-empty gate. The three paths were already modified bef
 `build-log-T13.md`); their diffs are the `coin-economy` acceptance state and the
 `docs/features/README.md` coin-economy row update, not T17 content. T17 did **not** edit any of
 them: the T17 worktree diff contains only the five owned docs, and the commit stages only those five
-files plus this log. Clearing the check requires the orchestrator/owner to commit its own
-`coin-economy`/index changes; restoring or committing them here would be an out-of-scope edit. The
-same check is reproduced in T18 with this note carried forward.
+files plus this log. The commits themselves leave all three paths byte-identical to the pre-T17
+commit:
+
+```
+$ git diff --name-only daf40e3..HEAD -- docs/features/README.md docs/features/coin-economy/reviews/code-r2.md docs/features/coin-economy/status.md
+(no output)
+EXIT:0
+```
+
+Clearing the check requires the orchestrator/owner to commit its own `coin-economy`/index changes;
+restoring or committing them here would be an out-of-scope edit. The same check is reproduced in T18
+with this note carried forward.
 
 ### Proposed `docs/features/README.md` row (proposal only — do not apply in T17)
 
 ```diff
 @@ after the `hangar-tabs-and-menu-motion` row
  | hangar-tabs-and-menu-motion | Hangar Tabs & Menu Motion (tabbed spaceship hangar, glitch menu boot, screenshot polish) | accepted | 2026-11-17 |
-+| remote-spaceship-customization | Remote Spaceship Customization (spectated remote ships + 1,351-part catalog) | code_review | 2026-11-19 |
++| remote-spaceship-customization | Remote Spaceship Customization (spectated remote ships + 1,351-part catalog) | building | 2026-11-19 |
 ```
 
 The orchestrator owns the row and sets the final state/date when it applies the index update on
