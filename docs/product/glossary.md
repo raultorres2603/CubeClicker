@@ -17,8 +17,13 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### appearance
 
-**Definition:** The equipped look of a player's spaceship, expressed as a map from **part slot** to a part id; a missing slot resolves to that slot's standard part. Slots are equipped and unequipped independently, so a loadout may be asymmetric (for example a silver port wing and a gold starboard wing). It is persisted per **account** in the `user_economy.appearance` column and broadcast to that account's joined connections; **guests** keep an ephemeral copy for the session. Changing appearance updates the live 3D preview and the in-game pointer ship.
+**Definition:** The equipped look of a player's spaceship, expressed as a map from **part slot** to a part id; a missing slot resolves to that slot's standard part. Slots are equipped and unequipped independently, so a loadout may be asymmetric (for example a silver port wing and a gold starboard wing). It is persisted per **account** in the `user_economy.appearance` column and is also the **public appearance projection**: every **server member**'s equipped map is carried on the wire (`MemberState.appearance` and the `memberAppearance` frame) and rendered as that member's **remote ship** while that member is being **spectated**, so other players see the real loadout. The projection carries only slot→part-id strings — inventory counts, coins, upgrades and account identity are never public. **Guests** keep an ephemeral copy for the session and report it to the server so their ship is visible to others. Changing appearance updates the live 3D preview and the in-game pointer ship.
 **Example:** Equipping `wing-left-silver` sets the `wing-left` slot to that part and recolors the port wing, while the starboard wing keeps its previous part.
+
+### chassis form
+
+**Definition:** The hull-shape recipe of a generated **part** — one of the ten generated forms (`Dart`, `Lance`, `Needle`, `Manta`, `Hauler`, `Bulwark`, `Arrow`, `Orca`, `Talon`, `Kite`) or `Classic`. A form drives the per-slot scale, rotation and offset transforms and a chassis triple applied to the whole ship model, so choosing a form changes the silhouette at once on the hull, wings and tail. The form comes from the equipped hull part; `Classic` keeps the accepted v2 transforms and the identity chassis `[1, 1, 1]`. Equipping a hull of another form multiplies the chassis by the 260 ms equip pulse — it never overwrites it.
+**Example:** Equipping `hull-dart-chrome` selects the `Dart` form, giving the model the chassis `[0.95, 0.9, 1.25]` and the hull slot the scale `[0.85, 0.9, 1.15]`.
 
 ### click
 
@@ -50,6 +55,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 **Definition:** One of the six flat sides of the cube — front, back, left, right, top and bottom — each an N×N grid of **mini-cubes**, where N is the cube level's random grid size (3 to 7), identical on all six faces. A face is cleared (and disappears from the cube) when its last mini-cube is destroyed.
 **Example:** Destroying every mini-cube on the front face clears that face, and the remaining five faces stay playable.
 
+### finish
+
+**Definition:** The colour and rarity recipe of a generated **part** — one of twelve finishes, six rare (`Chrome`, `Azure`, `Ember`, `Jade`, `Steel`, `Ivory`) and six epic (`Abyss`, `Aurum`, `Violet`, `Crimson`, `Plasma`, `Solar`). A finish sets the part's `color`, `accent` and rarity; the hangar's **form and finish picker** chooses a form first and then one of its 12 finish cells (or one of the 3 classic cells, 1 on `shot`). A generated part id is `slot-form-finish` and its name is `<Finish> <Form> <noun>`.
+**Example:** `hull-dart-chrome` is the rare `Chrome` finish on the `Dart` hull, rendering `#c9d4e2` with the `#ffffff` accent.
+
 ### game server
 
 **Definition:** A logical room inside the single backend process that holds up to X **server members**' cubes in one world, where X is the configured capacity (default 10, valid 2–24). A game server is created lazily when its first member joins — no server exists at boot — and is destroyed immediately when its last member leaves. Servers are numbered with sequential integers from 1; ids are assigned at creation and never reused, so a gap in the sequence simply records a destroyed server. Every member of the server sees only that server's world, roster and play.
@@ -62,8 +72,8 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### hangar tab
 
-**Definition:** One of the five UI groups that split the ten **part slots** in the **Spaceship Customization** menu: `Frame` (`hull`, `tail-fin`), `Front` (`nose`, `cockpit`), `Wings` (`wing-left`, `wing-right`), `Engines` (`engine-left`, `engine-right`) and `Ignitions` (`ignition-left`, `ignition-right`), in that order, two slots each. A hangar tab is a presentation grouping over the **part slot** catalog — not a domain term and not a second kind of slot — and it owns no game state: the selected tab is panel-local, resets to `Frame` on every open, is never persisted or sent over the wire, and after a lootbox reveal the panel lands on the tab containing the granted slot. Each tab shows an `owned/4` badge over its lootable (rare + epic) parts and is announced as `<Label>, <owned> of 4 parts owned`.
-**Example:** Equipping `wing-left-silver` happens under the `Wings` tab, whose badge reads `1/4` when that is the only looted part of the group.
+**Definition:** One of the six UI groups that split the eleven **part slots** in the **Spaceship Customization** menu: `Frame` (`hull`, `tail-fin`), `Front` (`nose`, `cockpit`), `Wings` (`wing-left`, `wing-right`), `Engines` (`engine-left`, `engine-right`), `Ignitions` (`ignition-left`, `ignition-right`) and `Shots` (`shot`), in that order — two slots each except `Shots`, which holds one. A hangar tab is a presentation grouping over the **part slot** catalog — not a domain term and not a second kind of slot — and it owns no game state: the selected tab is panel-local, resets to `Frame` on every open, is never persisted or sent over the wire, and after a lootbox reveal the panel lands on the tab containing the granted slot. Each tab shows an `<owned>/<total>` badge over its lootable (rare + epic) parts — **244** on each ship tab and **120** on `Shots` — and is announced as `<Label>, <owned> of <total> parts owned`.
+**Example:** Equipping `wing-left-silver` happens under the `Wings` tab, whose badge reads `1/244` when that is the only looted part of the group.
 
 ### idle progress
 
@@ -107,13 +117,13 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 ### part
 
-**Definition:** A cosmetic spaceship component belonging to exactly one of the ten **part slots** (hull, nose, cockpit, wing-left, wing-right, engine-left, engine-right, ignition-left, ignition-right, tail-fin). The catalog has 30 parts — one standard, one rare and one epic part for every slot; the 10 standard parts are always owned and never looted, while the 20 rare/epic parts are granted one per **lootbox** opening. Parts can be equipped in the spaceship customization menu to change the ship's colours, accents and some shapes. Owned part counts are persisted per **account** in the `user_economy.parts` column.
-**Example:** `wing-left-silver` is a rare port-wing part; a lootbox opening can grant it once, and equipping it changes only the port wing.
+**Definition:** A cosmetic spaceship component belonging to exactly one of the eleven **part slots** (hull, nose, cockpit, wing-left, wing-right, engine-left, engine-right, ignition-left, ignition-right, tail-fin and shot). The catalog has **1,351 parts**: each of the ten ship slots has three classic parts (standard, rare and epic) plus 120 generated parts (ten **chassis form**s × twelve **finishes**), and the `shot` slot has its standard bolt plus 120 generated **shot style**s. The 11 standard parts are always owned and never looted, while the 1,340 rare/epic parts are granted one per **lootbox** opening. Parts can be equipped in the spaceship customization menu to change the ship's colours, accents, chassis shape and shot style. Owned part counts are persisted per **account** in the `user_economy.parts` column.
+**Example:** `hull-dart-chrome` is a generated rare hull part (`Chrome Dart Hull`); equipping it changes the hull shape and palette, and a lootbox opening can grant it once.
 
 ### part slot
 
-**Definition:** One of the ten independently customizable positions on a player's spaceship: `hull`, `nose`, `cockpit`, `wing-left`, `wing-right`, `engine-left`, `engine-right`, `ignition-left`, `ignition-right` and `tail-fin` (displayed as Hull, Nose, Cockpit, Port Wing, Starboard Wing, Port Engine, Starboard Engine, Port Ignition, Starboard Ignition and Tail Fin). Each slot has its own appearance entry and its own three parts in the 30-part catalog (standard, rare and epic), so the left and right sides are independent. A slot with no equipped part resolves to its standard part, which is always owned.
-**Example:** Equipping `tail-fin-comet` fills only the `tail-fin` slot; the hull, wings and engines keep their own parts.
+**Definition:** One of the eleven independently customizable positions on a player's spaceship: the ten ship positions — `hull`, `nose`, `cockpit`, `wing-left`, `wing-right`, `engine-left`, `engine-right`, `ignition-left`, `ignition-right` and `tail-fin` (displayed as Hull, Nose, Cockpit, Port Wing, Starboard Wing, Port Engine, Starboard Engine, Port Ignition, Starboard Ignition and Tail Fin) — plus `shot` (displayed as Shot), which carries the projectile and muzzle style and has no ship mesh. Each ship slot has 123 catalog rows (3 classic + 120 generated) and `shot` has 121 (its standard bolt + 120 generated), so the left and right sides are independent. A slot with no equipped part resolves to its standard part, which is always owned.
+**Example:** Equipping `tail-fin-comet` fills only the `tail-fin` slot; the hull, wings, engines and shot keep their own parts.
 
 ### points
 
@@ -129,6 +139,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** Whether a user currently owns a slot on a **game server** as a **server member**, and therefore appears in that server's roster, `Users on Server` panel and live leaderboard. Presence has exactly two sub-states — **connected** (a joined socket is attached) and **in grace** (the socket closed abruptly and the 30-second reconnect grace has not expired) — and they are indistinguishable in the UI: no presence field is sent and there is no "reconnecting" marker. A deliberate close — closing the tab or reloading the page — sends the additive, self-only `leave` frame on a non-bfcache `pagehide`, and the server finalizes the member immediately: no grace, an immediate `memberLeft (left)` to the remaining members, the slot freed and the server destroyed when it was the last member. An **abrupt close** — a network drop, a crash, a killed tab or a `leave` that never arrived — keeps the member and slot for `RECONNECT_GRACE_MS` (30 000 ms) so a `rejoin` can resume the same member. Presence is per connection: two tabs are two members, and closing one tab removes only that tab. The deliberate-close path is best-effort during unload, so a lost or late `leave` falls back to grace and a reload can briefly show two members until expiry.
 **Example:** Closing the game tab sends `leave`, so the player disappears from the other players' `Users on Server` panel at once and from the leaderboard at the next coalesced update instead of lingering for 30 seconds.
+
+### remote ship
+
+**Definition:** The client-local 3D ship rendered for the **server member** currently being **spectated**, above-front of their cube at the anchor offset `(1.6, 2.8, 4.4)` and scale `1.2`. It reuses the cursor-ship model and the same `appearanceToShipParamsV3` mapping as the player's own ship, so it shows that member's equipped parts, **chassis form** and **shot style**; it idles with a small bob/sway, fires when the owner's accepted removals arrive (one shot per 90 ms, at most two in flight) with the owner's projectile and muzzle, and re-skins live when the owner changes parts. Exactly one remote ship exists, and only while spectating — its cube is the only remote cube on screen in the accepted camera layouts. It never follows a pointer, travels, banks or affects shared state. Under reduced motion it is static and a removal renders one 120 ms flash at the target.
+**Example:** Spectating `Player 2` shows their `Chrome Dart Hull` ship above their cube, bobbing gently and firing their violet wave shots as they clear mini-cubes.
 
 ### reveal stage
 
@@ -149,6 +164,11 @@ Docs and agents should use these terms as defined here rather than informal syno
 
 **Definition:** A server-side, opaque authentication session carried in an `HttpOnly` cookie with a 7-day sliding expiry. It is created on login or email verification, revoked on logout, and all prior sessions for an account are revoked when a new login succeeds (single active session). The backend resolves account identity from this cookie on the server; the client never reads it.
 **Example:** Logging in sets the session cookie; `GET /auth/me` returns the authenticated user while it is valid.
+
+### shot style
+
+**Definition:** The equipped appearance of the `shot` **part slot**, resolved by `shotStyleForPart` into one of four projectile geometries (`bolt`, `orb`, `wave`, `shard`), a projectile scale, one of three muzzle forms (`spark`, `ring`, `petal`) and a pair of projectile/muzzle colours. The player's pointer ship and every **remote ship** fire with their owner's shot style; an in-flight shot keeps the geometry and muzzle it captured at spawn while a live style change updates the colours and the next shot's form. A missing, unknown or non-`shot` part resolves to `shot-default` — the accepted `bolt` projectile with the `spark` muzzle, `#fff1c8` projectile and `#ffd27a` accent.
+**Example:** Equipping `shot-orca-violet` makes the next shot a violet `wave` torus with a `petal` muzzle, while a shot already in flight keeps its previous form.
 
 ### spectating
 

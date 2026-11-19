@@ -504,6 +504,105 @@ and its render, `WorldState.leaderboard`/`pendingWorldSwap.leaderboard` and the 
 There is nothing to roll back operationally: the leaderboard is process memory only, has no
 feature flag and no stored data, and a restart clears it.
 
+## Public appearance projection
+
+Added by feature `remote-spaceship-customization` (2026-11-19); the full contract and acceptance
+criteria are in the [feature spec](../features/remote-spaceship-customization/spec.md), and the
+player-facing terms are in the [glossary](../product/glossary.md#appearance).
+
+Every **server member**'s equipped **appearance** is a public presentation value within that
+member's server. It travels as an optional `MemberState.appearance` field — a map from the eleven v3
+**part slot** ids to part ids — and as one additive update frame, on the existing encode-once path
+(§ Fan-out). The projection carries no catalog, inventory count, coin, upgrade, `accountId`, token,
+email, IP or free text.
+
+### Field, frames and normalization
+
+`MemberState.appearance?: Record<string, string>` is **optional in the wire type**, so every existing
+full-literal fixture and an older client keep working. The backend's `memberState()`/`rosterFor()`
+**always** populate it, so every server-originated `welcome.roster[i]`, `worldEntered.roster[i]` and
+`memberJoined.member` carries the field (an account's seeded record, a guest's `{}` until it reports).
+`stateSync` and `levelAdvanced` gain no field, and their encoded bytes are unchanged.
+
+Every frontend decode/copy path (`copyMember`, `reduceWorldState`, the scene's roster copy) passes the
+member through `memberAppearanceOf(member)`, which returns the field when it is a valid record and
+`{}` when it is absent, not a plain object, has more than 11 entries, an unknown slot key, or a
+non-string/empty/over-40-character value. A renderer therefore never sees an absent or malformed
+record.
+
+The two frames are additive members of the existing unions:
+
+```ts
+// server → client, one per affected member
+| { type: 'memberAppearance'; playerId: string; appearance: Record<string, string> }
+// client → server, guest loadout report
+| { type: 'setAppearance'; appearance: Record<string, string> }
+```
+
+`memberAppearanceMessage(playerId, appearance)` copies the record defensively. The backend's
+`parseClientMessage` decodes `setAppearance`; the frontend's `multiplayer/protocol.ts` mirrors both
+frame types.
+
+### Authority matrix
+
+| Member | Appearance source | Client `setAppearance` |
+| --- | --- | --- |
+| **Account** | Persisted `user_economy.appearance`, seeded at join and rejoin; `equipPart`/`unequipPart` validate the v3 catalog and ownership, persist, update every member of the account, and keep the account-scoped `customizationUpdate` unchanged | **Silent no-op** — no state change, no frame, no error; a forged loadout is impossible |
+| **Guest** | The guest's own report, structurally validated by the codec and normalized against the v3 catalog (unknown and wrong-slot ids are dropped; legacy aliases follow the accepted v1/v2 normalization rules); pinned on the member, never persisted | Accepted within the rate limit; one broadcast only on a real normalized change |
+
+The projection is **equipped appearance only**. Account inventory counts, coins, upgrade levels and
+identity stay private; the public record is the same slot→part-id map that is rendered on screen by
+definition. Guests have no persisted inventory by accepted design (Q-4), so their report is
+cosmetic-only, carries no gameplay advantage and is bounded by the catalog, the entry/size bounds and
+the rate limit.
+
+### Bounds and cadence
+
+The appearance codec accepts a plain object (never `null` or an array) with at most
+`APPEARANCE_MAX_ENTRIES = 11` entries; keys must be v3 slot ids and values non-empty strings of at
+most `APPEARANCE_VALUE_MAX_LENGTH = 40` characters; the encoded object must be at most
+`APPEARANCE_JSON_MAX_BYTES = 700` UTF-8 bytes. The pinned worst-case appearance frame measures
+492 B for `playerId: 'p1'` (493 B for the longer `p24`) and the pinned 24-guest full-appearance
+`welcome` is 16,362 B, both inside this feature's outbound test budgets. `MAX_MESSAGE_BYTES` (1024)
+stays an **incoming client-frame** cap; the 700 B bound is this projection's outbound budget, not a
+new wire cap.
+
+Guest reports are limited to **10 admitted `setAppearance` frames per member in any true 1000 ms
+trailing interval** (`RATE_WINDOW_MS = 1000`). A timestamp is forgotten when
+`now − admittedAt <= 1000`; the boundary is pinned: ten frames admitted at `t = 0, 100, …, 900` admit
+nothing at `t = 950`, and `t = 0` expires at `t = 1000`, so an attempt at `t = 1000` is accepted.
+Dropped attempts are silent: no state change, no broadcast, no error.
+
+### Fan-out, reconnect and loss tolerance
+
+`equipPart`/`unequipPart` first update every member of the account, then emit **one
+`memberAppearance` frame per changed member (`playerId`) on that member's server** — two tabs of one
+account on the same server are two members and receive two frames; two tabs on two servers receive
+one frame each; an unchanged record emits none. Each frame is encoded once per server through
+§ Fan-out. A guest change is broadcast to the server's other members only (origin excluded) and only
+when the normalized record differs from the stored one. A live `memberAppearance` for the currently
+spectated member reaches the mounted ship through `SceneView.setSpectatedAppearance` in the same
+message turn, so the spectator's view never waits for a remount.
+
+Appearance is a presentation delta, not game state. A resume inside the reconnect grace restores the
+stored record in the new `welcome`; a cross-server move carries it in the target roster; a final
+removal discards it and a fresh guest identity starts at `{}`. A missed `memberAppearance` leaves the
+last known outfit on screen until the next `welcome`, `memberJoined` or `memberAppearance`; it cannot
+corrupt boards, positions, membership, economy or the leaderboard, and the ship never blocks or
+throws. A guest adopts `welcome.roster[self].appearance` into its engine when its local record is
+empty, then sends exactly one `setAppearance` iff the resulting non-empty record differs, so its own
+ship, preview and hangar are never stale.
+
+### Metrics
+
+`memberAppearance` is added to the closed `type` allow-lists of
+`cubeclicker_ws_messages_encoded_total` and `cubeclicker_ws_frames_sent_total`, and `setAppearance`
+to `cubeclicker_ws_messages_received_total` — three catalog values, no new metric. The allow-list
+entries are required, not optional: the counters throw on an unlisted `type`. One broadcast
+increments the encoded counter once and the frames-sent counter per recipient; a decoded
+`setAppearance` increments the received counter once, including a report that is later dropped as
+rate-limited or unchanged.
+
 ## Benchmark
 
 The feature's before/after evidence is produced by

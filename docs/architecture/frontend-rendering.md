@@ -60,12 +60,77 @@ The session owns the requestAnimationFrame loop for the Three.js game scene; the
 
 `appliedTier` is seeded at attach (after the attach-time `setQuality`), so the first frame adds no call and stable-tier frames add neither `setQuality` nor a pixel-ratio apply. Because the tier poll and DPR re-apply happen before step 6, a tier change takes effect in the same frame it is observed.
 
+## Remote ships
+
+Added by feature `remote-spaceship-customization` (2026-11-19); the full contract is in the
+[feature spec](../features/remote-spaceship-customization/spec.md), and the player-facing terms are
+[remote ship](../product/glossary.md#remote-ship) and [appearance](../product/glossary.md#appearance).
+
+**One ship, for the spectated member.** The scene renders exactly one **remote ship**: the ship of
+the **server member** the camera is currently spectating. The visibility rule is geometric, not
+cosmetic. The accepted spectate camera rests at `(px, py, 12)` looking at `(px, py, 0)` with
+`CAMERA_FOV = 50`, so at the cube plane the visible half-width is ≈ `12 · tan(25°) · aspect`
+(≈ 8.95 units at aspect 1.6), while adjacent ring slots sit `SLOT_SPACING = 24` apart. Every
+non-spectated cube is therefore off-screen (or mid-flight) in the accepted layouts, so a ship there
+would add draws without pixels. Appearance is still carried for every member on the wire
+(§ [realtime](realtime.md#public-appearance-projection)), so a future camera/overview change can
+render them without a protocol change. No ship exists before the first `welcome`, during a
+spectate/return camera flight, or when the spectated member is not in the rendered world.
+
+**Hierarchy, anchor and aim.** [`render/remote-ship.ts`](../../src/frontend/src/render/remote-ship.ts)
+places a `remote-ship` root above-front of the member's cube at
+`REMOTE_SHIP_OFFSET = { x: 1.6, y: 2.8, z: 4.4 }` and `REMOTE_SHIP_SCALE = 1.2`, aimed at the cube
+centre (the root's local `+z` points at it). A `remote-ship-body` child carries the idle bob/sway and
+the firing recoil, and the reused cursor model (32 objects, 21 meshes, ten ship slot groups) sits
+under it; a `shots` group is the body's sibling under the root. The root's anchor and aim are
+independent of the animation.
+
+**Appearance and live re-skin.** The ship resolves its 11-slot appearance through the shared
+`appearanceToShipParamsV3` mapping and applies the ten ship slots to the model; the `shot` entry
+selects only the shot style. `SceneView.setSpectatedAppearance(playerId, appearance)` applies a live
+`memberAppearance` to the mounted ship when the id matches: the hull, slot transforms and shot style
+change on the same model identity (no remount, no second `dispose()`), a repeated record performs no
+material or transform write, and an absent, unknown or wrong-slot entry renders that slot's classic
+standard part. The session calls it on the arrival frame and after a remote `levelAdvanced` rebuild.
+
+**Idle motion.** `remoteShipIdle(elapsedMs, reducedMotion)` writes only the body:
+`position.y = 0.12 · sin(2π·t / 2600)` and `rotation.y = 0.05 · cos(2π·t / 2600)`
+(`REMOTE_SHIP_BOB_AMPLITUDE = 0.12`, `REMOTE_SHIP_BOB_PERIOD_MS = 2600`,
+`REMOTE_SHIP_SWAY_RAD = 0.05`). The ship never follows the pointer, travels, banks or leaves a trail.
+
+**Firing from accepted removals.** Remote firing adds **no protocol traffic**: it is derived from
+the existing `miniCubeRemoved`/`miniCubesRemoved` broadcasts. For the mounted member, one removal
+spawns at most one shot at the removed id's tile origin (the fallback for an already-hidden tile is
+`(px, py, 2.75)`), from the model's nose, travelling over the retained `SHOT_TRAVEL_MS = 180` with
+the owner's shot style (geometry, scale, muzzle form and colours). At most one shot per
+`REMOTE_SHOT_MIN_INTERVAL_MS = 90` and at most `REMOTE_SHOT_MAX_IN_FLIGHT = 2` live shots; a third is
+dropped, not queued. Each accepted shot starts a recoil of `0.12` units along the body's local `−z`,
+decaying with `1 − easeOutCubic(t)` over `MOTION.remoteShipRecoilMs = 120`; a dropped shot starts
+none, and a removal for any other member spawns nothing (the local ship owns its own shots).
+
+**Reduced motion.** The remote ship does not bob, sway or recoil. A removal renders one opacity
+flash at the target for `MOTION.remoteShotFlashMs = 120` with no travelling mesh; the tile conceal
+and the shared impact burst are unchanged, and the quality tier never re-enables suppressed motion.
+
+**Lazy manager and measured budgets.** The `remote-ships` manager group is created only while a ship
+is mounted and removed with the last disposal, so the accepted scene counts return exactly with no
+ship: **135** objects with no world, **146** with one remote member, **210** with 9 and **322** with
+23. The mounted ship adds **36 objects / 21 draws** — manager 1 + root 1 + body 1 + 32 cursor-model
+objects + 1 `shots` group — so the idle spectating fixture is **182 objects / 246 / 358**. Each
+in-flight bolt adds **+1 object / +1 draw** and each live muzzle adds **+1 / +1**, so two bolts give
+184 / 248 / 360 (38 scene objects / 23 draws), and the peak fixture with two bolts and one live
+muzzle is **185 objects / 249 / 361** — the one-remote-member spectating baseline of **185 objects /
+24 draws** (39 objects in the ship subtree). Unmounting restores the accepted counts exactly even
+with shots in flight. A ray that hits only the remote ship resolves to `null` through the picking
+path; medium hides the accepted four detail meshes and low the accepted six, with no trail and no
+reticle; the per-frame path writes pre-allocated vectors and allocates no object.
+
 ## Lootbox reveal stage
 
 The 3D lootbox reveal is a second, deliberately small three.js presentation of an accepted grant; it changes no protocol, server, persistence or quality-tier behavior. The grant still arrives as the server-authoritative, opener-only `lootboxOpened` message (or a guest engine's local grant), the session stores it as `lastLootboxGrant`, and a `welcome` or any non-`connected` transport status clears it, so a reconnect never replays the animation.
 
 - **Modules.** [`game/reveal-motion.ts`](../../src/frontend/src/game/reveal-motion.ts) is pure arithmetic — the pinned 1290 ms pose timeline (`revealStagePose`), the per-slot yaw table and the rarity colours — with no DOM, timers or randomness, and it writes one pre-allocated `RevealStagePose` so a frame allocates nothing. [`render/lootbox-reveal.ts`](../../src/frontend/src/render/lootbox-reveal.ts) builds the stage (`createRevealStage`): one scene named `lootbox-reveal-scene` with an ambient light, a key light, the existing `createCursorShipModel` group and one rarity `RingGeometry` mesh; it owns no renderer and no loop. [`ui/LootboxReveal.tsx`](../../src/frontend/src/ui/LootboxReveal.tsx) owns the browser boundary and the card.
-- **Try-on, never a mutation.** The slot is resolved from the pinned catalog (`partDefinition(partId).slot`), never from the wire `slot`; the stage copies the normalized appearance, replaces only that slot, and applies it through the model's single `applyAppearance` path — the same `appearanceToCursorShipParams` mapping the pointer ship and the customization preview use. The player's stored appearance changes only through `Equip` (the existing `onEquip`/server path).
+- **Try-on, never a mutation.** The slot is resolved from the pinned catalog (`partDefinition(partId).slot`), never from the wire `slot`; the stage copies the normalized appearance, replaces only that slot, and applies it through the model's single `applyAppearance` path — the same `appearanceToShipParamsV3` mapping the pointer ship, the remote ship and the customization preview use. The player's stored appearance changes only through `Equip` (the existing `onEquip`/server path).
 - **One context and one bounded loop.** The reveal renders in its own canvas inside the customization panel; while a grant exists the panel renders `LootboxReveal` and **not** `SpaceshipPreview`, so the panel has exactly one WebGL context in addition to the main scene's own context. The reveal loop is capped at 30 frames per second, skips rendering and stops scheduling while `document.hidden`, resumes on `visibilitychange` with a reset frame baseline, and is disposed on dismissal, grant replacement and unmount (stage first, then renderer). The main scene's frame loop, quality tier and draw budget are untouched.
 - **Deferred chunk.** The component and its three.js imports stay behind the existing `DeferredSpaceshipCustomizationPanel` dynamic import, so the entry graph remains Three-free and the bundle-budget gate is unchanged (§ Loading and code splitting).
 - **Reduced motion and fallback.** With reduced motion the component renders exactly one static rest-pose frame and schedules no further frame. If the renderer or the stage cannot be constructed, the card stays complete and the stage is replaced by a static inline-SVG ship fallback. The reveal root is a non-live `role="group" aria-live="off"` region labelled `Lootbox reveal: <part name>`; it is non-modal (no scrim, no focus trap, the game and the customization toggle stay interactive), and `Escape`, `Dismiss` and `Equip` are the only dismissal paths.
@@ -87,7 +152,7 @@ Two player-opened menus animate when they mount — the hangar panel (`.customiz
 - **Open only, no close.** There is no exit keyframe, `animation-direction: reverse` or delayed unmount: closing the hangar or the crew list unmounts it in one commit, and the next open replays the boot from the start.
 - **No transform, no filter.** The beats animate only `opacity`, `border-color` and `text-shadow` on the surfaces, plus `right`/`height` on the two 1–2 px decorative pseudo-elements. No rule on the panel, the crew list, their pseudo-elements or their titles declares `transform`, `filter`, `backdrop-filter`, `will-change` or `clip-path`, so the chamfered clip and the layer table below are unchanged.
 - **Reduced motion, specificity-safe.** Both off-switches — the file's single `@media (prefers-reduced-motion: reduce)` block and the existing top-level `main[data-reduced-motion='true']` session block — repeat the scoped selectors (the boot root and its `::before`/`::after`/title, the reveal state, `.customization-tabs`, `.customization-tab`, `.customization-tabpanel`, and the crew root/`::before`/`::after`/title) and set `animation: none; transition: none`. The boot rules are (0,2,0) and would beat a bare `.customization-panel` (0,1,0), so the off-switch selectors carry equal or higher specificity and every animation rule is declared before the media block; the scoped `.customization-panel[data-reveal-active='true']` selector also closes the older OS-preference gap on `reveal-spotlight`.
-- **Tab structure.** The hangar's `.customization-tabs[role="tablist"]` (labelled `Spaceship part groups`) holds five `role="tab"` buttons — `Frame`, `Front`, `Wings`, `Engines`, `Ignitions`, two part slots each — with roving `tabindex` and arrow/`Home`/`End` selection. Exactly one `role="tabpanel"` (`id="customization-tabpanel"`) renders the active group's two rows; no tab carries `aria-controls` (there is only one panel), and the panel points back with `aria-labelledby` at the selected tab's stable id. The reveal branch keeps only `reveal-spotlight` and no tablist, tabpanel or preview.
+- **Tab structure.** The hangar's `.customization-tabs[role="tablist"]` (labelled `Spaceship part groups`) holds six `role="tab"` buttons — `Frame`, `Front`, `Wings`, `Engines`, `Ignitions` and `Shots` (two part slots each except `Shots`, which holds the `shot` slot) — with roving `tabindex` and arrow/`Home`/`End` selection. Exactly one `role="tabpanel"` (`id="customization-tabpanel"`) renders the active group's two rows (one on `Shots`), each row with an eleven-button form strip and a 3-cell (`classic`), 1-cell (`shot` classic) or 12-cell (generated form) finish grid; no tab carries `aria-controls` (there is only one panel), and the panel points back with `aria-labelledby` at the selected tab's stable id. The reveal branch keeps only `reveal-spotlight` and no tablist, tabpanel or preview.
 
 ## Game shell layering
 
