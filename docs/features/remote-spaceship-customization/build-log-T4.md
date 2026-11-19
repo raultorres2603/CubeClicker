@@ -3,7 +3,7 @@
 Task: T4 (2026-11-19)
 Files changed: `src/backend/src/observability/metrics.ts`, `src/backend/src/observability/metrics.test.ts`, `docs/features/remote-spaceship-customization/build-log-T4.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: feat commit `feat: allow appearance frames in metrics` (hash pinned in the follow-up `docs:` commit; not pushed), mirroring T1/T2/T3/T5.
+Commit: `8096f6e` — `feat: allow appearance frames in metrics` (not pushed; hash recorded in this follow-up `docs:` commit, mirroring T1/T2/T3/T5).
 
 ## Sketch (≤5 lines)
 
