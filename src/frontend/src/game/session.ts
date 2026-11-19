@@ -114,7 +114,7 @@ import {
   createActivityLifetime,
   type ActivityFeedSlice,
 } from '../multiplayer/activity-lifetime';
-import { ACTIVITY_EVENT_TTL_MS } from '../multiplayer/protocol';
+import { ACTIVITY_EVENT_TTL_MS, memberAppearanceOf } from '../multiplayer/protocol';
 import type { ClientMessage, CubeState, ServerMessage } from '../multiplayer/protocol';
 import {
   applyWorldSwap,
@@ -132,6 +132,7 @@ import type { QualityTier } from '../render/quality';
 import type { SceneView, SceneViewOptions } from '../render/scene';
 import type { PerfStats } from '../perf/overlay';
 import { createEngine, type EngineSnapshot, type GameEngine, type GameEvent } from './engine';
+import { normalizeAppearanceV3 } from './parts-v3';
 import { isValidUpgradeId, upgradeCost, upgradeLevel } from './upgrades';
 import { CUBE_STYLES } from './progression';
 import { frontFace } from './rotation';
@@ -449,6 +450,22 @@ function resolveStyle(styleId: string, levelIndex: number): CubeStyle {
 }
 
 /**
+ * True when two appearance records carry exactly the same slot→part mapping. Both sides
+ * reach this helper normalized (catalog order), but the per-entry comparison keeps the
+ * decision independent of key order.
+ */
+function sameAppearanceRecord(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) {
+    return false;
+  }
+  return keys.every((key) => b[key] === a[key]);
+}
+
+/**
  * Creates one game session. Nothing is attached until {@link GameSession.attach} is
  * called; the engine (injected or created here) exists from this point on, so
  * `getSnapshot`/`subscribe` are safe to use before the first attach.
@@ -484,6 +501,18 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
   let pendingAutoReturn = false;
   /** The owned engine adopted the server's level-0 grid/style exactly once. */
   let adoptedInitialCube = false;
+  /**
+   * The normalized appearance the server is known to hold for this guest (AC-13 b): the
+   * roster record after a `welcome` and every accepted `setAppearance`. A local change only
+   * reports when this record actually differs.
+   */
+  let lastSentAppearance: Record<string, string> = {};
+  /**
+   * The member to mount after the arrival frame applies its `playing` snapshot: the scene
+   * refuses a mount while its retained snapshot still says `travel`, so the call waits until
+   * after `applySnapshot` (AC-15).
+   */
+  let pendingSpectatedMount: string | null = null;
 
   /** Throttle state for outbound `rotate` messages (50 ms coalescing window). */
   let lastBroadcastOrientation: { yawSteps: number; pitchSteps: number } | null = null;
@@ -841,6 +870,87 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     });
   }
 
+  /** The engine's current appearance, normalized against the v3 catalog. */
+  function normalizedEngineAppearance(): Record<string, string> {
+    return normalizeAppearanceV3(engine.getSnapshot().customization?.appearance ?? {});
+  }
+
+  /**
+   * Reports one guest appearance (AC-13 b): never for an account, never while the game
+   * cannot run, and never for a record the server already holds.
+   */
+  function sendGuestAppearance(appearance: Record<string, string>): void {
+    if (joinedMode === 'account' || transport === undefined || !canRun()) {
+      return;
+    }
+    const normalized = normalizeAppearanceV3(appearance);
+    if (sameAppearanceRecord(lastSentAppearance, normalized)) {
+      return;
+    }
+    transport.send({ type: 'setAppearance', appearance: { ...normalized } });
+    lastSentAppearance = { ...normalized };
+  }
+
+  /**
+   * `welcome` guest convergence (AC-13 b): adopt the roster self record into the engine
+   * when the local record is empty (so the own ship, preview and hangar show the stored
+   * loadout), then report the local record exactly once that `welcome` when it is non-empty
+   * and differs from the roster self entry. Accounts never report: the hub owns their state
+   * and answers through `customizationUpdate`.
+   */
+  function convergeGuestAppearance(message: Extract<ServerMessage, { type: 'welcome' }>): void {
+    if (joinedMode === 'account' || message.identity.kind === 'account') {
+      return;
+    }
+    const selfEntry = message.roster.find((entry) => entry.playerId === message.playerId);
+    const rosterSelf =
+      selfEntry === undefined ? {} : normalizeAppearanceV3(memberAppearanceOf(selfEntry));
+    // The roster entry is what the server is known to hold after this welcome, so the
+    // report decision is made against it (not against an earlier connection's send).
+    lastSentAppearance = { ...rosterSelf };
+    let effective = normalizedEngineAppearance();
+    if (Object.keys(effective).length === 0) {
+      // The server's stored loadout wins for a guest whose own record is empty.
+      engine.adoptAppearance?.(rosterSelf);
+      effective = { ...rosterSelf };
+    }
+    if (Object.keys(effective).length > 0 && !sameAppearanceRecord(effective, rosterSelf)) {
+      sendGuestAppearance(effective);
+    }
+    // Equal (or both empty): the server already holds this record; only a later local
+    // change may report. `sendGuestAppearance` already recorded the differing one.
+  }
+
+  /**
+   * Applies the session world's authoritative appearance to the mounted ship when
+   * `playerId` is the currently viewed member. The scene's own world copy is built at
+   * `welcome` and does not consume `memberAppearance`, so the session re-applies its
+   * authoritative projection after a mount or a remote rebuild (no remount; the ship's
+   * `applyAppearance` is idempotent).
+   */
+  function syncSpectatedAppearance(playerId: string): void {
+    const status = spectate.get();
+    if (status.mode !== 'viewing' || status.target !== playerId) {
+      return;
+    }
+    const member = world.members.find((candidate) => candidate.playerId === playerId);
+    if (member === undefined) {
+      return;
+    }
+    activeScene?.setSpectatedAppearance(playerId, memberAppearanceOf(member));
+  }
+
+  /**
+   * `memberAppearance` (AC-15/AC-17): the reducer has already stored the projection; the
+   * mounted ship is re-skinned in place only when the updated member is the one currently
+   * spectated (never a remount, and never for the own/unknown member).
+   */
+  function handleMemberAppearance(
+    message: Extract<ServerMessage, { type: 'memberAppearance' }>,
+  ): void {
+    syncSpectatedAppearance(message.playerId);
+  }
+
   /** `welcome` (join or resume): adopt the level-0 cube, enter the world, release the intro. */
   function handleWelcome(
     message: Extract<ServerMessage, { type: 'welcome' }>,
@@ -873,9 +983,12 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       }
     }
     // Every welcome (join or resume, any identity) clears the spectate state and the view
-    // resets to the own cube instantly (AC-12, AC-14).
+    // resets to the own cube instantly (AC-12, AC-14). The remote ship is released through
+    // the explicit lifecycle call even when `enterWorld` below also disposes the old world.
     spectate.reset();
     engine.setSpectating?.(false);
+    pendingSpectatedMount = null;
+    activeScene?.setSpectatedMember(null);
     reconcileCube(message.self);
     if (message.economy !== undefined && engine.adoptEconomy !== undefined) {
       engine.adoptEconomy(message.economy);
@@ -890,6 +1003,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     welcomed = true;
     completionLevel = null;
     pendingLootboxOpen = false;
+    // Guest convergence (AC-13 b): adopt the roster self record when the local one is
+    // empty, then report the local record once this welcome when it really differs. An
+    // account is skipped entirely (the adopted `customization` above is its authority).
+    convergeGuestAppearance(message);
     // A welcome is a fresh view of the world, for a join and a resume alike: the one-shot
     // reveal grant never survives it, so a rejoin can never replay a stale animation
     // (AC-11). The `publish` below makes the cleared grant observable to the store.
@@ -1085,6 +1202,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (!spectate.onMemberLeft(playerId)) {
       return;
     }
+    // The viewed member is gone: release the mounted ship immediately (AC-15); the scene
+    // may already have dropped it from its own world, so `null` stays a no-op there.
+    pendingSpectatedMount = null;
+    activeScene?.setSpectatedMember(null);
     if (mode === 'viewing') {
       // The controller dropped to `none`; the flight home is the session's job.
       startOwnReturn();
@@ -1116,6 +1237,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         handleWorldEntered(message);
         break;
       case 'memberJoined':
+        break;
+      case 'memberAppearance':
+        handleMemberAppearance(message);
         break;
       case 'memberLeft':
         handleMemberLeft(message.playerId);
@@ -1161,12 +1285,22 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         break;
     }
     activeScene?.applyWorldMessage(message);
+    if (message.type === 'levelAdvanced') {
+      // A remote rebuild re-skins from the scene's roster copy, which does not consume
+      // `memberAppearance`; re-apply the session's live projection after it (AC-15/AC-17).
+      syncSpectatedAppearance(message.playerId);
+    }
     publishMultiplayer();
   }
 
   /** Transport status: leaving `connected` closes the input/clock gate until `welcome`. */
   function handleStatus(next: TransportStatus): void {
     status = next;
+    // A status change never keeps a remote ship from the previous world (AC-15): the ship
+    // is cleared on every transition (an idempotent no-op when none is mounted) and only a
+    // spectate arrival mounts one again.
+    pendingSpectatedMount = null;
+    activeScene?.setSpectatedMember(null);
     if (next !== 'connected') {
       welcomed = false;
       // A dropped socket can never deliver the pong: settle every in-flight measurement.
@@ -1219,9 +1353,14 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     if (before.phase !== 'travel' || after.phase !== 'playing') {
       return;
     }
-    if (before.travelKind === 'spectate' && spectate.get().mode === 'traveling') {
+    const status = spectate.get();
+    if (before.travelKind === 'spectate' && status.mode === 'traveling') {
       spectate.arrive();
       engine.setSpectating?.(true);
+      // The scene refuses a mount while its retained snapshot still says `travel`; the
+      // frame loop calls `setSpectatedMember` right after `applySnapshot` applies this
+      // `playing` snapshot (AC-15).
+      pendingSpectatedMount = status.target;
       return;
     }
     if (before.travelKind === 'spectate' || before.travelKind === 'return') {
@@ -1279,6 +1418,10 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       publishMultiplayer();
       return false;
     }
+    // The ship is only ever the spectated member's; the return flight starts from view mode,
+    // so the mounted ship is released immediately (AC-15).
+    pendingSpectatedMount = null;
+    activeScene?.setSpectatedMember(null);
     return true;
   }
 
@@ -1291,6 +1434,9 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
     welcomed = false;
     // The retry closes the socket: a pending measurement can no longer receive its pong.
     clearPendingRtt();
+    // A reconnect cycle never keeps a remote ship from the previous world (AC-15).
+    pendingSpectatedMount = null;
+    activeScene?.setSpectatedMember(null);
     publishMultiplayer();
     if (!active) {
       // Detached (pre-attach login): the attach-time `connect()` opens the socket with the
@@ -1369,8 +1515,15 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       transport.send({ type: 'equipPart', partId });
       return;
     }
+    const before = normalizedEngineAppearance();
     engine.equipPart?.(partId);
+    const after = normalizedEngineAppearance();
     publish(engine.getSnapshot());
+    if (!sameAppearanceRecord(before, after)) {
+      // One report per accepted local change; an unowned/unknown id leaves the record
+      // unchanged and therefore sends nothing (AC-13 b).
+      sendGuestAppearance(after);
+    }
   }
 
   function unequipPart(slotId: string): void {
@@ -1381,8 +1534,13 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       transport.send({ type: 'unequipPart', slotId });
       return;
     }
+    const before = normalizedEngineAppearance();
     engine.unequipPart?.(slotId);
+    const after = normalizedEngineAppearance();
     publish(engine.getSnapshot());
+    if (!sameAppearanceRecord(before, after)) {
+      sendGuestAppearance(after);
+    }
   }
 
   function dismissLootboxReveal(): void {
@@ -1512,6 +1670,16 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
         view.setHoverTarget(pick.id);
       }
       view.applySnapshot(snapshot, nowMs);
+      if (pendingSpectatedMount !== null) {
+        // The arrival's `playing` snapshot is now retained by the scene, so the mount gate
+        // no longer sees a camera-only flight: mount the one spectated ship (AC-15).
+        const target = pendingSpectatedMount;
+        pendingSpectatedMount = null;
+        activeScene?.setSpectatedMember(target);
+        // The scene mounted from its roster copy; re-apply the session's authoritative live
+        // projection so a `memberAppearance` received during the flight is honoured (AC-15).
+        syncSpectatedAppearance(target);
+      }
       view.update(dtMs);
       const tier = view.getQualityTier();
       if (tier !== appliedTier) {
@@ -1756,6 +1924,8 @@ export function createGameSession(options: GameSessionOptions = {}): OnlineGameS
       completionLevel = null;
       pendingAutoReturn = false;
       pendingLootboxOpen = false;
+      pendingSpectatedMount = null;
+      lastSentAppearance = {};
       hoverPickPending = false;
       hoveredId = null;
       clearRotateTimer();

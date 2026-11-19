@@ -3,6 +3,7 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  MeshPhysicalMaterial,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -184,6 +185,33 @@ interface FakeEnv {
   orientation: FakeOrientation;
   renderer: FakeRendererFactory;
   clock: { now: number };
+}
+
+/**
+ * The two T12 spectate hooks observed at the session boundary: every call the session makes
+ * is recorded before the real `SceneView` runs it, so lifecycle and live re-skin assertions
+ * read the session's exact decisions against the real scene.
+ */
+interface SceneViewCalls {
+  spectatedMembers: Array<string | null>;
+  spectatedAppearances: Array<{ playerId: string; appearance: Record<string, string> }>;
+}
+
+/** Records the two spectate hooks while the real scene still executes them. */
+function instrumentSceneView(view: SceneView, calls: SceneViewCalls): SceneView {
+  const instrumented: SceneView = Object.create(view) as SceneView;
+  instrumented.setSpectatedMember = (playerId: string | null): void => {
+    calls.spectatedMembers.push(playerId);
+    view.setSpectatedMember(playerId);
+  };
+  instrumented.setSpectatedAppearance = (
+    playerId: string,
+    appearance: Record<string, string>,
+  ): void => {
+    calls.spectatedAppearances.push({ playerId, appearance: { ...appearance } });
+    view.setSpectatedAppearance(playerId, appearance);
+  };
+  return instrumented;
 }
 
 /** A deterministic starfield/particle seed (the scene layout is irrelevant to the wiring). */
@@ -470,6 +498,7 @@ function createFakeEnv(
     hidden?: boolean;
     random?: () => number;
     stats?: { calls: number; triangles: number };
+    sceneCalls?: SceneViewCalls;
   } = {},
 ): FakeEnv {
   const canvas = createFakeCanvas(options.rect ?? { left: 0, top: 0, width: 800, height: 800 });
@@ -500,7 +529,12 @@ function createFakeEnv(
       // the injected environment. `pickHoverTarget` is the module mock above so the
       // per-frame coalescing assertions stay observable.
       renderRuntime: {
-        createSceneView,
+        createSceneView: (sceneOptions) => {
+          const view = createSceneView(sceneOptions);
+          return options.sceneCalls === undefined
+            ? view
+            : instrumentSceneView(view, options.sceneCalls);
+        },
         pickHoverTarget,
         pickMiniCube,
       },
@@ -924,6 +958,7 @@ function welcomeMessage(options: {
   economy?: { coins: number; clicks: number; facesDestroyed: number; cubesDestroyed: number };
   upgrades?: UpgradeState;
   customization?: { lootboxes: number; keys: number; parts: Record<string, number>; appearance: Record<string, string> };
+  identity?: WelcomeMessage['identity'];
 } = {}): WelcomeMessage {
   const playerId = options.playerId ?? 'p1';
   const name = options.name ?? 'Player 1';
@@ -945,7 +980,7 @@ function welcomeMessage(options: {
       options.roster ?? [
         member({ playerId, name, position, levelIndex, gridSize, styleId, removedIds }),
       ],
-    identity: { kind: 'guest', playerId },
+    identity: options.identity ?? { kind: 'guest', playerId },
     ...(options.activity === undefined ? {} : { activity: options.activity }),
     ...(options.leaderboard === undefined ? {} : { leaderboard: options.leaderboard }),
     ...(options.economy === undefined ? {} : { economy: options.economy }),
@@ -4434,6 +4469,442 @@ describe('multiplayer spectate (AC-18, AC-19)', () => {
   });
 });
 
+describe('guest appearance convergence (AC-13)', () => {
+  function guestSetup(): {
+    engine: ReturnType<typeof createEngine>;
+    fake: FakeEnv;
+    wire: FakeTransport;
+    session: OnlineGameSession;
+  } {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv();
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    return { engine, fake, wire, session };
+  }
+
+  it('adopts the roster self record when the local record is empty and reports nothing', () => {
+    const { engine, wire, session } = guestSetup();
+    const adopt = vi.spyOn(engine, 'adoptAppearance');
+
+    wire.emit(
+      welcomeMessage({
+        roster: [
+          selfMember({ appearance: { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' } }),
+          member(),
+        ],
+      }),
+    );
+
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledWith({
+      hull: 'hull-dart-aurum',
+      shot: 'shot-orca-violet',
+    });
+    expect(session.getSnapshot().customization!.appearance).toEqual({
+      hull: 'hull-dart-aurum',
+      shot: 'shot-orca-violet',
+    });
+    // Adoption makes the record equal to the roster entry: no report is needed.
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('reports a non-empty local record once when it differs from the roster self entry', () => {
+    const { engine, wire, session } = guestSetup();
+    engine.adoptAppearance({ hull: 'hull-obsidian' });
+    const adopt = vi.spyOn(engine, 'adoptAppearance');
+
+    wire.emit(
+      welcomeMessage({
+        roster: [selfMember({ appearance: { hull: 'hull-dart-aurum' } }), member()],
+      }),
+    );
+
+    // A non-empty local record is never replaced by the roster entry.
+    expect(adopt).not.toHaveBeenCalled();
+    expect(session.getSnapshot().customization!.appearance).toEqual({ hull: 'hull-obsidian' });
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+    ]);
+  });
+
+  it('reports once per welcome while the roster self still differs from the local record', () => {
+    const { engine, wire, session } = guestSetup();
+    engine.adoptAppearance({ hull: 'hull-obsidian' });
+
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+    ]);
+
+    // A resume welcome whose roster copy still lacks the record is a fresh difference: the
+    // local record is reported again (once for that welcome), not suppressed by the
+    // previous connection's send.
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+    ]);
+
+    // Once the roster carries the record, the next welcome reports nothing.
+    wire.emit(
+      welcomeMessage({
+        roster: [selfMember({ appearance: { hull: 'hull-obsidian' } }), member()],
+      }),
+    );
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+      { type: 'setAppearance', appearance: { hull: 'hull-obsidian' } },
+    ]);
+    // The equal roster entry never replaces the guest's local record.
+    expect(session.getSnapshot().customization!.appearance).toEqual({ hull: 'hull-obsidian' });
+  });
+
+  it('reports nothing when the local record already equals the roster self entry', () => {
+    const { engine, wire, session } = guestSetup();
+    engine.adoptAppearance({ hull: 'hull-obsidian' });
+    const adopt = vi.spyOn(engine, 'adoptAppearance');
+
+    wire.emit(
+      welcomeMessage({
+        roster: [selfMember({ appearance: { hull: 'hull-obsidian' } }), member()],
+      }),
+    );
+
+    expect(adopt).not.toHaveBeenCalled();
+    expect(session.getSnapshot().customization!.appearance).toEqual({ hull: 'hull-obsidian' });
+    expect(wire.sent).toEqual([]);
+  });
+
+  it('never reports for an account, even when its local record differs', () => {
+    const { engine, wire, session } = guestSetup();
+    session.join('account');
+    const adopt = vi.spyOn(engine, 'adoptAppearance');
+
+    wire.emit(
+      welcomeMessage({
+        identity: { kind: 'account', accountId: 'acct-1', username: 'Player 1' },
+        customization: {
+          lootboxes: 0,
+          keys: 0,
+          parts: { 'hull-dart-aurum': 1 },
+          appearance: { hull: 'hull-dart-aurum' },
+        },
+        roster: [
+          selfMember({ appearance: { hull: 'hull-dart-aurum' } }),
+          member(),
+        ],
+      }),
+    );
+
+    expect(adopt).not.toHaveBeenCalled();
+    expect(wire.sent).toEqual([]);
+    expect(session.getSnapshot().customization!.appearance).toEqual({
+      hull: 'hull-dart-aurum',
+    });
+
+    // The account equip path is the dedicated message; no appearance report is ever sent.
+    session.equipPart('hull-dart-aurum');
+    expect(wire.sent).toEqual([{ type: 'equipPart', partId: 'hull-dart-aurum' }]);
+  });
+
+  it('reports one setAppearance per accepted local guest change and none for a no-op', () => {
+    const { engine, wire, session } = guestSetup();
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-dart-aurum': 1 },
+      appearance: {},
+    });
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(wire.sent).toEqual([]);
+
+    session.equipPart('nose-crimson');
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+    ]);
+
+    // A repeated equip leaves the engine record unchanged: no second report.
+    session.equipPart('nose-crimson');
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+    ]);
+
+    session.equipPart('hull-dart-aurum');
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+      { type: 'setAppearance', appearance: { hull: 'hull-dart-aurum', nose: 'nose-crimson' } },
+    ]);
+
+    // Unequipping back to the empty default is a real change and reports `{}`.
+    session.unequipPart!('hull');
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+      { type: 'setAppearance', appearance: { hull: 'hull-dart-aurum', nose: 'nose-crimson' } },
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+    ]);
+  });
+});
+
+describe('remote ship spectate lifecycle and live appearance (AC-15)', () => {
+  function spectateSetup(calls: SceneViewCalls): {
+    fake: FakeEnv;
+    wire: FakeTransport;
+    session: OnlineGameSession;
+  } {
+    const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
+    const fake = createFakeEnv({ sceneCalls: calls });
+    const wire = createFakeTransport();
+    const session = createOnlineSession(fake, wire, engine);
+    session.attach(fake.canvas.surface);
+    wire.emitStatus('connected');
+    wire.emit(
+      welcomeMessage({
+        roster: [
+          selfMember(),
+          member({ appearance: { hull: 'hull-obsidian' } }),
+          member({ playerId: 'p3', name: 'Player 3', position: { x: 0, y: 24 } }),
+        ],
+      }),
+    );
+    fake.scheduler.tick(0);
+    tapOn(fake.canvas, 400, 400); // intro skip
+    fake.scheduler.tick(16);
+    expect(session.getSnapshot().phase).toBe('playing');
+    return { fake, wire, session };
+  }
+
+  function renderedScene(fake: FakeEnv): Scene {
+    return fake.renderer.renders.at(-1)!.scene;
+  }
+
+  function mountedShip(fake: FakeEnv): Group | null {
+    return (renderedScene(fake).getObjectByName('remote-ship') as Group | undefined) ?? null;
+  }
+
+  it('mounts the spectated ship on arrival and releases it when the return flight starts', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, session } = spectateSetup(calls);
+    const marker = calls.spectatedMembers.length;
+
+    expect(mountedShip(fake)).toBeNull();
+    expect(calls.spectatedMembers.slice(marker)).toEqual([]);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    // The camera-only flight shows no ship; the mount waits for the arrival frame.
+    expect(calls.spectatedMembers.slice(marker)).toEqual([]);
+    fake.scheduler.tick(2516);
+
+    expect(calls.spectatedMembers.slice(marker)).toEqual(['p2']);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+    expect(mountedShip(fake)).not.toBeNull();
+    // The arrival applies the session's authoritative projection after mounting.
+    expect(calls.spectatedAppearances.slice(-1)).toEqual([
+      { playerId: 'p2', appearance: { hull: 'hull-obsidian' } },
+    ]);
+
+    expect(session.returnToOwnCube()).toBe(true);
+    expect(calls.spectatedMembers.slice(marker)).toEqual(['p2', null]);
+    expect(mountedShip(fake)).toBeNull();
+
+    fake.scheduler.tick(5016);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getSnapshot().phase).toBe('playing');
+    expect(calls.spectatedMembers.slice(marker)).toEqual(['p2', null]);
+  });
+
+  it('releases the ship only for the departing spectated member', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, wire, session } = spectateSetup(calls);
+    const marker = calls.spectatedMembers.length;
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    const ship = mountedShip(fake);
+    expect(ship).not.toBeNull();
+
+    // Another member leaving cannot unmount the spectated one.
+    wire.emit({ type: 'memberLeft', playerId: 'p3', reason: 'left' });
+    expect(calls.spectatedMembers.slice(marker)).toEqual(['p2']);
+    expect(mountedShip(fake)).toBe(ship);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'viewing', target: 'p2' });
+
+    wire.emit({ type: 'memberLeft', playerId: 'p2', reason: 'left' });
+    expect(calls.spectatedMembers.slice(marker)).toEqual(['p2', null]);
+    expect(mountedShip(fake)).toBeNull();
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getSnapshot().travelKind).toBe('return');
+  });
+
+  it('clears the ship on every status change and on a resume welcome', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, wire, session } = spectateSetup(calls);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    expect(mountedShip(fake)).not.toBeNull();
+    const marker = calls.spectatedMembers.length;
+
+    wire.emitStatus('disconnected');
+    expect(calls.spectatedMembers.slice(marker)).toEqual([null]);
+    expect(mountedShip(fake)).toBeNull();
+
+    wire.emitStatus('connected');
+    expect(calls.spectatedMembers.slice(marker)).toEqual([null, null]);
+    expect(mountedShip(fake)).toBeNull();
+
+    // A resume welcome resets the spectate state and keeps the ship unmounted.
+    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(calls.spectatedMembers.slice(marker)).toEqual([null, null, null]);
+    expect(session.getMultiplayerSnapshot().spectate).toEqual({ mode: 'none' });
+    expect(session.getSnapshot().spectating).toBe(false);
+    expect(mountedShip(fake)).toBeNull();
+  });
+
+  it('re-skins the mounted ship on a matching memberAppearance without remounting', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, wire, session } = spectateSetup(calls);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    const ship = mountedShip(fake);
+    expect(ship).not.toBeNull();
+    const hullMesh = ship!.getObjectByName('cursor-hull');
+    expect(hullMesh).toBeInstanceOf(Mesh);
+    expect((hullMesh as Mesh).material).toBeInstanceOf(MeshPhysicalMaterial);
+    expect(((hullMesh as Mesh).material as MeshPhysicalMaterial).color.getHexString()).toBe(
+      '1a2333',
+    );
+    const memberMarker = calls.spectatedMembers.length;
+    const appearanceMarker = calls.spectatedAppearances.length;
+
+    wire.emit({
+      type: 'memberAppearance',
+      playerId: 'p2',
+      appearance: { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' },
+    });
+
+    expect(calls.spectatedAppearances.slice(appearanceMarker)).toEqual([
+      {
+        playerId: 'p2',
+        appearance: { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' },
+      },
+    ]);
+    // The roster/member state stores the projection; the model is the same object.
+    expect(session.getMultiplayerSnapshot().world.members).toEqual([
+      {
+        playerId: 'p2',
+        name: 'Player 2',
+        position: { x: 24, y: 0 },
+        levelIndex: 0,
+        gridSize: 5,
+        styleId: CUBE_STYLES[0]!.id,
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+        appearance: { hull: 'hull-dart-aurum', shot: 'shot-orca-violet' },
+      },
+      {
+        playerId: 'p3',
+        name: 'Player 3',
+        position: { x: 0, y: 24 },
+        levelIndex: 0,
+        gridSize: 5,
+        styleId: CUBE_STYLES[0]!.id,
+        removedIds: [],
+        yawSteps: 0,
+        pitchSteps: 0,
+        appearance: {},
+      },
+    ]);
+    expect(mountedShip(fake)).toBe(ship);
+    expect(calls.spectatedMembers.slice(memberMarker)).toEqual([]);
+    expect(
+      ((hullMesh as Mesh).material as MeshPhysicalMaterial).color.getHexString(),
+    ).toBe('ccaa44');
+  });
+
+  it('re-applies the live projection after a remote level rebuild (T12 seam)', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, wire, session } = spectateSetup(calls);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    const ship = mountedShip(fake);
+    expect(ship).not.toBeNull();
+    const hullMesh = ship!.getObjectByName('cursor-hull') as Mesh;
+    const hullMaterial = hullMesh.material as MeshPhysicalMaterial;
+    const memberMarker = calls.spectatedMembers.length;
+
+    wire.emit({
+      type: 'memberAppearance',
+      playerId: 'p2',
+      appearance: { hull: 'hull-dart-aurum' },
+    });
+    const appearanceMarker = calls.spectatedAppearances.length;
+
+    wire.emit(
+      levelAdvancedMessage({
+        playerId: 'p2',
+        levelIndex: 2,
+        gridSize: 6,
+        styleId: CUBE_STYLES[2]!.id,
+        position: { x: 24, y: 0 },
+      }),
+    );
+
+    // The scene rebuilds its roster copy on the advance without consuming the session's
+    // `memberAppearance` projection, so the session re-applies it after the rebuild.
+    expect(calls.spectatedAppearances.slice(appearanceMarker)).toEqual([
+      { playerId: 'p2', appearance: { hull: 'hull-dart-aurum' } },
+    ]);
+    expect(hullMaterial.color.getHexString()).toBe('ccaa44');
+    // The resync re-skins the mounted model; it never remounts it.
+    expect(calls.spectatedMembers.slice(memberMarker)).toEqual([]);
+    expect(mountedShip(fake)).toBe(ship);
+  });
+
+  it('ignores self, unknown and non-spectated memberAppearance updates', () => {
+    const calls: SceneViewCalls = { spectatedMembers: [], spectatedAppearances: [] };
+    const { fake, wire, session } = spectateSetup(calls);
+
+    expect(session.spectateMember('p2')).toBe(true);
+    fake.scheduler.tick(2516);
+    const membersBefore = session.getMultiplayerSnapshot().world.members;
+    const appearanceMarker = calls.spectatedAppearances.length;
+
+    wire.emit({
+      type: 'memberAppearance',
+      playerId: 'ghost',
+      appearance: { hull: 'hull-gold' },
+    });
+    wire.emit({
+      type: 'memberAppearance',
+      playerId: 'p1',
+      appearance: { hull: 'hull-gold' },
+    });
+
+    // Neither the unknown member nor the own player changes the world or the ship.
+    expect(calls.spectatedAppearances.slice(appearanceMarker)).toEqual([]);
+    expect(session.getMultiplayerSnapshot().world.members).toBe(membersBefore);
+
+    // A known non-spectated member is stored but never re-skins the mounted ship.
+    wire.emit({
+      type: 'memberAppearance',
+      playerId: 'p3',
+      appearance: { hull: 'hull-gold' },
+    });
+    expect(calls.spectatedAppearances.slice(appearanceMarker)).toEqual([]);
+    expect(
+      session.getMultiplayerSnapshot().world.members.find((entry) => entry.playerId === 'p3')!
+        .appearance,
+    ).toEqual({ hull: 'hull-gold' });
+    expect(mountedShip(fake)).not.toBeNull();
+  });
+});
+
 describe('multiplayer connection gating (AC-22)', () => {
   it('gates every input while disconnected and resumes after welcome', () => {
     const engine = createEngine({ online: true, gridSize: 5, random: fixedRandom });
@@ -5035,9 +5506,13 @@ describe('multiplayer customization wiring (T11)', () => {
     session.attach(fake.canvas.surface);
     wire.emitStatus('connected');
     wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    expect(wire.sent).toEqual([]);
     session.equipPart('nose-crimson');
     expect(session.getSnapshot().customization!.appearance).toEqual({ nose: 'nose-crimson' });
-    expect(wire.sent).toEqual([]);
+    // One guest report per accepted local change (AC-13 b).
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { nose: 'nose-crimson' } },
+    ]);
   });
 
   it('applies guest local unequip', () => {
@@ -5053,14 +5528,25 @@ describe('multiplayer customization wiring (T11)', () => {
     const session = createOnlineSession(fake, wire, engine);
     session.attach(fake.canvas.surface);
     wire.emitStatus('connected');
-    wire.emit(welcomeMessage({ roster: [selfMember(), member()] }));
+    wire.emit(
+      welcomeMessage({
+        roster: [
+          selfMember({ appearance: { nose: 'nose-crimson', 'tail-fin': 'tail-fin-split' } }),
+          member(),
+        ],
+      }),
+    );
+    // The roster self already carries the resumed guest's record: the welcome reports nothing.
+    expect(wire.sent).toEqual([]);
 
     session.unequipPart!('nose');
 
     expect(session.getSnapshot().customization!.appearance).toEqual({
       'tail-fin': 'tail-fin-split',
     });
-    expect(wire.sent).toEqual([]);
+    expect(wire.sent).toEqual([
+      { type: 'setAppearance', appearance: { 'tail-fin': 'tail-fin-split' } },
+    ]);
   });
 
   it('guest open with insufficient counts is a no-op', () => {
