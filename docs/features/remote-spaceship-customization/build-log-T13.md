@@ -3,7 +3,7 @@
 Task: T13 (2026-11-19)
 Files changed: `src/frontend/src/game/session.ts`, `src/frontend/src/game/session.test.ts`, `docs/features/remote-spaceship-customization/build-log-T13.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `<pending>` — `feat: wire guest appearance and spectate convergence` (not pushed; the real hash is recorded in the follow-up `docs:` commit, mirroring T1/T2/T8/T12)
+Commit: `234bada` — `feat: wire guest appearance and spectate convergence` (not pushed; hash recorded in this follow-up `docs:` commit, mirroring T1/T2/T8/T12)
 
 ## Sketch (≤5 lines)
 
