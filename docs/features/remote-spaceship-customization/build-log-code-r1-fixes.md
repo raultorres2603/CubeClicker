@@ -4,9 +4,9 @@ Task: code-review r1 remediation (2026-11-19)
 Files changed: `docs/architecture/realtime.md`, `docs/architecture/frontend-rendering.md`,
 `docs/features/remote-spaceship-customization/build-log-code-r1-fixes.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `docs: clarify appearance projection boundaries` (single docs-only commit containing the
-two architecture docs and this log; not pushed). The commit hash is reported by the builder because a
-commit cannot embed its own hash.
+Commit: `1f95cd6` — `docs: clarify appearance projection boundaries` (not pushed; the hash is
+recorded by the follow-up `docs: record code-r1 fix commit hash` commit, because a commit cannot
+embed its own hash).
 
 ## Sketch (≤5 lines)
 
