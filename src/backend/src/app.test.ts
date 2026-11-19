@@ -315,6 +315,7 @@ describe('GET /ws', () => {
           removedIds: secondWelcome.self.removedIds,
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
       });
     } finally {
@@ -470,6 +471,7 @@ describe('GET /ws', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
       });
       expect(fourthWelcome.roster[0]).toEqual({
@@ -482,6 +484,7 @@ describe('GET /ws', () => {
         removedIds: [],
         yawSteps: 0,
         pitchSteps: 0,
+        appearance: {},
       });
 
       // p1's grace expires; only p2 (server 1) hears about it.
@@ -545,6 +548,7 @@ describe('GET /ws', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
         {
           playerId: 'p2',
@@ -556,6 +560,7 @@ describe('GET /ws', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
       ]);
       expect(await nextWithoutLeaderboard(second)).toEqual({
@@ -618,6 +623,7 @@ describe('GET /ws', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
         {
           playerId: 'p4',
@@ -629,6 +635,7 @@ describe('GET /ws', () => {
           removedIds: [],
           yawSteps: 0,
           pitchSteps: 0,
+          appearance: {},
         },
       ]);
       expect(await nextWithoutLeaderboard(fourth)).toEqual({
@@ -655,6 +662,7 @@ describe('GET /ws', () => {
             removedIds: [],
             yawSteps: 0,
             pitchSteps: 0,
+            appearance: {},
           },
         ]);
       } finally {
@@ -1507,8 +1515,26 @@ describe('granular customization integration (T5)', () => {
         parts: { 'hull-obsidian': 2 },
         appearance: { hull: 'hull-obsidian' },
       };
+      // The public projection follows the account update: one frame per affected member
+      // (p1 and p2) on this server, for every recipient.
+      const equippedFrames = [
+        {
+          type: 'memberAppearance',
+          playerId: 'p1',
+          appearance: { hull: 'hull-obsidian' },
+        },
+        {
+          type: 'memberAppearance',
+          playerId: 'p2',
+          appearance: { hull: 'hull-obsidian' },
+        },
+      ] as const;
       expect(await opener.next()).toEqual(equipped);
+      expect(await opener.next()).toEqual(equippedFrames[0]);
+      expect(await opener.next()).toEqual(equippedFrames[1]);
       expect(await secondTab.next()).toEqual(equipped);
+      expect(await secondTab.next()).toEqual(equippedFrames[0]);
+      expect(await secondTab.next()).toEqual(equippedFrames[1]);
 
       // A later connection adopts the persisted loadout with no reveal.
       const late = await connectClient(url);
@@ -1533,9 +1559,24 @@ describe('granular customization integration (T5)', () => {
           parts: { 'hull-obsidian': 2 },
           appearance: {},
         };
+        // Every member of the account is affected (p1, p2, p3): three public frames each.
+        const unequippedFrames = [
+          { type: 'memberAppearance', playerId: 'p1', appearance: {} },
+          { type: 'memberAppearance', playerId: 'p2', appearance: {} },
+          { type: 'memberAppearance', playerId: 'p3', appearance: {} },
+        ] as const;
         expect(await late.next()).toEqual(unequipped);
+        expect(await late.next()).toEqual(unequippedFrames[0]);
+        expect(await late.next()).toEqual(unequippedFrames[1]);
+        expect(await late.next()).toEqual(unequippedFrames[2]);
         expect(await opener.next()).toEqual(unequipped);
+        expect(await opener.next()).toEqual(unequippedFrames[0]);
+        expect(await opener.next()).toEqual(unequippedFrames[1]);
+        expect(await opener.next()).toEqual(unequippedFrames[2]);
         expect(await secondTab.next()).toEqual(unequipped);
+        expect(await secondTab.next()).toEqual(unequippedFrames[0]);
+        expect(await secondTab.next()).toEqual(unequippedFrames[1]);
+        expect(await secondTab.next()).toEqual(unequippedFrames[2]);
 
         late.send({ type: 'unequipPart', slotId: 'wings' });
         expect(await late.next()).toEqual({ type: 'error', code: 'unknown_slot' });

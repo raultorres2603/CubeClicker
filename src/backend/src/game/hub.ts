@@ -41,8 +41,17 @@
  *   weighted part with **the captured hub `random`** (F21; never a fresh `deps.random()`), and
  *   calls `applyLootboxOpenV2`; every joined connection of the account receives the absolute
  *   `customizationUpdate`, and exactly the opening connection receives `lootboxOpened`;
- * - `equipPart`/`unequipPart` are server-validated against the v2 catalog and ownership (standard
- *   parts are implicitly owned), and persist through the per-slot atomic `setSlotAppearance`;
+ * - `equipPart`/`unequipPart` are server-validated against the v3 catalog and ownership
+ *   (standard parts are implicitly owned), and persist through the per-slot atomic
+ *   `setSlotAppearance`; an accepted change updates every member of the account, broadcasts
+ *   the account-scoped `customizationUpdate`, and emits one public `memberAppearance` frame
+ *   per affected member on that member's server;
+ * - the public appearance projection (`remote-spaceship-customization`): an account member is
+ *   seeded from the persisted `customization.appearance` (normalized v3) on join/rejoin; a
+ *   guest reports its loadout through `setAppearance`, which is normalized against the v3
+ *   catalog, stored on the member and rebroadcast to the server's other members (origin
+ *   excluded) only on a change, inside a true trailing 10-per-1000 ms window. The stored
+ *   record survives grace, travels with a cross-server move and is discarded on final removal;
  * - the legacy ids `body-*`/`wings-*`/`engine-*` stay accepted: the server expands them to one
  *   hull slot or both wing/ignition slots, and a multi-slot legacy id requires **both** target
  *   parts owned; nose/cockpit ids are already v2 ids and equip directly (AC-28).
@@ -82,6 +91,7 @@ import {
   welcomeMessage,
   worldEnteredMessage,
   leaderboardUpdateMessage,
+  memberAppearanceMessage,
   type CubeState,
   type CubeSync,
   type EconomyState,
@@ -139,19 +149,27 @@ import {
   UPGRADE_CATALOG,
 } from './upgrades.js';
 import {
-  defaultPartForSlot,
-  isValidPartId,
-  isValidSlotId,
-  partDefinition,
-  selectLootPart,
-  type PartIdV2,
-  type SlotId,
-} from './parts-v2.js';
+  defaultPartForSlotV3,
+  isValidPartIdV3,
+  isValidSlotIdV3,
+  normalizeAppearanceV3,
+  partDefinitionV3,
+  selectLootPartV3,
+  type PartIdV3,
+  type SlotIdV3,
+} from './parts-v3.js';
 import type { LogSink } from '../observability/logging.js';
 import type { Metrics } from '../observability/metrics.js';
 
 /** The trailing window of the explode rate limit: 30 admitted attempts per second (AC-14). */
 const RATE_WINDOW_MS = 1000;
+
+/**
+ * Guest `setAppearance` quota: at most 10 admitted frames per member inside any true
+ * trailing 1000 ms window (`remote-spaceship-customization` AC-12). Excess frames are
+ * dropped silently (no state change, no broadcast, no error).
+ */
+const APPEARANCE_RATE_LIMIT = 10;
 
 /**
  * Diagnostic ping limit: at most one accepted `ping` per connection per second (AC-23).
@@ -174,18 +192,18 @@ export const ECONOMY_BROADCAST_INTERVAL_MS = 250;
 /** Max `rotate` messages per trailing second per member (AC-6). */
 const ROTATE_RATE_LIMIT = 20;
 
-/** One equip target: the v2 slot and the v2 part to place there. */
+/** One equip target: the v3 slot and the v3 part to place there. */
 interface EquipTarget {
-  slot: SlotId;
-  partId: PartIdV2;
+  slot: SlotIdV3;
+  partId: PartIdV3;
 }
 
 /**
- * Legacy catalog part ids expanded server-side to their v2 target(s) (AC-28):
+ * Legacy catalog part ids expanded server-side to their v3 target(s):
  * `body-*` → one hull slot, `wings-*` → both wing slots, `engine-*` → both ignition slots.
- * Nose/cockpit ids are v2 ids already and resolve through `isValidPartId`.
+ * Nose/cockpit ids are v3 ids already and resolve through `isValidPartIdV3`.
  */
-const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
+const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV3[]>> = {
   'body-default': ['hull-default'],
   'body-obsidian': ['hull-obsidian'],
   'body-gold': ['hull-gold'],
@@ -195,21 +213,21 @@ const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
   'engine-blue': ['ignition-left-blue', 'ignition-right-blue'],
 };
 
-/** Expands a client-supplied part id to its v2 target slot(s); `null` when unknown. */
+/** Expands a client-supplied part id to its v3 target slot(s); `null` when unknown. */
 function resolveEquipTargets(partId: string): EquipTarget[] | null {
-  if (isValidPartId(partId)) {
-    return [{ slot: partDefinition(partId).slot, partId }];
+  if (isValidPartIdV3(partId)) {
+    return [{ slot: partDefinitionV3(partId).slot, partId }];
   }
   const legacy = LEGACY_EQUIP_TARGETS[partId];
   if (legacy === undefined) {
     return null;
   }
-  return legacy.map((id) => ({ slot: partDefinition(id).slot, partId: id }));
+  return legacy.map((id) => ({ slot: partDefinitionV3(id).slot, partId: id }));
 }
 
 /** Standard parts are implicitly owned (AC-12); other parts need a positive count (AC-21). */
-function ownsPart(state: CustomizationState, partId: PartIdV2): boolean {
-  return partDefinition(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
+function ownsPart(state: CustomizationState, partId: PartIdV3): boolean {
+  return partDefinitionV3(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
 }
 
 /**
@@ -369,6 +387,17 @@ interface Member {
   /** Server-authoritative customization state for this member. */
   customization: CustomizationState;
   /**
+   * The member's public appearance projection (`remote-spaceship-customization`).
+   *
+   * Accounts are seeded from the persisted `customization.appearance` (normalized v3) on
+   * join/rejoin and updated by the accepted equip path; guests report it through
+   * `setAppearance`, which the hub normalizes against the v3 catalog. It survives a socket
+   * close inside grace and travels with the member on a cross-server move.
+   */
+  appearance: Record<string, string>;
+  /** Timestamps (ms) of the guest `setAppearance` frames admitted in the trailing window. */
+  appearanceAdmitted: number[];
+  /**
    * Session counters for the live leaderboard (`server-live-leaderboard`).
    *
    * Incremented only at the hub's accepted transitions (`handleExplode` after validation,
@@ -407,7 +436,7 @@ export function createGameHub(deps: HubDeps): GameHub {
    * The one captured RNG stream (F21/AC-18). Every server draw shares it, synchronously in
    * message-arrival order: a join and each accepted cube completion draw one next-cube grid
    * value (`createNextCube`), and every account `openLootbox` that passes the in-flight guard
-   * draws exactly one weighted loot value (`selectLootPart`) before its repository await. An
+   * draws exactly one weighted loot value (`selectLootPartV3`) before its repository await. An
    * in-flight guard drop therefore never consumes a loot draw, and no handler ever calls
    * `deps.random()` again.
    */
@@ -711,6 +740,7 @@ export function createGameHub(deps: HubDeps): GameHub {
       removedIds: [...member.cube.removedIds],
       yawSteps: member.yawSteps,
       pitchSteps: member.pitchSteps,
+      appearance: { ...member.appearance },
     };
   }
 
@@ -1135,6 +1165,10 @@ export function createGameHub(deps: HubDeps): GameHub {
       economy: loadedEconomy,
       upgrades: loadedUpgrades,
       customization: loadedCustomization,
+      appearance: isAccount
+        ? normalizeAppearanceV3(loadedCustomization.appearance)
+        : {},
+      appearanceAdmitted: [],
       sessionStats: { clicks: 0, facesDestroyed: 0, cubesCompleted: 0 },
       connection,
       rate: { admitted: [], lastLimitedAt: null },
@@ -1388,6 +1422,70 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
   }
 
+  /** Whether two appearance records carry the same slot→part-id pairs (order-independent). */
+  function sameAppearance(
+    left: Record<string, string>,
+    right: Record<string, string>,
+  ): boolean {
+    const leftKeys = Object.keys(left);
+    if (leftKeys.length !== Object.keys(right).length) {
+      return false;
+    }
+    for (const key of leftKeys) {
+      if (left[key] !== right[key]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Pins one member's public appearance (AC-10/AC-11). Returns whether it actually changed,
+   * so the caller emits a `memberAppearance` frame only for a real change. The stored record
+   * is a fresh copy: a normalized draft or caller argument can never alias member state.
+   */
+  function setMemberAppearance(member: Member, appearance: Record<string, string>): boolean {
+    if (sameAppearance(member.appearance, appearance)) {
+      return false;
+    }
+    member.appearance = { ...appearance };
+    return true;
+  }
+
+  /**
+   * AC-10 fan-out state step: mirrors one account's persisted appearance onto **every**
+   * member of that account before broadcasting, returning the members that changed (one
+   * `memberAppearance` frame each, on that member's own server).
+   */
+  function updateMembersAppearance(
+    accountId: string,
+    appearance: Record<string, string>,
+  ): Member[] {
+    const normalized = normalizeAppearanceV3(appearance);
+    const changed: Member[] = [];
+    for (const m of members.values()) {
+      if (m.accountId === accountId && setMemberAppearance(m, normalized)) {
+        changed.push(m);
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Broadcasts one member's pinned appearance on that member's current server (AC-10/AC-11).
+   *
+   * The account equip path includes every recipient (the owner's own tabs must update their
+   * roster entry); the guest path passes the origin so the reporter receives no echo. The
+   * frame is encoded once per broadcast by the shared fan-out.
+   */
+  function broadcastMemberAppearance(member: Member, except?: string): void {
+    const location = locationOf(member.playerId);
+    if (location === null) {
+      return;
+    }
+    broadcast(location.serverId, memberAppearanceMessage(member.playerId, member.appearance), except);
+  }
+
   function broadcastCustomizationUpdate(userId: string, customization: CustomizationState): void {
     broadcastAccount(userId, customizationUpdateMessage(customization));
   }
@@ -1609,11 +1707,15 @@ export function createGameHub(deps: HubDeps): GameHub {
     try {
       const accountId = member.accountId;
       // One weighted draw from the captured hub stream, before the repository await (AC-18).
-      const partId = selectLootPart(random);
-      const definition = partDefinition(partId);
+      const partId = selectLootPartV3(random);
+      if (!isValidPartIdV3(partId)) {
+        // Unreachable: `selectLootPartV3` only returns catalog ids.
+        throw new Error(`selectLootPartV3 returned an unknown part: ${partId}`);
+      }
+      const definition = partDefinitionV3(partId);
       if (definition.rarity === 'standard') {
-        // Unreachable: `selectLootPart` only returns lootable parts.
-        throw new Error(`selectLootPart returned a standard part: ${partId}`);
+        // Unreachable: `selectLootPartV3` only returns lootable parts.
+        throw new Error(`selectLootPartV3 returned a standard part: ${partId}`);
       }
       const result = await economyRepo.applyLootboxOpenV2(accountId, partId);
       if (closed) {
@@ -1691,8 +1793,16 @@ export function createGameHub(deps: HubDeps): GameHub {
         return;
       }
     }
+    // Authority first (AC-10): every member of the account adopts the persisted appearance
+    // before the account-scoped update and the per-member public frames.
+    const changed = updateMembersAppearance(accountId, state.appearance);
     updateMembersCustomization(accountId, state);
     broadcastCustomizationUpdate(accountId, state);
+    // One `memberAppearance` per affected member/playerId, on that member's server. Two tabs
+    // on one server are two members, so both frames reach that server; two servers get one each.
+    for (const changedMember of changed) {
+      broadcastMemberAppearance(changedMember);
+    }
   }
 
   async function handleUnequipPart(
@@ -1703,7 +1813,7 @@ export function createGameHub(deps: HubDeps): GameHub {
     if (member.accountId === null || economyRepo === null) {
       return;
     }
-    if (!isValidSlotId(slotId)) {
+    if (!isValidSlotIdV3(slotId)) {
       sendError(connection, 'unknown_slot');
       return;
     }
@@ -1714,15 +1824,51 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     const equipped = current.appearance[slotId];
     // A missing slot and a slot resolving to its standard part are already at the default.
-    if (equipped === undefined || equipped === defaultPartForSlot(slotId)) {
+    if (equipped === undefined || equipped === defaultPartForSlotV3(slotId)) {
       return;
     }
     const state = await economyRepo.setSlotAppearance(accountId, slotId, null);
     if (closed) {
       return;
     }
+    // Authority first (AC-10): mirror the persisted appearance, then fan out per member.
+    const changed = updateMembersAppearance(accountId, state.appearance);
     updateMembersCustomization(accountId, state);
     broadcastCustomizationUpdate(accountId, state);
+    for (const changedMember of changed) {
+      broadcastMemberAppearance(changedMember);
+    }
+  }
+
+  /**
+   * Guest public appearance report (`remote-spaceship-customization` AC-11/AC-12).
+   *
+   * Accounts are refused silently: their appearance is authoritative from persistence, so a
+   * client report changes no state and emits no frame/error. A guest's record is normalized
+   * against the v3 catalog (unknown ids, wrong-slot ids and legacy duplicates are dropped by
+   * the normalizer; the codec already rejects > 11 entries), stored only when it differs from
+   * the pinned one, and broadcast to the server's other members only on a real change. The
+   * true trailing 1000 ms window admits at most 10 frames per member; the 11th and later are
+   * dropped silently (no state, no frame, no error).
+   */
+  function handleSetAppearance(member: Member, appearance: Record<string, string>): void {
+    if (member.accountId !== null) {
+      return;
+    }
+    const now = deps.now();
+    const admitted = member.appearanceAdmitted;
+    while (admitted.length > 0 && admitted[0]! <= now - RATE_WINDOW_MS) {
+      admitted.shift();
+    }
+    if (admitted.length >= APPEARANCE_RATE_LIMIT) {
+      return;
+    }
+    admitted.push(now);
+    const normalized = normalizeAppearanceV3(appearance);
+    if (!setMemberAppearance(member, normalized)) {
+      return;
+    }
+    broadcastMemberAppearance(member, member.playerId);
   }
 
   function handleRotate(member: Member, connection: Connection, yawSteps: number, pitchSteps: number): void {
@@ -1836,6 +1982,10 @@ export function createGameHub(deps: HubDeps): GameHub {
     }
     if (message.type === 'unequipPart') {
       void handleUnequipPart(member, connection, message.slotId);
+      return;
+    }
+    if (message.type === 'setAppearance') {
+      handleSetAppearance(member, message.appearance);
       return;
     }
   }

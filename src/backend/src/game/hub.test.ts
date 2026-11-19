@@ -489,6 +489,7 @@ function memberOf(
   cube: CubeFields = LEVEL_0,
   yawSteps = 0,
   pitchSteps = 0,
+  appearance: Record<string, string> = {},
 ): {
   playerId: string;
   name: string;
@@ -499,8 +500,9 @@ function memberOf(
   removedIds: string[];
   yawSteps: number;
   pitchSteps: number;
+  appearance: Record<string, string>;
 } {
-  return { playerId, name, position, ...cube, yawSteps, pitchSteps };
+  return { playerId, name, position, ...cube, yawSteps, pitchSteps, appearance };
 }
 
 /** Pinned ring positions (T1 has the formula; these are the exact doubles the hub must send). */
@@ -2521,13 +2523,13 @@ describe('granular spaceship customization (T5)', () => {
       },
       {
         type: 'lootboxOpened',
-        partId: 'tail-fin-comet',
-        slot: 'tail-fin',
+        partId: 'shot-kite-solar',
+        slot: 'shot',
         rarity: 'epic',
         duplicate: false,
         lootboxes: 0,
         keys: 0,
-        parts: { 'hull-obsidian': 1, 'tail-fin-comet': 1 },
+        parts: { 'hull-obsidian': 1, 'shot-kite-solar': 1 },
         appearance: {},
       },
     ]);
@@ -2700,6 +2702,11 @@ describe('granular spaceship customization (T5)', () => {
         parts: {},
         appearance: { 'wing-left': 'wing-left-default' },
       },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { 'wing-left': 'wing-left-default' },
+      },
     ]);
     expect(await repo.findCustomizationByUserId('u1')).toEqual({
       lootboxes: 0,
@@ -2729,6 +2736,11 @@ describe('granular spaceship customization (T5)', () => {
         parts: { 'nose-crimson': 1 },
         appearance: { nose: 'nose-crimson' },
       },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { nose: 'nose-crimson' },
+      },
     ]);
   });
 
@@ -2754,8 +2766,18 @@ describe('granular spaceship customization (T5)', () => {
       parts: { 'nose-crimson': 1 },
       appearance: { nose: 'nose-crimson' },
     };
-    expect(first.messages()).toEqual([expected]);
-    expect(second.messages()).toEqual([expected]);
+    // Same-server two tabs are two members: one public frame per affected playerId, so each
+    // tab receives both frames (a single frame would leave the sibling's roster entry stale).
+    expect(first.messages()).toEqual([
+      expected,
+      { type: 'memberAppearance', playerId: 'p1', appearance: { nose: 'nose-crimson' } },
+      { type: 'memberAppearance', playerId: 'p2', appearance: { nose: 'nose-crimson' } },
+    ]);
+    expect(second.messages()).toEqual([
+      expected,
+      { type: 'memberAppearance', playerId: 'p1', appearance: { nose: 'nose-crimson' } },
+      { type: 'memberAppearance', playerId: 'p2', appearance: { nose: 'nose-crimson' } },
+    ]);
   });
 
   it('equipPart unknown part sends unknown_part', async () => {
@@ -2812,6 +2834,7 @@ describe('granular spaceship customization (T5)', () => {
         parts: { 'hull-gold': 1 },
         appearance: { hull: 'hull-gold' },
       },
+      { type: 'memberAppearance', playerId: 'p1', appearance: { hull: 'hull-gold' } },
     ]);
   });
 
@@ -2847,6 +2870,11 @@ describe('granular spaceship customization (T5)', () => {
         lootboxes: 0,
         keys: 0,
         parts: { 'wing-left-silver': 1, 'wing-right-silver': 1 },
+        appearance: { 'wing-left': 'wing-left-silver', 'wing-right': 'wing-right-silver' },
+      },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
         appearance: { 'wing-left': 'wing-left-silver', 'wing-right': 'wing-right-silver' },
       },
     ]);
@@ -2896,6 +2924,14 @@ describe('granular spaceship customization (T5)', () => {
           'ignition-right': 'ignition-right-blue',
         },
       },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: {
+          'ignition-left': 'ignition-left-blue',
+          'ignition-right': 'ignition-right-blue',
+        },
+      },
     ]);
   });
 
@@ -2931,6 +2967,14 @@ describe('granular spaceship customization (T5)', () => {
         lootboxes: 0,
         keys: 0,
         parts: {},
+        appearance: {
+          'ignition-left': 'ignition-left-default',
+          'ignition-right': 'ignition-right-default',
+        },
+      },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
         appearance: {
           'ignition-left': 'ignition-left-default',
           'ignition-right': 'ignition-right-default',
@@ -2985,8 +3029,13 @@ describe('granular spaceship customization (T5)', () => {
       parts: { 'nose-crimson': 1, 'hull-obsidian': 1 },
       appearance: { hull: 'hull-obsidian' },
     };
-    expect(first.messages()).toEqual([expected]);
-    expect(second.messages()).toEqual([expected]);
+    const expectedFrames = [
+      expected,
+      { type: 'memberAppearance', playerId: 'p1', appearance: { hull: 'hull-obsidian' } },
+      { type: 'memberAppearance', playerId: 'p2', appearance: { hull: 'hull-obsidian' } },
+    ];
+    expect(first.messages()).toEqual(expectedFrames);
+    expect(second.messages()).toEqual(expectedFrames);
     expect(await repo.findCustomizationByUserId('u1')).toEqual({
       lootboxes: 0,
       keys: 0,
@@ -3091,6 +3140,700 @@ describe('granular spaceship customization (T5)', () => {
       appearance: {},
     });
     expect(peer2.messages().some((m) => m.type === 'lootboxOpened')).toBe(false);
+  });
+});
+
+describe('public appearance projection (remote-spaceship-customization T6)', () => {
+  /**
+   * The worst-case 11-entry appearance: every slot with its longest catalog id
+   * (`<slot>-bulwark-crimson`; the longest is `ignition-right-bulwark-crimson`, 30 chars).
+   */
+  const FULL_APPEARANCE: Record<string, string> = {
+    hull: 'hull-bulwark-crimson',
+    nose: 'nose-bulwark-crimson',
+    cockpit: 'cockpit-bulwark-crimson',
+    'wing-left': 'wing-left-bulwark-crimson',
+    'wing-right': 'wing-right-bulwark-crimson',
+    'engine-left': 'engine-left-bulwark-crimson',
+    'engine-right': 'engine-right-bulwark-crimson',
+    'ignition-left': 'ignition-left-bulwark-crimson',
+    'ignition-right': 'ignition-right-bulwark-crimson',
+    'tail-fin': 'tail-fin-bulwark-crimson',
+    shot: 'shot-bulwark-crimson',
+  };
+
+  /** The public `MemberState` key set: identity/cube/appearance only (no inventory/account). */
+  const PUBLIC_MEMBER_KEYS = [
+    'appearance',
+    'gridSize',
+    'levelIndex',
+    'name',
+    'pitchSteps',
+    'playerId',
+    'position',
+    'removedIds',
+    'styleId',
+    'yawSteps',
+  ];
+
+  interface AppearanceHarnessOptions {
+    overrides?: Partial<GameConfig>;
+    economy?: InMemoryEconomyRepository;
+    draw?: () => number;
+  }
+
+  /** A hub with a manual clock, optional repo/metrics and guest/account helpers. */
+  function createAppearanceHarness(options: AppearanceHarnessOptions = {}) {
+    const config: GameConfig = { ...loadGameConfig({}), ...options.overrides };
+    const metrics = createMetrics();
+    let clock = 0;
+    const hub = createGameHub({
+      config,
+      now: () => clock,
+      random: () => options.draw ?? (() => 0),
+      timers: { setInterval, clearInterval, setTimeout, clearTimeout },
+      metrics,
+      ...(options.economy === undefined ? {} : { economy: options.economy }),
+    });
+    return {
+      config,
+      hub,
+      metrics,
+      setNow(ms: number): void {
+        clock = ms;
+      },
+      advance(ms: number): void {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      },
+      connectGuest(): FakePeer {
+        const peer = new FakePeer();
+        hub.attach(peer);
+        return peer;
+      },
+      advanceTimersOnly(ms: number): void {
+        vi.advanceTimersByTime(ms);
+      },
+      connectAccount(userId = 'u1', username = 'alice'): FakePeer {
+        const peer = new FakePeer();
+        hub.attach(peer, { userId, username, verified: true });
+        return peer;
+      },
+      join(peer: FakePeer): void {
+        peer.receive(JSON.stringify({ type: 'join' }));
+      },
+      rejoin(peer: FakePeer, token: string): void {
+        peer.receive(JSON.stringify({ type: 'rejoin', token }));
+      },
+      setAppearance(peer: FakePeer, appearance: Record<string, string>): void {
+        peer.receive(JSON.stringify({ type: 'setAppearance', appearance }));
+      },
+      async flush(): Promise<void> {
+        await drainMicrotasks();
+      },
+    };
+  }
+
+  /** The numeric value of one exact rendered sample (`name` or `name{labels}`), or `null`. */
+  function sampleValue(metrics: Metrics, sample: string): number | null {
+    const line = metrics
+      .render()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${sample} `));
+    if (line === undefined) {
+      return null;
+    }
+    return Number(line.slice(sample.length + 1));
+  }
+
+  /** A repository with the pinned seeded appearance and an owned lootable nose part. */
+  async function seededRepository(): Promise<InMemoryEconomyRepository> {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    await repo.applyLootboxOpenV2('u1', 'nose-crimson');
+    await repo.applyLootboxOpenV2('u1', 'hull-dart-chrome');
+    await repo.setSlotAppearance('u1', 'hull', 'hull-obsidian');
+    return repo;
+  }
+
+  it('seeds an account member from the persisted v3 appearance on a fresh join', async () => {
+    const repo = await seededRepository();
+    await repo.setSlotAppearance('u1', 'shot', 'shot-orca-violet');
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const peer = h.connectAccount();
+    h.join(peer);
+    await h.flush();
+
+    const welcome = welcomeOf(peer);
+    expect(welcome.roster).toEqual([
+      memberOf('p1', 'alice', X2_SLOT_1, LEVEL_0, 0, 0, {
+        hull: 'hull-obsidian',
+        shot: 'shot-orca-violet',
+      }),
+    ]);
+    expect(welcome.roster[0]!.appearance).toEqual({
+      hull: 'hull-obsidian',
+      shot: 'shot-orca-violet',
+    });
+    // The account-private persisted state keeps the same normalized record.
+    expect(welcome.customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-dart-chrome': 1 },
+      appearance: { hull: 'hull-obsidian', shot: 'shot-orca-violet' },
+    });
+  });
+
+  it('seeds a sibling tab memberJoined with the persisted appearance', async () => {
+    const repo = await seededRepository();
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectAccount();
+    h.join(first);
+    await h.flush();
+    const second = h.connectAccount();
+    h.join(second);
+    await h.flush();
+
+    expect(onlyType(first, 'memberJoined')).toEqual({
+      type: 'memberJoined',
+      member: memberOf('p2', 'alice', X2_SLOT_2, LEVEL_0, 0, 0, { hull: 'hull-obsidian' }),
+    });
+    expect(welcomeOf(second).roster).toEqual([
+      memberOf('p1', 'alice', X2_SLOT_1, LEVEL_0, 0, 0, { hull: 'hull-obsidian' }),
+      memberOf('p2', 'alice', X2_SLOT_2, LEVEL_0, 0, 0, { hull: 'hull-obsidian' }),
+    ]);
+  });
+
+  it('keeps the seeded account appearance across a rejoin inside grace', async () => {
+    const repo = await seededRepository();
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const peer = h.connectAccount();
+    h.join(peer);
+    await h.flush();
+    const token = welcomeOf(peer).token;
+    peer.drop();
+
+    const resumed = new FakePeer();
+    h.hub.attach(resumed, { userId: 'u1', username: 'alice', verified: true });
+    h.rejoin(resumed, token);
+    await h.flush();
+
+    expect(welcomeOf(resumed).roster).toEqual([
+      memberOf('p1', 'alice', X2_SLOT_1, LEVEL_0, 0, 0, { hull: 'hull-obsidian' }),
+    ]);
+  });
+
+  it('starts every guest from an empty appearance on welcome and memberJoined', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+
+    expect(welcomeOf(first).roster).toEqual([memberOf('p1', 'Player 1', X2_SLOT_1)]);
+    expect(welcomeOf(second).roster).toEqual([
+      memberOf('p1', 'Player 1', X2_SLOT_1),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
+    ]);
+    expect(onlyType(first, 'memberJoined')).toEqual({
+      type: 'memberJoined',
+      member: memberOf('p2', 'Player 2', X2_SLOT_2),
+    });
+  });
+
+  it('normalizes a guest report, stores it and broadcasts only to the other members', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    // A wrong-slot id, an unknown id and a valid id: only the valid one survives normalization.
+    h.setAppearance(first, {
+      hull: 'nose-crimson',
+      nose: 'nope',
+      'wing-left': 'wing-left-gold',
+    });
+
+    expect(second.messages()).toEqual([
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { 'wing-left': 'wing-left-gold' },
+      },
+    ]);
+    // The origin is excluded from its own report.
+    expect(first.messages()).toEqual([]);
+
+    // The pinned record is what later joiners see in the roster.
+    const third = h.connectGuest();
+    h.join(third);
+    expect(welcomeOf(third).roster).toEqual([
+      memberOf('p1', 'Player 1', X3_SLOT_1, LEVEL_0, 0, 0, {
+        'wing-left': 'wing-left-gold',
+      }),
+      memberOf('p2', 'Player 2', X3_SLOT_2),
+      memberOf('p3', 'Player 3', X3_SLOT_3),
+    ]);
+  });
+
+  it('broadcasts nothing when a guest report normalizes to the stored record', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    first.clear();
+    second.clear();
+    h.setAppearance(first, { hull: 'hull-gold' });
+    expect(second.messages()).toEqual([
+      { type: 'memberAppearance', playerId: 'p1', appearance: { hull: 'hull-gold' } },
+    ]);
+    first.clear();
+    second.clear();
+
+    // The legacy part id normalizes to the same canonical record: no state change, no frame.
+    h.setAppearance(first, { hull: 'body-gold' });
+    expect(second.messages()).toEqual([]);
+    expect(first.messages()).toEqual([]);
+  });
+
+  it('notifies the stored change when a guest report normalizes to an empty record', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    h.setAppearance(first, { nose: 'nose-crimson' });
+    first.clear();
+    second.clear();
+
+    h.setAppearance(first, { nose: 'missing-part' });
+    expect(second.messages()).toEqual([
+      { type: 'memberAppearance', playerId: 'p1', appearance: {} },
+    ]);
+    expect(first.messages()).toEqual([]);
+  });
+
+  it('treats setAppearance from an account member as a silent no-op', async () => {
+    const repo = await seededRepository();
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const peer = h.connectAccount();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    h.setAppearance(peer, { nose: 'nose-crimson' });
+    await h.flush();
+    expect(peer.messages()).toEqual([]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-dart-chrome': 1 },
+      appearance: { hull: 'hull-obsidian' },
+    });
+
+    // A sibling tab still sees the persisted record, and the next accepted equip builds on it
+    // (the refused report was never stored).
+    const second = h.connectAccount();
+    h.join(second);
+    await h.flush();
+    expect(welcomeOf(second).roster[0]!.appearance).toEqual({ hull: 'hull-obsidian' });
+    peer.clear();
+    second.clear();
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+    // Both members of the account are affected: one frame per playerId on this server.
+    expect(
+      peer.messages().filter((message) => message.type === 'memberAppearance'),
+    ).toEqual([
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+      {
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+    ]);
+  });
+
+  it('fans out one public frame per member for two tabs on the same server', async () => {
+    const repo = await seededRepository();
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 3 } });
+    const first = h.connectAccount();
+    h.join(first);
+    await h.flush();
+    const second = h.connectAccount();
+    h.join(second);
+    await h.flush();
+    const guest = h.connectGuest();
+    h.join(guest);
+    await h.flush();
+    first.clear();
+    second.clear();
+    guest.clear();
+
+    first.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+
+    const update = {
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-dart-chrome': 1 },
+      appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+    };
+    const frames = [
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+      {
+        type: 'memberAppearance',
+        playerId: 'p2',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+    ] as const;
+
+    // Both tabs are members ⇒ two frames per server, one per affected playerId.
+    expect(first.messages()).toEqual([update, ...frames]);
+    expect(second.messages()).toEqual([update, ...frames]);
+    // The guest is not on the account: it receives only the public projection.
+    expect(guest.messages()).toEqual([...frames]);
+  });
+
+  it('fans out one public frame per server when the account has a tab on each', async () => {
+    const repo = await seededRepository();
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectAccount();
+    h.join(first);
+    await h.flush();
+    const guest = h.connectGuest();
+    h.join(guest);
+    const second = h.connectAccount();
+    h.join(second);
+    await h.flush();
+    expect(welcomeOf(first).serverId).toBe(1);
+    expect(welcomeOf(guest).serverId).toBe(1);
+    expect(welcomeOf(second).serverId).toBe(2);
+    first.clear();
+    guest.clear();
+    second.clear();
+
+    first.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-crimson' }));
+    await h.flush();
+
+    const update = {
+      type: 'customizationUpdate',
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'nose-crimson': 1, 'hull-dart-chrome': 1 },
+      appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+    };
+    // Server 1 owns p1's frame; server 2 owns p3's frame. One frame each, never cross-server.
+    expect(first.messages()).toEqual([
+      update,
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+    ]);
+    expect(guest.messages()).toEqual([
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+    ]);
+    expect(second.messages()).toEqual([
+      update,
+      {
+        type: 'memberAppearance',
+        playerId: 'p3',
+        appearance: { hull: 'hull-obsidian', nose: 'nose-crimson' },
+      },
+    ]);
+  });
+
+  it('accepts generated v3 parts, the shot slot and their unequip through the account path', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    await repo.applyLootboxOpenV2('u1', 'hull-dart-chrome');
+    await repo.applyLootboxOpenV2('u1', 'shot-orca-violet');
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const peer = h.connectAccount();
+    h.join(peer);
+    await h.flush();
+    peer.clear();
+
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'hull-dart-chrome' }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'shot-orca-violet' }));
+    await h.flush();
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: 'shot' }));
+    await h.flush();
+
+    expect(
+      peer.messages().filter((message) => message.type === 'memberAppearance'),
+    ).toEqual([
+      { type: 'memberAppearance', playerId: 'p1', appearance: { hull: 'hull-dart-chrome' } },
+      {
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+      },
+      { type: 'memberAppearance', playerId: 'p1', appearance: { hull: 'hull-dart-chrome' } },
+    ]);
+    expect(await repo.findCustomizationByUserId('u1')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-dart-chrome': 1, 'shot-orca-violet': 1 },
+      appearance: { hull: 'hull-dart-chrome' },
+    });
+
+    // Accepted rules stay intact for v3: unowned is refused, unknown ids are refused.
+    peer.clear();
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'nose-kite-solar' }));
+    await h.flush();
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'not_owned' }]);
+    peer.clear();
+    peer.receive(JSON.stringify({ type: 'equipPart', partId: 'hull-not-a-part' }));
+    await h.flush();
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'unknown_part' }]);
+    peer.clear();
+    peer.receive(JSON.stringify({ type: 'unequipPart', slotId: 'booster' }));
+    await h.flush();
+    expect(peer.messages()).toEqual([{ type: 'error', code: 'unknown_slot' }]);
+  });
+
+  it('admits 10 guest frames in a true trailing second and expires the first at 1000 ms', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 3 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    first.clear();
+    second.clear();
+
+    const finishes = [
+      'chrome',
+      'azure',
+      'ember',
+      'jade',
+      'steel',
+      'ivory',
+      'abyss',
+      'aurum',
+      'violet',
+      'crimson',
+      'plasma',
+      'solar',
+    ] as const;
+    const record = (finish: string): Record<string, string> => ({
+      nose: `nose-dart-${finish}`,
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      h.setNow(index * 100);
+      h.setAppearance(first, record(finishes[index]!));
+    }
+    // 10 admitted frames at 0…900: the 11th at 950 sits inside (−50, 950] and is dropped.
+    h.setNow(950);
+    h.setAppearance(first, record('plasma'));
+    expect(second.messages()).toHaveLength(10);
+    // At 1000 the frame admitted at 0 is forgotten (`<= now − 1000`), so the next one is admitted.
+    h.setNow(1000);
+    h.setAppearance(first, record('solar'));
+    expect(second.messages()).toHaveLength(11);
+    expect(first.messages()).toEqual([]);
+
+    // Dropped frames changed no state: a later joiner sees the 10th record, never the 11th.
+    const third = h.connectGuest();
+    h.join(third);
+    expect(welcomeOf(third).roster[0]!.appearance).toEqual({
+      nose: 'nose-dart-solar',
+    });
+    expect(second.messages().filter((message) => message.type === 'memberAppearance')).toEqual(
+      finishes.slice(0, 10).map((finish) => ({
+        type: 'memberAppearance',
+        playerId: 'p1',
+        appearance: { nose: `nose-dart-${finish}` },
+      })).concat([
+        { type: 'memberAppearance', playerId: 'p1', appearance: { nose: 'nose-dart-solar' } },
+      ]),
+    );
+  });
+
+  it('keeps a guest appearance across a socket close inside grace and a rejoin', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    h.setAppearance(first, FULL_APPEARANCE);
+    const token = welcomeOf(first).token;
+    second.clear();
+
+    first.drop();
+    const resumed = new FakePeer();
+    h.hub.attach(resumed);
+    h.rejoin(resumed, token);
+
+    expect(welcomeOf(resumed).roster).toEqual([
+      memberOf('p1', 'Player 1', X2_SLOT_1, LEVEL_0, 0, 0, FULL_APPEARANCE),
+      memberOf('p2', 'Player 2', X2_SLOT_2),
+    ]);
+    // A resume sends no appearance frame: the roster is the authoritative projection.
+    expect(second.messages()).toEqual([]);
+  });
+
+  it('discards the appearance on final removal and starts a new identity empty', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const token = welcomeOf(first).token;
+    h.setAppearance(first, FULL_APPEARANCE);
+    first.drop();
+    h.advance(h.config.reconnectGraceMs);
+
+    const late = new FakePeer();
+    h.hub.attach(late);
+    h.rejoin(late, token);
+    expect(onlyType(late, 'error')).toEqual({ type: 'error', code: 'resume_failed' });
+
+    const fresh = h.connectGuest();
+    h.join(fresh);
+    expect(welcomeOf(fresh).roster).toEqual([memberOf('p2', 'Player 2', X2_SLOT_1)]);
+    expect(welcomeOf(fresh).roster[0]!.appearance).toEqual({});
+  });
+
+  it('carries the appearance with the member on a cross-server move', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    const third = h.connectGuest();
+    h.join(third);
+    expect(welcomeOf(first).serverId).toBe(1);
+    expect(welcomeOf(second).serverId).toBe(1);
+    expect(welcomeOf(third).serverId).toBe(2);
+    h.setAppearance(third, FULL_APPEARANCE);
+    // No other member shares server 2, so the guest report produces no frame.
+    expect(first.messages().some((message) => message.type === 'memberAppearance')).toBe(false);
+    expect(second.messages().some((message) => message.type === 'memberAppearance')).toBe(false);
+
+    // Free a server-1 slot so the planned move targets it at completion.
+    second.drop();
+    h.advance(h.config.reconnectGraceMs);
+    first.clear();
+    third.clear();
+
+    removeLevel(h, third, allIds(3));
+    third.clear();
+    first.clear();
+    third.receive(JSON.stringify({ type: 'cubeCompleted', level: 0 }));
+
+    const moved = memberOf(
+      'p3',
+      'Player 3',
+      X2_SLOT_2,
+      { levelIndex: 1, gridSize: 3, styleId: 'crimson-alloy', removedIds: [] },
+      0,
+      0,
+      FULL_APPEARANCE,
+    );
+    const entered = onlyType(third, 'worldEntered');
+    expect(entered.serverId).toBe(1);
+    expect(entered.roster).toEqual([memberOf('p1', 'Player 1', X2_SLOT_1), moved]);
+    expect(entered.roster[1]!.appearance).toEqual(FULL_APPEARANCE);
+    expect(onlyType(first, 'memberJoined').member).toEqual(moved);
+  });
+
+  it('never exposes account identity or inventory on the public member projection', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization('u1', { lootboxes: 2, keys: 2 });
+    await repo.applyLootboxOpenV2('u1', 'hull-gold');
+    await repo.applyLootboxOpenV2('u1', 'shot-kite-solar');
+    await repo.setSlotAppearance('u1', 'hull', 'hull-dart-chrome');
+    const h = createAppearanceHarness({ economy: repo, overrides: { maxUsersPerServer: 2 } });
+    const guest = h.connectGuest();
+    h.join(guest);
+    const account = h.connectAccount();
+    h.join(account);
+    await h.flush();
+
+    const projected = memberOf('p2', 'alice', X2_SLOT_2, LEVEL_0, 0, 0, {
+      hull: 'hull-dart-chrome',
+    });
+    const joined = onlyType(guest, 'memberJoined');
+    expect(joined.member).toEqual(projected);
+    expect(Object.keys(joined.member).sort()).toEqual(PUBLIC_MEMBER_KEYS);
+    expect(welcomeOf(account).roster).toEqual([
+      memberOf('p1', 'Player 1', X2_SLOT_1),
+      projected,
+    ]);
+    expect(Object.keys(welcomeOf(account).roster[1]!).sort()).toEqual(PUBLIC_MEMBER_KEYS);
+  });
+
+  it('counts a metrics-enabled memberAppearance broadcast without throwing', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 2 } });
+    const first = h.connectGuest();
+    h.join(first);
+    const second = h.connectGuest();
+    h.join(second);
+    second.clear();
+
+    h.setAppearance(first, { nose: 'nose-crimson' });
+
+    expect(second.messages()).toEqual([
+      { type: 'memberAppearance', playerId: 'p1', appearance: { nose: 'nose-crimson' } },
+    ]);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_received_total{type="setAppearance"}'),
+    ).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_messages_encoded_total{type="memberAppearance"}'),
+    ).toBe(1);
+    expect(
+      sampleValue(h.metrics, 'cubeclicker_ws_frames_sent_total{type="memberAppearance"}'),
+    ).toBe(1);
+  });
+
+  it('pins the 24-member full-appearance welcome inside the AC-14 outbound budget', async () => {
+    const h = createAppearanceHarness({ overrides: { maxUsersPerServer: 24 } });
+    const peers: FakePeer[] = [];
+    for (let index = 0; index < 24; index += 1) {
+      const peer = h.connectGuest();
+      h.join(peer);
+      peers.push(peer);
+    }
+    for (const peer of peers) {
+      h.setAppearance(peer, FULL_APPEARANCE);
+    }
+    const last = peers[23]!;
+    const token = welcomeOf(last).token;
+    last.drop();
+    const resumed = new FakePeer();
+    h.hub.attach(resumed);
+    h.rejoin(resumed, token);
+
+    const welcome = welcomeOf(resumed);
+    expect(welcome.roster).toHaveLength(24);
+    expect(welcome.customization).toBeUndefined();
+    for (const member of welcome.roster) {
+      expect(member.removedIds).toEqual([]);
+      expect(member.appearance).toEqual(FULL_APPEARANCE);
+      expect(Buffer.byteLength(JSON.stringify(member.appearance), 'utf8')).toBeLessThanOrEqual(550);
+    }
+    expect(Buffer.byteLength(JSON.stringify(welcome), 'utf8')).toBeLessThanOrEqual(17_408);
   });
 });
 
@@ -4855,12 +5598,12 @@ describe('server activity feed (live-activity-feed)', () => {
         return message.type === 'lootboxOpened';
       });
     expect(reveals.map((reveal) => [reveal.partId, reveal.rarity, reveal.duplicate])).toEqual([
-      ['tail-fin-comet', 'epic', false],
-      ['tail-fin-comet', 'epic', true],
+      ['shot-kite-solar', 'epic', false],
+      ['shot-kite-solar', 'epic', true],
     ]);
     expect(activityFrames(peer)).toEqual([
-      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet'),
-      epicActivity(3, 2000, 1, 'p1', 'alice', 'tail-fin-comet'),
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'shot-kite-solar'),
+      epicActivity(3, 2000, 1, 'p1', 'alice', 'shot-kite-solar'),
     ]);
   });
 
@@ -5042,7 +5785,7 @@ describe('server activity feed (live-activity-feed)', () => {
     const verifier = h.connect();
     h.join(verifier);
     expect(welcomeOf(verifier).activity).toEqual([
-      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet').event,
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'shot-kite-solar').event,
       transitionActivity(1, 0, 1, 'memberJoined', 'p1', 'alice').event,
     ]);
   });
@@ -5229,7 +5972,7 @@ describe('server activity feed (live-activity-feed)', () => {
     expect(repo.openCalls).toBe(1);
     expect(peer.messages().filter((message) => message.type === 'lootboxOpened')).toHaveLength(1);
     expect(activityFrames(peer)).toEqual([
-      epicActivity(2, 1000, 1, 'p1', 'alice', 'tail-fin-comet'),
+      epicActivity(2, 1000, 1, 'p1', 'alice', 'shot-kite-solar'),
     ]);
   });
 
