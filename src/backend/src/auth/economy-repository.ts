@@ -28,18 +28,25 @@
  * T4 adds the granular v2 contract (`applyLootboxOpenV2`, `setSlotAppearance`)
  * while keeping the legacy `applyLootboxOpen`/`setAppearance` methods for the
  * pre-migration hub. Every customization read is normalized: legacy keys/ids
- * are mapped to the v2 slot catalog and unknown/mismatched entries are
- * dropped, regardless of the persisted `customization_version` (F15).
+ * are mapped to the slot catalog and unknown/mismatched entries are dropped,
+ * regardless of the persisted `customization_version` (F15).
+ *
+ * remote-spaceship-customization T5 widens that contract to the v3 catalog
+ * (11 slots, 1,351 rows) and switches the read normalizer to
+ * `normalizeCustomizationStateV3`. The storage shape and the persisted
+ * `customization_version` (2) are unchanged: legacy v1/v2 rows normalize
+ * exactly as before, v3 ids round-trip, and the SQL/schema stay identical
+ * (AC-36).
  */
 
 import { roundCoins } from '../game/economy.js';
 import type { UpgradeId, UpgradeState } from '../game/upgrades.js';
 import type { PartId } from '../game/parts.js';
 import {
-  normalizeCustomizationState,
-  type PartIdV2,
-  type SlotId,
-} from '../game/parts-v2.js';
+  normalizeCustomizationStateV3,
+  type PartIdV3,
+  type SlotIdV3,
+} from '../game/parts-v3.js';
 
 export interface EconomyState {
   coins: number;
@@ -108,7 +115,7 @@ export interface EconomyRepository {
   ): Promise<CustomizationState>;
   applyLootboxOpenV2(
     userId: string,
-    partId: PartIdV2,
+    partId: PartIdV3,
   ): Promise<
     | { state: CustomizationState; duplicate: boolean }
     | { reason: 'no_lootbox' }
@@ -116,8 +123,8 @@ export interface EconomyRepository {
   >;
   setSlotAppearance(
     userId: string,
-    slot: SlotId,
-    partId: PartIdV2 | null,
+    slot: SlotIdV3,
+    partId: PartIdV3 | null,
   ): Promise<CustomizationState>;
 }
 
@@ -167,12 +174,13 @@ function copyCustomization(state: CustomizationState): CustomizationState {
 
 /**
  * The single read shape of both implementations: a defensive copy normalized
- * to the v2 slot catalog. Normalization is unconditional (it is idempotent for
- * canonical v2 state), so a legacy row restored with `customization_version=2`
- * still yields v2 keys/ids and unknown/mismatched entries are dropped (F15).
+ * to the v3 slot catalog. Normalization is unconditional (it is idempotent for
+ * canonical v3 state), so a legacy row restored with `customization_version=2`
+ * still yields v3 keys/ids, v3 ids survive, and unknown/mismatched entries are
+ * dropped (F15, AC-5, AC-36).
  */
 function normalizeRead(state: CustomizationState): CustomizationState {
-  return normalizeCustomizationState(state);
+  return normalizeCustomizationStateV3(state);
 }
 
 export class InMemoryEconomyRepository implements EconomyRepository {
@@ -430,7 +438,7 @@ export class InMemoryEconomyRepository implements EconomyRepository {
 
   async applyLootboxOpenV2(
     userId: string,
-    partId: PartIdV2,
+    partId: PartIdV3,
   ): Promise<
     | { state: CustomizationState; duplicate: boolean }
     | { reason: 'no_lootbox' }
@@ -463,8 +471,8 @@ export class InMemoryEconomyRepository implements EconomyRepository {
 
   async setSlotAppearance(
     userId: string,
-    slot: SlotId,
-    partId: PartIdV2 | null,
+    slot: SlotIdV3,
+    partId: PartIdV3 | null,
   ): Promise<CustomizationState> {
     const existing = this.store.get(userId);
     const baseCustom = normalizeRead(
@@ -841,7 +849,7 @@ export class PgEconomyRepository implements EconomyRepository {
 
   async applyLootboxOpenV2(
     userId: string,
-    partId: PartIdV2,
+    partId: PartIdV3,
   ): Promise<
     | { state: CustomizationState; duplicate: boolean }
     | { reason: 'no_lootbox' }
@@ -891,8 +899,8 @@ export class PgEconomyRepository implements EconomyRepository {
 
   async setSlotAppearance(
     userId: string,
-    slot: SlotId,
-    partId: PartIdV2 | null,
+    slot: SlotIdV3,
+    partId: PartIdV3 | null,
   ): Promise<CustomizationState> {
     // One key changes: set with jsonb_set or delete with the jsonb `-`
     // operator; every other slot is untouched.

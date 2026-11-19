@@ -42,6 +42,35 @@ const LEGACY_STATE = {
   },
 };
 
+/**
+ * T5 fixture: one real generated row per ship slot (catalog v3). The v3 normalizer
+ * must keep every id verbatim; a v2 normalizer would drop all of them.
+ */
+const V3_SHIP_APPEARANCE: Record<string, string> = {
+  hull: 'hull-dart-chrome',
+  nose: 'nose-lance-azure',
+  cockpit: 'cockpit-needle-jade',
+  'wing-left': 'wing-left-manta-ember',
+  'wing-right': 'wing-right-hauler-steel',
+  'engine-left': 'engine-left-bulwark-ivory',
+  'engine-right': 'engine-right-arrow-abyss',
+  'ignition-left': 'ignition-left-orca-aurum',
+  'ignition-right': 'ignition-right-talon-violet',
+  'tail-fin': 'tail-fin-kite-crimson',
+};
+
+/** The same fixture plus the `shot` slot (11 entries, `SLOT_CATALOG_V3` order). */
+const V3_APPEARANCE: Record<string, string> = {
+  ...V3_SHIP_APPEARANCE,
+  shot: 'shot-kite-solar',
+};
+
+/** The persisted v3 inventory paired with `V3_APPEARANCE` in the round-trip fixtures. */
+const V3_PARTS: Record<string, number> = {
+  'hull-dart-chrome': 2,
+  'shot-kite-solar': 1,
+};
+
 function sampleState(overrides: Partial<EconomyState> = {}): EconomyState {
   return {
     coins: 12.34,
@@ -1047,7 +1076,7 @@ describe('customization read normalization (T4)', () => {
   });
 });
 
-describe('InMemoryEconomyRepository v2 lootbox/appearance', () => {
+describe('InMemoryEconomyRepository lootbox/appearance (v2 + v3)', () => {
   it('applyLootboxOpenV2 reports duplicate false then true and increments the owned count', async () => {
     const repo = new InMemoryEconomyRepository();
     await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 2 });
@@ -1182,9 +1211,54 @@ describe('InMemoryEconomyRepository v2 lootbox/appearance', () => {
       appearance: {},
     });
   });
+
+  it('round-trips a persisted v3 row through find, setSlotAppearance and find', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 3, keys: 3 });
+    await repo.applyLootboxOpenV2(FIXED_USER, 'hull-dart-chrome');
+    await repo.applyLootboxOpenV2(FIXED_USER, 'hull-dart-chrome');
+    await repo.applyLootboxOpenV2(FIXED_USER, 'shot-kite-solar');
+    await repo.setAppearance(FIXED_USER, V3_APPEARANCE);
+    const stored = { lootboxes: 0, keys: 0, parts: V3_PARTS, appearance: V3_APPEARANCE };
+
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual(stored);
+
+    const reequipped = {
+      ...stored,
+      appearance: { ...V3_SHIP_APPEARANCE, shot: 'shot-orca-plasma' },
+    };
+    expect(await repo.setSlotAppearance(FIXED_USER, 'shot', 'shot-orca-plasma')).toEqual(
+      reequipped,
+    );
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual(reequipped);
+
+    const unequipped = { ...stored, appearance: V3_SHIP_APPEARANCE };
+    expect(await repo.setSlotAppearance(FIXED_USER, 'shot', null)).toEqual(unequipped);
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual(unequipped);
+  });
+
+  it('applyLootboxOpenV2 reports duplicates for a v3 shot id', async () => {
+    const repo = new InMemoryEconomyRepository();
+    await repo.grantCustomization(FIXED_USER, { lootboxes: 2, keys: 2 });
+
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'shot-orca-plasma')).toEqual({
+      state: { lootboxes: 1, keys: 1, parts: { 'shot-orca-plasma': 1 }, appearance: {} },
+      duplicate: false,
+    });
+    expect(await repo.applyLootboxOpenV2(FIXED_USER, 'shot-orca-plasma')).toEqual({
+      state: { lootboxes: 0, keys: 0, parts: { 'shot-orca-plasma': 2 }, appearance: {} },
+      duplicate: true,
+    });
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'shot-orca-plasma': 2 },
+      appearance: {},
+    });
+  });
 });
 
-describe('PgEconomyRepository v2 lootbox/appearance', () => {
+describe('PgEconomyRepository lootbox/appearance (v2 + v3)', () => {
   function makeDb(handler: (text: string, values?: unknown[]) => unknown): EconomyDb & {
     calls: Array<{ text: string; values?: unknown[] }>;
   } {
@@ -1403,6 +1477,82 @@ describe('PgEconomyRepository v2 lootbox/appearance', () => {
     await expect(repo.setSlotAppearance(FIXED_USER, 'hull', 'hull-gold')).rejects.toThrow(
       'INSERT/UPDATE returned no row',
     );
+  });
+
+  it('findCustomizationByUserId keeps v3 ids and applies the v3 duplicate/wrong-slot rules', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 1,
+          keys: 2,
+          parts: {
+            'hull-dart-chrome': 2,
+            'wing-left-manta-ember': -1,
+            'nonsense-lance-azure': 3,
+            'wings-silver': 4,
+            'wing-right-silver': 1,
+            'shot-kite-solar': 1,
+            'tail-fin-kite-crimson': 1.5,
+          },
+          appearance: {
+            hull: 'hull-dart-chrome',
+            'wing-left': 'wing-left-manta-ember',
+            wings: 'wings-silver',
+            nose: 'hull-dart-chrome',
+            shot: 'shot-kite-solar',
+            'tail-fin': 'tail-fin-kite-crimson',
+            body: 'body-gold',
+          },
+          customization_version: 2,
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.findCustomizationByUserId(FIXED_USER)).toEqual({
+      lootboxes: 1,
+      keys: 2,
+      parts: {
+        'hull-dart-chrome': 2,
+        'wing-left-silver': 4,
+        'wing-right-silver': 5,
+        'shot-kite-solar': 1,
+      },
+      appearance: {
+        hull: 'hull-dart-chrome',
+        'wing-left': 'wing-left-manta-ember',
+        'wing-right': 'wing-right-silver',
+        'tail-fin': 'tail-fin-kite-crimson',
+        shot: 'shot-kite-solar',
+      },
+    });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].values).toEqual([FIXED_USER]);
+  });
+
+  it('setSlotAppearance writes the v3 shot slot and returns the ids intact', async () => {
+    const db = makeDb(() => ({
+      rows: [
+        {
+          lootboxes: 0,
+          keys: 0,
+          parts: V3_PARTS,
+          appearance: { ...V3_APPEARANCE, shot: 'shot-orca-plasma' },
+        },
+      ],
+      rowCount: 1,
+    }));
+    const repo = new PgEconomyRepository(db);
+
+    expect(await repo.setSlotAppearance(FIXED_USER, 'shot', 'shot-orca-plasma')).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: V3_PARTS,
+      appearance: { ...V3_APPEARANCE, shot: 'shot-orca-plasma' },
+    });
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].values).toEqual([FIXED_USER, 'shot', 'shot-orca-plasma']);
   });
 });
 
@@ -1770,13 +1920,14 @@ async function waitForPostgres(connectionString: string): Promise<Client> {
 const containerRuntime = detectContainerRuntime();
 const dbDescribe = containerRuntime === null ? describe.skip : describe;
 
-dbDescribe('PgEconomyRepository v2 against PostgreSQL', () => {
+dbDescribe('PgEconomyRepository customization against PostgreSQL', () => {
   const LEGACY_USER = '20000000-0000-4000-8000-000000000001';
   const OPEN_USER = '20000000-0000-4000-8000-000000000002';
   const DUPLICATE_USER = '20000000-0000-4000-8000-000000000003';
   const SLOT_USER = '20000000-0000-4000-8000-000000000004';
   const UPSERT_USER = '20000000-0000-4000-8000-000000000005';
   const DELETE_UPSERT_USER = '20000000-0000-4000-8000-000000000006';
+  const V3_USER = '20000000-0000-4000-8000-000000000007';
 
   let client: Client;
   let repo: PgEconomyRepository;
@@ -1852,6 +2003,29 @@ dbDescribe('PgEconomyRepository v2 against PostgreSQL', () => {
       parts: LEGACY_ROW.parts,
       appearance: LEGACY_ROW.appearance,
     });
+  });
+
+  it('round-trips a v3 row through find, setSlotAppearance and find', async () => {
+    await seed(V3_USER, 2, 2, V3_PARTS, V3_APPEARANCE);
+    const seeded = { lootboxes: 2, keys: 2, parts: V3_PARTS, appearance: V3_APPEARANCE };
+
+    expect(await repo.findCustomizationByUserId(V3_USER)).toEqual(seeded);
+
+    const reequipped = {
+      ...seeded,
+      appearance: { ...V3_SHIP_APPEARANCE, shot: 'shot-orca-plasma' },
+    };
+    expect(await repo.setSlotAppearance(V3_USER, 'shot', 'shot-orca-plasma')).toEqual(
+      reequipped,
+    );
+    expect(await repo.findCustomizationByUserId(V3_USER)).toEqual(reequipped);
+    expect(await storedRow(V3_USER)).toEqual(reequipped);
+
+    const version = await client.query(
+      'SELECT customization_version FROM user_economy WHERE user_id = $1',
+      [V3_USER],
+    );
+    expect(version.rows[0]).toEqual({ customization_version: 2 });
   });
 
   it('atomically consumes one lootbox and one key and grants a new part', async () => {
