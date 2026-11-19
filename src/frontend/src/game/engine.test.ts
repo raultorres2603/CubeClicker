@@ -2691,3 +2691,209 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     expect(after).not.toBe(before);
   });
 });
+
+describe('engine customization v3 (AC-5, AC-13)', () => {
+  it('equips an owned generated v3 hull and publishes a new snapshot', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-dart-chrome': 1 },
+      appearance: {},
+    });
+    const before = engine.getSnapshot();
+
+    engine.equipPart('hull-dart-chrome');
+
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization.appearance).toEqual({ hull: 'hull-dart-chrome' });
+    expect(after.customization.parts).toEqual({ 'hull-dart-chrome': 1 });
+    expect(after.stats).toBe(before.stats);
+    expect(after.board).toBe(before.board);
+  });
+
+  it('equips and unequips a generated v3 shot part', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'shot-orca-violet': 1 },
+      appearance: {},
+    });
+
+    engine.equipPart('shot-orca-violet');
+    expect(engine.getSnapshot().customization.appearance).toEqual({ shot: 'shot-orca-violet' });
+
+    const before = engine.getSnapshot();
+    engine.unequipPart('shot');
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization.appearance).toEqual({});
+    expect(after.customization.parts).toEqual({ 'shot-orca-violet': 1 });
+  });
+
+  it('keeps the v3 standard parts implicitly owned and already at default', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+
+    engine.equipPart('hull-default');
+    engine.equipPart('shot-default');
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      hull: 'hull-default',
+      shot: 'shot-default',
+    });
+
+    const before = engine.getSnapshot();
+    engine.unequipPart('hull');
+    engine.unequipPart('shot');
+    expect(engine.getSnapshot()).toBe(before);
+  });
+
+  it('is a no-op for unowned and unknown generated v3 ids', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({ lootboxes: 0, keys: 0, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+
+    // Valid catalog ids the guest does not own.
+    engine.equipPart('hull-dart-chrome');
+    engine.equipPart('shot-orca-violet');
+    // Unknown finish and unknown shot id: not v3 catalog ids, not legacy ids.
+    engine.equipPart('hull-dart-platinum');
+    engine.equipPart('shot-unknown');
+
+    expect(engine.getSnapshot()).toBe(before);
+    expect(engine.getSnapshot().customization.appearance).toEqual({});
+  });
+
+  it('adopts the roster appearance without rolling back stats or the parts map', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.dispatch({ type: 'introSkip' });
+    engine.dispatch({ type: 'explodeMiniCube', id: 'front:0:0' });
+    engine.adoptCustomization({
+      lootboxes: 2,
+      keys: 3,
+      parts: { 'hull-gold': 4 },
+      appearance: { hull: 'hull-gold' },
+    });
+    const before = engine.getSnapshot();
+    const beforeStats = before.stats;
+    const beforeBoard = before.board;
+
+    engine.adoptAppearance({ hull: 'hull-dart-chrome', shot: 'shot-kite-solar' });
+
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization).toEqual({
+      lootboxes: 2,
+      keys: 3,
+      parts: { 'hull-gold': 4 },
+      appearance: { hull: 'hull-dart-chrome', shot: 'shot-kite-solar' },
+    });
+    expect(after.stats).toBe(beforeStats);
+    expect(after.stats).toEqual({ clicks: 1, facesDestroyed: 0, coins: 0.1 });
+    expect(after.levelIndex).toBe(0);
+    expect(after.board).toBe(beforeBoard);
+    expect(after.lastLootboxGrant).toBeNull();
+  });
+
+  it('treats an empty and an identical adoption as a no-op', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    const empty = engine.getSnapshot();
+
+    // A guest with an empty local record adopting an empty roster record changes nothing.
+    engine.adoptAppearance({});
+    expect(engine.getSnapshot()).toBe(empty);
+
+    engine.adoptAppearance({ hull: 'hull-gold', 'wing-left': 'wing-left-gold' });
+    const adopted = engine.getSnapshot();
+    expect(adopted.customization.appearance).toEqual({
+      hull: 'hull-gold',
+      'wing-left': 'wing-left-gold',
+    });
+
+    // The same mapping in a different insertion order is still an identical adoption.
+    engine.adoptAppearance({ 'wing-left': 'wing-left-gold', hull: 'hull-gold' });
+    expect(engine.getSnapshot()).toBe(adopted);
+  });
+
+  it('normalizes a roster adoption with the v3 rules', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+
+    engine.adoptAppearance({
+      // Legacy aliases expand to both slots; a generated id under a legacy alias survives.
+      wings: 'wings-silver',
+      body: 'hull-dart-chrome',
+      // A real id under the wrong slot and an unknown id are dropped.
+      nose: 'hull-gold',
+      cockpit: 'cockpit-unknown',
+      // A generated shot id is retained; output is emitted in catalog order.
+      shot: 'shot-kite-solar',
+    });
+
+    expect(engine.getSnapshot().customization.appearance).toEqual({
+      hull: 'hull-dart-chrome',
+      'wing-left': 'wing-left-silver',
+      'wing-right': 'wing-right-silver',
+      shot: 'shot-kite-solar',
+    });
+  });
+
+  it('drops wrong-slot and unknown values from an adopted customization', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'hull-dart-chrome': 1 },
+      appearance: { hull: 'wing-left-gold', nose: 'nose-unknown', shot: 'shot-kite-solar' },
+    });
+
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 1,
+      keys: 1,
+      parts: { 'hull-dart-chrome': 1 },
+      appearance: { shot: 'shot-kite-solar' },
+    });
+  });
+
+  it('keeps generated v3 ids in an adopted account customization', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    const before = engine.getSnapshot();
+
+    engine.adoptCustomization({
+      lootboxes: 2,
+      keys: 3,
+      parts: { 'hull-dart-chrome': 2, 'shot-orca-violet': 1 },
+      appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+    });
+
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization).toEqual({
+      lootboxes: 2,
+      keys: 3,
+      parts: { 'hull-dart-chrome': 2, 'shot-orca-violet': 1 },
+      appearance: { hull: 'hull-dart-chrome', shot: 'shot-orca-violet' },
+    });
+    expect(after.stats).toBe(before.stats);
+    expect(after.board).toBe(before.board);
+  });
+
+  it('unequips a generated v3 part with a new snapshot', () => {
+    const engine = createEngine({ gridSize: 2, random: flatRandom });
+    engine.adoptCustomization({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-dart-chrome': 1 },
+      appearance: { hull: 'hull-dart-chrome' },
+    });
+    const before = engine.getSnapshot();
+
+    engine.unequipPart('hull');
+
+    const after = engine.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.customization.appearance).toEqual({});
+    expect(after.customization.parts).toEqual({ 'hull-dart-chrome': 1 });
+  });
+});

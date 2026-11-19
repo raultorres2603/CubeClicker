@@ -100,16 +100,17 @@ import {
   miniCubeMultiplier,
   speedWindowSeconds,
 } from './upgrades';
+import { partDefinition, selectLootPart } from './parts-v2';
 import {
-  defaultPartForSlot,
-  isValidPartId,
-  isValidSlotId,
-  normalizeCustomizationState,
-  partDefinition,
-  selectLootPart,
-  type PartIdV2,
-  type SlotId,
-} from './parts-v2';
+  defaultPartForSlotV3,
+  isValidPartIdV3,
+  isValidSlotIdV3,
+  normalizeAppearanceV3,
+  normalizeCustomizationStateV3,
+  partDefinitionV3,
+  type PartIdV3,
+  type SlotIdV3,
+} from './parts-v3';
 import {
   createOrientation,
   frontFace,
@@ -333,19 +334,29 @@ export interface GameEngine {
   adoptUpgrades?(upgrades: UpgradeState): void;
   /**
    * Replaces the engine's customization state with the carried absolute state. The state is
-   * normalized (legacy ids/appearance values map to the v2 catalog) because a restored or
+   * normalized (legacy ids/appearance values map to the v3 catalog) because a restored or
    * unmigrated row must render and equip correctly (AC-16/AC-28/AC-33).
    */
   adoptCustomization?(state: CustomizationState): void;
+  /**
+   * Guest: adopts the server's roster appearance for this member on `welcome` (AC-13 b).
+   * Replaces **only** `customization.appearance` (normalized against the v3 catalog) and
+   * publishes a new snapshot; lootbox/key counts, the parts map, the level, the board and
+   * the session-local stats are never touched. An identical record is a no-op.
+   *
+   * Optional in this base contract only for source compatibility with engine fakes
+   * (owned by other tasks); {@link createEngine} always implements it.
+   */
+  adoptAppearance?(appearance: Record<string, string>): void;
   /**
    * Guest: opens a lootbox locally, granting exactly one lootable v2 part. Returns the
    * reveal metadata (with the advanced `sequence`) or `null` when the guest lacks a
    * lootbox/key. Never sends anything: guest state is ephemeral (AC-27/AC-32).
    */
   openLootbox?(): LootboxGrant | null;
-  /** Guest: equips an owned v2 (or legacy) part locally (AC-21/AC-22/AC-28). */
+  /** Guest: equips an owned v3 (or legacy) part locally (AC-21/AC-22/AC-28). */
   equipPart?(partId: string): void;
-  /** Guest: unequips one v2 slot locally; an unknown slot or an already-default slot is a no-op. */
+  /** Guest: unequips one v3 slot locally; an unknown slot or an already-default slot is a no-op. */
   unequipPart?(slotId: string): void;
   /** Adopts the server's opener-only grant and advances the client-owned grant sequence. */
   adoptLootboxGrant?(grant: LootboxGrant): void;
@@ -364,6 +375,7 @@ export interface OnlineGameEngine extends GameEngine {
   adoptEconomy(economy: EconomyState): void;
   adoptUpgrades(upgrades: UpgradeState): void;
   adoptCustomization(state: CustomizationState): void;
+  adoptAppearance(appearance: Record<string, string>): void;
   openLootbox(): LootboxGrant | null;
   equipPart(partId: string): void;
   unequipPart(slotId: string): void;
@@ -414,18 +426,18 @@ function drawTravelDirection(random: () => number): TravelDirection {
   return TRAVEL_DIRECTIONS[Math.floor(random() * TRAVEL_DIRECTIONS.length)];
 }
 
-/** One resolved equip target: the v2 slot and the v2 part to place there. */
+/** One resolved equip target: the v3 slot and the v3 part to place there. */
 interface EquipTarget {
-  slot: SlotId;
-  partId: PartIdV2;
+  slot: SlotIdV3;
+  partId: PartIdV3;
 }
 
 /**
- * Legacy part ids expanded client-side to their v2 target(s) (AC-28). The guest engine
+ * Legacy part ids expanded client-side to their v3 target(s) (AC-28). The guest engine
  * mirrors the hub's compatibility rule: `body-*` → one hull slot, `wings-*` → both wing
- * slots, `engine-*` → both ignition slots; nose/cockpit ids are v2 ids already.
+ * slots, `engine-*` → both ignition slots; nose/cockpit ids are v3 ids already.
  */
-const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
+const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV3[]>> = {
   'body-default': ['hull-default'],
   'body-obsidian': ['hull-obsidian'],
   'body-gold': ['hull-gold'],
@@ -435,21 +447,37 @@ const LEGACY_EQUIP_TARGETS: Readonly<Record<string, readonly PartIdV2[]>> = {
   'engine-blue': ['ignition-left-blue', 'ignition-right-blue'],
 };
 
-/** Expands a client-supplied part id to its v2 target slot(s); `null` when unknown. */
+/** Expands a client-supplied part id to its v3 target slot(s); `null` when unknown. */
 function resolveEquipTargets(partId: string): EquipTarget[] | null {
-  if (isValidPartId(partId)) {
-    return [{ slot: partDefinition(partId).slot, partId }];
+  if (isValidPartIdV3(partId)) {
+    return [{ slot: partDefinitionV3(partId).slot, partId }];
   }
   const legacy = LEGACY_EQUIP_TARGETS[partId];
   if (legacy === undefined) {
     return null;
   }
-  return legacy.map((id) => ({ slot: partDefinition(id).slot, partId: id }));
+  return legacy.map((id) => ({ slot: partDefinitionV3(id).slot, partId: id }));
 }
 
 /** Standard parts are implicitly owned (AC-12); other parts need a positive count (AC-21). */
-function ownsPart(state: CustomizationState, partId: PartIdV2): boolean {
-  return partDefinition(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
+function ownsPart(state: CustomizationState, partId: PartIdV3): boolean {
+  return partDefinitionV3(partId).rarity === 'standard' || (state.parts[partId] ?? 0) > 0;
+}
+
+/**
+ * True when two appearance records carry exactly the same slot→part mapping, regardless
+ * of key order: the adopted roster record and the local one may be built in different
+ * insertion orders, and an identical adoption must stay a no-op (AC-13 b).
+ */
+function sameAppearance(
+  current: Record<string, string>,
+  next: Record<string, string>,
+): boolean {
+  const entries = Object.entries(current);
+  return (
+    entries.length === Object.keys(next).length &&
+    entries.every(([slot, partId]) => next[slot] === partId)
+  );
 }
 
 /** An exact half turn: both directions are shortest, so `+1` is preferred. */
@@ -1228,13 +1256,31 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
 
     adoptCustomization(state: CustomizationState): void {
       // A restored/unmigrated row may still carry legacy ids and appearance values; the
-      // normalizer maps them to the v2 catalog before anything reads the state (AC-33).
-      const normalized = normalizeCustomizationState(state);
+      // normalizer maps them to the v3 catalog (keeping generated v3 ids) before anything
+      // reads the state (AC-5/AC-33).
+      const normalized = normalizeCustomizationStateV3(state);
       customization = {
         lootboxes: normalized.lootboxes,
         keys: normalized.keys,
         parts: { ...normalized.parts },
         appearance: { ...normalized.appearance },
+      };
+      invalidate();
+    },
+
+    adoptAppearance(appearance: Record<string, string>): void {
+      // The roster record is re-normalized at the engine boundary (unknown, wrong-slot and
+      // legacy values never reach a renderer); only the appearance is replaced, so a guest
+      // rejoin never rolls back the session-local stats or the parts map (AC-13 b).
+      const normalized = normalizeAppearanceV3(appearance);
+      if (sameAppearance(customization.appearance, normalized)) {
+        return;
+      }
+      customization = {
+        lootboxes: customization.lootboxes,
+        keys: customization.keys,
+        parts: customization.parts,
+        appearance: normalized,
       };
       invalidate();
     },
@@ -1299,12 +1345,12 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
     },
 
     unequipPart(slotId: string): void {
-      if (!isValidSlotId(slotId)) {
+      if (!isValidSlotIdV3(slotId)) {
         return;
       }
       const equipped = customization.appearance[slotId];
       // A missing slot and a slot resolving to its standard part are already at default.
-      if (equipped === undefined || equipped === defaultPartForSlot(slotId)) {
+      if (equipped === undefined || equipped === defaultPartForSlotV3(slotId)) {
         return;
       }
       const appearance = { ...customization.appearance };
