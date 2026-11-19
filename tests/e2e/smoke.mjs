@@ -16,6 +16,10 @@
 //      roster grows from 1 (A's welcome) to 2 (B's welcome), and A also receives `memberJoined`
 //   4b. activity snapshot: A's `welcome.activity` is `[]` and B's `welcome.activity` carries
 //      exactly A's accepted `memberJoined` event (serverId, playerId, name, positive id, finite at)
+//   4c. appearance projection (remote-spaceship-customization AC-35): guest B's valid 11-slot
+//      `setAppearance` yields exactly one `memberAppearance` on guest A with that exact record
+//      (A's roster entry for B was `{}` first); an unknown slot key yields
+//      `error bad_message` and no further frame
 //   5. a third client `join`s → its `welcome.serverId` is the run's first server id + 1
 //      (overflow with X = 2)
 //   6. A's valid `explode` → `miniCubeRemoved` on A (ack) and B (broadcast)
@@ -83,6 +87,26 @@ const MEMBER_LEFT_TIMEOUT_MS = 5000;
 const GRACE_LOWER_BOUND_MS = 900;
 /** Settle after the batch arrives before the negative single-frame assertion (AC-26). */
 const BURST_SETTLE_MS = 100;
+/**
+ * AC-35 appearance check: the exact 11-slot v3 record guest B reports. Every id is a valid
+ * generated catalog row (`<slot>-bulwark-crimson`, the T6 worst-case fixture), so the record
+ * also exercises the longest accepted part ids.
+ */
+const FULL_APPEARANCE = {
+  hull: 'hull-bulwark-crimson',
+  nose: 'nose-bulwark-crimson',
+  cockpit: 'cockpit-bulwark-crimson',
+  'wing-left': 'wing-left-bulwark-crimson',
+  'wing-right': 'wing-right-bulwark-crimson',
+  'engine-left': 'engine-left-bulwark-crimson',
+  'engine-right': 'engine-right-bulwark-crimson',
+  'ignition-left': 'ignition-left-bulwark-crimson',
+  'ignition-right': 'ignition-right-bulwark-crimson',
+  'tail-fin': 'tail-fin-bulwark-crimson',
+  shot: 'shot-bulwark-crimson',
+};
+/** Settle after a rejected setAppearance before pinning that nothing was broadcast (AC-35). */
+const APPEARANCE_SETTLE_MS = 250;
 /**
  * End-of-run drain: the smoke backend's pinned grace window is 1000 ms, so waiting past it lets
  * this run's members expire before the script exits. The next run then starts from an empty
@@ -669,6 +693,8 @@ const LEAVE_CHECK_LABEL =
   "multiplayer leave: closing B's socket yields memberLeft(left) on A after the 1s grace window";
 const ACTIVITY_JOIN_CHECK_LABEL =
   "activity snapshot: A's welcome feed is empty and B's welcome carries exactly A's memberJoined event";
+const APPEARANCE_CHECK_LABEL =
+  "appearance projection: guest B's 11-slot setAppearance yields exactly one memberAppearance on guest A, and an unknown slot key yields bad_message without a broadcast";
 const ACTIVITY_LEAVE_CHECK_LABEL =
   "activity leave: A receives the memberLeft activity event with B's name and an id newer than the snapshot id";
 const EXPLICIT_LEAVE_CHECK_LABEL =
@@ -899,6 +925,37 @@ function rosterProblems(label, roster, expected) {
   return problems;
 }
 
+/**
+ * Exact equality for one appearance record: a plain object with exactly the expected
+ * slot→part-id entries and no extra keys (no wildcard match).
+ */
+function appearanceProblems(label, appearance, expected) {
+  if (appearance === null || typeof appearance !== 'object' || Array.isArray(appearance)) {
+    return [`${label} expected an appearance object, got ${JSON.stringify(appearance)}`];
+  }
+  const problems = [];
+  const expectedKeys = Object.keys(expected);
+  const actualKeys = Object.keys(appearance);
+  if (actualKeys.length !== expectedKeys.length) {
+    problems.push(
+      `${label} expected ${expectedKeys.length} entries, got ${JSON.stringify(actualKeys)}`,
+    );
+  }
+  for (const key of expectedKeys) {
+    if (appearance[key] !== expected[key]) {
+      problems.push(
+        `${label}.${key} expected ${JSON.stringify(expected[key])}, got ${JSON.stringify(appearance[key])}`,
+      );
+    }
+  }
+  for (const key of actualKeys) {
+    if (!Object.hasOwn(expected, key)) {
+      problems.push(`${label} carries unexpected slot ${JSON.stringify(key)}`);
+    }
+  }
+  return problems;
+}
+
 /** The run-relative anchor: every server id must be a real id issued by this backend process. */
 function serverIdProblems(label, welcome) {
   const serverId = welcome?.serverId;
@@ -997,6 +1054,7 @@ async function checkMultiplayerFlow() {
   let clientB = null;
   let welcomeA = null;
   let welcomeB = null;
+  let memberJoinedB = null;
   let setupProblem = null;
 
   try {
@@ -1018,7 +1076,7 @@ async function checkMultiplayerFlow() {
         MULTIPLAYER_TIMEOUT_MS,
         'welcome',
       );
-      await waitForMessage(
+      memberJoinedB = await waitForMessage(
         clientA,
         (message) =>
           message.type === 'memberJoined' && message.member?.playerId === welcomeB.playerId,
@@ -1109,6 +1167,75 @@ async function checkMultiplayerFlow() {
         problems.length === 0
           ? `server ${welcomeA.serverId}; memberJoined id ${joinActivityId} for ${welcomeA.playerId}`
           : problems.join('; '),
+      );
+    }
+
+    // Public appearance projection (remote-spaceship-customization AC-35): A's roster entry for
+    // guest B starts `{}` (the T6 projection always populates the optional field), B's one valid
+    // 11-slot report reaches A exactly once with the same record, and a frame with an unknown
+    // slot key is rejected with `bad_message` without a broadcast.
+    if (!setupComplete) {
+      record(false, APPEARANCE_CHECK_LABEL, 'not run — the two-client join failed');
+    } else {
+      const problems = [];
+      if (welcomeA.identity?.kind !== 'guest') {
+        problems.push(`A identity.kind expected "guest", got ${JSON.stringify(welcomeA.identity?.kind)}`);
+      }
+      if (welcomeB.identity?.kind !== 'guest') {
+        problems.push(`B identity.kind expected "guest", got ${JSON.stringify(welcomeB.identity?.kind)}`);
+      }
+      problems.push(
+        ...appearanceProblems(
+          'A memberJoined for B appearance',
+          memberJoinedB?.member?.appearance,
+          {},
+        ),
+      );
+
+      let detail = '';
+      try {
+        clientB.send({ type: 'setAppearance', appearance: FULL_APPEARANCE });
+        const appearanceFrame = await waitForMessage(
+          clientA,
+          (message) =>
+            message.type === 'memberAppearance' && message.playerId === welcomeB.playerId,
+          MULTIPLAYER_TIMEOUT_MS,
+          `memberAppearance for ${welcomeB.playerId}`,
+        );
+        problems.push(
+          ...appearanceProblems(
+            'A memberAppearance for B appearance',
+            appearanceFrame.appearance,
+            FULL_APPEARANCE,
+          ),
+        );
+
+        // Unknown slot key: the codec rejects the whole frame, so B gets exactly bad_message.
+        clientB.send({ type: 'setAppearance', appearance: { spoiler: 'hull-obsidian' } });
+        await waitForMessage(
+          clientB,
+          (message) => message.type === 'error' && message.code === 'bad_message',
+          MULTIPLAYER_TIMEOUT_MS,
+          'error bad_message for an unknown slot key',
+        );
+
+        // Any broadcast caused by the rejected frame would land inside this settle. A must still
+        // hold exactly the one accepted frame, and no other memberAppearance may have leaked.
+        await delay(APPEARANCE_SETTLE_MS);
+        const frames = clientA.history.filter((message) => message.type === 'memberAppearance');
+        if (frames.length !== 1) {
+          problems.push(
+            `A expected exactly one memberAppearance in total, got ${frames.length}: ${JSON.stringify(frames)}`,
+          );
+        }
+        detail = `playerId ${welcomeB.playerId}; 11 slots; unknown slot key rejected with bad_message; ${frames.length} memberAppearance frame(s) seen by A`;
+      } catch (error) {
+        problems.push(problemText(error));
+      }
+      record(
+        problems.length === 0,
+        APPEARANCE_CHECK_LABEL,
+        problems.length === 0 ? detail : problems.join('; '),
       );
     }
 
