@@ -3,7 +3,7 @@
 Task: T12 (2026-11-19)
 Files changed: `src/frontend/src/render/scene.ts`, `src/frontend/src/render/scene.test.ts`, `src/frontend/src/render/scene-spaceship.test.ts`, `src/frontend/src/render/world.ts`, `src/frontend/src/render/world.test.ts`, `src/frontend/src/render/cube-view.ts`, `src/frontend/src/render/cube-view.test.ts`, `src/frontend/src/game/session.test.ts` (inert fixture methods only — see Deviations), `docs/features/remote-spaceship-customization/build-log-T12.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `(pending)` — `feat: wire remote ships into the scene` (not pushed; hash recorded in this follow-up `docs:` commit)
+Commit: `49439ea` — `feat: wire remote ships into the scene` (not pushed; hash recorded in this follow-up `docs:` commit)
 
 ## Sketch (≤5 lines)
 
