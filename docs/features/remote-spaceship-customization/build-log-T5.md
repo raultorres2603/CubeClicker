@@ -3,7 +3,7 @@
 Task: T5 (2026-11-19)
 Files changed: `src/backend/src/auth/economy-repository.ts`, `src/backend/src/auth/economy-repository.test.ts`, `docs/features/remote-spaceship-customization/build-log-T5.md`
 Branch: `feat/remote-spaceship-customization`
-Commit: recorded in the follow-up `docs: record T5 build log commit hash` commit.
+Commit: `7637179` — `feat: widen economy repository to catalog v3` (not pushed; hash recorded in this follow-up `docs:` commit)
 
 ## What changed & why
 
