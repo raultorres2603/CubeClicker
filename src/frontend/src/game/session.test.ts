@@ -5017,9 +5017,9 @@ describe('multiplayer customization wiring (T11)', () => {
     const totalCount = Object.values(c.parts).reduce((a, b) => a + b, 0);
     expect(totalCount).toBe(1);
     expect(session.getSnapshot().lastLootboxGrant).toEqual({
-      partId: 'engine-left-vector',
+      partId: 'engine-left-hauler-violet',
       slot: 'engine-left',
-      rarity: 'rare',
+      rarity: 'epic',
       duplicate: false,
       sequence: 1,
     });
@@ -5437,18 +5437,18 @@ describe('lootbox grant lifecycle (AC-2, AC-3, AC-11)', () => {
 
     session.openLootbox();
     expect(session.getSnapshot().lastLootboxGrant).toEqual({
-      partId: 'engine-left-vector',
+      partId: 'engine-left-hauler-violet',
       slot: 'engine-left',
-      rarity: 'rare',
+      rarity: 'epic',
       duplicate: false,
       sequence: 1,
     });
 
     session.openLootbox();
     expect(session.getSnapshot().lastLootboxGrant).toEqual({
-      partId: 'engine-left-vector',
+      partId: 'engine-left-hauler-violet',
       slot: 'engine-left',
-      rarity: 'rare',
+      rarity: 'epic',
       duplicate: true,
       sequence: 2,
     });
@@ -5456,16 +5456,16 @@ describe('lootbox grant lifecycle (AC-2, AC-3, AC-11)', () => {
     // No lootboxes left: the draw never runs and the previous grant is untouched.
     session.openLootbox();
     expect(session.getSnapshot().lastLootboxGrant).toEqual({
-      partId: 'engine-left-vector',
+      partId: 'engine-left-hauler-violet',
       slot: 'engine-left',
-      rarity: 'rare',
+      rarity: 'epic',
       duplicate: true,
       sequence: 2,
     });
     expect(session.getSnapshot().customization).toEqual({
       lootboxes: 0,
       keys: 0,
-      parts: { 'engine-left-vector': 2 },
+      parts: { 'engine-left-hauler-violet': 2 },
       appearance: {},
     });
     expect(session.getMultiplayerSnapshot().pendingLootboxOpen).toBe(false);

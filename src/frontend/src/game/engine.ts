@@ -100,7 +100,6 @@ import {
   miniCubeMultiplier,
   speedWindowSeconds,
 } from './upgrades';
-import { partDefinition, selectLootPart } from './parts-v2';
 import {
   defaultPartForSlotV3,
   isValidPartIdV3,
@@ -108,6 +107,7 @@ import {
   normalizeAppearanceV3,
   normalizeCustomizationStateV3,
   partDefinitionV3,
+  selectLootPartV3,
   type PartIdV3,
   type SlotIdV3,
 } from './parts-v3';
@@ -349,9 +349,10 @@ export interface GameEngine {
    */
   adoptAppearance?(appearance: Record<string, string>): void;
   /**
-   * Guest: opens a lootbox locally, granting exactly one lootable v2 part. Returns the
-   * reveal metadata (with the advanced `sequence`) or `null` when the guest lacks a
-   * lootbox/key. Never sends anything: guest state is ephemeral (AC-27/AC-32).
+   * Guest: opens a lootbox locally, granting exactly one lootable v3 part drawn from the
+   * 1,340-row catalog. Returns the reveal metadata (with the advanced `sequence`) or `null`
+   * when the guest lacks a lootbox/key. Never sends anything: guest state is ephemeral
+   * (AC-4/AC-27/AC-32).
    */
   openLootbox?(): LootboxGrant | null;
   /** Guest: equips an owned v3 (or legacy) part locally (AC-21/AC-22/AC-28). */
@@ -1289,9 +1290,9 @@ export function createEngine(options: EngineOptions = {}): OnlineGameEngine {
       if (customization.lootboxes < 1 || customization.keys < 1) {
         return null;
       }
-      // Exactly one weighted draw over the 20 lootable v2 parts (AC-13/AC-27).
-      const granted = selectLootPart(random);
-      const definition = partDefinition(granted);
+      // Exactly one weighted draw over the 1,340 lootable v3 rows (AC-4/AC-13/AC-27).
+      const granted = selectLootPartV3(random);
+      const definition = partDefinitionV3(granted);
       if (definition.rarity === 'standard') {
         return null;
       }

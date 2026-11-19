@@ -12,6 +12,8 @@ import { CUBE_STYLES } from './progression';
 import { COINS_PER_CUBE, COINS_PER_MINI_CUBE, roundCoins, thresholdSeconds } from './economy';
 import { cubeMultiplier, miniCubeMultiplier, speedWindowSeconds } from './upgrades';
 import { FACE_IDS, GRID_SIZE, TRAVEL_DIRECTIONS, type FaceId, type MiniCubeId } from './types';
+import { isValidPartId } from './parts-v2';
+import { isValidPartIdV3, partDefinitionV3 } from './parts-v3';
 
 /**
  * The burst every default-profile explosion carries when the engine's random source is
@@ -2286,8 +2288,8 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     expect(beforeAppearance).not.toBe(after.customization.appearance);
   });
 
-  it('openLootbox decrements counts and grants one lootable v2 part (guest)', () => {
-    // Draw 0 selects the first lootable catalog entry: hull-obsidian (AC-13).
+  it('openLootbox decrements counts and grants one lootable v3 part (guest)', () => {
+    // Draw 0 selects the first lootable catalog entry: hull-obsidian (AC-4).
     const engine = createEngine({ gridSize: 2, random: () => 0 });
     engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
 
@@ -2306,6 +2308,92 @@ describe('engine customization (AC-2, AC-5, AC-8, AC-10)', () => {
     expect(customization.keys).toBe(0);
     expect(customization.parts).toEqual({ 'hull-obsidian': 1 });
     expect(customization.appearance).toEqual({});
+  });
+
+  it('openLootbox draws a generated v3 row that parts-v2 does not know (guest)', () => {
+    // Draw 0.5 walks half of the 2,680 v3 weight: engine-left-hauler-violet (AC-4).
+    const engine = createEngine({ gridSize: 2, random: () => 0.5 });
+    engine.adoptCustomization({ lootboxes: 1, keys: 1, parts: {}, appearance: {} });
+
+    const grant = engine.openLootbox();
+
+    expect(grant).toEqual({
+      partId: 'engine-left-hauler-violet',
+      slot: 'engine-left',
+      rarity: 'epic',
+      duplicate: false,
+      sequence: 1,
+    });
+    // The granted id is a lootable v3 catalog row and only exists in v3.
+    expect(partDefinitionV3('engine-left-hauler-violet')).toEqual({
+      id: 'engine-left-hauler-violet',
+      slot: 'engine-left',
+      name: 'Violet Hauler Port Engine',
+      rarity: 'epic',
+      color: '#6d28d9',
+      accent: '#c4b5fd',
+      form: 'hauler',
+      finish: 'violet',
+      shape: 'hauler',
+    });
+    expect(isValidPartIdV3('engine-left-hauler-violet')).toBe(true);
+    expect(isValidPartId('engine-left-hauler-violet')).toBe(false);
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'engine-left-hauler-violet': 1 },
+      appearance: {},
+    });
+  });
+
+  it('openLootbox walks the pinned v3 boundaries and draws once per open (guest)', () => {
+    // One scripted draw per open: the script throws on any extra draw.
+    const engine = createEngine({ gridSize: 2, random: scriptedRandom([0, 0.999999, 1]) });
+    engine.adoptCustomization({ lootboxes: 3, keys: 3, parts: {}, appearance: {} });
+
+    expect(engine.openLootbox()).toEqual({
+      partId: 'hull-obsidian',
+      slot: 'hull',
+      rarity: 'rare',
+      duplicate: false,
+      sequence: 1,
+    });
+    expect(engine.openLootbox()).toEqual({
+      partId: 'shot-kite-solar',
+      slot: 'shot',
+      rarity: 'epic',
+      duplicate: false,
+      sequence: 2,
+    });
+    // A raw draw of exactly 1 clamps to the last lootable row, a duplicate now.
+    expect(engine.openLootbox()).toEqual({
+      partId: 'shot-kite-solar',
+      slot: 'shot',
+      rarity: 'epic',
+      duplicate: true,
+      sequence: 3,
+    });
+    expect(engine.getSnapshot().customization).toEqual({
+      lootboxes: 0,
+      keys: 0,
+      parts: { 'hull-obsidian': 1, 'shot-kite-solar': 2 },
+      appearance: {},
+    });
+  });
+
+  it('openLootbox never consumes a draw without both a lootbox and a key', () => {
+    const live = countingRandom(0.5);
+    const engine = createEngine({ gridSize: 2, random: live.random });
+    engine.adoptCustomization({ lootboxes: 0, keys: 1, parts: {}, appearance: {} });
+    const before = engine.getSnapshot();
+
+    expect(engine.openLootbox()).toBeNull();
+    expect(live.draws()).toBe(0);
+    expect(engine.getSnapshot()).toBe(before);
+
+    engine.adoptCustomization({ lootboxes: 1, keys: 0, parts: {}, appearance: {} });
+    expect(engine.openLootbox()).toBeNull();
+    expect(live.draws()).toBe(0);
   });
 
   it('openLootbox flags a duplicate and advances the grant sequence', () => {
