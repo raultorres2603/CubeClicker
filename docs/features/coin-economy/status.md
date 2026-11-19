@@ -1,10 +1,10 @@
 ---
 feature: coin-economy
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 1
+build_round: 2
 created: 2026-10-28
-updated: 2026-10-28
+updated: 2026-11-18
 ---
 # Status — Coin Economy
 
@@ -23,6 +23,10 @@ Add an in-game economy: coins earned by destroying mini-cubes and cubes, with a 
 - 2026-10-28 — awaiting_approval → building — user approved spec + Q-1/Q-2/Q-3/Q-5 defaults — docs/features/coin-economy/spec.md
 - 2026-10-30 — building → code_review — all tasks [x], T_final verify passed (lint/typecheck/test/coverage/build + container/doc gates) — docs/features/coin-economy/build-log-T_final.md
 - 2026-10-30 — code_review → building — changes_requested r1 (2 MAJOR) — docs/features/coin-economy/reviews/code-r1.md
+- 2026-11-18 — building — resumed to fix code-r1 F1–F3 (direct engine economy tests + concrete hub assertions) to release the `remote-spaceship-customization` sequencing gate; user authorized the detour — fixes in progress
+- 2026-11-18 — building → code_review — F1–F3 fixed and committed (`eece694`, build log `build-log-code-r1-fixes.md`); F4 status inconsistency resolved; code review r2 started — `reviews/code-r2.md` pending
+- 2026-11-18 — code_review → accepted — review r2 `approved` (0 blocking; F1–F4 fixed); test-only fix, T13 docs pass retained; `docs/features/README.md` row updated — `reviews/code-r2.md`
 
 ## Blockers / open questions
 - Approval-gated questions Q-1, Q-2, Q-3, Q-5 resolved with the approved defaults (COINS_PER_MINI_CUBE=0.1, COINS_PER_CUBE=5, thresholdSeconds(gridSize)=gridSize*5, persisted stats scope coins/clicks/facesDestroyed/cubesDestroyed) per status log entry 2026-10-28 (awaiting_approval -> building). Q-4, Q-6, Q-8, Q-10, Q-11 resolved as proposed defaults; Q-7 deferred and Q-9 non-goal (see spec Open questions).
+- **Code-r1 F1–F3 fixes in progress:** `engine.test.ts` direct economy coverage (F1/F2) and `hub.test.ts` concrete guards (F3). A code review r2 follows; the gate releases when `coin-economy` reaches `code_review` (and ideally `accepted`).
