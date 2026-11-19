@@ -3,7 +3,7 @@
 Task: T7 (2026-11-19)
 Files changed: `src/frontend/src/multiplayer/protocol.ts`, `src/frontend/src/multiplayer/protocol.test.ts`, `src/frontend/src/multiplayer/server-state.ts`, `src/frontend/src/multiplayer/server-state.test.ts`, `src/frontend/src/game/session.test.ts` (three fixture-only `appearance: {}` properties, see Deviations), `docs/features/remote-spaceship-customization/build-log-T7.md` (this log)
 Branch: `feat/remote-spaceship-customization`
-Commit: `<filled in by the follow-up docs commit>`
+Commit: `fb38938` — `feat: mirror appearance protocol on the client` (not pushed; hash recorded in this follow-up `docs:` commit)
 
 ## Sketch (≤5 lines)
 
@@ -168,3 +168,18 @@ All four thresholds (≥ 80 statements/branches/functions/lines) pass for the fr
   the file; this change does not touch its production `session.ts` or any behavioural assertion.
 - No other spec deviation. `UserPanel.test.tsx`, `activity-lifetime.test.ts` and `App.test.tsx`
   were **not** touched: the optional field keeps their member literals compiling, as planned.
+
+## Scope / diff checks
+
+- `git diff --check` → exit 0.
+- T7 touched exactly the six staged paths above; `git status --porcelain src/backend` is clean, and
+  no backend, `game/engine.ts`, `game/session.ts`, `render/**`, `ui/**`, `App.tsx`, `parts-v2`,
+  `package.json`, lockfile, compose/Docker or `.env*` file was modified. No new dependency, no
+  schema/migration.
+- After the two commits, `git status --porcelain` still lists three pre-existing unrelated
+  modifications that were already dirty before T7 started (`docs/features/README.md`,
+  `docs/features/coin-economy/reviews/code-r2.md`, `docs/features/coin-economy/status.md`); they
+  are orchestrator/other-feature-owned and were deliberately left untouched. The remaining
+  untracked entries are this feature's orchestrator-owned artifacts
+  (`spec.md`, `plan.md`, `tasks.md`, `status.md`, `reviews/`).
+
