@@ -16,6 +16,10 @@
       "Neon": {
         "type": "remote",
         "url": "https://mcp.neon.tech/mcp"
+      },
+      "brevo": {
+        "type": "remote",
+        "url": "https://mcp.brevo.com/v1/brevo/mcp"
       }
     }
   }
