@@ -8,6 +8,7 @@ import {
   DEFAULT_ARGON2_TIME_COST,
   DEFAULT_SESSION_COOKIE_SAMESITE,
   DEFAULT_SESSION_TTL_DAYS,
+  DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
   DEFAULT_SMTP_FROM,
   DEFAULT_SMTP_HOST,
   DEFAULT_SMTP_PORT,
@@ -15,11 +16,13 @@ import {
   MAX_ARGON2_PARALLELISM,
   MAX_ARGON2_TIME_COST,
   MAX_SESSION_TTL_DAYS,
+  MAX_SMTP_CONNECTION_TIMEOUT_MS,
   MAX_VERIFICATION_TOKEN_TTL_MS,
   MIN_ARGON2_MEMORY_COST,
   MIN_ARGON2_PARALLELISM,
   MIN_ARGON2_TIME_COST,
   MIN_SESSION_TTL_DAYS,
+  MIN_SMTP_CONNECTION_TIMEOUT_MS,
   MIN_VERIFICATION_TOKEN_TTL_MS,
   loadAuthConfig,
 } from './config.js';
@@ -28,9 +31,11 @@ const DEFAULT_CONFIG = {
   databaseUrl: null,
   smtpHost: 'mailpit',
   smtpPort: 1025,
+  smtpSecure: false,
   smtpUser: null,
   smtpPass: null,
   smtpFrom: 'no-reply@cubeclicker.local',
+  smtpConnectionTimeoutMs: 10000,
   appBaseUrl: 'http://localhost:5173',
   allowedOrigin: 'http://localhost:5173',
   sessionCookieSecure: false,
@@ -48,6 +53,9 @@ describe('pinned constants', () => {
     expect(DEFAULT_SMTP_HOST).toBe('mailpit');
     expect(DEFAULT_SMTP_PORT).toBe(1025);
     expect(DEFAULT_SMTP_FROM).toBe('no-reply@cubeclicker.local');
+    expect(DEFAULT_SMTP_CONNECTION_TIMEOUT_MS).toBe(10000);
+    expect(MIN_SMTP_CONNECTION_TIMEOUT_MS).toBe(1000);
+    expect(MAX_SMTP_CONNECTION_TIMEOUT_MS).toBe(120000);
     expect(DEFAULT_APP_BASE_URL).toBe('http://localhost:5173');
     expect(DEFAULT_ALLOWED_ORIGIN).toBe('http://localhost:5173');
     expect(DEFAULT_SESSION_COOKIE_SAMESITE).toBe('lax');
@@ -133,6 +141,115 @@ describe('SMTP settings', () => {
     );
     expect(() => loadAuthConfig({ SMTP_PORT: 'abc' })).toThrowError(
       'SMTP_PORT must be an integer between 1 and 65535; received "abc"',
+    );
+  });
+});
+
+describe('SMTP_SECURE', () => {
+  it('derives false for the default Mailpit port', () => {
+    expect(loadAuthConfig({}).smtpSecure).toBe(false);
+    expect(loadAuthConfig({ SMTP_PORT: '1025' }).smtpSecure).toBe(false);
+  });
+
+  it('derives true for port 465', () => {
+    expect(loadAuthConfig({ SMTP_PORT: '465' }).smtpSecure).toBe(true);
+  });
+
+  it('treats an empty SMTP_SECURE as unset and keeps the port derivation', () => {
+    expect(loadAuthConfig({ SMTP_PORT: '465', SMTP_SECURE: '' }).smtpSecure).toBe(true);
+    expect(loadAuthConfig({ SMTP_PORT: '1025', SMTP_SECURE: '' }).smtpSecure).toBe(false);
+  });
+
+  it('accepts explicit true/1 and false/0 overrides regardless of port', () => {
+    expect(loadAuthConfig({ SMTP_PORT: '1025', SMTP_SECURE: 'true' }).smtpSecure).toBe(true);
+    expect(loadAuthConfig({ SMTP_PORT: '1025', SMTP_SECURE: '1' }).smtpSecure).toBe(true);
+    expect(loadAuthConfig({ SMTP_PORT: '465', SMTP_SECURE: 'false' }).smtpSecure).toBe(false);
+    expect(loadAuthConfig({ SMTP_PORT: '465', SMTP_SECURE: '0' }).smtpSecure).toBe(false);
+  });
+
+  it('rejects values other than true/false/1/0 naming the variable', () => {
+    expect(() => loadAuthConfig({ SMTP_SECURE: 'yes' })).toThrowError(
+      'SMTP_SECURE must be a boolean ("true", "false", "1", or "0"); received "yes"',
+    );
+    expect(() => loadAuthConfig({ SMTP_SECURE: 'TRUE' })).toThrowError(
+      'SMTP_SECURE must be a boolean ("true", "false", "1", or "0"); received "TRUE"',
+    );
+  });
+});
+
+describe('SMTP_CONNECTION_TIMEOUT_MS', () => {
+  it('defaults to 10000', () => {
+    expect(loadAuthConfig({}).smtpConnectionTimeoutMs).toBe(10000);
+    expect(DEFAULT_SMTP_CONNECTION_TIMEOUT_MS).toBe(10000);
+  });
+
+  it('accepts the 1000 and 120000 boundaries and a mid-range override', () => {
+    expect(loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '1000' }).smtpConnectionTimeoutMs).toBe(
+      1000,
+    );
+    expect(loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '120000' }).smtpConnectionTimeoutMs).toBe(
+      120000,
+    );
+    expect(loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '2500' }).smtpConnectionTimeoutMs).toBe(
+      2500,
+    );
+  });
+
+  it('rejects 999 and 120001 naming the variable and the value', () => {
+    expect(() => loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '999' })).toThrowError(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received "999"',
+    );
+    expect(() => loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '120001' })).toThrowError(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received "120001"',
+    );
+  });
+
+  it('rejects non-integer and empty values', () => {
+    expect(() => loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '10000.5' })).toThrowError(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received "10000.5"',
+    );
+    expect(() => loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: 'abc' })).toThrowError(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received "abc"',
+    );
+    expect(() => loadAuthConfig({ SMTP_CONNECTION_TIMEOUT_MS: '' })).toThrowError(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received ""',
+    );
+  });
+});
+
+describe('SMTP credential pairing', () => {
+  const PAIRING_ERROR =
+    'SMTP_USER and SMTP_PASS must be provided together (both or neither)';
+
+  it('accepts both credentials', () => {
+    const config = loadAuthConfig({ SMTP_USER: 'smtp-login', SMTP_PASS: 'smtp-key' });
+    expect(config.smtpUser).toBe('smtp-login');
+    expect(config.smtpPass).toBe('smtp-key');
+  });
+
+  it('accepts both credentials absent or both empty', () => {
+    const absent = loadAuthConfig({});
+    expect(absent.smtpUser).toBeNull();
+    expect(absent.smtpPass).toBeNull();
+    const empty = loadAuthConfig({ SMTP_USER: '', SMTP_PASS: '' });
+    expect(empty.smtpUser).toBeNull();
+    expect(empty.smtpPass).toBeNull();
+  });
+
+  it('rejects SMTP_USER without SMTP_PASS', () => {
+    expect(() => loadAuthConfig({ SMTP_USER: 'smtp-login' })).toThrowError(PAIRING_ERROR);
+  });
+
+  it('rejects SMTP_PASS without SMTP_USER', () => {
+    expect(() => loadAuthConfig({ SMTP_PASS: 'smtp-key' })).toThrowError(PAIRING_ERROR);
+  });
+
+  it('rejects a pair where the other credential is empty', () => {
+    expect(() => loadAuthConfig({ SMTP_USER: 'smtp-login', SMTP_PASS: '' })).toThrowError(
+      PAIRING_ERROR,
+    );
+    expect(() => loadAuthConfig({ SMTP_USER: '', SMTP_PASS: 'smtp-key' })).toThrowError(
+      PAIRING_ERROR,
     );
   });
 });

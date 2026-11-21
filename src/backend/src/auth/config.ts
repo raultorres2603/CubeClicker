@@ -18,6 +18,11 @@ export const DEFAULT_SMTP_PORT = 1025;
 /** Default sender address used when SMTP_FROM is unset. */
 export const DEFAULT_SMTP_FROM = 'no-reply@cubeclicker.local';
 
+/** Default bound on SMTP connection, greeting and socket timeouts (10 seconds). */
+export const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+export const MIN_SMTP_CONNECTION_TIMEOUT_MS = 1_000;
+export const MAX_SMTP_CONNECTION_TIMEOUT_MS = 120_000;
+
 /** Default verification-link base URL (frontend dev server). */
 export const DEFAULT_APP_BASE_URL = 'http://localhost:5173';
 /** Default allowed Origin for CSRF checks (frontend dev server). */
@@ -58,12 +63,16 @@ export interface AuthConfig {
   smtpHost: string;
   /** SMTP port used by the email service. */
   smtpPort: number;
+  /** Whether the SMTP connection uses implicit TLS (`SMTP_SECURE`, default: port 465). */
+  smtpSecure: boolean;
   /** SMTP username, or null when SMTP auth is disabled. */
   smtpUser: string | null;
   /** SMTP password, or null when SMTP auth is disabled. */
   smtpPass: string | null;
   /** Sender address for outbound email. */
   smtpFrom: string;
+  /** Bound applied to the SMTP connection, greeting and socket timeouts, in milliseconds. */
+  smtpConnectionTimeoutMs: number;
   /** Absolute base URL used to build verification links. */
   appBaseUrl: string;
   /** Origin allowed for state-changing auth requests (CSRF, AC-15). */
@@ -139,15 +148,7 @@ function readInteger(
   return value;
 }
 
-function readBoolean(
-  env: Record<string, string | undefined>,
-  name: string,
-  fallback: boolean,
-): boolean {
-  const raw = env[name];
-  if (raw === undefined) {
-    return fallback;
-  }
+function parseBoolean(raw: string, name: string): boolean {
   if (raw === 'true' || raw === '1') {
     return true;
   }
@@ -157,6 +158,30 @@ function readBoolean(
   throw new Error(
     `${name} must be a boolean ("true", "false", "1", or "0"); received "${raw}"`,
   );
+}
+
+function readBoolean(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: boolean,
+): boolean {
+  const raw = env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  return parseBoolean(raw, name);
+}
+
+/** Reads a boolean where an absent or empty variable means "not configured". */
+function readOptionalBoolean(
+  env: Record<string, string | undefined>,
+  name: string,
+): boolean | null {
+  const raw = env[name];
+  if (raw === undefined || raw === '') {
+    return null;
+  }
+  return parseBoolean(raw, name);
 }
 
 function readSessionCookieSameSite(
@@ -200,9 +225,23 @@ export function loadAuthConfig(
   const databaseUrl = readDatabaseUrl(env);
   const smtpHost = readRequiredString(env, 'SMTP_HOST', DEFAULT_SMTP_HOST);
   const smtpPort = readInteger(env, 'SMTP_PORT', DEFAULT_SMTP_PORT, 1, 65535);
+  const smtpSecure =
+    readOptionalBoolean(env, 'SMTP_SECURE') ?? (smtpPort === 465);
   const smtpUser = readOptionalString(env, 'SMTP_USER');
   const smtpPass = readOptionalString(env, 'SMTP_PASS');
+  if ((smtpUser === null) !== (smtpPass === null)) {
+    throw new Error(
+      'SMTP_USER and SMTP_PASS must be provided together (both or neither)',
+    );
+  }
   const smtpFrom = readRequiredString(env, 'SMTP_FROM', DEFAULT_SMTP_FROM);
+  const smtpConnectionTimeoutMs = readInteger(
+    env,
+    'SMTP_CONNECTION_TIMEOUT_MS',
+    DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
+    MIN_SMTP_CONNECTION_TIMEOUT_MS,
+    MAX_SMTP_CONNECTION_TIMEOUT_MS,
+  );
   const appBaseUrl = readRequiredString(env, 'APP_BASE_URL', DEFAULT_APP_BASE_URL);
   const allowedOrigin = readRequiredString(
     env,
@@ -254,9 +293,11 @@ export function loadAuthConfig(
     databaseUrl,
     smtpHost,
     smtpPort,
+    smtpSecure,
     smtpUser,
     smtpPass,
     smtpFrom,
+    smtpConnectionTimeoutMs,
     appBaseUrl,
     allowedOrigin,
     sessionCookieSecure,
