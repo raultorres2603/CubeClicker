@@ -1,0 +1,509 @@
+{
+  "version": 2,
+  "skills": {
+    "ab-testing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/ab-testing/SKILL.md",
+      "computedHash": "56e4fd344bf686d5d3a083b2728a9fd65f173f047a6535eeb05712dd7ee10f13"
+    },
+    "ad-creative": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/ad-creative/SKILL.md",
+      "computedHash": "21f151626df70971bfe3c768f0d180eb063e877e00c66bd740e02cbc24324828"
+    },
+    "ads": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/ads/SKILL.md",
+      "computedHash": "e17bd2849ceed2e196a1988516f28f9b498334c2990a34be5d68ac1ee9877707"
+    },
+    "ai-seo": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/ai-seo/SKILL.md",
+      "computedHash": "bb68811a6f0f5e2f734ae2683132d5932bdf4a1a9e109fd719fe9cf2a727a0ff"
+    },
+    "analytics": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/analytics/SKILL.md",
+      "computedHash": "d427971cc71c44d5c8734195ff69288a75c2022b97a9170ee9312256560a5f72"
+    },
+    "analytics-dashboard": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/analytics-dashboard/SKILL.md",
+      "computedHash": "194a82c6dc41ce2c759c739e048755206e06d32820e014e5759b1bb78be35e3b"
+    },
+    "aso": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/aso/SKILL.md",
+      "computedHash": "3be200233147515dfd1be265924ba24c281e8d727c81ea04f9f6a1c035e6c842"
+    },
+    "attribution": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/attribution/SKILL.md",
+      "computedHash": "38d7aceab5765ff455440bdfc0b747369054f5622cabdc40a32c298b6275ce7f"
+    },
+    "churn-prevention": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/churn-prevention/SKILL.md",
+      "computedHash": "de31f41ad671c6237b61423a475eb9b9f7973a4eb629a3c38bbf7b49e24aabbe"
+    },
+    "co-marketing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/co-marketing/SKILL.md",
+      "computedHash": "0d51144f2e9595dd033b44c0e84c6aeae3db4d7ccf9ab1ac7792990d8e72116f"
+    },
+    "cold-email": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/cold-email/SKILL.md",
+      "computedHash": "fde085e02f3ff4e79bbb4f862a6f6261f2c84ca2bb1493834237e6df01bf6b0d"
+    },
+    "community-marketing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/community-marketing/SKILL.md",
+      "computedHash": "20973073c347b9aeccb6933aea1cfb6f3748f314af761673432ffd9ed6ad1e0c"
+    },
+    "competitor-profiling": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/competitor-profiling/SKILL.md",
+      "computedHash": "76efcbc21f1aedb9003897638bba2adf265c05415e57444078c57a7a1021f3c2"
+    },
+    "competitors": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/competitors/SKILL.md",
+      "computedHash": "4a4740d93a85de0d5f3d5d99073a7ed2f953677dfefa9148654ff8ae6726018a"
+    },
+    "content-matrix": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/content-matrix/SKILL.md",
+      "computedHash": "45423d4893f32ae55d35061ee76671bab07031516781dd1f277c8491dc7abd22"
+    },
+    "content-strategy": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/content-strategy/SKILL.md",
+      "computedHash": "94a23ddb279c20ea8c7c7751eb07f548c855a5287aed8983f31e63b49e7dbf1a"
+    },
+    "conversion-tracking": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/conversion-tracking/SKILL.md",
+      "computedHash": "6847a545bf3ca478cf61c822652f1a940103a8bed899960e1d6303bf7f6def6e"
+    },
+    "copy-editing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/copy-editing/SKILL.md",
+      "computedHash": "faf2d2cb156cdebe9b7ad16df2d25e42494e6069b33f237f5cdd24b04853636b"
+    },
+    "copywriting": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/copywriting/SKILL.md",
+      "computedHash": "6b86be15d7e8397c27d339fbcbf72718854f96f096ca617889e45b5b8174c393"
+    },
+    "cro": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/cro/SKILL.md",
+      "computedHash": "cc8040529654755144b4dedce5f075ead4667969978257596a05fa4282a5b42f"
+    },
+    "customer-research": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/customer-research/SKILL.md",
+      "computedHash": "a8a89bd4789f64f3cdaedf0bf7f3531a79829755b715899d461be09cb0e6101e"
+    },
+    "design-taste-frontend": {
+      "source": "Leonxlnx/taste-skill",
+      "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill/SKILL.md",
+      "computedHash": "b10eab0a9684cd09cf34c31ef04a3bf530a5f4404422f9c520d42372d670c7fc"
+    },
+    "directory-submissions": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/directory-submissions/SKILL.md",
+      "computedHash": "5d6c7a35c7fc89362c9d4db82f9c657ef600508dcc293e087a6f54ba306cea2c"
+    },
+    "emails": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/emails/SKILL.md",
+      "computedHash": "85084a8b4df7be945ebb539c6b0a83dca7d29d3f8fb375f9af282ca320364fbe"
+    },
+    "emil-design-eng": {
+      "source": "emilkowalski/skills",
+      "commit": "64eb3deb9a5fbfa041faf783e0bc3fd635872e9c",
+      "sourceType": "github",
+      "skillPath": "skills/emil-design-eng/SKILL.md",
+      "computedHash": "e1b377ccde1d32743d1d3f7d8626629deb8055c9114d180c184697928cc66cc6"
+    },
+    "events": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/events/SKILL.md",
+      "computedHash": "4e6d76dfbc37019549ef6859c834b9e190dc58cd4ba80eb5557f04e379725681"
+    },
+    "free-tools": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/free-tools/SKILL.md",
+      "computedHash": "8ac6a6881df107a32d1ed74dc0d9ae52232c7416fe4acc37ae1f281f9668e49b"
+    },
+    "gemini-carousel": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/gemini-carousel/SKILL.md",
+      "computedHash": "028f1598ebfe17e4ccd791b703dcf64bd6a24d395d32fd7698835554f5ba727b"
+    },
+    "gemini-infographic": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/gemini-infographic/SKILL.md",
+      "computedHash": "ea9a11733836f697e7ef3a81a33ef7326646059a4cd4db01f34e0e505d2f1688"
+    },
+    "graphic-designer": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/graphic-designer/SKILL.md",
+      "computedHash": "f2c09405144d0ff472031679d5b310c850fd35bb537862c4f9b261b7543fcd40"
+    },
+    "hook-generator": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/hook-generator/SKILL.md",
+      "computedHash": "2e61e0a5fbc95574536ed2b5c8b63a050aaa5d27049b6b71756d274970233019"
+    },
+    "image": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/image/SKILL.md",
+      "computedHash": "97ffb6d97131e3278f7922ec79893e6fb67f2eb4c91fb7e5e77b0140a8373604"
+    },
+    "influencer-marketing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/influencer-marketing/SKILL.md",
+      "computedHash": "6af66c88c80c4ccc4683ecbdfea454b0063259f02d610303fef43f75ffdf918a"
+    },
+    "launch": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/launch/SKILL.md",
+      "computedHash": "585ae1023f9178c84490bf5fcf2a0e0d1dc418e215f3c8d813f3e648acaac5c1"
+    },
+    "lead-magnets": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/lead-magnets/SKILL.md",
+      "computedHash": "d6eea3541ee5761567d7a7ea7758e1a2900a386f86b042d34c1ee6240b9b00f9"
+    },
+    "link-building": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/link-building/SKILL.md",
+      "computedHash": "828cd35f2f0c059f42d26ab6ee9fe426bff00f4e36d7f3d228d74e550773d227"
+    },
+    "marketing-council": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-council/SKILL.md",
+      "computedHash": "55a4da1a4d3b0c7c3686d63af8b57ac3f7306e1ac306ca1a274b9bc6c74126b0"
+    },
+    "marketing-ideas": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-ideas/SKILL.md",
+      "computedHash": "98eaa42d604e487b9b39d8dd894bba95fb86d53154f5481f797ca23b8600d336"
+    },
+    "marketing-loops": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-loops/SKILL.md",
+      "computedHash": "69fe1afe23c72143bb303350908f067e6c41027ae011fe41687a80464c61bfc2"
+    },
+    "marketing-plan": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-plan/SKILL.md",
+      "computedHash": "71c72784b864fa63782fe96bce4cac48d54a66a20518afedb63c10774e170e21"
+    },
+    "marketing-psychology": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-psychology/SKILL.md",
+      "computedHash": "9542dca644cf683b8d171b962054679a51b2e740bfad0692c2edcfd85d129c9c"
+    },
+    "newsletter-voice": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/newsletter-voice/SKILL.md",
+      "computedHash": "89d8d0902494741256604347462db189613aedff4f5f0c10d0b320ed0a5c96ca"
+    },
+    "niche-research": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/niche-research/SKILL.md",
+      "computedHash": "dc5ddab5c9396441fc7e3be070a10437979f917a659b52968319aad3b20c5032"
+    },
+    "offers": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/offers/SKILL.md",
+      "computedHash": "3641ad9980f4cfb0e5b8810b0cfecd7f724b9e0076152930c06de8884d1ad791"
+    },
+    "onboarding": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/onboarding/SKILL.md",
+      "computedHash": "5ce184188474818e786f36cbccac979bff528cc597a17eb241e58868be9c4609"
+    },
+    "paywalls": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/paywalls/SKILL.md",
+      "computedHash": "43b19f7b8ccc79b7566cebc75c96fbe8d74de5c1e183c9b6884e6e5741d2ef0e"
+    },
+    "pinned-comment": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/pinned-comment/SKILL.md",
+      "computedHash": "efee1d8b6cbc8bfe62f7334005db9933157da74f92b71fc9dc3b5984422eb1ca"
+    },
+    "popups": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/popups/SKILL.md",
+      "computedHash": "c279f5d46798ad27c5a9ae04925bc22e346b04f372ced1d80b2bc5eee4459b16"
+    },
+    "post-formatter": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/post-formatter/SKILL.md",
+      "computedHash": "383d674a4df4e5984f05dff4178bf3701ce51a421f170f8d04a07629ed72f88a"
+    },
+    "post-scorer": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/post-scorer/SKILL.md",
+      "computedHash": "09f3d289eeb0cc4251cddd42f943428785decb9eefb42ee28e0fe7753a426717"
+    },
+    "post-writer": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/post-writer/SKILL.md",
+      "computedHash": "ced6080d085e7a13ecd09d4edd3e5d2cc7ce5a61244b63142842552e02811306"
+    },
+    "pricing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/pricing/SKILL.md",
+      "computedHash": "9bea1819645df0b2d95429ecb64745ef5d2940b0bb161a40131eae3db8222813"
+    },
+    "product-marketing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/product-marketing/SKILL.md",
+      "computedHash": "2b7f80ab415280e3e0a0bcc112af8e24059169642c70fb36e18e44a79f80f505"
+    },
+    "profile-optimizer": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/profile-optimizer/SKILL.md",
+      "computedHash": "177431393f31c5e383948bbed1ccdb5c4ba2102e022a1222d1962b3750d474a4"
+    },
+    "programmatic-seo": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/programmatic-seo/SKILL.md",
+      "computedHash": "f37db3caa28d6e8e7d4bc0b73e65db26cae7dfb15b53d97f58a0f2330bca545b"
+    },
+    "prospecting": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/prospecting/SKILL.md",
+      "computedHash": "6e26279c7150f8421ca4b9ce4dd02b7dd40e7bb3531268eb5519c92681ebb0dd"
+    },
+    "public-relations": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/public-relations/SKILL.md",
+      "computedHash": "e8dd380b94e3252568d3dcb03537c4a0080ba6c3d3ba2116fd2fef3d623e82e1"
+    },
+    "quote-post": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/quote-post/SKILL.md",
+      "computedHash": "49f4706395fa36d28700c0fe99610cc517c2475fcf8496f6ea2b8d981a5bd0b6"
+    },
+    "reels-scripting": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/reels-scripting/SKILL.md",
+      "computedHash": "505b43b642bb9db16f58eef928794e08234b192909ee12b39e05558cb7fcfdb8"
+    },
+    "referrals": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/referrals/SKILL.md",
+      "computedHash": "c4c40d5a910cf212f9bd07266ec929811ef5cbaeab6d2b517a8932701f68d802"
+    },
+    "reverse-engineer-marketing": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/reverse-engineer-marketing/SKILL.md",
+      "computedHash": "1437cbb1f1563a0a81fb2495d093b9a631d3409c18efd961d61debc366a3ef41"
+    },
+    "revops": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/revops/SKILL.md",
+      "computedHash": "7be8c12ed8228ca60a4a171fd084d7b70dbc1f6417bac066e3f633b53bb0fed4"
+    },
+    "sales-enablement": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/sales-enablement/SKILL.md",
+      "computedHash": "a097c96210ed88e19fdb3a43b4b9e53a4f394bf5942d96af3c1f2c1b3c8b93e8"
+    },
+    "schema": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/schema/SKILL.md",
+      "computedHash": "f8704ea70fc7d7ff985b9d902e52bac2d455baa6678b803b4306c8afb99997b1"
+    },
+    "seo-audit": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/seo-audit/SKILL.md",
+      "computedHash": "d42f6f32bb62f8ebce93826ef33a7b663f2259b2891a0992f3d63dbd46f0f5ad"
+    },
+    "signup": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/signup/SKILL.md",
+      "computedHash": "f6ee15c99bdc3a774f20f6d7a6ff8bf111a9a33431b6962ee34ce307762a3c14"
+    },
+    "site-architecture": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/site-architecture/SKILL.md",
+      "computedHash": "b705d5e242192822cdb1aa2efb48f3efc1fe10cdb97f444066c37a5fd629db88"
+    },
+    "sms": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/sms/SKILL.md",
+      "computedHash": "cdbf361bee341b17188d0279ca714e1a1a211b7ed7cf4a55e6a88a600d2358e7"
+    },
+    "social": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/social/SKILL.md",
+      "computedHash": "d4e3f754e4f6a1ef99a79f038656f53ae7d560492f06c6be075b400c614b20d4"
+    },
+    "video": {
+      "source": "coreyhaines31/marketingskills",
+      "commit": "5b2b400eec1e7e1cec76245a715d0b0d4fd2a9c1",
+      "sourceType": "github",
+      "skillPath": "skills/video/SKILL.md",
+      "computedHash": "76445cee7d4c53d0a64a24967e6e6d4835a8626c785ac5b34cb8d1d79a88eaf3"
+    },
+    "voice-builder": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/voice-builder/SKILL.md",
+      "computedHash": "ff374f3d1fa08711a0a24bd4e4b61efafaaa16ff938568c7b865328dcd760997"
+    },
+    "youtube-thumbnail": {
+      "source": "charlie947/social-media-skills",
+      "commit": "10ca79c0ec0be0f7654d19cd4f0c86b6fa6ed23b",
+      "sourceType": "github",
+      "skillPath": "skills/youtube-thumbnail/SKILL.md",
+      "computedHash": "c411148680dbe6c600562ccfad5fb504a82300b95a8aebed54aedf6b11b4e82d"
+    }
+  }
+}

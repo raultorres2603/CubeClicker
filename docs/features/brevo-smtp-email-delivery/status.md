@@ -1,8 +1,8 @@
 ---
 feature: brevo-smtp-email-delivery
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 0
+build_round: 1
 created: 2026-11-20
 updated: 2026-11-21
 ---
@@ -21,7 +21,7 @@ Wire Brevo SMTP as the email delivery provider for development and production so
 - [x] T6 — Test-email CLI and scripts `[seq]`
 - [x] T7 — Mailpit smoke pinning + Render/compose entries `[seq]`
 - [x] T8 — Documentation pass `[seq]`
-- [ ] T9 — Verify & integrate `[seq]`
+- [x] T9 — Verify & integrate `[seq]`
 
 ## Loop log
 - 2026-11-20 — created → planning — request: "We are going to use Brevo SMTP to send the emails on development and production environments for verification accounts when registering the accounts. We have an API Key. Proceed with implementation to be able to set the API KEY, SMTP host, etc."
@@ -42,6 +42,17 @@ Wire Brevo SMTP as the email delivery provider for development and production so
 - 2026-11-22 — building — T6 complete — `email:test`/`email:test:dist` CLI with `redactSecrets`, 1773 tests, commit 941862d — build-log-T6.md
 - 2026-11-22 — building — T7 complete — SMTP_SECURE/TIMEOUT in compose+render, smoke pinned to Mailpit, 7/7 config checks, commit 6eb14b5 — build-log-T7.md
 - 2026-11-22 — building — T8 complete — README Brevo recipe/CLI/asset docs, deployment/vercel-render/containerization updated, 36/36 greps, commit 36d6aa8 — build-log-T8.md
+- 2026-11-22 — building — T9 complete — full gate green (4617 tests, coverage 96.59/90.54/99.6/96.59 backend, 97.15/96.75/98.36/97.15 frontend, smoke 29/29, assets served on both frontends, audits clean); integration commit fbadccf + a4a3b6c — build-log-T9.md
+- 2026-11-22 — building → code_review — all 9 tasks [x], every task's verify recorded — tasks.md
+- 2026-11-22 — code_review → accepted — verdict `approved`, blocking 0; AC-1…AC-21 met; docs pass complete (T8); feature index updated — reviews/code-r1.md
+
+## Backlog (MINOR/INFO)
+- F1 MINOR: `compose.yaml` defaults `SMTP_SECURE` to explicit `"false"`, masking the port-465 derivation; document explicit `SMTP_SECURE=true` for 465 or use `${SMTP_SECURE:-}`.
+- F2 MINOR: CLI prints `starttls=off` for no-auth/`secure=false`; plan vocabulary is `required|opportunistic`.
+- F3 MINOR: README/vercel-render rationale says the development deploy is user-triggered while other docs say `main` deploys automatically; correct the rationale.
+- F4 MINOR: README Secret hygiene command block lacks the branch-history guard shown in the text.
+- F5 INFO: T9 integration commit intentionally stages orchestrator artifacts.
+- F6 INFO: AC-10 recovery test uses `/auth/resend`; the AC names `/auth/resend-verification` (shared handler).
 
 ## Blockers / open questions
 - Spec r1 F1–F16 addressed in revision 3; awaiting round-2 review.
