@@ -4,7 +4,8 @@ import { createAuthService } from './auth-service.js';
 import { InMemoryUserRepository } from './user-repository.js';
 import { InMemorySessionRepository } from './session-repository.js';
 import { InMemoryVerificationTokenRepository } from './verification-token-repository.js';
-import { FakeEmailService } from './email.js';
+import { FakeEmailService, type CapturedVerificationEmail, type EmailService } from './email.js';
+import type { VerificationEmailOptions } from './email-template.js';
 import { createPasswordHasher, DEFAULT_ARGON2_PARAMS } from './password.js';
 import { createRateLimiter } from './rate-limit.js';
 import authRoutes, { SESSION_COOKIE_NAME } from './auth-routes.js';
@@ -12,6 +13,33 @@ import type { SessionCookieSameSite } from './config.js';
 
 const FIXED_NOW = 1_700_000_000_000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface RecordingEmailService extends EmailService {
+  readonly sent: CapturedVerificationEmail[];
+}
+
+/** Records every send attempt, then rejects the configured number of times. */
+class FlakyRecordingEmailService implements RecordingEmailService {
+  readonly sent: CapturedVerificationEmail[] = [];
+  private failuresRemaining: number;
+
+  constructor(failuresRemaining: number) {
+    this.failuresRemaining = failuresRemaining;
+  }
+
+  async sendVerification(
+    to: string,
+    verificationUrl: string,
+    options?: VerificationEmailOptions,
+  ): Promise<void> {
+    this.sent.push({ to, verificationUrl, expiresInMs: options?.expiresInMs });
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      throw new Error('SMTP transport failed: connection refused');
+    }
+  }
+}
 
 interface Ctx {
   app: FastifyInstance;
@@ -19,7 +47,7 @@ interface Ctx {
   users: InMemoryUserRepository;
   sessions: InMemorySessionRepository;
   tokens: InMemoryVerificationTokenRepository;
-  email: FakeEmailService;
+  email: RecordingEmailService;
   rateLimiter: ReturnType<typeof createRateLimiter>;
   clock: () => number;
 }
@@ -29,13 +57,16 @@ interface CookieOptions {
   sessionCookieSameSite?: SessionCookieSameSite;
 }
 
-async function buildCtx(cookieOptions: CookieOptions = {}): Promise<Ctx> {
+async function buildCtx(
+  cookieOptions: CookieOptions = {},
+  emailService: RecordingEmailService = new FakeEmailService(),
+): Promise<Ctx> {
   let now = FIXED_NOW;
   const clock = () => now;
   const users = new InMemoryUserRepository({ now: clock });
   const sessions = new InMemorySessionRepository({ now: clock });
   const tokens = new InMemoryVerificationTokenRepository({ now: clock });
-  const email = new FakeEmailService();
+  const email = emailService;
   const hasher = createPasswordHasher(DEFAULT_ARGON2_PARAMS);
   const rateLimiter = createRateLimiter(clock);
   const service = createAuthService({
@@ -46,7 +77,7 @@ async function buildCtx(cookieOptions: CookieOptions = {}): Promise<Ctx> {
     passwordHasher: hasher,
     rateLimiter,
     clock,
-    config: { appBaseUrl: 'http://localhost:5173', sessionTtlMs: SESSION_TTL_MS, verificationTokenTtlMs: 24 * 60 * 60 * 1000 },
+    config: { appBaseUrl: 'http://localhost:5173', sessionTtlMs: SESSION_TTL_MS, verificationTokenTtlMs: VERIFICATION_TTL_MS },
   });
 
   const app = Fastify();
@@ -555,6 +586,77 @@ describe('auth routes', () => {
       expect(denied.json()).toEqual({ message: 'origin not allowed', code: 'origin_not_allowed' });
     } finally {
       await app.close();
+    }
+  });
+
+  it('POST /auth/register transport rejection returns 500 internal_error, then resend recovers with a fresh token', async () => {
+    const email = new FlakyRecordingEmailService(1);
+    const failing = await buildCtx({}, email);
+    const createdSessionUserIds: string[] = [];
+    const createSession = failing.sessions.create.bind(failing.sessions);
+    failing.sessions.create = async (userId, ttlMs) => {
+      createdSessionUserIds.push(String(userId));
+      return createSession(userId, ttlMs);
+    };
+    const headers = { origin: 'http://localhost:5173' };
+    try {
+      const res = await failing.app.inject({
+        method: 'POST',
+        url: '/auth/register',
+        headers,
+        payload: { username: 'flaky', email: 'flaky@x.com', password: 'password1234' },
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({ message: 'internal error', code: 'internal_error', error: 'internal_error' });
+      expect(getSetCookie(res)).toBe('');
+      expect(createdSessionUserIds).toEqual([]);
+
+      const persisted = await failing.users.findByEmail('flaky@x.com');
+      expect(persisted).not.toBeNull();
+      expect(persisted!.username).toBe('flaky');
+      expect(persisted!.verified).toBe(false);
+
+      const resend = await failing.app.inject({
+        method: 'POST',
+        url: '/auth/resend',
+        headers,
+        payload: { email: 'flaky@x.com' },
+      });
+      expect(resend.statusCode).toBe(202);
+      expect(resend.json()).toEqual({ message: 'verification email sent' });
+      expect(email.sent).toHaveLength(2);
+      expect(email.sent[0].to).toBe('flaky@x.com');
+      expect(email.sent[0].expiresInMs).toBe(VERIFICATION_TTL_MS);
+      expect(email.sent[1].to).toBe('flaky@x.com');
+      expect(email.sent[1].expiresInMs).toBe(VERIFICATION_TTL_MS);
+
+      const firstToken = new URL(email.sent[0].verificationUrl).searchParams.get('token');
+      const secondToken = new URL(email.sent[1].verificationUrl).searchParams.get('token');
+      expect(firstToken).toMatch(/^[0-9a-f]{64}$/);
+      expect(secondToken).toMatch(/^[0-9a-f]{64}$/);
+      expect(secondToken).not.toBe(firstToken);
+
+      const oldToken = await failing.app.inject({
+        method: 'POST',
+        url: '/auth/verify',
+        headers,
+        payload: { token: firstToken },
+      });
+      expect(oldToken.statusCode).toBe(400);
+      expect(oldToken.json()).toEqual({ message: 'invalid or expired token', code: 'invalid_token', error: 'invalid_token' });
+
+      const verification = await failing.app.inject({
+        method: 'POST',
+        url: '/auth/verify',
+        headers,
+        payload: { token: secondToken },
+      });
+      expect(verification.statusCode).toBe(200);
+      expect(verification.json().user.email).toBe('flaky@x.com');
+      expect(verification.json().user.verified).toBe(true);
+      expect(getSetCookie(verification)).toContain('HttpOnly');
+    } finally {
+      await failing.app.close();
     }
   });
 });

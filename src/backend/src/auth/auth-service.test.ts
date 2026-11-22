@@ -9,9 +9,10 @@ import {
 import {
   InMemoryVerificationTokenRepository,
 } from './verification-token-repository.js';
-import { FakeEmailService } from './email.js';
+import { FakeEmailService, SmtpEmailService, type CapturedVerificationEmail, type EmailService, type OutgoingEmail } from './email.js';
+import type { VerificationEmailOptions } from './email-template.js';
 import { createPasswordHasher, DEFAULT_ARGON2_PARAMS, verifyPassword } from './password.js';
-import { DEFAULT_ARGON2_MEMORY_COST, DEFAULT_ARGON2_TIME_COST, DEFAULT_ARGON2_PARALLELISM } from './config.js';
+import { DEFAULT_ARGON2_MEMORY_COST, DEFAULT_ARGON2_TIME_COST, DEFAULT_ARGON2_PARALLELISM, loadAuthConfig } from './config.js';
 import { createRateLimiter } from './rate-limit.js';
 import { AuthService, createAuthService, ValidationError, DuplicateAccountError, InvalidCredentialsError, AccountLockedError, InvalidTokenError, RateLimitError } from './auth-service.js';
 
@@ -585,5 +586,146 @@ describe('AuthService aliases and factory', () => {
     const ctx = makeService();
     const r = await ctx.service.register({ username: 'factory', email: 'factory@x.com', password: 'password1234' });
     expect(r.user.username).toBe('factory');
+  });
+});
+
+const TTL_2_HOURS_MS = 2 * 60 * 60 * 1000;
+
+function makeServiceWithTtl(ttlMs: number) {
+  return makeService({
+    config: {
+      appBaseUrl: 'http://localhost:5173',
+      sessionTtlMs: SESSION_TTL_MS,
+      verificationTokenTtlMs: ttlMs,
+    },
+  });
+}
+
+/** Records every send attempt, then rejects the configured number of times. */
+class RejectingEmailService implements EmailService {
+  readonly sent: CapturedVerificationEmail[] = [];
+  private failuresRemaining: number;
+
+  constructor(failuresRemaining: number) {
+    this.failuresRemaining = failuresRemaining;
+  }
+
+  async sendVerification(
+    to: string,
+    verificationUrl: string,
+    options?: VerificationEmailOptions,
+  ): Promise<void> {
+    this.sent.push({ to, verificationUrl, expiresInMs: options?.expiresInMs });
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      throw new Error('SMTP transport failed: connection refused');
+    }
+  }
+}
+
+describe('AuthService verification TTL propagation (AC-19(b))', () => {
+  it('register passes the non-default VERIFICATION_TOKEN_TTL_HOURS=2 lifetime to sendVerification', async () => {
+    const { verificationTokenTtlMs } = loadAuthConfig({ VERIFICATION_TOKEN_TTL_HOURS: '2' });
+    expect(verificationTokenTtlMs).toBe(TTL_2_HOURS_MS);
+
+    const ctx = makeServiceWithTtl(verificationTokenTtlMs);
+    await ctx.service.register({ username: 'ttl', email: 'ttl@x.com', password: 'password1234' });
+
+    expect(ctx.email.sent).toHaveLength(1);
+    expect(ctx.email.sent[0].to).toBe('ttl@x.com');
+    expect(ctx.email.sent[0].expiresInMs).toBe(TTL_2_HOURS_MS);
+  });
+
+  it('resendVerification passes the same configured lifetime to sendVerification', async () => {
+    const ctx = makeServiceWithTtl(TTL_2_HOURS_MS);
+    await ctx.service.register({ username: 'ttl', email: 'ttl@x.com', password: 'password1234' });
+    await ctx.service.resendVerification('ttl@x.com');
+
+    expect(ctx.email.sent).toHaveLength(2);
+    expect(ctx.email.sent[0].expiresInMs).toBe(TTL_2_HOURS_MS);
+    expect(ctx.email.sent[1].to).toBe('ttl@x.com');
+    expect(ctx.email.sent[1].expiresInMs).toBe(TTL_2_HOURS_MS);
+  });
+
+  it('renders "This link expires in 2 hours." through SmtpEmailService for VERIFICATION_TOKEN_TTL_HOURS=2', async () => {
+    const sent: OutgoingEmail[] = [];
+    const email = new SmtpEmailService(
+      { host: 'mailpit', port: 1025, from: 'no-reply@cubeclicker.local' },
+      () => ({
+        sendMail: async (mail: OutgoingEmail) => {
+          sent.push(mail);
+        },
+      }),
+    );
+    const { verificationTokenTtlMs } = loadAuthConfig({ VERIFICATION_TOKEN_TTL_HOURS: '2' });
+    const ctx = makeService({
+      email,
+      config: {
+        appBaseUrl: 'http://localhost:5173',
+        sessionTtlMs: SESSION_TTL_MS,
+        verificationTokenTtlMs,
+      },
+    });
+
+    await ctx.service.register({ username: 'ttl', email: 'ttl@x.com', password: 'password1234' });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].to).toBe('ttl@x.com');
+    expect(sent[0].subject).toBe('Verify your CubeClicker email');
+    expect(sent[0].html).toContain('This link expires in 2 hours.');
+  });
+});
+
+describe('AuthService transport failure recovery (AC-10)', () => {
+  it('persists the account unverified and issues no session when the transport rejects on register', async () => {
+    const rejecting = new RejectingEmailService(1);
+    const ctx = makeService({ email: rejecting });
+    const createdSessionUserIds: string[] = [];
+    const createSession = ctx.sessions.create.bind(ctx.sessions);
+    ctx.sessions.create = async (userId, ttlMs) => {
+      createdSessionUserIds.push(String(userId));
+      return createSession(userId, ttlMs);
+    };
+
+    const error = await ctx.service
+      .register({ username: 'flaky', email: 'flaky@x.com', password: 'password1234' })
+      .catch((reason: unknown) => reason as Error);
+
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+    expect(rejecting.sent).toHaveLength(1);
+    expect(rejecting.sent[0].to).toBe('flaky@x.com');
+    expect(rejecting.sent[0].expiresInMs).toBe(VERIFY_TTL_MS);
+
+    const persisted = await ctx.users.findByEmail('flaky@x.com');
+    expect(persisted).not.toBeNull();
+    expect(persisted!.username).toBe('flaky');
+    expect(persisted!.verified).toBe(false);
+    expect(createdSessionUserIds).toEqual([]);
+  });
+
+  it('resend recovers after a registration transport failure with a new email and a fresh token', async () => {
+    const rejecting = new RejectingEmailService(1);
+    const ctx = makeService({ email: rejecting });
+
+    const error = await ctx.service
+      .register({ username: 'flaky', email: 'flaky@x.com', password: 'password1234' })
+      .catch((reason: unknown) => reason as Error);
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+
+    const res = await ctx.service.resendVerification('flaky@x.com');
+    expect(res.message).toBe('verification email sent');
+    expect(rejecting.sent).toHaveLength(2);
+
+    const firstToken = new URL(rejecting.sent[0].verificationUrl).searchParams.get('token');
+    const secondToken = new URL(rejecting.sent[1].verificationUrl).searchParams.get('token');
+    expect(firstToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondToken).not.toBe(firstToken);
+    expect(rejecting.sent[1].to).toBe('flaky@x.com');
+    expect(rejecting.sent[1].expiresInMs).toBe(VERIFY_TTL_MS);
+
+    await expect(ctx.service.verifyEmail(firstToken!)).rejects.toBeInstanceOf(InvalidTokenError);
+    const verified = await ctx.service.verifyEmail(secondToken!);
+    expect(verified.user.verified).toBe(true);
   });
 });

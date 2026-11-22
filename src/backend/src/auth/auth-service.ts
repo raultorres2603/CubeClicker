@@ -313,7 +313,9 @@ export class AuthService {
 
     const { token } = await this.verificationTokens.issue(user.id, this.verificationTokenTtlMs, this.clock());
     const verificationUrl = makeVerificationUrl(this.appBaseUrl, token);
-    await this.email.sendVerification(user.email, verificationUrl);
+    await this.email.sendVerification(user.email, verificationUrl, {
+      expiresInMs: this.verificationTokenTtlMs,
+    });
 
     const sanitized = sanitize(user);
     const result: RegisterResult = {
@@ -463,7 +465,9 @@ export class AuthService {
     await this.verificationTokens.invalidateForUser(user.id);
     const { token } = await this.verificationTokens.issue(user.id, this.verificationTokenTtlMs, this.clock());
     const verificationUrl = makeVerificationUrl(this.appBaseUrl, token);
-    await this.email.sendVerification(user.email, verificationUrl);
+    await this.email.sendVerification(user.email, verificationUrl, {
+      expiresInMs: this.verificationTokenTtlMs,
+    });
 
     return { message: 'verification email sent' };
   }
