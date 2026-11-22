@@ -856,3 +856,5 @@ $ git status --porcelain=v1
 Audit 1 covers the tracked tree at `HEAD`; audit 2 covers untracked non-ignored files (`.agents/` and `skills-lock.json` are the only untracked paths). Audits 3 and 4 are count-only (`grep -c`), so no diff or patch line could be printed. Audit 5 confirms no `.env*` path appears in any branch commit. Audit 6 is the expected pre-existing untracked state: `.agents/` and `skills-lock.json` only, never staged, and no tracked file modified.
 
 The T9 commit was then amended with `build-log-T9.md` staged alone (`git commit --amend --no-edit`); the amended hash is recorded in the one-line follow-up commit below.
+
+Amended T9 commit: `fbadccffd308ce2f34b24a55a349e491e38aa229` (`fbadccf`) — the evidence above was written against `c8b6186` and applies unchanged to this tree.
