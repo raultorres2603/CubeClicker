@@ -64,3 +64,7 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_CONNECTION_TIMEOUT_MS
+        sync: false
