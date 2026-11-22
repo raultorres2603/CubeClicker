@@ -317,7 +317,6 @@ gh secret set SMTP_PASS --env development --repo raultorres2603/CubeClicker --bo
 gh secret set RENDER_API_KEY --env development --repo raultorres2603/CubeClicker --body '<CHANGEME-render-api-key>'
 
 # production (placeholder-only)
-
 gh variable set SMTP_HOST --env production --repo raultorres2603/CubeClicker --body 'smtp-relay.brevo.com'
 gh variable set SMTP_PORT --env production --repo raultorres2603/CubeClicker --body '587'
 gh variable set SMTP_SECURE --env production --repo raultorres2603/CubeClicker --body 'false'
@@ -358,9 +357,9 @@ fi
 
 **Preserve note.** The 2026-11-22 owner decision preserves the existing development values and creates only the missing names: `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`, `RENDER_SERVICE_ID` and `RENDER_API_KEY`, with the `SMTP_USER` variable value moved to the secret through stdin without printing. The owner re-checks the preserved `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USER` and `SMTP_PASS` values rather than re-entering them; the guard cannot detect a real-but-wrong preserved value, so the deployed proof below is the delivery check.
 
-**Merge ordering.** Fill the `development` `RENDER_API_KEY` placeholder with a real Render key before this feature merges to `main`: `main` auto-deploys development and the strict guard fails closed, so the first development deploy after merge is blocked by design until the placeholder is filled. The preserved development values are already in place, so `RENDER_API_KEY` is the only remaining pre-merge `development` value; production remains placeholder-only until it is provisioned.
+**Merge ordering.** Fill the `development` `RENDER_API_KEY` placeholder with a real Render key before this feature merges to main: `main` auto-deploys development and the strict guard fails closed, so the first development deploy after merge is blocked by design until the placeholder is filled. The preserved development values are already in place, so `RENDER_API_KEY` is the only remaining pre-merge `development` value; production remains placeholder-only until it is provisioned.
 
-**Source of truth.** The seven SMTP names are written to Render by the deploy workflow from the GitHub Environment; the dashboard is not the source, and GitHub is the source of truth; Render dashboard edits are reverted on the next deploy. Only those seven names are written — `RENDER_API_KEY` and `RENDER_SERVICE_ID` are never written to the service, and the remaining `sync: false` names stay dashboard-owned.
+**Source of truth.** The seven SMTP names are written to Render by the deploy workflow from the GitHub Environment; GitHub is the source of truth; Render dashboard edits are reverted on the next deploy. Only those seven names are written — `RENDER_API_KEY` and `RENDER_SERVICE_ID` are never written to the service, and the remaining `sync: false` names stay dashboard-owned.
 
 #### Deployed proof (user-owned)
 

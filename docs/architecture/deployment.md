@@ -15,7 +15,7 @@ The application itself is unchanged: game logic, server authority, in-memory roo
 | Static SPA (`src/frontend`) | Vercel CDN | Nothing but the built HTML/JS/CSS; no functions, no serverless backend |
 | HTTP API + WebSocket (`/auth/*`, `/healthz`, `/ws`) | Render free Docker web service, one instance | All live game/room state (in memory, one process) and auth sessions |
 | PostgreSQL | Neon | Durable accounts, sessions, verification tokens, economy and customization rows only |
-| CI/CD and configuration | GitHub Actions Environments + Render service variables | Pipeline ordering, per-environment secrets/variables and the committed runtime defaults; no runtime application state |
+| CI/CD and configuration | GitHub Environments (source of truth) + Render service variables (runtime copy) | Pipeline ordering, per-environment secrets/variables and the committed runtime defaults; no runtime application state |
 
 - **Game state stays on Render.** Rooms are in-memory, server-authoritative and per process. One instance is the pinned topology; two or more instances would split the room registry. See § Single-instance trade-off. Neon is never used for game/room state, and Vercel owns no application state.
 - **Data flow.** Browser → Vercel for HTML/JS/CSS; browser → Render for `/auth/*` (`fetch`, `credentials: 'include'`) and `/ws` (`wss://`). The session cookie is host-only for the Render API host and is attached on both requests and the WebSocket upgrade; the backend resolves the account from the upgrade cookie exactly as locally.

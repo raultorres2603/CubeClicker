@@ -43,7 +43,7 @@ flowchart LR
 
 ## Environment catalog
 
-All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, has no secrets, variables or protection rules yet, and fails until it is provisioned with a production Render service, a production Vercel project and a production Neon branch.
+All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, holds the nine deployment names `placeholder-only`, and `no Render service, Vercel project or Neon branch is provisioned`. It fails at the Brevo placeholder guard until it is provisioned with a production Render service, a production Vercel project and a production Neon branch.
 
 ### GitHub Environment `development` (provisioned)
 
@@ -52,25 +52,32 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 | `DATABASE_URL` | secret | Neon development **pooled** URL (`-pooler`, `sslmode=require`); CI migration fallback |
 | `DIRECT_DATABASE_URL` | secret | Neon development **direct** URL (`sslmode=require`); CI migration (preferred) |
 | `RENDER_DEPLOY_HOOK_URL` | secret | `curl -fsS -X POST` deploy trigger for `srv-dbtcvv9srm7s73au5bag` (never echoed) |
-| `SMTP_PASS` | secret | Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — not the REST API key; consumed by the Render service |
+| `RENDER_API_KEY` | secret | Render API bearer for the deploy sync; pipeline-only, never written to the Render service |
+| `SMTP_PASS` | secret | Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — not the REST API key; synced to Render |
+| `SMTP_USER` | secret | Brevo **SMTP login**; synced to Render with the other six SMTP names |
 | `VERCEL_TOKEN` | secret | `vercel pull`/`build`/`deploy` (never echoed) |
 | `FRONTEND_ORIGIN` | var | Stable development frontend origin; smoke frontend base and Origin |
 | `VITE_API_URL` | var | Render service origin; Render health poll, Vercel build, smoke API base |
 | `VITE_WS_URL` | var | `wss://<render-service>/ws`; Vercel build and smoke WS URL |
 | `VERCEL_ORG_ID` | var | Vercel CLI project link |
 | `VERCEL_PROJECT_ID` | var | Vercel CLI project link |
-| `MAX_USERS_PER_SERVER` | var | Runtime-parity catalog entry; the Render service carries the value the app reads |
-| `SESSION_COOKIE_SECURE` | var | Runtime-parity catalog entry (`true`) |
-| `SESSION_COOKIE_SAMESITE` | var | Runtime-parity catalog entry (`none` for the cross-site default hosts) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS` | vars | Runtime-parity catalog entries for the Brevo SMTP relay; the Render service carries the values the app reads |
+| `MAX_USERS_PER_SERVER` | var | Catalog entry; the Render service carries the value the app reads |
+| `SESSION_COOKIE_SECURE` | var | Catalog entry (`true`) |
+| `SESSION_COOKIE_SAMESITE` | var | Catalog entry (`none` for the cross-site default hosts) |
+| `SMTP_HOST` | var | Brevo relay host; synced from the GitHub Environment |
+| `SMTP_PORT` | var | Brevo relay port; synced from the GitHub Environment |
+| `SMTP_SECURE` | var | Brevo TLS mode; synced from the GitHub Environment |
+| `SMTP_CONNECTION_TIMEOUT_MS` | var | Brevo connection timeout; synced from the GitHub Environment |
+| `SMTP_FROM` | var | Brevo verified sender; synced from the GitHub Environment |
+| `RENDER_SERVICE_ID` | var | Render service URL coordinate for the sync; never written to the Render service |
 
 - `VITE_*` values are public build-time configuration (baked into the bundle), not secrets. `VITE_WS_URL` is explicit here; the smoke derives `wss://<api-host>/ws` only when it is empty.
-- The workflow reads `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`; the runtime-parity names are documented so the catalog is complete even though only the Render service consumes them. The concrete development hostnames and project/service IDs are listed in § Architecture (they are public, non-secret identifiers).
+- The deploy workflow reads `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, the six deployment variables and the three deployment secrets. The nine deployment names are validated on every run and the seven SMTP names are synced from the GitHub Environment to the Render service (`nine validated, seven synced`); `RENDER_API_KEY` and `RENDER_SERVICE_ID` are never written to the Render service. The concrete development hostnames and project/service IDs are listed in § Architecture (they are public, non-secret identifiers).
 
 ### GitHub Environment `production` (not provisioned, manual only)
 
 - Trigger: `workflow_dispatch` only, with the single `production` choice. The job first verifies that CI for the target SHA succeeded, then runs the deploy job. The `production` Environment has **no protection rules and no deployment branch policy** today; required reviewers and a `main`-only branch policy must be configured before production is used.
-- Values: the same **names** as `development`, but none are provisioned: the environment has no secrets and no variables. Before production can deploy, a user must create a production Render service (with its own deploy hook URL), a production Vercel project/domain, and a Neon `production` branch with protected URL secrets, then add the catalog and the protection rules.
+- Values: the same **nine names** as `development`, all `placeholder-only` (six variables, three secrets). `no Render service, Vercel project or Neon branch is provisioned`; before production can deploy, a user must create a production Render service (with its own deploy hook URL), a production Vercel project/domain, and a Neon `production` branch with protected URL secrets, then fill the nine values and add the protection rules.
 - Nothing in the repository hardcodes a production hostname; production has no committed host or credential.
 
 ### Render service environment (committed in `render.yaml`)
@@ -87,9 +94,10 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 | `CORS_ORIGIN`, `ALLOWED_ORIGIN` | `sync: false` | exact `FRONTEND_ORIGIN` for HTTP CORS/CSRF and the WebSocket `Origin` guard |
 | `APP_BASE_URL` | `sync: false` | base URL for verification links and email image URLs |
 | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE` | `sync: false` | `true` / `none` for the cross-site default hosts |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS` | `sync: false` | Brevo SMTP relay: host/ports, SMTP login, SMTP key (not the REST API key), verified sender, TLS mode and timeout |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS` | `sync: false` (workflow-synced) | Brevo SMTP relay: host/ports, SMTP login, SMTP key (not the REST API key), verified sender, TLS mode and timeout; the deploy workflow writes these seven names from the GitHub Environment |
 
-- `sync: false` means Render prompts for the value and never stores it in git. On the live service these values were set in the Render dashboard.
+- `sync: false` means Render prompts for the value and never stores it in git. The seven SMTP names are synced from the GitHub Environment by the deploy workflow on every deploy; the remaining `sync: false` names (`DATABASE_URL`, `DIRECT_DATABASE_URL`, `CORS_ORIGIN`, `ALLOWED_ORIGIN`, `APP_BASE_URL`, `SESSION_COOKIE_*`) `stay dashboard-owned` and are `never synced`. `render.yaml` keeps `sync: false` and no value for every name.
+- `RENDER_API_KEY` and `RENDER_SERVICE_ID` are not in `render.yaml`: they are GitHub Environment entries read only by the deploy step, and they are never written to the Render service.
 - `CORS_ORIGIN`, `ALLOWED_ORIGIN` and `APP_BASE_URL` are no longer derived by the workflow; they are static service variables set to the exact `FRONTEND_ORIGIN`. Changing the frontend origin means updating the Render service variables, not a workflow.
 - **Ownership.** Every value is supplied by the repository owner per environment; this repository commits no Render API key, deploy hook URL, Vercel token, org/project ID value beyond the documented IDs, Neon connection string, domain or SMTP credential.
 
@@ -113,15 +121,17 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 - Vercel: project with root `src/frontend` (`prj_9GfusgivGpVJDXeJPi2TnMUCb2RV`), deployment protection off, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and the stable `FRONTEND_ORIGIN` host.
 - Render: one free Docker web service per environment (`cubeclicker-development`, `srv-dbtcvv9srm7s73au5bag`, Frankfurt, branch `main`, auto-deploy off) and its deploy hook URL. The service is described by `render.yaml`.
 - Neon: one project with a `development` branch (and, for production, a `production` branch), pooled and direct URLs, `sslmode=require`.
-- GitHub: the `development` Environment with the catalog above; for production, the `production` Environment with the same catalog and protection rules (required reviewers, deployment branch policy) created before production is used. No `develop` branch exists — `main` is the integration branch and its pushes deploy development.
-- SMTP: Brevo SMTP delivers verification email in development and production — host `smtp-relay.brevo.com`, port `587` (STARTTLS) or `465` (`SMTP_SECURE=true`), the Brevo **SMTP login** plus the **SMTP key** (**Settings → SMTP & API → SMTP**, not the REST API key) and a verified `SMTP_FROM`. See § SMTP and email.
+- GitHub: the `development` Environment with the catalog above; for production, the `production` Environment with the same nine names and protection rules (required reviewers, deployment branch policy) created before production is used. The deploy workflow validates all nine names on every run and syncs the seven SMTP names to Render before the deploy hook; the `production` names stay `placeholder-only` until the assets exist. No `develop` branch exists — `main` is the integration branch and its pushes deploy development.
+- SMTP: Brevo SMTP delivers verification email in development and production — host `smtp-relay.brevo.com`, port `587` (STARTTLS) or `465` (`SMTP_SECURE=true`), the Brevo **SMTP login** plus the **SMTP key** (**Settings → SMTP & API → SMTP**, not the REST API key) and a verified `SMTP_FROM`. The seven SMTP values are entered in the GitHub Environment and synced to Render by the deploy workflow; the strict guard fails closed on a missing value or a `CHANGEME` placeholder. See § SMTP and email.
 
 ### Routine development deploy
 
 1. Push or merge to `main`.
-2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, a `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared, and the guard that `deploy.yml` never mentions Fly).
+2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, a `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared, the guard that `deploy.yml` never mentions Fly, `Guard rejects placeholder values` and `Guard accepts a complete value set`).
 3. **Deploy** starts from the `workflow_run` event after that CI run succeeds (no `workflow_call`, no second test run):
+   - `Check deployment Brevo configuration`: validates all nine GitHub Environment values and fails before any provider call when one is missing or contains `CHANGEME`.
    - Neon migration with `DIRECT_DATABASE_URL` (names applied/pending are printed, no connection strings).
+   - `Sync Brevo SMTP settings to Render`: writes the seven SMTP names from the GitHub Environment through the Render API; the other `sync: false` names are untouched.
    - `POST` to `RENDER_DEPLOY_HOOK_URL`, then a 45 s wait for Render's build to start.
    - `/healthz` poll: exactly HTTP `200` within 180 s, 5 s interval, 15 s request cap.
    - `vercel pull --environment=production`, `vercel build --prod`, `vercel deploy --prebuilt --prod` (the stable alias is updated by `--prod`).
@@ -154,10 +164,10 @@ node tests/e2e/deployed-smoke.mjs
 
 ### Promote to production (currently unprovisioned)
 
-1. Provision the production assets first: a production Render service and deploy hook, a production Vercel project/domain, a Neon `production` branch, and the `production` Environment with the full catalog plus protection rules (required reviewers and a `main`-only deployment branch policy). Nothing is provisioned today, and the environment has no protection rules yet.
+1. Provision the production assets first: a production Render service and deploy hook, a production Vercel project/domain, a Neon `production` branch, and the `production` Environment's protection rules (required reviewers and a `main`-only deployment branch policy). `no Render service, Vercel project or Neon branch is provisioned` today; the `production` Environment holds the nine placeholder names (`placeholder-only`) and has no protection rules yet.
 2. Run Actions → Deploy → Run workflow with `environment: production`. The job first verifies that CI for the target SHA succeeded.
-3. Once the environment protection is configured, the gate pauses the job for a reviewer; until then the job runs immediately and fails on the first missing production secret.
-4. Run the deployed smoke against the production hostnames.
+3. Once the environment protection is configured, the gate pauses the job for a reviewer; until then the job runs immediately and `fails at the Brevo placeholder guard` (the first deployment step that reads the nine values), before the Neon migration and before any provider call.
+4. Fill the nine production values in the GitHub Environment (the source of truth), re-run the workflow, then run the deployed smoke against the production hostnames.
 
 ### Troubleshooting
 
@@ -168,13 +178,14 @@ node tests/e2e/deployed-smoke.mjs
 - **Cross-origin login fails:** confirm the Render service's `CORS_ORIGIN`/`ALLOWED_ORIGIN` equal `FRONTEND_ORIGIN`, the cookie is `Secure` with `SameSite=None` on the cross-site default hosts, and `VITE_API_URL` is the exact API origin. Safari/iOS ITP can still block third-party cookies on default hosts.
 - **WebSocket fails:** use `wss://` (mixed content is rejected), verify `VITE_WS_URL`/the derived URL, and check that the browser `Origin` matches `FRONTEND_ORIGIN` exactly — a disallowed origin is rejected with HTTP `403` **before** the upgrade and no `hello` frame.
 - **Vercel build fails:** cloud mode rejects a missing/relative `VITE_API_URL` and a resolved non-`wss://` WS URL. `vercel pull` must run from the repository root; the project Root Directory applies once.
-- **Email verification does not arrive:** check the Render service variables — `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (or `465` with `SMTP_SECURE=true`), `SMTP_USER` is the Brevo SMTP login and `SMTP_PASS` is the SMTP key from **Settings → SMTP & API → SMTP** (not the REST API key), and `SMTP_FROM` is a verified sender. Registration returns HTTP `500` when the transport rejects; the sign-in page offers a resend once the values are fixed. Run the documented test-email CLI (user-owned, § SMTP and email) and check the Render logs — no credential is printed.
+- **Email verification does not arrive:** check the GitHub `development` Environment — `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (or `465` with `SMTP_SECURE=true`), `SMTP_USER` is the Brevo SMTP login and `SMTP_PASS` is the SMTP key from **Settings → SMTP & API → SMTP** (not the REST API key), and `SMTP_FROM` is a verified sender. The GitHub Environment is the source the deploy workflow syncs from; a Render dashboard edit to one of the seven names is reverted on the next deploy. Registration returns HTTP `500` when the transport rejects; the sign-in page offers a resend once the values are fixed. Run the documented test-email CLI (user-owned, § SMTP and email) and check the Render logs — no credential is printed.
+- **Placeholder guard fails the deploy:** `Check deployment Brevo configuration` fails closed before any provider is touched when one of the nine values is missing or still contains `CHANGEME`. The error names the environment and the missing/placeholder keys; set the value in the GitHub Environment (UI or stdin, never as a command argument) and re-run the workflow. The `development` `RENDER_API_KEY` placeholder must be filled before the first development deploy; production stays `placeholder-only`.
 
 ### SMTP and email
 
 - Local compose runs Mailpit on the compose network (`mailpit:1025`, UI `http://localhost:8025`) and the smoke suite primes it; `compose.smoke.yaml` pins the smoke backend to Mailpit so host `SMTP_*` exports cannot redirect a smoke run to a real relay.
 - Development and production deliver through **Brevo SMTP** (SMTP only; no Brevo REST API integration). Render free provides no private services, so no Mailpit container runs in any deployed environment.
-- Render service variables (all `sync: false`, dashboard-supplied, never committed): `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (STARTTLS, pinned) or `465` with `SMTP_SECURE=true` (implicit TLS; `2525` STARTTLS is the fallback when a network blocks 587), `SMTP_USER` = the Brevo **SMTP login**, `SMTP_PASS` = the Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — **not the REST API key** — `SMTP_FROM` = a Brevo-verified sender (for example `CubeClicker <verified sender>`), plus the optional `SMTP_SECURE` and `SMTP_CONNECTION_TIMEOUT_MS`.
+- The seven SMTP deployment names are validated on every deploy and synced from the GitHub Environment to the Render service before the deploy hook (`nine validated, seven synced`); the placeholder guard rejects a missing value or any value containing `CHANGEME` before the Neon migration and before the sync. `render.yaml` keeps the seven SMTP names `sync: false` with no value, and the deployed copy lives only on the service — never committed, and a dashboard edit is reverted on the next deploy. Values: `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (STARTTLS, pinned) or `465` with `SMTP_SECURE=true` (implicit TLS; `2525` STARTTLS is the fallback when a network blocks 587), `SMTP_USER` = the Brevo **SMTP login**, `SMTP_PASS` = the Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — **not the REST API key** — `SMTP_FROM` = a Brevo-verified sender (for example `CubeClicker <verified sender>`), plus the optional `SMTP_SECURE` and `SMTP_CONNECTION_TIMEOUT_MS`.
 - With credentials set and `SMTP_SECURE=false`, STARTTLS is required and certificate verification stays on, so the key is never sent cleartext. The connection, greeting and socket timeouts all use `SMTP_CONNECTION_TIMEOUT_MS` (default `10000`, integer 1000–120000), so a relay that accepts and then stalls cannot hang registration. A transport rejection surfaces as HTTP `500` on registration; the account stays persisted and unverified, and a resend recovers.
 - The verification email is the branded HTML template with the unchanged plain-text body and the subject `Verify your CubeClicker email`. Its two PNGs are committed under `src/frontend/public/email/` and served by the existing frontend origin at `/email/*.png` (Vite locally, nginx in the `prod` image, Vercel when deployed): no new service, port, image or backend route. `APP_BASE_URL` supplies the origin for the link and the images, and the CTA plus the visible URL keep working when images are blocked.
 - Delivery check: `npm run email:test --workspace @cubeclicker/backend -- --to <address>` (host tooling), `node dist/auth/email-cli.js --to <address>` (built image) or `podman compose exec backend npm run email:test -w @cubeclicker/backend -- --to <address>` (stack). Success prints `Test email sent to …`; failures exit `1` with the credentials redacted. The live check is **user-owned**: no CI job contacts Brevo.
@@ -189,7 +200,7 @@ node tests/e2e/deployed-smoke.mjs
 ### Operating rules
 
 - Keep the backend at one instance; never scale above one without shared room state (a different feature).
-- Never put secrets in `render.yaml`, `vercel.json`, the image or the bundle; use the Render dashboard/API for `sync: false` values and GitHub Environment secrets for pipeline credentials.
+- Never put secrets in `render.yaml`, `vercel.json`, the image or the bundle; the seven SMTP names are synced from the GitHub Environment on every deploy, the other `sync: false` values `stay dashboard-owned` and are `never synced`, and `RENDER_API_KEY`/`RENDER_SERVICE_ID` are never written to the Render service.
 - Deploy only through `deploy.yml`; Vercel Git auto-deploy and Render auto-deploy are both off.
 - Do not run Terraform or create/delete AWS resources from this repository; the AWS tree is archived (see `deployment.md` § Superseded AWS deployment).
 - Do not deploy Fly. The Fly configs are archived under `../../infra/archive/fly/`.
@@ -256,7 +267,7 @@ The local path is unchanged: one command, `podman compose up`, starts backend + 
 | Backend runtime | container, `tsx watch`, ports 8080 | Render free Docker service, `512 MB` / `0.1 CPU` | not provisioned |
 | Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy | `workflow_dispatch` (no protection configured) |
 | Smoke | containerized `npm run smoke` | deployed smoke after deploy | deployed smoke after deploy |
-| Secrets source | shell environment (user) | GitHub Environment + Render dashboard | GitHub Environment + Render dashboard |
+| Secrets source | shell environment (user) | GitHub Environment (synced to Render for the seven SMTP names) | GitHub Environment (`placeholder-only`; not provisioned) |
 
 - **No-database startup.** With neither `DIRECT_DATABASE_URL` nor `DATABASE_URL` set (host-only `npm run dev` / `node dist/server.js`), startup migrations are skipped and the backend uses in-memory repositories; `/healthz` still serves `{"status":"ok"}`. The compose path sets `DATABASE_URL` to the compose Postgres.
 - **Changed only where this feature required it.** Same WebSocket protocol, heartbeat/reconnect/grace, server authority, room model, auth model and database schema; `compose.yaml` gained the two SMTP pass-throughs (`SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`) and `compose.smoke.yaml` pins the smoke backend to Mailpit. The nginx config, frontend Dockerfile and `tests/e2e/smoke.mjs` are unchanged, and Vercel hosts the static SPA, not a Fastify process or a serverless WebSocket.
