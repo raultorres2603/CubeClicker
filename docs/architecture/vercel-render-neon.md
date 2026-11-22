@@ -51,7 +51,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 | `DATABASE_URL` | secret | Neon development **pooled** URL (`-pooler`, `sslmode=require`); CI migration fallback |
 | `DIRECT_DATABASE_URL` | secret | Neon development **direct** URL (`sslmode=require`); CI migration (preferred) |
 | `RENDER_DEPLOY_HOOK_URL` | secret | `curl -fsS -X POST` deploy trigger for `srv-dbtcvv9srm7s73au5bag` (never echoed) |
-| `SMTP_PASS` | secret | Placeholder while development runs guest-only; no mail is delivered |
+| `SMTP_PASS` | secret | Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — not the REST API key; consumed by the Render service |
 | `VERCEL_TOKEN` | secret | `vercel pull`/`build`/`deploy` (never echoed) |
 | `FRONTEND_ORIGIN` | var | Stable development frontend origin; smoke frontend base and Origin |
 | `VITE_API_URL` | var | Render service origin; Render health poll, Vercel build, smoke API base |
@@ -61,7 +61,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 | `MAX_USERS_PER_SERVER` | var | Runtime-parity catalog entry; the Render service carries the value the app reads |
 | `SESSION_COOKIE_SECURE` | var | Runtime-parity catalog entry (`true`) |
 | `SESSION_COOKIE_SAMESITE` | var | Runtime-parity catalog entry (`none` for the cross-site default hosts) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM` | vars | Runtime-parity catalog entries; development email is guest-only today |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS` | vars | Runtime-parity catalog entries for the Brevo SMTP relay; the Render service carries the values the app reads |
 
 - `VITE_*` values are public build-time configuration (baked into the bundle), not secrets. `VITE_WS_URL` is explicit here; the smoke derives `wss://<api-host>/ws` only when it is empty.
 - The workflow reads `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`; the runtime-parity names are documented so the catalog is complete even though only the Render service consumes them. The concrete development hostnames and project/service IDs are listed in § Architecture (they are public, non-secret identifiers).
@@ -84,9 +84,9 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 | `DATABASE_URL` | `sync: false` | Neon pooled URL (runtime queries) |
 | `DIRECT_DATABASE_URL` | `sync: false` | Neon direct URL (startup migration) |
 | `CORS_ORIGIN`, `ALLOWED_ORIGIN` | `sync: false` | exact `FRONTEND_ORIGIN` for HTTP CORS/CSRF and the WebSocket `Origin` guard |
-| `APP_BASE_URL` | `sync: false` | base URL for verification links |
+| `APP_BASE_URL` | `sync: false` | base URL for verification links and email image URLs |
 | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE` | `sync: false` | `true` / `none` for the cross-site default hosts |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | `sync: false` | SMTP configuration; development is guest-only, so delivery is not relied on |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS` | `sync: false` | Brevo SMTP relay: host/ports, SMTP login, SMTP key (not the REST API key), verified sender, TLS mode and timeout |
 
 - `sync: false` means Render prompts for the value and never stores it in git. On the live service these values were set in the Render dashboard.
 - `CORS_ORIGIN`, `ALLOWED_ORIGIN` and `APP_BASE_URL` are no longer derived by the workflow; they are static service variables set to the exact `FRONTEND_ORIGIN`. Changing the frontend origin means updating the Render service variables, not a workflow.
@@ -113,7 +113,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 - Render: one free Docker web service per environment (`cubeclicker-development`, `srv-dbtcvv9srm7s73au5bag`, Frankfurt, branch `main`, auto-deploy off) and its deploy hook URL. The service is described by `render.yaml`.
 - Neon: one project with a `development` branch (and, for production, a `production` branch), pooled and direct URLs, `sslmode=require`.
 - GitHub: the `development` Environment with the catalog above; for production, the `production` Environment with the same catalog and protection rules (required reviewers, deployment branch policy) created before production is used. No `develop` branch exists — `main` is the integration branch and its pushes deploy development.
-- SMTP: a reachable SMTP host for email verification. Development is **guest-only** today; see § SMTP and email.
+- SMTP: Brevo SMTP delivers verification email in development and production — host `smtp-relay.brevo.com`, port `587` (STARTTLS) or `465` (`SMTP_SECURE=true`), the Brevo **SMTP login** plus the **SMTP key** (**Settings → SMTP & API → SMTP**, not the REST API key) and a verified `SMTP_FROM`. See § SMTP and email.
 
 ### Routine development deploy
 
@@ -167,13 +167,23 @@ node tests/e2e/deployed-smoke.mjs
 - **Cross-origin login fails:** confirm the Render service's `CORS_ORIGIN`/`ALLOWED_ORIGIN` equal `FRONTEND_ORIGIN`, the cookie is `Secure` with `SameSite=None` on the cross-site default hosts, and `VITE_API_URL` is the exact API origin. Safari/iOS ITP can still block third-party cookies on default hosts.
 - **WebSocket fails:** use `wss://` (mixed content is rejected), verify `VITE_WS_URL`/the derived URL, and check that the browser `Origin` matches `FRONTEND_ORIGIN` exactly — a disallowed origin is rejected with HTTP `403` **before** the upgrade and no `hello` frame.
 - **Vercel build fails:** cloud mode rejects a missing/relative `VITE_API_URL` and a resolved non-`wss://` WS URL. `vercel pull` must run from the repository root; the project Root Directory applies once.
-- **Email verification does not arrive:** expected in development. Guest play needs no email; the SMTP values are placeholders and Mailpit is not available on Render free (§ SMTP and email).
+- **Email verification does not arrive:** check the Render service variables — `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (or `465` with `SMTP_SECURE=true`), `SMTP_USER` is the Brevo SMTP login and `SMTP_PASS` is the SMTP key from **Settings → SMTP & API → SMTP** (not the REST API key), and `SMTP_FROM` is a verified sender. Registration returns HTTP `500` when the transport rejects; the sign-in page offers a resend once the values are fixed. Run the documented test-email CLI (user-owned, § SMTP and email) and check the Render logs — no credential is printed.
 
 ### SMTP and email
 
-- Local compose runs Mailpit on the compose network (`mailpit:1025`, UI `http://localhost:8025`) and the smoke suite primes it.
-- Render free does **not** provide private services, so there is no `.internal` host and the Fly Mailpit design does not port. The development deployment therefore runs **guest-only**: accounts can be created, but verification email delivery is not relied on and the SMTP values are placeholders. A reachable SMTP provider is a user-owned follow-up; it would mean setting real `SMTP_*` values on the Render service (and in the `development` catalog).
-- No Mailpit container runs in any deployed environment.
+- Local compose runs Mailpit on the compose network (`mailpit:1025`, UI `http://localhost:8025`) and the smoke suite primes it; `compose.smoke.yaml` pins the smoke backend to Mailpit so host `SMTP_*` exports cannot redirect a smoke run to a real relay.
+- Development and production deliver through **Brevo SMTP** (SMTP only; no Brevo REST API integration). Render free provides no private services, so no Mailpit container runs in any deployed environment.
+- Render service variables (all `sync: false`, dashboard-supplied, never committed): `SMTP_HOST=smtp-relay.brevo.com`, `SMTP_PORT=587` (STARTTLS, pinned) or `465` with `SMTP_SECURE=true` (implicit TLS; `2525` STARTTLS is the fallback when a network blocks 587), `SMTP_USER` = the Brevo **SMTP login**, `SMTP_PASS` = the Brevo **SMTP key** from **Settings → SMTP & API → SMTP** — **not the REST API key** — `SMTP_FROM` = a Brevo-verified sender (for example `CubeClicker <verified sender>`), plus the optional `SMTP_SECURE` and `SMTP_CONNECTION_TIMEOUT_MS`.
+- With credentials set and `SMTP_SECURE=false`, STARTTLS is required and certificate verification stays on, so the key is never sent cleartext. The connection, greeting and socket timeouts all use `SMTP_CONNECTION_TIMEOUT_MS` (default `10000`, integer 1000–120000), so a relay that accepts and then stalls cannot hang registration. A transport rejection surfaces as HTTP `500` on registration; the account stays persisted and unverified, and a resend recovers.
+- The verification email is the branded HTML template with the unchanged plain-text body and the subject `Verify your CubeClicker email`. Its two PNGs are committed under `src/frontend/public/email/` and served by the existing frontend origin at `/email/*.png` (Vite locally, nginx in the `prod` image, Vercel when deployed): no new service, port, image or backend route. `APP_BASE_URL` supplies the origin for the link and the images, and the CTA plus the visible URL keep working when images are blocked.
+- Delivery check: `npm run email:test --workspace @cubeclicker/backend -- --to <address>` (host tooling), `node dist/auth/email-cli.js --to <address>` (built image) or `podman compose exec backend npm run email:test -w @cubeclicker/backend -- --to <address>` (stack). Success prints `Test email sent to …`; failures exit `1` with the credentials redacted. The live check is **user-owned**: no CI job contacts Brevo.
+- Deployed-origin asset check (**documented-not-run**; the development frontend deploy is user-triggered and production is unprovisioned):
+
+  ```bash
+  curl -fsSI https://<frontend-host>/email/cubeclicker-hero.png
+  # expect HTTP 200 and content-type: image/png
+  curl -fsSI https://<frontend-host>/email/cubeclicker-cube.png
+  ```
 
 ### Operating rules
 
@@ -240,7 +250,7 @@ The local path is unchanged: one command, `podman compose up`, starts backend + 
 | Session cookie | `SameSite=Lax`, `Secure=false` | `SameSite=None`, `Secure=true` | not provisioned |
 | Database | compose Postgres 16 | Neon `development` branch | Neon `production` branch |
 | DB URLs | `postgres://cubeclicker:...@db:5432/cubeclicker` | pooled `DATABASE_URL` (runtime) + direct `DIRECT_DATABASE_URL` (migration) | same shape, production branch |
-| Email | Mailpit (`mailpit:1025`, UI `:8025`) | guest-only; placeholder SMTP, no Mailpit | not provisioned |
+| Email | Mailpit (`mailpit:1025`, UI `:8025`) | Brevo SMTP (`smtp-relay.brevo.com`, 587 STARTTLS); branded `/email/*.png` from the Vercel origin | not provisioned |
 | Frontend delivery | Vite dev server / nginx `prod` image for smoke | Vercel static build | not provisioned |
 | Backend runtime | container, `tsx watch`, ports 8080 | Render free Docker service, `512 MB` / `0.1 CPU` | not provisioned |
 | Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy | `workflow_dispatch` (no protection configured) |
@@ -248,7 +258,7 @@ The local path is unchanged: one command, `podman compose up`, starts backend + 
 | Secrets source | shell environment (user) | GitHub Environment + Render dashboard | GitHub Environment + Render dashboard |
 
 - **No-database startup.** With neither `DIRECT_DATABASE_URL` nor `DATABASE_URL` set (host-only `npm run dev` / `node dist/server.js`), startup migrations are skipped and the backend uses in-memory repositories; `/healthz` still serves `{"status":"ok"}`. The compose path sets `DATABASE_URL` to the compose Postgres.
-- **Unchanged invariants.** Same WebSocket protocol, heartbeat/reconnect/grace, server authority, room model, auth model and database schema; the compose files, nginx config, frontend Dockerfile and `tests/e2e/smoke.mjs` are untouched. Vercel hosts the static SPA, not a Fastify process or a serverless WebSocket.
+- **Changed only where this feature required it.** Same WebSocket protocol, heartbeat/reconnect/grace, server authority, room model, auth model and database schema; `compose.yaml` gained the two SMTP pass-throughs (`SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`) and `compose.smoke.yaml` pins the smoke backend to Mailpit. The nginx config, frontend Dockerfile and `tests/e2e/smoke.mjs` are unchanged, and Vercel hosts the static SPA, not a Fastify process or a serverless WebSocket.
 - **What differs from local.** Cloud is cross-site (`vercel.app` → `onrender.com`), sleeps when idle, and runs production logging/metrics defaults; local is loopback, always on, and has Mailpit. Neither difference changes application behavior.
 
 ## Cost and limits
@@ -265,7 +275,7 @@ Figures are order-of-magnitude and plan-dependent; verify current provider prici
 - **750 hours in practice.** A single always-awake instance would consume roughly 730 hours in a 31-day month, so one free service fits — but idle spin-down is what keeps the budget comfortable, and a second free service would contend for the same 750 hours. Running two always-awake free services is not sustainable.
 - **Availability trade-off.** A free instance sleeps when no client is connected, so the first visit after idle is slow, and a restart disconnects live sessions. This is acceptable for development and is why production is not provisioned on the free plan.
 - **Deliberate cost controls.** One backend instance (no horizontal scaling), no Render disk, no Vercel Functions, no second Neon project and no third environment.
-- **What is not covered.** Provider cost commitments, custom domains/DNS/certificates, a real SMTP provider and a paid Neon plan are user-owned; this repository provisions no paid asset and creates no domain.
+- **What is not covered.** Provider cost commitments, custom domains/DNS/certificates, the Brevo plan (free plan: roughly 300 emails/day) and a paid Neon plan are user-owned; this repository provisions no paid asset and creates no domain.
 - **Growth path.** More capacity requires a different feature (shared room state or multiple backend processes) and a paid Render/Neon plan; more environments require a spec amendment.
 
 ## Supersession ledger references

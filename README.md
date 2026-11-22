@@ -74,23 +74,121 @@ Both commands produce reproducible evidence recorded in the feature build logs; 
 | `POSTGRES_PASSWORD` | `cubeclicker` | Postgres superuser password |
 | `POSTGRES_DB` | `cubeclicker` | Postgres database name |
 | `DATABASE_URL` | `postgres://cubeclicker:cubeclicker@db:5432/cubeclicker` | backend connection string (must match the Postgres credentials above if overridden) |
-| `SMTP_HOST` | `mailpit` | SMTP host used by the backend |
-| `SMTP_PORT` | `1025` | SMTP port used by the backend |
-| `SMTP_USER` | _(empty)_ | SMTP username (optional) |
-| `SMTP_PASS` | _(empty)_ | SMTP password (optional) |
-| `SMTP_FROM` | `no-reply@cubeclicker.local` | sender address for outbound email |
-| `APP_BASE_URL` | `http://localhost:5173` | base URL used to build verification links |
+| `SMTP_HOST` | `mailpit` | SMTP host used by the backend (`smtp-relay.brevo.com` for Brevo) |
+| `SMTP_PORT` | `1025` | SMTP port used by the backend (`587` STARTTLS or `465` implicit TLS for Brevo) |
+| `SMTP_SECURE` | _(empty → derived: `true` when `SMTP_PORT` is `465`)_ | implicit TLS for the SMTP connection; `true`/`1`/`false`/`0`, empty derives it from the port |
+| `SMTP_USER` | _(empty)_ | SMTP login (optional; must be set together with `SMTP_PASS`) |
+| `SMTP_PASS` | _(empty)_ | SMTP password — the Brevo **SMTP key** (optional; must be set together with `SMTP_USER`) |
+| `SMTP_FROM` | `no-reply@cubeclicker.local` | sender address for outbound email (`CubeClicker <verified sender>` for Brevo) |
+| `SMTP_CONNECTION_TIMEOUT_MS` | `10000` | bound in ms for the SMTP connection, greeting and socket timeouts; integer 1000–120000 |
+| `APP_BASE_URL` | `http://localhost:5173` | base URL used to build verification links and the email image URLs |
 | `ALLOWED_ORIGIN` | `http://localhost:5173` | allowed Origin for state-changing auth requests (CSRF) |
 | `SESSION_COOKIE_SECURE` | `false` | set the session cookie `Secure` flag (enable in production over HTTPS) |
 | `LOG_LEVEL` | `debug` | backend Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`); the compose backend passes it with default `debug` |
 | `METRICS_ENABLED` | `true` | serve the `GET /metrics` route; compose defaults `true` on the loopback, the deployed Render service sets `false` (public host, no path filter); `false` removes the route (the path returns `404`) |
 | `VITE_PERF_OVERLAY` | `false` | dev-only performance overlay; only the exact value `true` enables it (frontend build-time variable) |
 
-The defaults work out of the box. `.env` files are user-owned and are not used by this scaffold — export a variable in your shell instead, e.g. `BACKEND_PORT=9090 podman compose up`. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
+The defaults work out of the box. `.env` files are user-owned and off-limits to agents; the canonical way to override a value is a shell export, e.g. `BACKEND_PORT=9090 podman compose up`, though a gitignored `.env` consumed by the compose provider works too because compose interpolates it. Secrets (database password, SMTP credentials) are supplied via environment variables at runtime and are never committed or baked into images.
 
 ### Vite dev proxy (host-only runs)
 
 The frontend talks to the backend through same-origin relative paths (`/auth/*`) so the `HttpOnly` session cookie stays on the page origin and the backend's CSRF check (which compares `Origin`) succeeds. In the compose stack Vite proxies `/auth` to the `backend` service with `changeOrigin: false`, keeping the browser's page origin (`http://localhost:5173`) as the forwarded `Origin` header — this must match the backend's `ALLOWED_ORIGIN` (`http://localhost:5173` by default). For host-only development (running Vite on the host against a host backend), point the proxy at the host backend with `BACKEND_URL=http://localhost:8080`; the page origin is still `http://localhost:5173`, so `ALLOWED_ORIGIN` must remain `http://localhost:5173` (or you must run via `podman compose`, which sets both consistently).
+
+## Email
+
+Local `podman compose up` needs no email configuration: the backend defaults to the in-stack **Mailpit** capture container (`SMTP_HOST=mailpit`, `SMTP_PORT=1025`, UI at http://localhost:8025), and `compose.smoke.yaml` pins the smoke backend to that same Mailpit so host `SMTP_*` exports cannot redirect a smoke run to a real relay. Development and production deliver real verification email through **Brevo SMTP** instead (SMTP only — there is no Brevo REST API integration): export the `SMTP_*` values below for a host run, or set them on the Render service.
+
+### Brevo SMTP recipe
+
+`SMTP_HOST` is `smtp-relay.brevo.com`. Port `587` with STARTTLS is the pinned recipe, `465` (implicit TLS, `SMTP_SECURE=true`) is supported, and `2525` (STARTTLS) is the documented fallback when a network blocks 587.
+
+| Variable | Brevo value |
+| --- | --- |
+| `SMTP_HOST` | `smtp-relay.brevo.com` |
+| `SMTP_PORT` | `587` (STARTTLS) or `465` (implicit TLS) |
+| `SMTP_SECURE` | empty (derived: `465` → `true`, `587` → `false`) or an explicit `true`/`false` |
+| `SMTP_USER` | the **SMTP login** shown on Brevo's SMTP page (`<id>@smtp-brevo.com`) |
+| `SMTP_PASS` | the **SMTP key** from **Settings → SMTP & API → SMTP** — **not the REST API key** |
+| `SMTP_FROM` | a Brevo **verified sender**, with the display name when possible: `CubeClicker <verified sender>` |
+| `SMTP_CONNECTION_TIMEOUT_MS` | `10000` (optional; integer 1000–120000) |
+| `APP_BASE_URL` | the public frontend origin (`https://<frontend-host>`); it drives the verification link and the email image URLs |
+
+- **The credential is the SMTP key, not the REST API key.** The `xkeysib-…` REST API key cannot authenticate the SMTP relay; read or create the SMTP key on Brevo's **Settings → SMTP & API → SMTP** page and put it in `SMTP_PASS`. The SMTP login (`…@smtp-brevo.com`) is a separate value for `SMTP_USER`.
+- `SMTP_USER` and `SMTP_PASS` are both-or-neither: setting only one fails startup with `SMTP_USER and SMTP_PASS must be provided together (both or neither)`.
+- With credentials set and `SMTP_SECURE` off, STARTTLS is required, so the key is never sent cleartext; certificate verification stays enabled. `SMTP_CONNECTION_TIMEOUT_MS` bounds the connection, greeting and socket phases, so a stalled provider cannot hang registration.
+- `SMTP_FROM` must be a Brevo-verified sender; the display name is passed through verbatim (`CubeClicker <verified sender>`). Sender verification plus SPF/DKIM/DMARC are Brevo-console/DNS actions owned by the repository owner.
+- A transport failure surfaces as HTTP `500` on registration (the account stays persisted and unverified) and through the CLI below; a successful resend recovers.
+
+The canonical local setup is a shell export (a gitignored `.env` consumed by the compose provider is an accepted alternative; agents never read it):
+
+```bash
+export SMTP_HOST=smtp-relay.brevo.com
+export SMTP_PORT=587
+export SMTP_USER=<your-smtp-login>
+export SMTP_PASS='<SMTP key>'
+export SMTP_FROM='CubeClicker <your verified sender>'
+export APP_BASE_URL=http://localhost:5173
+podman compose up
+```
+
+### Branded verification email
+
+Registration and resend send the branded CubeClicker HTML template plus the unchanged plain-text body; the subject stays `Verify your CubeClicker email`. The template is a 600 px table layout with inline CSS only (no web fonts, external stylesheet, `<script>`, `<svg>` or CSS background image), a preheader, hero, one `Verify email` CTA, a visible fallback URL, an accurate expiry note and a footer.
+
+The two images are static files committed under `src/frontend/public/email/` and are referenced by absolute URL from `APP_BASE_URL`:
+
+| Asset | Dimensions | Purpose |
+| --- | --- | --- |
+| `src/frontend/public/email/cubeclicker-hero.png` | 600×200 | starfield hero with the emerald cube and cyan `CUBECLICKER` wordmark |
+| `src/frontend/public/email/cubeclicker-cube.png` | 72×72 | cube mark in the footer |
+
+The existing frontend origin serves them at `/email/*.png` — the Vite dev server on 5173 locally, nginx in the frontend `prod` image, and Vercel when deployed. No new service, port, image or backend route is added, nothing is attached to the message (no CID parts), and `node src/frontend/scripts/generate-email-assets.mjs --check` proves the committed PNGs still match their deterministic source (the script is not part of `npm run build`).
+
+The verification link and the email text still work when images are blocked: the CTA is a text/background button, every image carries `alt` text and explicit dimensions, and the full verification URL is printed below the button (Outlook blocks images by default and Gmail often does until the recipient opts in). If `APP_BASE_URL` is not an absolute URL, the image URLs fall back to relative `/email/…` and the CTA plus the visible URL keep working. Set `SMTP_FROM` to `CubeClicker <verified sender>` so the From line carries the game name.
+
+Deployed-origin asset check (**documented-not-run**: the development frontend deploy is user-triggered and production is unprovisioned, so this is a recipe, not an automated check):
+
+```bash
+curl -fsSI https://<frontend-host>/email/cubeclicker-hero.png
+# expect HTTP 200 and content-type: image/png
+```
+
+### Test-email CLI (user-owned check)
+
+No automated test or CI job contacts Brevo; a live test email is **user-owned** because it needs the real SMTP key and a recipient you control. The CLI loads the same configuration and transport factory as the backend and sends one message rendered with the branded template:
+
+```bash
+# Host tooling (tsx), from the repository root
+npm run email:test --workspace @cubeclicker/backend -- --to <address>
+
+# Built `dist` entry (also what a prod image contains)
+node dist/auth/email-cli.js --to <address>
+
+# Inside the running compose backend container
+podman compose exec backend npm run email:test -w @cubeclicker/backend -- --to <address>
+```
+
+Prerequisites: `SMTP_USER` (SMTP login), `SMTP_PASS` (SMTP key) and a verified sender in `SMTP_FROM`. Expected success line:
+
+```text
+Test email sent to <address> via smtp-relay.brevo.com:587 (secure=false, starttls=required, auth=yes, from="CubeClicker <verified sender>")
+```
+
+When `SMTP_FROM` is still the local default the CLI also prints `Warning: SMTP_FROM is the local default; set it to a verified sender before real delivery.` Failures exit `1`, and every failure line is redacted first, so neither the SMTP login nor the SMTP key can appear in the output. The link in the message is a synthetic `/verify?token=cli-test` URL: the CLI proves delivery and rendering, it does not verify an account.
+
+### Secret hygiene
+
+The SMTP credential is runtime-only: `SMTP_USER`/`SMTP_PASS` live in your shell (or a gitignored `.env` consumed by the compose provider), in the Render dashboard service variables and in the GitHub `development` Environment — never in `render.yaml`, an image, a log or a tracked file. Brevo's SMTP key is distinct from the REST API key; only the SMTP key belongs in `SMTP_PASS`.
+
+Two key shapes are never valid in a tracked file: a Brevo REST key (`xkeysib-[A-Za-z0-9]{20,}`) and an SMTP key (`xsmtpsib-[A-Za-z0-9]{15,}`). The pinned guard fails on either pattern, or on a credential-looking `SMTP_(USER|PASS)` assignment, anywhere in the tracked tree, the untracked files, the branch diff or the branch history:
+
+```bash
+! git grep -qE "xsmtpsib-[A-Za-z0-9]{15,}|xkeysib-[A-Za-z0-9]{20,}|SMTP_(USER|PASS)=[\"']?[A-Za-z0-9+/_-]{12,}"
+! git grep --untracked -qE "xsmtpsib-[A-Za-z0-9]{15,}|xkeysib-[A-Za-z0-9]{20,}|SMTP_(USER|PASS)=[\"']?[A-Za-z0-9+/_-]{12,}"
+! git diff origin/main...HEAD | grep -qE "xsmtpsib-[A-Za-z0-9]{15,}|xkeysib-[A-Za-z0-9]{20,}|SMTP_(USER|PASS)=[\"']?[A-Za-z0-9+/_-]{12,}"
+```
+
+Documented placeholders use angle brackets (`SMTP_USER=<your-smtp-login>`, `SMTP_PASS=<SMTP key>`) so they cannot look like values. The Brevo MCP credential is likewise user-owned and lives only in the global OpenCode config (`~/.config/opencode/`), never in the tracked `opencode.jsonc`.
 
 ## Operations
 
@@ -179,6 +277,6 @@ Rollback, migrations, DNS/cookies and the single-instance trade-off are document
 The `development` GitHub Environment is provisioned with the exact secrets/variables catalogued in [`docs/architecture/vercel-render-neon.md`](docs/architecture/vercel-render-neon.md) § Environment catalog:
 
 - Secrets: `VERCEL_TOKEN`, `RENDER_DEPLOY_HOOK_URL`, `DATABASE_URL`, `DIRECT_DATABASE_URL`, `SMTP_PASS`.
-- Variables: `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE`, `MAX_USERS_PER_SERVER`.
+- Variables: `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FRONTEND_ORIGIN`, `VITE_API_URL`, `VITE_WS_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_FROM`, `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE`, `MAX_USERS_PER_SERVER`.
 
-Also required: a Vercel project whose Root Directory is `src/frontend` (Node 24, deployment protection disabled for development), one Render free Docker web service tracked to `main` with auto-deploy off, one Neon project with a `development` branch, and the stable frontend host per environment. Production is not provisioned and has no secrets, variables or protection rules; it must be provisioned — including required reviewers and a deployment branch policy — before use. Development email is guest-only: Render free has no private service for Mailpit, so the SMTP values are placeholders. No secret value is committed; the archived AWS tree and the archived Fly configs are not deployed.
+Also required: a Vercel project whose Root Directory is `src/frontend` (Node 24, deployment protection disabled for development), one Render free Docker web service tracked to `main` with auto-deploy off, one Neon project with a `development` branch, and the stable frontend host per environment. Production is not provisioned and has no secrets, variables or protection rules; it must be provisioned — including required reviewers and a deployment branch policy — before use. Development email delivers through Brevo SMTP: the Render service reads `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` (the Brevo SMTP key), `SMTP_FROM` (a verified sender) and the optional `SMTP_SECURE`/`SMTP_CONNECTION_TIMEOUT_MS` from the dashboard, and no Mailpit container runs in the cloud (§ Email). No secret value is committed; the archived AWS tree and the archived Fly configs are not deployed.
