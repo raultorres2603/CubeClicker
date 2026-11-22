@@ -12,7 +12,11 @@ import { InMemoryUserRepository, PgUserRepository } from './auth/user-repository
 import { InMemorySessionRepository, PgSessionRepository } from './auth/session-repository.js';
 import { InMemoryVerificationTokenRepository, PgVerificationTokenRepository } from './auth/verification-token-repository.js';
 import { InMemoryEconomyRepository, PgEconomyRepository } from './auth/economy-repository.js';
-import { FakeEmailService, SmtpEmailService } from './auth/email.js';
+import {
+  FakeEmailService,
+  createSmtpEmailService,
+  type SmtpTransportFactory,
+} from './auth/email.js';
 import { createRateLimiter } from './auth/rate-limit.js';
 import { createAuthService, type AuthService } from './auth/auth-service.js';
 import { authRoutes } from './auth/auth-routes.js';
@@ -112,6 +116,8 @@ export interface BuildAppOptions {
     verificationTokens?: unknown;
     economy?: unknown;
     email?: unknown;
+    /** Test seam: SMTP transport factory used by `createSmtpEmailService` (defaults to nodemailer). */
+    emailTransportFactory?: SmtpTransportFactory;
     rateLimiter?: unknown;
     pool?: unknown;
     authConfig?: Partial<AuthConfig>;
@@ -214,13 +220,7 @@ export function buildApp(
   const email =
     options.auth?.email ??
     (authConfig.smtpHost
-      ? new SmtpEmailService({
-          host: authConfig.smtpHost,
-          port: authConfig.smtpPort,
-          user: authConfig.smtpUser,
-          pass: authConfig.smtpPass,
-          from: authConfig.smtpFrom,
-        })
+      ? createSmtpEmailService(authConfig, options.auth?.emailTransportFactory)
       : new FakeEmailService());
 
   const rateLimiter =

@@ -1,11 +1,17 @@
 import http from 'node:http';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, helloMessage, toPeer } from './app.js';
 import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
-import { FakeEmailService } from './auth/email.js';
+import {
+  FakeEmailService,
+  renderVerificationEmail,
+  type EmailTransport,
+  type OutgoingEmail,
+  type SmtpTransportOptions,
+} from './auth/email.js';
 import type { PartId } from './game/parts.js';
 import { roundCoins, idleCoins } from './game/economy.js';
 import { buildLoggerOptions } from './observability/logging.js';
@@ -26,6 +32,16 @@ function listenPort(app: FastifyInstance): number {
     throw new Error('expected an inet address after listen');
   }
   return address.port;
+}
+
+/** Runs `build` and returns the thrown error message; fails when nothing throws. */
+function thrownMessage(build: () => unknown): string {
+  try {
+    build();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected the call to throw');
 }
 
 interface RawFrame {
@@ -242,6 +258,112 @@ describe('GET /healthz', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('application/json');
       expect(response.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * Composition-root SMTP wiring. `buildApp` must surface an invalid SMTP setting as
+ * the config error itself (so `server.ts` exits non-zero before listening) and must
+ * construct the SMTP service through the injectable transport factory.
+ */
+const BREVO_SMTP_ENV = {
+  SMTP_HOST: 'smtp-relay.brevo.com',
+  SMTP_PORT: '587',
+  SMTP_SECURE: 'false',
+  SMTP_USER: 'smtp-login@example.test',
+  SMTP_PASS: 'smtp-key-for-tests',
+  SMTP_FROM: 'CubeClicker <no-reply@example.com>',
+  SMTP_CONNECTION_TIMEOUT_MS: '10000',
+} as const;
+
+describe('SMTP composition root (T4)', () => {
+  it('throws the SMTP_SECURE parse error from buildApp (AC-3)', () => {
+    expect(thrownMessage(() => buildApp({ SMTP_SECURE: 'yes' }))).toBe(
+      'SMTP_SECURE must be a boolean ("true", "false", "1", or "0"); received "yes"',
+    );
+  });
+
+  it('throws the SMTP_CONNECTION_TIMEOUT_MS range error from buildApp (AC-3)', () => {
+    expect(thrownMessage(() => buildApp({ SMTP_CONNECTION_TIMEOUT_MS: '120001' }))).toBe(
+      'SMTP_CONNECTION_TIMEOUT_MS must be an integer between 1000 and 120000; received "120001"',
+    );
+  });
+
+  it('constructs the SMTP service through the injected transport factory exactly once (AC-5)', async () => {
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'msg-1' });
+    const transport: EmailTransport = { sendMail };
+    const factory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>()
+      .mockReturnValue(transport);
+
+    const app = buildApp(BREVO_SMTP_ENV, { auth: { emailTransportFactory: factory } });
+
+    try {
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(factory).toHaveBeenCalledWith({
+        host: 'smtp-relay.brevo.com',
+        port: 587,
+        secure: false,
+        requireTLS: true,
+        auth: { user: 'smtp-login@example.test', pass: 'smtp-key-for-tests' },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 10000,
+      });
+      expect(sendMail).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('sends registration mail through the factory transport with the branded template (AC-5, AC-7)', async () => {
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'msg-1' });
+    const factory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>()
+      .mockReturnValue({ sendMail });
+    const app = buildApp(BREVO_SMTP_ENV, { auth: { emailTransportFactory: factory } });
+
+    try {
+      const register = await app.inject({
+        method: 'POST',
+        url: '/auth/register',
+        headers: { origin: 'http://localhost:5173' },
+        payload: {
+          username: 'brevo-mailer',
+          email: 'brevo-mailer@example.test',
+          password: 'password-for-brevo-mailer',
+        },
+      });
+
+      expect(register.statusCode).toBe(202);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      const message = sendMail.mock.calls[0]![0];
+      const lines = message.text.split('\n');
+      expect(lines.slice(0, 3)).toEqual([
+        'Welcome to CubeClicker!',
+        '',
+        'Verify your email address by opening the link below:',
+      ]);
+      const verificationUrl = lines[3]!;
+      expect(new URL(verificationUrl).searchParams.get('token')).toHaveLength(64);
+      expect(message).toStrictEqual({
+        from: 'CubeClicker <no-reply@example.com>',
+        to: 'brevo-mailer@example.test',
+        subject: 'Verify your CubeClicker email',
+        text:
+          'Welcome to CubeClicker!\n\n' +
+          'Verify your email address by opening the link below:\n' +
+          `${verificationUrl}\n\n` +
+          'If you did not create an account, you can ignore this email.',
+        html: renderVerificationEmail(verificationUrl).html,
+      });
     } finally {
       await app.close();
     }
