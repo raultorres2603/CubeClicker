@@ -63,5 +63,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | hangar-tabs-and-menu-motion | Hangar Tabs & Menu Motion (tabbed spaceship hangar, glitch menu boot, screenshot polish) | accepted | 2026-11-17 |
 | remote-spaceship-customization | Remote Spaceship Customization (other players' ships + 1,351 chassis/form/shot options) | accepted | 2026-11-19 |
 | brevo-smtp-email-delivery | Brevo SMTP Email Delivery & Branded Verification Email (Brevo SMTP for development/production with TLS/timeout config and SMTP-key vs REST-API-key guidance, branded table email with public PNG assets and image-blocked fallback, user-owned delivery CLI, Mailpit-pinned smoke) | accepted | 2026-11-22 |
+| deploy-brevo-env-placeholders | Deployment Brevo Environment Placeholders (GitHub development/production env vars+secrets, strict placeholder guard, GitHub→Render SMTP sync, Mailpit kept local) | accepted | 2026-11-23 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`

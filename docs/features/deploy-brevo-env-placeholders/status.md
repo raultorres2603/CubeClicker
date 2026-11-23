@@ -1,8 +1,8 @@
 ---
 feature: deploy-brevo-env-placeholders
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 0
+build_round: 1
 created: 2026-11-22
 updated: 2026-11-22
 ---
@@ -18,7 +18,7 @@ Local stays on Mailpit; development and production deployment environments carry
 - [x] T4 — CI guard fixture checks `[seq]`
 - [x] T5 — Create the GitHub Environment placeholders `[seq]`
 - [x] T6 — Runbook and architecture documentation `[seq]`
-- [ ] T7 — Verify & integrate `[seq]`
+- [x] T7 — Verify & integrate `[seq]`
 
 ## Loop log
 - 2026-11-22 — created → planning — request: "On local, we will continue using Mailpit, but, on deployment environments, we'll use Brevo. So: On development and production we should have this as environment variables/secrets. Can you do this for me? Add the placeholders on GitHub, I'll update with the values."
@@ -33,13 +33,12 @@ Local stays on Mailpit; development and production deployment environments carry
 - 2026-11-22 — building — T4 complete — CI reject/accept guard fixtures with real CLI calls, actionlint clean, commit 38e405f — build-log-T4.md
 - 2026-11-22 — building — T5 complete — GitHub envs: dev added/migrated (preserve decision), production nine placeholders; probes 422/422; names-only verify green; commit d2041ef — build-log-T5.md
 - 2026-11-22 — building — T6 complete — README deployment runbook, deployment/vercel-render docs corrected, T6 verify green; concurrent commit 5469a7c noted for audit; commit cb95d75 — build-log-T6.md
+- 2026-11-23 — building — T7 complete — full gate green (1826+2844 tests, coverage backend 96.64/90.81/99.61/96.64, frontend 97.15/96.75/98.36/97.15, smoke 29/29, actionlint/config/credential audits clean); 5469a7c audited clean; commit 434308b — build-log-T7.md
+- 2026-11-23 — building → code_review — all 7 tasks [x], every task's verify recorded — tasks.md
+- 2026-11-23 — code_review → accepted — verdict `approved`, blocking 0; AC-1…AC-12 met; docs pass complete (T6); live deploy for 5469a7c succeeded (guard 9 values, 7 SYNCED, /healthz OK, deployed smoke 8/8); feature index updated — reviews/code-r1.md
 
 ## Blockers / open questions
-- Live GitHub state (review probe): both environments exist; `development` has `SMTP_HOST/PORT/USER/FROM` variables + `SMTP_PASS` secret; `production` empty. `SMTP_USER` must move from variable to secret.
-- Q-1: user creates/updates `RENDER_API_KEY` (new secret) to authorize the sync.
-- Q-2: the four `development` values (`SMTP_FROM`, `SMTP_USER`, `SMTP_PASS`, `RENDER_API_KEY`) must be filled **before merging to `main`**, because `main` auto-deploys development and the guard fails closed.
-- Q-3: production stays placeholder-only (unprovisioned).
-- Q-4: confirm strict-fail rather than skip-with-warning when placeholders remain.
-- Q-5: confirm `SMTP_USER` as a secret (supersedes the accepted feature's variable classification for deployment).
-- Q-6: live-delivery proof remains user-owned.
-- Q-12: GitHub environment write permission required for T5 (`Environments: Read and write` or classic `repo`), otherwise owner-executed fallback.
+- Resolved: T5 created the GitHub entries (development additions + `SMTP_USER` migrated variable→secret preserving value; production nine placeholders); owner filled `development` `RENDER_API_KEY`; deploy run 45059930353 synced seven values to Render and passed.
+- Q-3: production stays placeholder-only (unprovisioned) — fill the production placeholders when the service exists.
+- Q-6: live-delivery proof the deployed registration delivers is user-owned; the deployed smoke 8/8 passed.
+- Backlog (MINOR/INFO from code-r1): stale post-deploy operator wording (README/architecture/net status), README development runbook re-run hazard (label fresh-environment-only), AC-8 fixture-size literal vs public constants, commits on `main`/`5469a7c` mega-commit/process notes, URL-encoding INFO, log masking INFO.
