@@ -17,7 +17,7 @@ Local stays on Mailpit; development and production deployment environments carry
 - [x] T3 — Deploy workflow: preflight guard and Render sync `[seq]`
 - [x] T4 — CI guard fixture checks `[seq]`
 - [x] T5 — Create the GitHub Environment placeholders `[seq]`
-- [ ] T6 — Runbook and architecture documentation `[seq]`
+- [x] T6 — Runbook and architecture documentation `[seq]`
 - [ ] T7 — Verify & integrate `[seq]`
 
 ## Loop log
@@ -32,6 +32,7 @@ Local stays on Mailpit; development and production deployment environments carry
 - 2026-11-22 — building — T3 complete — deploy preflight + sync steps, actionlint clean, 13/13 checks, commit fa56cb4 — build-log-T3.md
 - 2026-11-22 — building — T4 complete — CI reject/accept guard fixtures with real CLI calls, actionlint clean, commit 38e405f — build-log-T4.md
 - 2026-11-22 — building — T5 complete — GitHub envs: dev added/migrated (preserve decision), production nine placeholders; probes 422/422; names-only verify green; commit d2041ef — build-log-T5.md
+- 2026-11-22 — building — T6 complete — README deployment runbook, deployment/vercel-render docs corrected, T6 verify green; concurrent commit 5469a7c noted for audit; commit cb95d75 — build-log-T6.md
 
 ## Blockers / open questions
 - Live GitHub state (review probe): both environments exist; `development` has `SMTP_HOST/PORT/USER/FROM` variables + `SMTP_PASS` secret; `production` empty. `SMTP_USER` must move from variable to secret.
