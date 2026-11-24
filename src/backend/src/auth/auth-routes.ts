@@ -9,10 +9,12 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import cookie from '@fastify/cookie';
 
-import { AuthService, AuthServiceError } from './auth-service.js';
+import { AuthService, AuthServiceError, DuplicateAccountError } from './auth-service.js';
+import { EmailDeliveryError } from './email.js';
 import type { SessionRepository } from './session-repository.js';
 import type { RateLimiter } from './rate-limit.js';
 import type { Clock } from './rate-limit.js';
+import { createLogSink, type LogFields } from '../observability/logging.js';
 import {
   DEFAULT_SESSION_COOKIE_SAMESITE,
   type AuthConfig,
@@ -121,16 +123,75 @@ function checkOrigin(
   return true;
 }
 
-function mapError(reply: FastifyReply, err: unknown): void {
+/** Canonical `route` values for the delivery-failure warn event (AC-3(d)). */
+type DeliveryFailureRoute = 'register' | 'resend-verification';
+
+/**
+ * Derives the canonical delivery route from the matched Fastify route. Only
+ * `POST /auth/register` and the resend handler can issue a verification email,
+ * so those are the only routes that can surface an `EmailDeliveryError`; both
+ * resend aliases canonicalize to `resend-verification` (AC-3(d)).
+ */
+function deliveryFailureRoute(request: FastifyRequest): DeliveryFailureRoute {
+  return request.routeOptions.url === '/auth/register' ? 'register' : 'resend-verification';
+}
+
+/**
+ * Emits exactly one redacted `warn` event for a typed SMTP delivery failure.
+ * Only the route, the source error name, the whitelisted transport code and the
+ * configured host/port reach the log; the transport message (which stays on the
+ * error for the operator CLI) never does.
+ */
+function logDeliveryFailure(
+  request: FastifyRequest,
+  route: DeliveryFailureRoute,
+  error: EmailDeliveryError,
+): void {
+  const fields: LogFields = {
+    route,
+    errorType: error.errorType,
+    host: error.host,
+    port: error.port,
+  };
+  if (error.transportCode !== undefined) {
+    fields.transportCode = error.transportCode;
+  }
+  createLogSink(request.log).warn('verification_email_delivery_failed', fields);
+}
+
+/**
+ * Maps a service error onto the HTTP contract.
+ *
+ * `EmailDeliveryError` becomes the fixed `502 verification_email_failed` body
+ * and one per-route `warn` event; a `DuplicateAccountError` keeps the accepted
+ * generic message and adds the ordered `field`/`fields`; every other service
+ * error keeps its status/code/`Retry-After`; anything else is the existing
+ * generic `500`.
+ */
+function mapError(request: FastifyRequest, reply: FastifyReply, err: unknown): void {
+  if (err instanceof EmailDeliveryError) {
+    logDeliveryFailure(request, deliveryFailureRoute(request), err);
+    reply.code(502).send({
+      message: 'verification email could not be sent',
+      code: 'verification_email_failed',
+      error: 'verification_email_failed',
+    });
+    return;
+  }
   if (err instanceof AuthServiceError) {
     if (err.retryAfter !== undefined) {
       reply.header('Retry-After', String(err.retryAfter));
     }
-    reply.code(err.status || err.statusCode || 500).send({
+    const body: Record<string, unknown> = {
       message: err.message,
       code: err.code ?? 'auth_error',
       error: err.code ?? 'auth_error',
-    });
+    };
+    if (err instanceof DuplicateAccountError) {
+      body.field = err.field;
+      body.fields = err.fields;
+    }
+    reply.code(err.status || err.statusCode || 500).send(body);
     return;
   }
   reply.code(500).send({ message: 'internal error', code: 'internal_error', error: 'internal_error' });
@@ -184,9 +245,16 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
         email: str(body.email),
         password: str(body.password ?? body.pass),
       });
-      reply.code(202).send({ message: result.message ?? 'verification email sent' });
+      // AC-4(a)/(f): `resumed` is serialized only when the service reports it.
+      const response: Record<string, unknown> = {
+        message: result.message ?? 'verification email sent',
+      };
+      if (result.resumed === true) {
+        response.resumed = true;
+      }
+      reply.code(202).send(response);
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   };
 
@@ -213,7 +281,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
       setSessionCookie(reply, r, result.token ?? result.sessionToken ?? '', result.expiresAt);
       reply.code(200).send({ user: result.user });
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   };
 
@@ -234,7 +302,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
       if (sessionToken) setSessionCookie(reply, r, sessionToken, result.expiresAt);
       reply.code(200).send({ user: result.user });
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   };
 
@@ -263,7 +331,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
       // service may throw ValidationError for empty email; ensure we still call with email
       reply.code(202).send({ message: result.message ?? 'verification email sent' });
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   };
 
@@ -324,7 +392,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
       }
       reply.code(200).send({ user });
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   });
 
@@ -366,7 +434,7 @@ const authRoutesPlugin: FastifyPluginAsync<AuthRoutesOptions> = async (fastify, 
       const user = await r.service.getSession(token);
       reply.code(200).send({ user: user ?? undefined, expiresAt });
     } catch (err) {
-      mapError(reply, err);
+      mapError(request, reply, err);
     }
   };
 

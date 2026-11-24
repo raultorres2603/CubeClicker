@@ -1,19 +1,27 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { createAuthService } from './auth-service.js';
 import { InMemoryUserRepository } from './user-repository.js';
 import { InMemorySessionRepository } from './session-repository.js';
 import { InMemoryVerificationTokenRepository } from './verification-token-repository.js';
-import { FakeEmailService, type CapturedVerificationEmail, type EmailService } from './email.js';
+import {
+  EmailDeliveryError,
+  FakeEmailService,
+  type CapturedVerificationEmail,
+  type EmailService,
+} from './email.js';
 import type { VerificationEmailOptions } from './email-template.js';
 import { createPasswordHasher, DEFAULT_ARGON2_PARAMS } from './password.js';
 import { createRateLimiter } from './rate-limit.js';
 import authRoutes, { SESSION_COOKIE_NAME } from './auth-routes.js';
 import type { SessionCookieSameSite } from './config.js';
+import { buildLoggerOptions } from '../observability/logging.js';
 
 const FIXED_NOW = 1_700_000_000_000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const SMTP_HOST = 'smtp-relay.brevo.com';
+const SMTP_PORT = 2525;
 
 interface RecordingEmailService extends EmailService {
   readonly sent: CapturedVerificationEmail[];
@@ -41,6 +49,73 @@ class FlakyRecordingEmailService implements RecordingEmailService {
   }
 }
 
+/**
+ * Applies a scripted outcome per send: `null` succeeds, an `Error` rejects that
+ * attempt. Attempts past the script succeed. It records the attempt first, so a
+ * rejected send still proves which address was targeted.
+ */
+class ScriptedEmailService implements RecordingEmailService {
+  readonly sent: CapturedVerificationEmail[] = [];
+  private readonly outcomes: Array<Error | null>;
+
+  constructor(outcomes: Array<Error | null> = []) {
+    this.outcomes = [...outcomes];
+  }
+
+  async sendVerification(
+    to: string,
+    verificationUrl: string,
+    options?: VerificationEmailOptions,
+  ): Promise<void> {
+    this.sent.push({ to, verificationUrl, expiresInMs: options?.expiresInMs });
+    const outcome = this.outcomes.shift() ?? null;
+    if (outcome !== null) {
+      throw outcome;
+    }
+  }
+}
+
+/** Builds the typed failure the SMTP service raises for a transport rejection. */
+function deliveryFailure(
+  message = 'SMTP transport failed: connection refused',
+  options: { code?: string; name?: string } = {},
+): EmailDeliveryError {
+  const source = new Error(message);
+  if (options.name !== undefined) source.name = options.name;
+  if (options.code !== undefined) Object.assign(source, { code: options.code });
+  return new EmailDeliveryError(source, SMTP_HOST, SMTP_PORT);
+}
+
+interface CaptureStream {
+  stream: { write(line: string): void };
+  lines(): string[];
+  text(): string;
+}
+
+/** Captures the JSON lines Pino writes through the logger test seam. */
+function createCaptureStream(): CaptureStream {
+  const chunks: string[] = [];
+  return {
+    stream: {
+      write: (line: string) => {
+        chunks.push(line);
+      },
+    },
+    lines: () => chunks.flatMap((chunk) => chunk.split('\n')).filter((line) => line !== ''),
+    text: () => chunks.join(''),
+  };
+}
+
+function logEntries(capture: CaptureStream): Array<Record<string, unknown>> {
+  return capture.lines().map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function deliveryFailureWarnings(capture: CaptureStream): Array<Record<string, unknown>> {
+  return logEntries(capture).filter(
+    (entry) => entry['msg'] === 'verification_email_delivery_failed',
+  );
+}
+
 interface Ctx {
   app: FastifyInstance;
   service: ReturnType<typeof createAuthService>;
@@ -60,6 +135,7 @@ interface CookieOptions {
 async function buildCtx(
   cookieOptions: CookieOptions = {},
   emailService: RecordingEmailService = new FakeEmailService(),
+  logger?: FastifyServerOptions['logger'],
 ): Promise<Ctx> {
   let now = FIXED_NOW;
   const clock = () => now;
@@ -80,7 +156,7 @@ async function buildCtx(
     config: { appBaseUrl: 'http://localhost:5173', sessionTtlMs: SESSION_TTL_MS, verificationTokenTtlMs: VERIFICATION_TTL_MS },
   });
 
-  const app = Fastify();
+  const app = Fastify({ logger });
   await app.register(authRoutes, {
     authService: service,
     sessions,
@@ -124,7 +200,7 @@ describe('auth routes', () => {
     expect(res.json().message).toBe('verification email sent');
   });
 
-  it('POST /auth/register duplicate username returns 409', async () => {
+  it('POST /auth/register duplicate username returns 409 with the username field', async () => {
     await ctx.app.inject({
       method: 'POST', url: '/auth/register', headers: { origin: 'http://localhost:5173' },
       payload: { username: 'alice', email: 'a@x.com', password: 'password1234' },
@@ -134,9 +210,17 @@ describe('auth routes', () => {
       payload: { username: 'ALICE', email: 'b@x.com', password: 'password1234' },
     });
     expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({
+      message: 'account already exists',
+      code: 'duplicate_account',
+      error: 'duplicate_account',
+      field: 'username',
+      fields: ['username'],
+    });
+    expect(getSetCookie(res)).toBe('');
   });
 
-  it('POST /auth/register duplicate email returns 409', async () => {
+  it('POST /auth/register duplicate email returns 409 with the email field', async () => {
     await ctx.app.inject({
       method: 'POST', url: '/auth/register', headers: { origin: 'http://localhost:5173' },
       payload: { username: 'alice', email: 'a@x.com', password: 'password1234' },
@@ -146,6 +230,14 @@ describe('auth routes', () => {
       payload: { username: 'bob', email: 'A@X.COM', password: 'password1234' },
     });
     expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({
+      message: 'account already exists',
+      code: 'duplicate_account',
+      error: 'duplicate_account',
+      field: 'email',
+      fields: ['email'],
+    });
+    expect(getSetCookie(res)).toBe('');
   });
 
   it('POST /auth/register password boundaries', async () => {
@@ -589,7 +681,7 @@ describe('auth routes', () => {
     }
   });
 
-  it('POST /auth/register transport rejection returns 500 internal_error, then resend recovers with a fresh token', async () => {
+  it('POST /auth/register untyped email failure returns 500 internal_error, then resend recovers with a fresh token', async () => {
     const email = new FlakyRecordingEmailService(1);
     const failing = await buildCtx({}, email);
     const createdSessionUserIds: string[] = [];
@@ -658,5 +750,394 @@ describe('auth routes', () => {
     } finally {
       await failing.app.close();
     }
+  });
+});
+
+describe('registration route contract (AC-3, AC-4, AC-5)', () => {
+  let ctx: Ctx & { advance: (ms: number) => void };
+
+  beforeEach(async () => {
+    ctx = await buildCtx();
+  });
+
+  it('serializes resumed:true only on a resume and omits it for a new registration', async () => {
+    const headers = { origin: 'http://localhost:5173' };
+    const payload = {
+      username: 'resumer',
+      email: 'resumer@example.test',
+      password: 'password1234',
+    };
+
+    const created = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(created.statusCode).toBe(202);
+    expect(created.json()).toEqual({ message: 'verification email sent' });
+    expect(getSetCookie(created)).toBe('');
+
+    const resumed = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(resumed.statusCode).toBe(202);
+    expect(resumed.json()).toEqual({ message: 'verification email sent', resumed: true });
+    expect(getSetCookie(resumed)).toBe('');
+
+    expect(ctx.email.sent).toHaveLength(2);
+    expect(ctx.email.sent[0].to).toBe('resumer@example.test');
+    expect(ctx.email.sent[1].to).toBe('resumer@example.test');
+  });
+
+  it('preserves the resume 429 body after three resumes per hour without sending another email', async () => {
+    const headers = { origin: 'http://localhost:5173' };
+    const payload = {
+      username: 'limited',
+      email: 'limited@example.test',
+      password: 'password1234',
+    };
+
+    const created = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(created.statusCode).toBe(202);
+
+    for (let i = 0; i < 3; i += 1) {
+      const resumed = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+      expect(resumed.statusCode).toBe(202);
+      expect(resumed.json()).toEqual({ message: 'verification email sent', resumed: true });
+    }
+    expect(ctx.email.sent).toHaveLength(4);
+
+    const limited = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({
+      message: 'rate limit exceeded',
+      code: 'rate_limited',
+      error: 'rate_limited',
+    });
+    expect(getSetCookie(limited)).toBe('');
+    expect(ctx.email.sent).toHaveLength(4);
+  });
+
+  it('reports both ordered fields when the username and email belong to different unverified rows (U1/U2)', async () => {
+    const headers = { origin: 'http://localhost:5173' };
+    const u1 = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'u1-holder', email: 'u1@example.test', password: 'password1234' },
+    });
+    const u2 = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'u2-holder', email: 'u2@example.test', password: 'password1234' },
+    });
+    expect(u1.statusCode).toBe(202);
+    expect(u2.statusCode).toBe(202);
+    const u1Row = await ctx.users.findByUsername('u1-holder');
+    const u2Row = await ctx.users.findByEmail('u2@example.test');
+    expect(u1Row!.verified).toBe(false);
+    expect(u2Row!.verified).toBe(false);
+    expect(u1Row!.id).not.toBe(u2Row!.id);
+
+    const conflict = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'u1-holder', email: 'u2@example.test', password: 'password1234' },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({
+      message: 'account already exists',
+      code: 'duplicate_account',
+      error: 'duplicate_account',
+      field: 'both',
+      fields: ['username', 'email'],
+    });
+    expect(getSetCookie(conflict)).toBe('');
+    expect(ctx.email.sent).toHaveLength(2);
+
+    const stillU1 = await ctx.users.findByUsername('u1-holder');
+    const stillU2 = await ctx.users.findByEmail('u2@example.test');
+    expect(stillU1!.id).toBe(u1Row!.id);
+    expect(stillU2!.id).toBe(u2Row!.id);
+  });
+
+  it('does not resume a wrong password on the same unverified row and sends no email', async () => {
+    const headers = { origin: 'http://localhost:5173' };
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'alice', email: 'alice@example.test', password: 'password1234' },
+    });
+    expect(created.statusCode).toBe(202);
+    expect(ctx.email.sent).toHaveLength(1);
+
+    const conflict = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'alice', email: 'alice@example.test', password: 'wrongpassword1' },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({
+      message: 'account already exists',
+      code: 'duplicate_account',
+      error: 'duplicate_account',
+      field: 'both',
+      fields: ['username', 'email'],
+    });
+    expect(getSetCookie(conflict)).toBe('');
+    expect(ctx.email.sent).toHaveLength(1);
+  });
+
+  it('does not resume an already-verified pair and sends no email', async () => {
+    const headers = { origin: 'http://localhost:5173' };
+    const payload = {
+      username: 'alice',
+      email: 'alice@example.test',
+      password: 'password1234',
+    };
+    const created = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(created.statusCode).toBe(202);
+    const token = new URL(ctx.email.sent[0].verificationUrl).searchParams.get('token')!;
+    const verified = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      headers,
+      payload: { token },
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json().user.verified).toBe(true);
+
+    const conflict = await ctx.app.inject({ method: 'POST', url: '/auth/register', headers, payload });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({
+      message: 'account already exists',
+      code: 'duplicate_account',
+      error: 'duplicate_account',
+      field: 'both',
+      fields: ['username', 'email'],
+    });
+    expect(getSetCookie(conflict)).toBe('');
+    expect(ctx.email.sent).toHaveLength(1);
+  });
+});
+
+describe('delivery failure logging (AC-3)', () => {
+  it('register delivery failure returns the fixed 502 body, sets no session and logs one redacted warn event', async () => {
+    const capture = createCaptureStream();
+    const email = new ScriptedEmailService([
+      deliveryFailure('SMTP transport failed: connection refused', {
+        code: 'ECONNECTION',
+        name: 'SmtpError',
+      }),
+    ]);
+    const failing = await buildCtx(
+      {},
+      email,
+      buildLoggerOptions({ LOG_LEVEL: 'warn' }, capture.stream),
+    );
+    const sessionCreate = vi.spyOn(failing.sessions, 'create');
+
+    const res = await failing.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers: { origin: 'http://localhost:5173' },
+      payload: { username: 'delivery-user', email: 'delivery@example.test', password: 'password1234' },
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      message: 'verification email could not be sent',
+      code: 'verification_email_failed',
+      error: 'verification_email_failed',
+    });
+    expect(getSetCookie(res)).toBe('');
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    const persisted = await failing.users.findByEmail('delivery@example.test');
+    expect(persisted).not.toBeNull();
+    expect(persisted!.username).toBe('delivery-user');
+    expect(persisted!.verified).toBe(false);
+
+    const warnings = deliveryFailureWarnings(capture);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]['level']).toBe(40);
+    expect(warnings[0]['route']).toBe('register');
+    expect(warnings[0]['errorType']).toBe('SmtpError');
+    expect(warnings[0]['transportCode']).toBe('ECONNECTION');
+    expect(warnings[0]['host']).toBe(SMTP_HOST);
+    expect(warnings[0]['port']).toBe(SMTP_PORT);
+
+    const text = capture.text();
+    expect(text).not.toContain('delivery@example.test');
+    expect(text).not.toContain('delivery-user');
+    expect(text).not.toContain('password1234');
+    expect(text).not.toContain('SMTP transport failed');
+    expect(text).not.toContain('verify?token=');
+  });
+
+  it('resend-verification delivery failure returns the same 502 body and logs the resend route without transportCode', async () => {
+    const capture = createCaptureStream();
+    const email = new ScriptedEmailService([null, deliveryFailure()]);
+    const failing = await buildCtx(
+      {},
+      email,
+      buildLoggerOptions({ LOG_LEVEL: 'warn' }, capture.stream),
+    );
+
+    const registered = await failing.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers: { origin: 'http://localhost:5173' },
+      payload: { username: 'alice', email: 'alice@example.test', password: 'password1234' },
+    });
+    expect(registered.statusCode).toBe(202);
+    expect(email.sent).toHaveLength(1);
+
+    const res = await failing.app.inject({
+      method: 'POST',
+      url: '/auth/resend-verification',
+      headers: { origin: 'http://localhost:5173' },
+      payload: { email: 'alice@example.test' },
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      message: 'verification email could not be sent',
+      code: 'verification_email_failed',
+      error: 'verification_email_failed',
+    });
+    expect(getSetCookie(res)).toBe('');
+    expect(email.sent).toHaveLength(2);
+
+    const warnings = deliveryFailureWarnings(capture);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]['level']).toBe(40);
+    expect(warnings[0]['route']).toBe('resend-verification');
+    expect(warnings[0]['errorType']).toBe('Error');
+    expect(warnings[0]['host']).toBe(SMTP_HOST);
+    expect(warnings[0]['port']).toBe(SMTP_PORT);
+    expect('transportCode' in warnings[0]).toBe(false);
+
+    const text = capture.text();
+    expect(text).not.toContain('alice@example.test');
+    expect(text).not.toContain('alice');
+    expect(text).not.toContain('SMTP transport failed');
+    expect(text).not.toContain('verify?token=');
+  });
+});
+
+describe('email identifier login (AC-6)', () => {
+  let ctx: Ctx & { advance: (ms: number) => void };
+
+  beforeEach(async () => {
+    ctx = await buildCtx();
+  });
+
+  const headers = { origin: 'http://localhost:5173' };
+
+  async function registerAlice(): Promise<void> {
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'alice', email: 'alice@example.test', password: 'password1234' },
+    });
+    expect(res.statusCode).toBe(202);
+  }
+
+  it('logs in with a mixed-case email in the username field and returns the session', async () => {
+    await registerAlice();
+    const stored = await ctx.users.findByEmail('alice@example.test');
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      headers,
+      payload: { username: 'ALICE@EXAMPLE.TEST', password: 'password1234' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      user: {
+        id: stored!.id,
+        username: 'alice',
+        email: 'alice@example.test',
+        verified: false,
+      },
+    });
+    const sc = getSetCookie(res);
+    expect(sc).toContain('HttpOnly');
+    expect(cookieValue(sc, SESSION_COOKIE_NAME)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('logs in with the identifier alias for an email', async () => {
+    await registerAlice();
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      headers,
+      payload: { identifier: 'alice@example.test', password: 'password1234' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().user.username).toBe('alice');
+    expect(res.json().user.email).toBe('alice@example.test');
+  });
+
+  it('returns the generic 401 for an unknown email and for a wrong email password', async () => {
+    await registerAlice();
+
+    const unknown = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      headers,
+      payload: { username: 'ghost@example.test', password: 'password1234' },
+    });
+    expect(unknown.statusCode).toBe(401);
+    expect(unknown.json()).toEqual({
+      message: 'invalid credentials',
+      code: 'invalid_credentials',
+      error: 'invalid_credentials',
+    });
+    expect(getSetCookie(unknown)).toBe('');
+
+    const wrong = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      headers,
+      payload: { username: 'alice@example.test', password: 'wrongpassword1' },
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json()).toEqual({
+      message: 'invalid credentials',
+      code: 'invalid_credentials',
+      error: 'invalid_credentials',
+    });
+    expect(getSetCookie(wrong)).toBe('');
+  });
+
+  it('locks an email identifier after five failures and returns Retry-After on the 429', async () => {
+    await registerAlice();
+
+    for (let i = 0; i < 5; i += 1) {
+      const failed = await ctx.app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        headers,
+        payload: { username: 'alice@example.test', password: 'wrongpassword1' },
+      });
+      expect(failed.statusCode).toBe(401);
+    }
+
+    const locked = await ctx.app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      headers,
+      payload: { username: 'alice@example.test', password: 'password1234' },
+    });
+    expect(locked.statusCode).toBe(429);
+    expect(locked.headers['retry-after']).toBe('900');
+    expect(locked.json()).toEqual({
+      message: 'account locked',
+      code: 'account_locked',
+      error: 'account_locked',
+    });
   });
 });
