@@ -44,6 +44,12 @@ services:
         sync: false
       - key: DIRECT_DATABASE_URL
         sync: false
+      - key: DB_SCHEMA_BOOTSTRAP_ENABLED
+        value: 'true'
+      - key: DB_EXPIRED_TOKEN_CLEANUP_ENABLED
+        value: 'true'
+      - key: DB_EXPIRED_TOKEN_CLEANUP_INTERVAL_MS
+        value: '3600000'
       - key: CORS_ORIGIN
         sync: false
       - key: ALLOWED_ORIGIN
