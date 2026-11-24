@@ -6,6 +6,7 @@ import { allIds } from './game/cubes.js';
 import type { ServerMessage } from './game/protocol.js';
 import { InMemoryEconomyRepository } from './auth/economy-repository.js';
 import {
+  EmailDeliveryError,
   FakeEmailService,
   renderVerificationEmail,
   type EmailTransport,
@@ -364,6 +365,253 @@ describe('SMTP composition root (T4)', () => {
           'If you did not create an account, you can ignore this email.',
         html: renderVerificationEmail(verificationUrl).html,
       });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * Startup transport probe (AC-8). The probe is the fire-and-forget `onReady` hook:
+ * it is gated on the credential pair, starts `verify()` without awaiting it, and
+ * reports the outcome as one redacted event. These tests capture the Pino lines
+ * through the logger stream seam (the same pattern as the observability suite).
+ */
+describe('SMTP startup probe (T5, AC-8)', () => {
+  function probeLogger(capture: CaptureStream) {
+    return buildLoggerOptions({ LOG_LEVEL: 'debug' }, capture.stream);
+  }
+
+  function probeEvents(
+    capture: CaptureStream,
+    message: string,
+  ): Array<Record<string, unknown>> {
+    return parseLogLines(capture).filter((entry) => entry['msg'] === message);
+  }
+
+  it('serves /healthz while a never-settling verify() is pending and probes once per app (AC-8(a))', async () => {
+    const verify = vi.fn<() => Promise<void>>(() => new Promise<void>(() => undefined));
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: { sendVerification: async () => undefined, verify } },
+      logger: false,
+    });
+
+    try {
+      const first = await app.inject({ method: 'GET', url: '/healthz' });
+      const second = await app.inject({ method: 'GET', url: '/healthz' });
+
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toEqual({ status: 'ok' });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual({ status: 'ok' });
+      // `inject` boots the app; a later explicit `ready()` never re-runs the hook.
+      await app.ready();
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(verify).toHaveBeenCalledWith();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs exactly one info smtp_transport_verify_ok with host and port (AC-8(b))', async () => {
+    const capture = createCaptureStream();
+    const verify = vi.fn(async () => undefined);
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: { sendVerification: async () => undefined, verify } },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(verify).toHaveBeenCalledTimes(1);
+      const events = probeEvents(capture, 'smtp_transport_verify_ok');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(30);
+      expect(events[0]!['msg']).toBe('smtp_transport_verify_ok');
+      expect(events[0]!['host']).toBe('smtp-relay.brevo.com');
+      expect(events[0]!['port']).toBe(587);
+      expect(probeEvents(capture, 'smtp_transport_verify_failed')).toEqual([]);
+      expect(probeEvents(capture, 'smtp_transport_verify_skipped')).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs exactly one warn smtp_transport_verify_failed with fields only and catches the rejection (AC-8(c))', async () => {
+    const capture = createCaptureStream();
+    const rejection = Object.assign(new Error('probe rejected: credential smtp-key-for-tests'), {
+      code: 'ETIMEDOUT',
+    });
+    const verify = vi.fn(async () => {
+      throw new EmailDeliveryError(rejection, 'smtp-relay.brevo.com', 587);
+    });
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: { sendVerification: async () => undefined, verify } },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(verify).toHaveBeenCalledTimes(1);
+      const events = probeEvents(capture, 'smtp_transport_verify_failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(40);
+      expect(events[0]!['msg']).toBe('smtp_transport_verify_failed');
+      expect(events[0]!['errorType']).toBe('Error');
+      expect(events[0]!['transportCode']).toBe('ETIMEDOUT');
+      expect(events[0]!['host']).toBe('smtp-relay.brevo.com');
+      expect(events[0]!['port']).toBe(587);
+      // The rejection itself never reaches the line: no serializer, message or stack.
+      expect('err' in events[0]!).toBe(false);
+      expect('stack' in events[0]!).toBe(false);
+      expect(capture.text()).not.toContain('probe rejected');
+      expect(capture.text()).not.toContain('smtp-key-for-tests');
+      expect(capture.text()).not.toContain('smtp-login@example.test');
+      expect(probeEvents(capture, 'smtp_transport_verify_ok')).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reports a plain rejection with the configured host/port and no transportCode (AC-8(c))', async () => {
+    const capture = createCaptureStream();
+    const emailService = new FakeEmailService();
+    emailService.failNextVerify = new Error('mailpit unreachable: smtp-key-for-tests');
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: emailService },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(emailService.verifyCalls).toBe(1);
+      const events = probeEvents(capture, 'smtp_transport_verify_failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(40);
+      expect(events[0]!['errorType']).toBe('Error');
+      expect('transportCode' in events[0]!).toBe(false);
+      expect(events[0]!['host']).toBe('smtp-relay.brevo.com');
+      expect(events[0]!['port']).toBe(587);
+      expect(capture.text()).not.toContain('mailpit unreachable');
+      expect(capture.text()).not.toContain('smtp-key-for-tests');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('omits transportCode for a typed rejection without a provider code (AC-8(c))', async () => {
+    const capture = createCaptureStream();
+    const verify = vi.fn(async () => {
+      throw new EmailDeliveryError(new Error('no provider code'), 'smtp-relay.brevo.com', 587);
+    });
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: { sendVerification: async () => undefined, verify } },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      const events = probeEvents(capture, 'smtp_transport_verify_failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(40);
+      expect(events[0]!['errorType']).toBe('Error');
+      expect('transportCode' in events[0]!).toBe(false);
+      expect(events[0]!['host']).toBe('smtp-relay.brevo.com');
+      expect(events[0]!['port']).toBe(587);
+      expect(capture.text()).not.toContain('no provider code');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reports an unknown errorType for a non-Error rejection (AC-8(c))', async () => {
+    const capture = createCaptureStream();
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: {
+        email: {
+          sendVerification: async () => undefined,
+          verify: () => Promise.reject('relay refused without an Error'),
+        },
+      },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      const events = probeEvents(capture, 'smtp_transport_verify_failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(40);
+      expect(events[0]!['errorType']).toBe('unknown');
+      expect('transportCode' in events[0]!).toBe(false);
+      expect(events[0]!['host']).toBe('smtp-relay.brevo.com');
+      expect(events[0]!['port']).toBe(587);
+      expect(capture.text()).not.toContain('relay refused without an Error');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs one debug smtp_transport_verify_skipped with no_credentials and never probes without a credential pair (AC-8(d))', async () => {
+    const capture = createCaptureStream();
+    const verify = vi.fn(async () => undefined);
+    const app = buildApp({}, {
+      auth: { email: { sendVerification: async () => undefined, verify } },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(verify).not.toHaveBeenCalled();
+      const events = probeEvents(capture, 'smtp_transport_verify_skipped');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(20);
+      expect(events[0]!['msg']).toBe('smtp_transport_verify_skipped');
+      expect(events[0]!['reason']).toBe('no_credentials');
+      expect(probeEvents(capture, 'smtp_transport_verify_ok')).toEqual([]);
+      expect(probeEvents(capture, 'smtp_transport_verify_failed')).toEqual([]);
+
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs one debug smtp_transport_verify_skipped with unsupported when the service has no verify (AC-8(d))', async () => {
+    const capture = createCaptureStream();
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { email: { sendVerification: async () => undefined } },
+      logger: probeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      const events = probeEvents(capture, 'smtp_transport_verify_skipped');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(20);
+      expect(events[0]!['msg']).toBe('smtp_transport_verify_skipped');
+      expect(events[0]!['reason']).toBe('unsupported');
+      expect(probeEvents(capture, 'smtp_transport_verify_ok')).toEqual([]);
+      expect(probeEvents(capture, 'smtp_transport_verify_failed')).toEqual([]);
+
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: 'ok' });
     } finally {
       await app.close();
     }

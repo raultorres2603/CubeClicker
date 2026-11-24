@@ -13,8 +13,10 @@ import { InMemorySessionRepository, PgSessionRepository } from './auth/session-r
 import { InMemoryVerificationTokenRepository, PgVerificationTokenRepository } from './auth/verification-token-repository.js';
 import { InMemoryEconomyRepository, PgEconomyRepository } from './auth/economy-repository.js';
 import {
+  EmailDeliveryError,
   FakeEmailService,
   createSmtpEmailService,
+  type EmailService,
   type SmtpTransportFactory,
 } from './auth/email.js';
 import { createRateLimiter } from './auth/rate-limit.js';
@@ -28,7 +30,7 @@ import {
 } from './cors.js';
 import { loadObservabilityConfig } from './observability/config.js';
 import { createMetrics, type Metrics } from './observability/metrics.js';
-import { buildLoggerOptions, createLogSink } from './observability/logging.js';
+import { buildLoggerOptions, createLogSink, type LogFields } from './observability/logging.js';
 import { metricsRoutes } from './observability/metrics-route.js';
 import {
   collectPoolMetrics,
@@ -146,6 +148,33 @@ function parseCookieHeader(header: string | undefined, name: string): string | n
 }
 
 /**
+ * The redacted fields for a failed startup transport probe (AC-8(c)).
+ *
+ * A typed `EmailDeliveryError` contributes its source error type, its whitelisted
+ * provider code and the configured host/port; any other rejection contributes its
+ * error name and the configuration this app probed. The rejection message, stack
+ * and any credential are never copied, so the warn line cannot leak them.
+ */
+function smtpProbeFailureFields(error: unknown, host: string, port: number): LogFields {
+  if (error instanceof EmailDeliveryError) {
+    const fields: LogFields = {
+      errorType: error.errorType,
+      host: error.host,
+      port: error.port,
+    };
+    if (error.transportCode !== undefined) {
+      fields.transportCode = error.transportCode;
+    }
+    return fields;
+  }
+  return {
+    errorType: error instanceof Error ? error.name : 'unknown',
+    host,
+    port,
+  };
+}
+
+/**
  * Builds the backend app.
  */
 export function buildApp(
@@ -222,6 +251,38 @@ export function buildApp(
     (authConfig.smtpHost
       ? createSmtpEmailService(authConfig, options.auth?.emailTransportFactory)
       : new FakeEmailService());
+
+  // Non-blocking startup transport probe (AC-8). Only the authenticated relay path
+  // is probed (the local Mailpit is unauthenticated), and the `onReady` hook starts
+  // `verify()` and attaches `.then`/`.catch` without awaiting it, so `listen` and
+  // `/healthz` never wait on SMTP. Outcomes are event names plus configuration
+  // only: no credential, email, message or stack reaches a line.
+  const emailService = email as EmailService;
+  app.addHook('onReady', () => {
+    if (authConfig.smtpUser === null || authConfig.smtpPass === null) {
+      log.debug('smtp_transport_verify_skipped', { reason: 'no_credentials' });
+      return;
+    }
+    const verify = emailService.verify;
+    if (verify === undefined) {
+      log.debug('smtp_transport_verify_skipped', { reason: 'unsupported' });
+      return;
+    }
+    void verify
+      .call(emailService)
+      .then(() => {
+        log.info('smtp_transport_verify_ok', {
+          host: authConfig.smtpHost,
+          port: authConfig.smtpPort,
+        });
+      })
+      .catch((error: unknown) => {
+        log.warn(
+          'smtp_transport_verify_failed',
+          smtpProbeFailureFields(error, authConfig.smtpHost, authConfig.smtpPort),
+        );
+      });
+  });
 
   const rateLimiter =
     options.auth?.rateLimiter ??
