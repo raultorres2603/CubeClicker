@@ -1,11 +1,15 @@
 /**
- * Email delivery for user authentication (T4).
+ * Email delivery for user authentication (T4) with typed delivery failures (T2).
  *
  * Transport and service layer only: message content is rendered by the pure
  * `email-template` module, whose subject and renderer are re-exported here so
  * existing imports keep working. The transport connection object is built in
  * exactly one place (`buildSmtpTransportOptions`) and both the app and the
  * operator CLI compose the service through `createSmtpEmailService`.
+ *
+ * `SmtpEmailService` wraps every transport rejection (send and probe) in an
+ * `EmailDeliveryError`. Its `message` is the source message verbatim, because
+ * the operator CLI still prints (and redacts) it; routes and logs never do.
  */
 
 import * as nodemailer from 'nodemailer';
@@ -32,6 +36,8 @@ export interface OutgoingEmail {
 
 export interface EmailTransport {
   sendMail(options: OutgoingEmail): Promise<unknown>;
+  /** Optional SMTP `verify()` probe; fakes that predate it stay valid. */
+  verify?(): Promise<unknown>;
 }
 
 export interface EmailService {
@@ -40,6 +46,54 @@ export interface EmailService {
     verificationUrl: string,
     options?: VerificationEmailOptions,
   ): Promise<void>;
+  /** Optional reachability probe; absent services are reported as unsupported. */
+  verify?(): Promise<void>;
+}
+
+/** Only provider codes matching this shape may leave the process as a field. */
+const TRANSPORT_CODE_PATTERN = /^[A-Z0-9_]{1,40}$/;
+
+/** The source message verbatim; non-`Error` rejections are stringified as-is. */
+function readSourceMessage(source: unknown): string {
+  return source instanceof Error ? source.message : String(source);
+}
+
+/** The source `code`, only when it is a provider code of the pinned shape. */
+function readTransportCode(source: unknown): string | undefined {
+  if (typeof source !== 'object' || source === null) {
+    return undefined;
+  }
+  const code: unknown = (source as { code?: unknown }).code;
+  return typeof code === 'string' && TRANSPORT_CODE_PATTERN.test(code) ? code : undefined;
+}
+
+/**
+ * A typed SMTP delivery failure (AC-2).
+ *
+ * `message` deliberately preserves the source message verbatim (D-4): the
+ * operator CLI's accepted lines and its `redactSecrets` contract depend on it.
+ * Every other field is safe to log: `host`/`port` are configuration, `errorType`
+ * is a name, and `transportCode` is whitelisted by shape.
+ */
+export class EmailDeliveryError extends Error {
+  readonly code = 'verification_email_failed';
+  readonly transport = 'smtp';
+  readonly host: string;
+  readonly port: number;
+  readonly errorType: string;
+  readonly transportCode?: string;
+
+  constructor(source: unknown, host: string, port: number) {
+    super(readSourceMessage(source));
+    this.name = 'EmailDeliveryError';
+    this.host = host;
+    this.port = port;
+    this.errorType = source instanceof Error ? source.name : 'unknown';
+    const transportCode = readTransportCode(source);
+    if (transportCode !== undefined) {
+      this.transportCode = transportCode;
+    }
+  }
 }
 
 export interface CapturedVerificationEmail {
@@ -133,6 +187,10 @@ function createNodemailerTransport(options: SmtpTransportOptions): EmailTranspor
 
 export class FakeEmailService implements EmailService {
   readonly sent: CapturedVerificationEmail[] = [];
+  /** Number of `verify()` probes, including rejected ones. */
+  verifyCalls = 0;
+  /** One-shot probe failure: the next `verify()` rejects with it, then clears. */
+  failNextVerify: Error | undefined;
 
   async sendVerification(
     to: string,
@@ -141,17 +199,30 @@ export class FakeEmailService implements EmailService {
   ): Promise<void> {
     this.sent.push({ to, verificationUrl, expiresInMs: options?.expiresInMs });
   }
+
+  async verify(): Promise<void> {
+    this.verifyCalls += 1;
+    const failure = this.failNextVerify;
+    if (failure !== undefined) {
+      this.failNextVerify = undefined;
+      throw failure;
+    }
+  }
 }
 
 export class SmtpEmailService implements EmailService {
   private readonly transport: EmailTransport;
   private readonly from: string;
+  private readonly host: string;
+  private readonly port: number;
 
   constructor(
     options: SmtpEmailServiceOptions,
     transportFactory: SmtpTransportFactory = createNodemailerTransport,
   ) {
     this.from = options.from;
+    this.host = options.host;
+    this.port = options.port;
     this.transport = transportFactory(buildSmtpTransportOptions(options));
   }
 
@@ -161,7 +232,23 @@ export class SmtpEmailService implements EmailService {
     options?: VerificationEmailOptions,
   ): Promise<void> {
     const { subject, text, html } = renderVerificationEmail(verificationUrl, options);
-    await this.transport.sendMail({ from: this.from, to, subject, text, html });
+    try {
+      await this.transport.sendMail({ from: this.from, to, subject, text, html });
+    } catch (error) {
+      throw new EmailDeliveryError(error, this.host, this.port);
+    }
+  }
+
+  async verify(): Promise<void> {
+    const verify = this.transport.verify;
+    if (verify === undefined) {
+      return;
+    }
+    try {
+      await verify.call(this.transport);
+    } catch (error) {
+      throw new EmailDeliveryError(error, this.host, this.port);
+    }
   }
 }
 

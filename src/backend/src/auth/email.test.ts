@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import * as template from './email-template.js';
+import { runEmailTestCli } from './email-cli.js';
 import {
+  EmailDeliveryError,
   FakeEmailService,
   SmtpEmailService,
   VERIFICATION_EMAIL_SUBJECT,
@@ -260,6 +262,42 @@ describe('createSmtpEmailService (AC-5)', () => {
   });
 });
 
+describe('operator CLI integration (AC-2(d))', () => {
+  it('prints the redacted exact failure line through the real SmtpEmailService wrapper', async () => {
+    const env = {
+      SMTP_HOST: 'smtp-relay.brevo.com',
+      SMTP_PORT: '587',
+      SMTP_SECURE: 'false',
+      SMTP_USER: CREDENTIALS.user,
+      SMTP_PASS: CREDENTIALS.pass,
+      SMTP_FROM: 'CubeClicker <no-reply@example.com>',
+    };
+    const source = Object.assign(
+      new Error(`535 authentication failed for ${CREDENTIALS.user} (${CREDENTIALS.pass})`),
+      { code: 'EAUTH' },
+    );
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockRejectedValue(source);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const exitCode = await runEmailTestCli(['--to', 'user@example.com'], env, {
+      createService: (config) => createSmtpEmailService(config, () => ({ sendMail })),
+      log: (line) => stdout.push(line),
+      logError: (line) => stderr.push(line),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toStrictEqual([]);
+    expect(stderr).toStrictEqual([
+      'Failed to send test email via smtp-relay.brevo.com:587: 535 authentication failed for [redacted] ([redacted])',
+    ]);
+    expect(stderr.join('\n')).not.toContain(CREDENTIALS.user);
+    expect(stderr.join('\n')).not.toContain(CREDENTIALS.pass);
+  });
+});
+
 describe('FakeEmailService', () => {
   it('starts with no captured messages', () => {
     const fake = new FakeEmailService();
@@ -306,6 +344,32 @@ describe('FakeEmailService', () => {
       },
     ]);
   });
+
+  it('records verifyCalls and resolves by default', async () => {
+    const fake = new FakeEmailService();
+
+    expect(fake.verifyCalls).toBe(0);
+    await expect(fake.verify()).resolves.toBeUndefined();
+    await expect(fake.verify()).resolves.toBeUndefined();
+
+    expect(fake.verifyCalls).toBe(2);
+    expect(fake.failNextVerify).toBeUndefined();
+  });
+
+  it('rejects once with the injected failNextVerify and then clears it', async () => {
+    const fake = new FakeEmailService();
+    const failure = new Error('probe refused');
+    fake.failNextVerify = failure;
+
+    await expect(fake.verify()).rejects.toBe(failure);
+
+    expect(fake.verifyCalls).toBe(1);
+    expect(fake.failNextVerify).toBeUndefined();
+
+    await expect(fake.verify()).resolves.toBeUndefined();
+
+    expect(fake.verifyCalls).toBe(2);
+  });
 });
 
 describe('SmtpEmailService', () => {
@@ -334,10 +398,11 @@ describe('SmtpEmailService', () => {
     });
   });
 
-  it('propagates transport failures', async () => {
+  it('wraps transport failures in EmailDeliveryError with the verbatim source message', async () => {
+    const source = Object.assign(new Error('smtp down'), { code: 'ETIMEDOUT' });
     const sendMail = vi
       .fn<(options: OutgoingEmail) => Promise<unknown>>()
-      .mockRejectedValue(new Error('smtp down'));
+      .mockRejectedValue(source);
     const service = new SmtpEmailService(
       { host: 'smtp.example.com', port: 587, from: 'no-reply@cubeclicker.local' },
       () => ({ sendMail }),
@@ -347,6 +412,198 @@ describe('SmtpEmailService', () => {
       .sendVerification('user@example.com', VERIFICATION_URL)
       .catch((reason: unknown) => reason as Error);
 
-    expect(error.message).toBe('smtp down');
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    const typed = error as EmailDeliveryError;
+    expect(typed.message).toBe('smtp down');
+    expect(typed.host).toBe('smtp.example.com');
+    expect(typed.port).toBe(587);
+    expect(typed.errorType).toBe('Error');
+    expect(typed.transportCode).toBe('ETIMEDOUT');
+  });
+
+  it('reports the configured host and port when send fails through createSmtpEmailService', async () => {
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockRejectedValue(new Error('connection refused'));
+    const service = createSmtpEmailService(BREVO_CONFIG, () => ({ sendMail }));
+
+    const error = await service
+      .sendVerification('user@example.com', VERIFICATION_URL)
+      .catch((reason: unknown) => reason as Error);
+
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    const typed = error as EmailDeliveryError;
+    expect(typed.name).toBe('EmailDeliveryError');
+    expect(typed.code).toBe('verification_email_failed');
+    expect(typed.transport).toBe('smtp');
+    expect(typed.host).toBe('smtp-relay.brevo.com');
+    expect(typed.port).toBe(587);
+    expect(typed.errorType).toBe('Error');
+    expect(typed.transportCode).toBeUndefined();
+    expect(typed.message).toBe('connection refused');
+  });
+
+  it('keeps credentials and token shapes out of every enumerable field except message (AC-2(b))', async () => {
+    const token = 'a'.repeat(64);
+    const message =
+      `535 authentication failed for ${CREDENTIALS.user} (${CREDENTIALS.pass}) token=${token}`;
+    const source = Object.assign(new Error(message), { code: 'EAUTH' });
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockRejectedValue(source);
+    const service = new SmtpEmailService(
+      {
+        host: 'smtp.example.com',
+        port: 587,
+        user: CREDENTIALS.user,
+        pass: CREDENTIALS.pass,
+        from: 'no-reply@cubeclicker.local',
+      },
+      () => ({ sendMail }),
+    );
+
+    const error = await service
+      .sendVerification('user@example.com', VERIFICATION_URL)
+      .catch((reason: unknown) => reason as Error);
+
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    const typed = error as EmailDeliveryError;
+    expect(typed.name).toBe('EmailDeliveryError');
+    expect(typed.code).toBe('verification_email_failed');
+    expect(typed.transport).toBe('smtp');
+    expect(typed.host).toBe('smtp.example.com');
+    expect(typed.port).toBe(587);
+    expect(typed.errorType).toBe('Error');
+    expect(typed.transportCode).toBe('EAUTH');
+    expect(typed.message).toBe(message);
+
+    const enumerableStrings = Object.entries(typed)
+      .filter(([key]) => key !== 'message')
+      .map(([, value]) => value)
+      .filter((value): value is string => typeof value === 'string');
+    for (const secret of [CREDENTIALS.user, CREDENTIALS.pass, token]) {
+      expect(enumerableStrings.filter((value) => value.includes(secret))).toStrictEqual([]);
+    }
+  });
+});
+
+describe('SmtpEmailService.verify (AC-2(c))', () => {
+  it('delegates to the transport verify exactly once and resolves', async () => {
+    const verify = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ok: true });
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'unused' });
+    const service = new SmtpEmailService(
+      { host: 'smtp.example.com', port: 587, from: 'no-reply@cubeclicker.local' },
+      () => ({ sendMail, verify }),
+    );
+
+    await expect(service.verify()).resolves.toBeUndefined();
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(sendMail).toHaveBeenCalledTimes(0);
+  });
+
+  it('wraps a verify rejection in EmailDeliveryError with the configured host and port', async () => {
+    const source = Object.assign(new Error('greeting timeout'), { code: 'ETIMEDOUT' });
+    const verify = vi.fn<() => Promise<unknown>>().mockRejectedValue(source);
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'unused' });
+    const service = new SmtpEmailService(
+      { host: 'smtp-relay.brevo.com', port: 2525, from: 'no-reply@cubeclicker.local' },
+      () => ({ sendMail, verify }),
+    );
+
+    const error = await service
+      .verify()
+      .catch((reason: unknown) => reason as Error);
+
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    const typed = error as EmailDeliveryError;
+    expect(typed.name).toBe('EmailDeliveryError');
+    expect(typed.code).toBe('verification_email_failed');
+    expect(typed.transport).toBe('smtp');
+    expect(typed.host).toBe('smtp-relay.brevo.com');
+    expect(typed.port).toBe(2525);
+    expect(typed.errorType).toBe('Error');
+    expect(typed.transportCode).toBe('ETIMEDOUT');
+    expect(typed.message).toBe('greeting timeout');
+    expect(verify).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves without calling anything when the transport has no verify', async () => {
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'unused' });
+    const service = new SmtpEmailService(
+      { host: 'mailpit', port: 1025, from: 'no-reply@cubeclicker.local' },
+      () => ({ sendMail }),
+    );
+
+    await expect(service.verify()).resolves.toBeUndefined();
+
+    expect(sendMail).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe('EmailDeliveryError (AC-2)', () => {
+  it('pins the typed fields and preserves the source message verbatim', () => {
+    const source = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:587'), {
+      code: 'ECONNREFUSED',
+    });
+
+    const error = new EmailDeliveryError(source, 'smtp-relay.brevo.com', 587);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    expect(error.name).toBe('EmailDeliveryError');
+    expect(error.code).toBe('verification_email_failed');
+    expect(error.transport).toBe('smtp');
+    expect(error.host).toBe('smtp-relay.brevo.com');
+    expect(error.port).toBe(587);
+    expect(error.errorType).toBe('Error');
+    expect(error.transportCode).toBe('ECONNREFUSED');
+    expect(error.message).toBe('connect ECONNREFUSED 127.0.0.1:587');
+  });
+
+  it('uses the source error name as errorType', () => {
+    const source = new Error('mailbox unavailable');
+    source.name = 'MailboxError';
+
+    const error = new EmailDeliveryError(source, 'smtp.example.com', 587);
+
+    expect(error.errorType).toBe('MailboxError');
+    expect(error.transportCode).toBeUndefined();
+  });
+
+  it('reports unknown errorType and a stringified message for non-Error rejections', () => {
+    const textError = new EmailDeliveryError('relay refused', 'mailpit', 1025);
+
+    expect(textError.errorType).toBe('unknown');
+    expect(textError.message).toBe('relay refused');
+    expect(textError.transportCode).toBeUndefined();
+
+    const nullError = new EmailDeliveryError(null, 'mailpit', 1025);
+
+    expect(nullError.errorType).toBe('unknown');
+    expect(nullError.message).toBe('null');
+    expect(nullError.transportCode).toBeUndefined();
+  });
+
+  it.each([
+    { label: 'uppercase acronym', code: 'EAUTH', expected: 'EAUTH' },
+    { label: 'underscore', code: 'E_AUTH', expected: 'E_AUTH' },
+    { label: '40 characters', code: 'A'.repeat(40), expected: 'A'.repeat(40) },
+    { label: 'lowercase', code: 'econnrefused', expected: undefined },
+    { label: 'hyphen', code: 'E-AUTH', expected: undefined },
+    { label: 'trailing space', code: 'EAUTH ', expected: undefined },
+    { label: '41 characters', code: 'A'.repeat(41), expected: undefined },
+    { label: 'non-string', code: 535, expected: undefined },
+    { label: 'absent', code: undefined, expected: undefined },
+  ])('keeps $label transport codes only when provider-shaped', ({ code, expected }) => {
+    const source = Object.assign(new Error('rejected'), { code });
+
+    expect(new EmailDeliveryError(source, 'smtp.example.com', 587).transportCode).toBe(expected);
   });
 });
