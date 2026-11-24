@@ -32,8 +32,38 @@ The event and field contract is fixed. Log lines never contain request/response 
 - **Correlation.** The `/ws` upgrade passes the Fastify request id to the hub as `connectionId`, so `ws_connection_opened` and `ws_connection_closed` correlate with the matching HTTP upgrade request log.
 - **Redaction.** Pino redacts the top-level `email`, `password`, `pass`, `token`, `sessionToken`, `verificationToken`, `cookie` and `authorization` paths; the request/response paths `req.headers.cookie`, `req.headers.authorization`, `req.headers['x-api-key']`, `res.headers['set-cookie']`, `req.body.email`, `req.body.password`, `req.body.pass`, `req.body.token`, `req.body.sessionToken` and `req.body.verificationToken`; and the wildcard forms `*.email`, `*.password`, `*.pass`, `*.token`, `*.sessionToken`, `*.verificationToken`, `*.cookie` and `*.authorization`. Every redacted value is replaced with `[REDACTED]`.
 - **No bodies or headers.** Custom serializers reduce a request to `{ method, url, host }` (query string stripped), a response to `{ statusCode }`, and an error to `{ type, code? }` (`code` only when it is a string). Bodies, headers, IPs, messages and stacks never reach a log line.
-- **Adapter.** The hub and shutdown code log through the event-first `LogSink` (`info(event, fields)`, `warn(event, fields)`, `error(event, fields)`); `createLogSink` calls Pino object-first (`logger.info(fields, event)`), so the structured fields are emitted instead of dropped.
+- **Adapter.** The hub, shutdown and database-lifecycle code log through the event-first `LogSink` (`debug(event, fields)`, `info(event, fields)`, `warn(event, fields)`, `error(event, fields)`); `createLogSink` calls Pino object-first (`logger.debug(fields, event)`, `logger.info(fields, event)`, …), so the structured fields are emitted instead of dropped. `LogSink.debug` is the additive fourth method: the existing `info`/`warn`/`error` mapping, redaction paths, serializers, levels and event names are unchanged, and debug rows appear only when the configured level is `debug` (the development default, or `LOG_LEVEL=debug`).
 - **Local access.** `podman compose logs backend` reads the JSON lines from the backend container; on the current Render target the same stdout stream is read from the Render dashboard (service → Logs) or with the Render CLI (`render logs -r srv-dbtcvv9srm7s73au5bag`). The superseded AWS target used the ECS `awslogs` driver into CloudWatch with 30-day retention (see [Exposure and retention](#exposure-and-retention)).
+
+## Database lifecycle events
+
+The startup schema bootstrap and the in-process expired-verification cleanup log through the same `LogSink` and Fastify/Pino instance as the rest of the backend: the startup phase runs after the app is built and before `listen`, and cleanup starts after `listen`. Per-table presence checks, lock waits, up-to-date migrations and zero-delete runs are `debug` (visible only at `LOG_LEVEL=debug`); creations, drift warnings, summaries and failures are visible at the production `info` default.
+
+| Event | Fields | Level |
+| --- | --- | --- |
+| `db_startup_lock_wait` | `waitedMs` | debug |
+| `db_startup_lock_acquired` | `waitedMs` | debug |
+| `db_migrations_applied` | `count` | info |
+| `db_migrations_up_to_date` | — | debug |
+| `db_schema_bootstrap_started` | `tables` | info |
+| `db_schema_table_present` | `table` | debug |
+| `db_schema_table_created` | `table` | info |
+| `db_schema_table_outdated` | `table`, `missingColumns` (comma-joined in the normative DDL column order, not alphabetical) | warn |
+| `db_schema_bootstrap_completed` | `checked`, `created`, `outdated`, `durationMs` | info |
+| `db_schema_bootstrap_skipped` | `reason`: `no_database` (debug) or `disabled` (info) | debug / info |
+| `db_schema_bootstrap_failed` | `table`, `errorType`, optional string `code` | error |
+| `db_startup_completed` | `migrated`, `created`, `outdated`, `durationMs` | info |
+| `db_startup_failed` | `stage` (`connect`/`lock`/`migrations`/`bootstrap`), `errorType`, optional string `code` | error |
+| `db_verification_cleanup_started` | `intervalMs` | info |
+| `db_verification_cleanup_skipped` | `reason`: `no_database` (debug), `disabled` (info) or `in_flight` (debug) | debug / info |
+| `db_verification_cleanup_run` | `deleted`, `durationMs` | info when `deleted > 0`, debug when `0` |
+| `db_verification_cleanup_failed` | `errorType`, optional string `code` | error |
+| `db_verification_cleanup_stopped` | — | info |
+
+- **Error fields only.** Failure events carry `errorType` (the error's `name`, or `unknown`) and an optional string SQLSTATE-style `code`; the error message, stack, `detail` and `hint` are never copied into a field, because PostgreSQL can put SQL text or row data there.
+- **No SQL, rows or secrets.** The events carry schema metadata (`table`, `missingColumns`), aggregate counts (`tables`, `checked`, `created`, `outdated`, `migrated`, `deleted`), durations, constants (`reason`, `stage`) and the error fields above. No connection string, SQL text, query parameter, email, username, account id, token/hash, cookie, authorization value, error message or stack is logged.
+- **No new metric.** This feature adds no metric series and the fixed catalog below stays at exactly 30 metrics: no `cubeclicker_db_bootstrap*` or `cubeclicker_db_cleanup*` series exists, and `/metrics` continues to serve only the catalog entries listed in § Metrics catalog.
+- **Visibility.** `db_schema_bootstrap_skipped { reason: 'no_database' }` and `db_verification_cleanup_skipped { reason: 'no_database' }` are debug lines for host-only runs without a database; the `disabled` variants are info lines because an operator turned a service off explicitly.
 
 ## Metrics catalog
 

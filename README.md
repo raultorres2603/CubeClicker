@@ -74,6 +74,9 @@ Both commands produce reproducible evidence recorded in the feature build logs; 
 | `POSTGRES_PASSWORD` | `cubeclicker` | Postgres superuser password |
 | `POSTGRES_DB` | `cubeclicker` | Postgres database name |
 | `DATABASE_URL` | `postgres://cubeclicker:cubeclicker@db:5432/cubeclicker` | backend connection string (must match the Postgres credentials above if overridden) |
+| `DB_SCHEMA_BOOTSTRAP_ENABLED` | `true` | startup schema bootstrap: after migrations and before `listen`, check the five required tables (`users`, `sessions`, `verification_tokens`, `user_economy`, `schema_migrations`) and create any missing one; `false` keeps migrations and skips only the bootstrap |
+| `DB_EXPIRED_TOKEN_CLEANUP_ENABLED` | `true` | in-process expired-verification cleanup: after `listen`, delete `verification_tokens` rows with `expires_at <= now`; `false` starts no scheduler |
+| `DB_EXPIRED_TOKEN_CLEANUP_INTERVAL_MS` | `3600000` | delay in ms between cleanup runs, measured from the previous run's settlement; integer 60000–86400000 (default one hour) |
 | `SMTP_HOST` | `mailpit` | SMTP host used by the backend (`smtp-relay.brevo.com` for Brevo) |
 | `SMTP_PORT` | `1025` | SMTP port used by the backend (`587` STARTTLS or `465` implicit TLS for Brevo) |
 | `SMTP_SECURE` | _(empty → derived: `true` when `SMTP_PORT` is `465`)_ | implicit TLS for the SMTP connection; `true`/`1`/`false`/`0`, empty derives it from the port |
@@ -216,6 +219,23 @@ VITE_PERF_OVERLAY=true podman compose up
 ```
 
 `VITE_PERF_OVERLAY=true` shows the dev-only performance overlay (frame time, quality tier, draw calls, triangles and WebSocket RTT). It is a build-time Vite variable: a running dev server must be restarted to pick it up, and production builds leave it unset.
+
+### Database lifecycle
+
+With a database configured, the backend runs two database lifecycle services inside its existing process; no new service, image, port or route is added.
+
+- **Startup: migrations → schema bootstrap → listen.** On one dedicated direct-URL `pg.Client`, the backend acquires a session-level Postgres advisory lock (retrying every 250 ms for at most 30 s), applies pending numbered migrations, then checks the five required tables (`users`, `sessions`, `verification_tokens`, `user_economy`, `schema_migrations`). A missing table and its indexes are created with idempotent `CREATE ... IF NOT EXISTS` DDL in one transaction per table; a required column missing from an existing table is logged as `db_schema_table_outdated` and never altered. `db_schema_bootstrap_completed` (`checked`, `created`, `outdated`, `durationMs`) summarizes the check and `db_startup_completed` closes the phase. A connect, lock, migration or table-creation failure logs `db_startup_failed` and exits `1` without listening. `DIRECT_DATABASE_URL` wins on Neon; when it is absent, the fallback `DATABASE_URL` must be direct/session-capable (the local compose Postgres is direct, while a pooled `-pooler` URL cannot carry a session advisory lock).
+- **After listen: expired-verification cleanup.** The in-process scheduler deletes only `verification_tokens` rows with `expires_at <= now` once immediately and then `DB_EXPIRED_TOKEN_CLEANUP_INTERVAL_MS` after each run settles (default one hour; 60,000–86,400,000 ms). Each run logs `db_verification_cleanup_run` (`deleted`, `durationMs`; `info` when rows were deleted, `debug` when none); a failed run logs `db_verification_cleanup_failed` and never stops the next scheduled run. `SIGTERM`/`SIGINT` stops the scheduler before the pool closes.
+- **Opt-outs and no-database mode.** `DB_SCHEMA_BOOTSTRAP_ENABLED=false` still applies migrations and skips the bootstrap; `DB_EXPIRED_TOKEN_CLEANUP_ENABLED=false` starts no cleanup scheduler. With neither database URL set (host-only runs), both services are skipped and the backend uses the in-memory repositories. An invalid or empty value fails startup naming the variable.
+
+The compose backend passes all three names with the defaults above; override them from the shell:
+
+```bash
+DB_SCHEMA_BOOTSTRAP_ENABLED=false podman compose up
+DB_EXPIRED_TOKEN_CLEANUP_INTERVAL_MS=600000 podman compose up
+```
+
+The full log-event, redaction, level and catalog reference is [`docs/architecture/observability.md`](docs/architecture/observability.md) § Database lifecycle events.
 
 ## Production images
 
