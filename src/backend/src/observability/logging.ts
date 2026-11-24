@@ -6,9 +6,9 @@
  * query strings, messages and stacks: only the request method/path/host, the
  * response status and the error type/optional code can reach a log line.
  *
- * `LogSink` is event-first (`info(event, fields)`); `createLogSink` adapts it to
- * Pino's object-first API (`logger.info(fields, event)`) so the structured fields
- * are emitted rather than silently dropped.
+ * `LogSink` is event-first (`debug`/`info`/`warn`/`error`, `(event, fields)`);
+ * `createLogSink` adapts it to Pino's object-first API (`logger.info(fields, event)`)
+ * so the structured fields are emitted rather than silently dropped.
  */
 
 import type { FastifyServerOptions } from 'fastify';
@@ -55,6 +55,7 @@ export type LogFields = Record<string, string | number | boolean>;
 
 /** Event-first structured logging contract used by the hub and shutdown code. */
 export interface LogSink {
+  debug(event: string, fields: LogFields): void;
   info(event: string, fields: LogFields): void;
   warn(event: string, fields: LogFields): void;
   error(event: string, fields: LogFields): void;
@@ -62,6 +63,7 @@ export interface LogSink {
 
 /** The subset of a Pino/Fastify logger the adapter needs. */
 export interface LoggerLike {
+  debug(fields: object, event: string): void;
   info(fields: object, event: string): void;
   warn(fields: object, event: string): void;
   error(fields: object, event: string): void;
@@ -75,6 +77,7 @@ export interface LoggerLike {
  */
 export function createLogSink(logger: LoggerLike): LogSink {
   return {
+    debug: (event, fields) => logger.debug(fields, event),
     info: (event, fields) => logger.info(fields, event),
     warn: (event, fields) => logger.warn(fields, event),
     error: (event, fields) => logger.error(fields, event),

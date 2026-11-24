@@ -4771,7 +4771,7 @@ describe('registry index hot paths (T3-B)', () => {
 describe('runtime observability (T2)', () => {
   /** One captured `LogSink` call: level, event name and structured fields. */
   interface RecordedLog {
-    level: 'info' | 'warn' | 'error';
+    level: 'debug' | 'info' | 'warn' | 'error';
     event: string;
     fields: LogFields;
   }
@@ -4784,6 +4784,9 @@ describe('runtime observability (T2)', () => {
     const entries: RecordedLog[] = [];
     return {
       entries,
+      debug(event, fields) {
+        entries.push({ level: 'debug', event, fields });
+      },
       info(event, fields) {
         entries.push({ level: 'info', event, fields });
       },

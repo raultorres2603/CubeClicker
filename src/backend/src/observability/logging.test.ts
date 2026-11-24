@@ -434,14 +434,34 @@ describe('createLogSink', () => {
     expect(lines[2].errorType).toBe('Error');
   });
 
+  it('emits a debug event at level 20 through a real Fastify/Pino logger', async () => {
+    const capture = createCaptureStream();
+    const app = Fastify({
+      logger: expectOptions({ LOG_LEVEL: 'debug' }, capture.stream),
+    });
+    const sink = createLogSink(app.log);
+
+    sink.debug('db_schema_table_present', { table: 'users' });
+    await app.close();
+
+    const lines = capture.lines();
+    expect(lines).toHaveLength(1);
+    const line = JSON.parse(lines[0]) as Record<string, unknown>;
+    expect(line.level).toBe(20);
+    expect(line.msg).toBe('db_schema_table_present');
+    expect(line.table).toBe('users');
+  });
+
   it('calls Pino object-first with fields then the event name', () => {
     const logger = {
+      debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     };
     const sink = createLogSink(logger);
 
+    sink.debug('db_schema_table_present', { table: 'users' });
     sink.info('ws_connection_opened', { connectionId: 'req-1' });
     sink.warn('ws_heartbeat_timeout', {
       connectionId: 'req-1',
@@ -452,6 +472,11 @@ describe('createLogSink', () => {
       errorType: 'Error',
     });
 
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledWith(
+      { table: 'users' },
+      'db_schema_table_present',
+    );
     expect(logger.info).toHaveBeenCalledTimes(1);
     expect(logger.info).toHaveBeenCalledWith(
       { connectionId: 'req-1' },

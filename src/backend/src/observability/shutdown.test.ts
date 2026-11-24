@@ -10,7 +10,7 @@ import {
 } from './shutdown.js';
 
 interface LogEntry {
-  level: 'info' | 'warn' | 'error';
+  level: 'debug' | 'info' | 'warn' | 'error';
   event: string;
   fields: LogFields;
 }
@@ -20,6 +20,7 @@ function createLogRecorder(): { log: LogSink; entries: LogEntry[] } {
   return {
     entries,
     log: {
+      debug: (event, fields) => entries.push({ level: 'debug', event, fields }),
       info: (event, fields) => entries.push({ level: 'info', event, fields }),
       warn: (event, fields) => entries.push({ level: 'warn', event, fields }),
       error: (event, fields) => entries.push({ level: 'error', event, fields }),
