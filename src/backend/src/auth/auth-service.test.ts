@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DuplicateUserError,
   InMemoryUserRepository,
 } from './user-repository.js';
 import {
@@ -68,9 +69,10 @@ describe('AuthService.register', () => {
   });
 
   it('rejects duplicate username with 409 and sends no email', async () => {
-    const { service, email } = makeService();
+    const { service, email, tokens } = makeService();
     await service.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
     const emailCountBefore = email.sent.length;
+    const issueSpy = vi.spyOn(tokens, 'issue');
     let thrown: unknown;
     try {
       await service.register({ username: 'ALICE', email: 'b@x.com', password: 'password1234' });
@@ -80,12 +82,18 @@ describe('AuthService.register', () => {
     expect(thrown).toBeInstanceOf(DuplicateAccountError);
     expect((thrown as DuplicateAccountError).status).toBe(409);
     expect((thrown as DuplicateAccountError).field).toBe('username');
+    expect((thrown as DuplicateAccountError).fields).toEqual(['username']);
+    expect((thrown as DuplicateAccountError).message).toBe('account already exists');
+    expect((thrown as DuplicateAccountError).code).toBe('duplicate_account');
     expect(email.sent.length).toBe(emailCountBefore);
+    expect(issueSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects duplicate email with 409', async () => {
-    const { service } = makeService();
+  it('rejects duplicate email with 409 and issues no token', async () => {
+    const { service, email, tokens } = makeService();
     await service.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
+    const emailCountBefore = email.sent.length;
+    const issueSpy = vi.spyOn(tokens, 'issue');
     let thrown: unknown;
     try {
       await service.register({ username: 'bob', email: 'A@X.COM', password: 'password1234' });
@@ -94,6 +102,9 @@ describe('AuthService.register', () => {
     }
     expect(thrown).toBeInstanceOf(DuplicateAccountError);
     expect((thrown as DuplicateAccountError).field).toBe('email');
+    expect((thrown as DuplicateAccountError).fields).toEqual(['email']);
+    expect(email.sent.length).toBe(emailCountBefore);
+    expect(issueSpy).not.toHaveBeenCalled();
   });
 
   it('enforces password length boundaries', async () => {
@@ -444,7 +455,6 @@ describe('AuthService edge cases and aliases', () => {
     const origFindEmail = ctx.users.findByEmail.bind(ctx.users);
     ctx.users.findByUsername = async () => null;
     ctx.users.findByEmail = async () => null;
-    const { DuplicateUserError } = await import('./user-repository.js');
     ctx.users.create = async () => { throw new DuplicateUserError('username'); };
     await expect(ctx.service.register({ username: 'dup', email: 'dup@x.com', password: 'password1234' })).rejects.toBeInstanceOf(DuplicateAccountError);
     ctx.users.findByUsername = origFind;
@@ -610,6 +620,11 @@ class RejectingEmailService implements EmailService {
     this.failuresRemaining = failuresRemaining;
   }
 
+  /** Makes the next send fail (after recording it), then clears. */
+  failNextSend(): void {
+    this.failuresRemaining += 1;
+  }
+
   async sendVerification(
     to: string,
     verificationUrl: string,
@@ -673,6 +688,444 @@ describe('AuthService verification TTL propagation (AC-19(b))', () => {
     expect(sent[0].to).toBe('ttl@x.com');
     expect(sent[0].subject).toBe('Verify your CubeClicker email');
     expect(sent[0].html).toContain('This link expires in 2 hours.');
+  });
+});
+
+async function captureRejection<T extends Error>(promise: Promise<unknown>): Promise<T> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as T;
+  }
+  throw new Error('expected the operation to reject');
+}
+
+describe('AuthService registration decision table (AC-4)', () => {
+  const credentials = {
+    username: 'alice',
+    email: 'alice@example.com',
+    password: 'password1234',
+  };
+
+  it('resumes one unverified row, rotates the token and omits resumed on a new registration', async () => {
+    const ctx = makeService();
+    const original = await ctx.service.register(credentials);
+    const originalToken = new URL(ctx.email.sent[0].verificationUrl).searchParams.get('token')!;
+    expect('resumed' in original).toBe(false);
+
+    const createSpy = vi.spyOn(ctx.users, 'create');
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+
+    const resumed = await ctx.service.register({
+      username: 'ALICE',
+      email: 'Alice@Example.COM',
+      password: credentials.password,
+    });
+
+    expect(resumed.resumed).toBe(true);
+    expect(resumed.message).toBe('verification email sent');
+    expect(resumed.user).toEqual({
+      id: original.user.id,
+      username: 'alice',
+      email: 'alice@example.com',
+      verified: false,
+    });
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(issueSpy).toHaveBeenCalledTimes(1);
+    expect(issueSpy).toHaveBeenCalledWith(original.user.id, VERIFY_TTL_MS, FIXED_NOW);
+    expect(ctx.email.sent).toHaveLength(2);
+    expect(ctx.email.sent[1].to).toBe('alice@example.com');
+    expect(ctx.email.sent[1].expiresInMs).toBe(VERIFY_TTL_MS);
+
+    const freshToken = new URL(ctx.email.sent[1].verificationUrl).searchParams.get('token')!;
+    expect(freshToken).not.toBe(originalToken);
+    await expect(ctx.service.verifyEmail(originalToken)).rejects.toBeInstanceOf(InvalidTokenError);
+    const verified = await ctx.service.verifyEmail(freshToken);
+    expect(verified.user.id).toBe(original.user.id);
+  });
+
+  it('rejects a wrong password on the same row with both ordered fields and no send or token', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+    const invalidateSpy = vi.spyOn(ctx.tokens, 'invalidateForUser');
+
+    const error = await captureRejection<DuplicateAccountError>(
+      ctx.service.register({ ...credentials, password: 'wrongpassword1' }),
+    );
+
+    expect(error).toBeInstanceOf(DuplicateAccountError);
+    expect(error.status).toBe(409);
+    expect(error.code).toBe('duplicate_account');
+    expect(error.message).toBe('account already exists');
+    expect(error.field).toBe('both');
+    expect(error.fields).toEqual(['username', 'email']);
+    expect(ctx.email.sent).toHaveLength(1);
+    expect(issueSpy).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects an already-verified same-pair row with both fields and no resume', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+    const token = new URL(ctx.email.sent[0].verificationUrl).searchParams.get('token')!;
+    await ctx.service.verifyEmail(token);
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+
+    const error = await captureRejection<DuplicateAccountError>(
+      ctx.service.register(credentials),
+    );
+
+    expect(error.field).toBe('both');
+    expect(error.fields).toEqual(['username', 'email']);
+    expect(ctx.email.sent).toHaveLength(1);
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  it('limits resume to three per hour per account and opens a new window after one hour', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await ctx.service.register(credentials);
+      expect(result.resumed).toBe(true);
+    }
+    expect(ctx.email.sent).toHaveLength(4);
+
+    const error = await captureRejection<RateLimitError>(ctx.service.register(credentials));
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error.status).toBe(429);
+    expect(error.code).toBe('rate_limited');
+    expect(error.message).toBe('rate limit exceeded');
+    expect(ctx.email.sent).toHaveLength(4);
+
+    ctx.advance(60 * 60 * 1000);
+    const afterWindow = await ctx.service.register(credentials);
+    expect(afterWindow.resumed).toBe(true);
+    expect(ctx.email.sent).toHaveLength(5);
+  });
+
+  it('reports both ordered fields when username and email belong to different rows (U1/U2)', async () => {
+    const ctx = makeService();
+    await ctx.service.register({
+      username: 'raultorraco',
+      email: 'one@example.com',
+      password: 'password1234',
+    });
+    await ctx.service.register({
+      username: 'raultorraco123',
+      email: 'two@example.com',
+      password: 'differentpass1',
+    });
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+
+    const error = await captureRejection<DuplicateAccountError>(
+      ctx.service.register({
+        username: 'RAULTORRACO',
+        email: 'TWO@EXAMPLE.COM',
+        password: 'password1234',
+      }),
+    );
+
+    expect(error).toBeInstanceOf(DuplicateAccountError);
+    expect(error.field).toBe('both');
+    expect(error.fields).toEqual(['username', 'email']);
+    expect(ctx.email.sent).toHaveLength(2);
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('DuplicateAccountError field contract (AC-5)', () => {
+  it('canonicalizes arrays and never omits fields', () => {
+    const reordered = new DuplicateAccountError(['email', 'username']);
+    expect(reordered.field).toBe('both');
+    expect(reordered.fields).toEqual(['username', 'email']);
+
+    const unknown = new DuplicateAccountError('unknown');
+    expect(unknown.field).toBe('both');
+    expect(unknown.fields).toEqual(['username', 'email']);
+
+    const absent = new DuplicateAccountError();
+    expect(absent.field).toBe('both');
+    expect(absent.fields).toEqual(['username', 'email']);
+
+    const empty = new DuplicateAccountError([]);
+    expect(empty.field).toBe('both');
+    expect(empty.fields).toEqual(['username', 'email']);
+  });
+});
+
+describe('AuthService duplicate race re-query (AC-5(f))', () => {
+  it('re-queries both identifiers on an unknown duplicate and reports the raced username', async () => {
+    const ctx = makeService();
+    await ctx.users.create({
+      username: 'taken',
+      email: 'taken@example.com',
+      passwordHash: await ctx.hasher.hash('password1234'),
+    });
+    const realFindByUsername = ctx.users.findByUsername.bind(ctx.users);
+    let usernameLookups = 0;
+    const findByUsername = vi
+      .spyOn(ctx.users, 'findByUsername')
+      .mockImplementation(async (username: string) => {
+        usernameLookups += 1;
+        return usernameLookups === 1 ? null : realFindByUsername(username);
+      });
+    const findByEmail = vi.spyOn(ctx.users, 'findByEmail');
+    const create = vi
+      .spyOn(ctx.users, 'create')
+      .mockRejectedValue(new DuplicateUserError('unknown'));
+
+    const error = await captureRejection<DuplicateAccountError>(
+      ctx.service.register({
+        username: 'taken',
+        email: 'new@example.com',
+        password: 'password1234',
+      }),
+    );
+
+    expect(error).toBeInstanceOf(DuplicateAccountError);
+    expect(error.field).toBe('username');
+    expect(error.fields).toEqual(['username']);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(findByUsername).toHaveBeenCalledTimes(2);
+    expect(findByEmail).toHaveBeenCalledTimes(2);
+    expect(ctx.email.sent).toHaveLength(0);
+  });
+
+  it('falls back to both fields when the unknown-duplicate re-query finds nothing', async () => {
+    const ctx = makeService();
+    vi.spyOn(ctx.users, 'create').mockRejectedValue(new DuplicateUserError('unknown'));
+    const findByUsername = vi.spyOn(ctx.users, 'findByUsername');
+    const findByEmail = vi.spyOn(ctx.users, 'findByEmail');
+
+    const error = await captureRejection<DuplicateAccountError>(
+      ctx.service.register({
+        username: 'ghost',
+        email: 'ghost@example.com',
+        password: 'password1234',
+      }),
+    );
+
+    expect(error.field).toBe('both');
+    expect(error.fields).toEqual(['username', 'email']);
+    expect(findByUsername).toHaveBeenCalledTimes(2);
+    expect(findByEmail).toHaveBeenCalledTimes(2);
+    expect(ctx.email.sent).toHaveLength(0);
+  });
+});
+
+describe('AuthService failed-send token invalidation (AC-3(c))', () => {
+  const credentials = {
+    username: 'flaky',
+    email: 'flaky@example.com',
+    password: 'password1234',
+  };
+
+  it('invalidates the create-issued token when the send rejects', async () => {
+    const rejecting = new RejectingEmailService(1);
+    const ctx = makeService({ email: rejecting });
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+    const invalidateSpy = vi.spyOn(ctx.tokens, 'invalidateForUser');
+
+    const error = await captureRejection<Error>(ctx.service.register(credentials));
+
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+    expect(issueSpy).toHaveBeenCalledTimes(1);
+    const issued = (await issueSpy.mock.results[0]!.value) as { token: string };
+    expect(issued.token).toHaveLength(64);
+    expect(await ctx.tokens.consume(issued.token)).toBeNull();
+
+    const persisted = await ctx.users.findByEmail(credentials.email);
+    if (persisted === null) throw new Error('expected the account to persist');
+    expect(persisted.username).toBe('flaky');
+    expect(persisted.verified).toBe(false);
+    expect(issueSpy.mock.calls[0]![0]).toBe(persisted.id);
+    expect(invalidateSpy).toHaveBeenCalledWith(persisted.id);
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates the resume-issued token when the resume send rejects', async () => {
+    const rejecting = new RejectingEmailService(0);
+    const ctx = makeService({ email: rejecting });
+    const original = await ctx.service.register(credentials);
+    const originalToken = new URL(rejecting.sent[0]!.verificationUrl).searchParams.get('token')!;
+    rejecting.failNextSend();
+
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+    const invalidateSpy = vi.spyOn(ctx.tokens, 'invalidateForUser');
+
+    const error = await captureRejection<Error>(ctx.service.register(credentials));
+
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+    expect(issueSpy).toHaveBeenCalledTimes(1);
+    const issued = (await issueSpy.mock.results[0]!.value) as { token: string };
+    expect(issued.token).toHaveLength(64);
+    expect(await ctx.tokens.consume(issued.token)).toBeNull();
+    expect(await ctx.tokens.consume(originalToken)).toBeNull();
+    expect(rejecting.sent).toHaveLength(2);
+    expect(invalidateSpy).toHaveBeenCalledTimes(2);
+    expect(invalidateSpy).toHaveBeenNthCalledWith(1, original.user.id);
+    expect(invalidateSpy).toHaveBeenNthCalledWith(2, original.user.id);
+  });
+
+  it('invalidates the resend-issued token when the resend send rejects', async () => {
+    const rejecting = new RejectingEmailService(0);
+    const ctx = makeService({ email: rejecting });
+    const original = await ctx.service.register(credentials);
+    const originalToken = new URL(rejecting.sent[0]!.verificationUrl).searchParams.get('token')!;
+    rejecting.failNextSend();
+
+    const issueSpy = vi.spyOn(ctx.tokens, 'issue');
+    const invalidateSpy = vi.spyOn(ctx.tokens, 'invalidateForUser');
+
+    const error = await captureRejection<Error>(ctx.service.resendVerification(credentials.email));
+
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+    expect(issueSpy).toHaveBeenCalledTimes(1);
+    const issued = (await issueSpy.mock.results[0]!.value) as { token: string };
+    expect(issued.token).toHaveLength(64);
+    expect(await ctx.tokens.consume(issued.token)).toBeNull();
+    expect(await ctx.tokens.consume(originalToken)).toBeNull();
+    expect(rejecting.sent).toHaveLength(2);
+    expect(invalidateSpy).toHaveBeenCalledTimes(2);
+    expect(invalidateSpy).toHaveBeenNthCalledWith(1, original.user.id);
+    expect(invalidateSpy).toHaveBeenNthCalledWith(2, original.user.id);
+  });
+
+  it('still surfaces the delivery failure when best-effort invalidation rejects', async () => {
+    const rejecting = new RejectingEmailService(1);
+    const ctx = makeService({ email: rejecting });
+    ctx.tokens.invalidateForUser = async () => {
+      throw new Error('invalidation failed');
+    };
+
+    const error = await captureRejection<Error>(ctx.service.register(credentials));
+
+    expect(error.name).toBe('Error');
+    expect(error.message).toBe('SMTP transport failed: connection refused');
+    expect(rejecting.sent).toHaveLength(1);
+  });
+});
+
+describe('AuthService email identifier login (AC-6)', () => {
+  const credentials = {
+    username: 'alice',
+    email: 'alice@example.com',
+    password: 'password1234',
+  };
+
+  it('logs in by a mixed-case email identifier and issues one session', async () => {
+    const ctx = makeService();
+    const registered = await ctx.service.register(credentials);
+
+    const result = await ctx.service.login({
+      username: 'Alice@Example.COM',
+      password: credentials.password,
+    });
+
+    expect(result.user).toEqual({
+      id: registered.user.id,
+      username: 'alice',
+      email: 'alice@example.com',
+      verified: false,
+    });
+    expect(result.token).toHaveLength(64);
+    expect(result.expiresAt).toBe(FIXED_NOW + SESSION_TTL_MS);
+    const sessionUser = await ctx.service.getSession(result.token);
+    expect(sessionUser?.username).toBe('alice');
+  });
+
+  it('accepts the identifier alias and prefers username when both are present', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+
+    const byIdentifier = await ctx.service.login({
+      identifier: 'alice@example.com',
+      password: credentials.password,
+    } as unknown as { username: string; password: string });
+    expect(byIdentifier.user.username).toBe('alice');
+
+    const usernameWins = await ctx.service.login({
+      username: 'alice',
+      identifier: 'ghost@example.com',
+      password: credentials.password,
+    } as unknown as { username: string; password: string });
+    expect(usernameWins.user.username).toBe('alice');
+  });
+
+  it('returns the generic 401 for an unknown email and only queries by email', async () => {
+    const ctx = makeService();
+    const findByUsername = vi.spyOn(ctx.users, 'findByUsername');
+    const findByEmail = vi.spyOn(ctx.users, 'findByEmail');
+
+    const error = await captureRejection<InvalidCredentialsError>(
+      ctx.service.login({ username: 'ghost@example.com', password: credentials.password }),
+    );
+
+    expect(error).toBeInstanceOf(InvalidCredentialsError);
+    expect(error.status).toBe(401);
+    expect(error.code).toBe('invalid_credentials');
+    expect(error.message).toBe('invalid credentials');
+    expect(findByUsername).not.toHaveBeenCalled();
+    expect(findByEmail).toHaveBeenCalledTimes(1);
+    expect(findByEmail).toHaveBeenCalledWith('ghost@example.com');
+  });
+
+  it('never falls back to a username lookup when the identifier contains @', async () => {
+    const ctx = makeService();
+    await ctx.service.register({
+      username: 'at@name.example',
+      email: 'real@example.com',
+      password: credentials.password,
+    });
+    const findByUsername = vi.spyOn(ctx.users, 'findByUsername');
+
+    const error = await captureRejection<InvalidCredentialsError>(
+      ctx.service.login({ username: 'at@name.example', password: credentials.password }),
+    );
+
+    expect(error.status).toBe(401);
+    expect(error.message).toBe('invalid credentials');
+    expect(findByUsername).not.toHaveBeenCalled();
+  });
+
+  it('increments the failure counter for a wrong password on an email identifier', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+
+    const error = await captureRejection<InvalidCredentialsError>(
+      ctx.service.login({ username: 'alice@example.com', password: 'wrongpassword1' }),
+    );
+
+    expect(error.status).toBe(401);
+    expect(error.code).toBe('invalid_credentials');
+    const user = await ctx.users.findByEmail(credentials.email);
+    if (user === null) throw new Error('expected the account to exist');
+    expect(user.failedLoginAttempts).toBe(1);
+    expect(user.lockedUntil).toBeNull();
+  });
+
+  it('locks after five failed email logins and returns Retry-After on a locked email login', async () => {
+    const ctx = makeService();
+    await ctx.service.register(credentials);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await expect(
+        ctx.service.login({ username: 'alice@example.com', password: 'wrongpassword1' }),
+      ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    }
+    await expect(
+      ctx.service.login({ username: 'alice@example.com', password: 'wrongpassword1' }),
+    ).rejects.toBeInstanceOf(InvalidCredentialsError);
+
+    const error = await captureRejection<AccountLockedError>(
+      ctx.service.login({ username: 'ALICE@EXAMPLE.COM', password: credentials.password }),
+    );
+
+    expect(error).toBeInstanceOf(AccountLockedError);
+    expect(error.status).toBe(429);
+    expect(error.code).toBe('account_locked');
+    expect(error.message).toBe('account locked');
+    expect(error.retryAfter).toBe(15 * 60);
   });
 });
 

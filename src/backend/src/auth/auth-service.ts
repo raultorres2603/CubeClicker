@@ -9,7 +9,7 @@ import {
 } from './config.js';
 import type { AuthConfig } from './config.js';
 import { createPasswordHasher, type PasswordHasher, type Argon2Params, DEFAULT_ARGON2_PARAMS } from './password.js';
-import type { UserRepository, User, DuplicateUserError } from './user-repository.js';
+import type { UserRepository, User } from './user-repository.js';
 import type { SessionRepository } from './session-repository.js';
 import type { VerificationTokenRepository } from './verification-token-repository.js';
 import type { EmailService } from './email.js';
@@ -94,12 +94,39 @@ export class ValidationError extends AuthServiceError {
   }
 }
 
+export type AccountField = 'username' | 'email';
+
+/**
+ * Resolves the canonical field order: username first, then email. Any empty,
+ * unknown or absent input keeps the plan's non-omittable `both` fallback.
+ */
+function resolveAccountFields(
+  fieldOrFields?: AccountField | AccountField[] | 'unknown',
+): AccountField[] {
+  if (fieldOrFields === 'username' || fieldOrFields === 'email') {
+    return [fieldOrFields];
+  }
+  if (Array.isArray(fieldOrFields)) {
+    const fields: AccountField[] = [];
+    if (fieldOrFields.includes('username')) fields.push('username');
+    if (fieldOrFields.includes('email')) fields.push('email');
+    if (fields.length > 0) return fields;
+  }
+  return ['username', 'email'];
+}
+
+/**
+ * A genuine conflict. The human message stays the accepted generic wording;
+ * the machine-readable `field`/`fields` never omit the found identifiers.
+ */
 export class DuplicateAccountError extends AuthServiceError {
-  readonly field?: 'username' | 'email' | 'unknown';
-  constructor(field?: 'username' | 'email' | 'unknown') {
+  readonly field: AccountField | 'both';
+  readonly fields: AccountField[];
+  constructor(fieldOrFields?: AccountField | AccountField[] | 'unknown') {
     super('account already exists', 409, undefined, 'duplicate_account');
     this.name = 'DuplicateAccountError';
-    this.field = field;
+    this.fields = resolveAccountFields(fieldOrFields);
+    this.field = this.fields.length === 2 ? 'both' : this.fields[0];
   }
 }
 
@@ -149,6 +176,8 @@ export interface RegisterResult {
   email?: string;
   verified?: boolean;
   message?: string;
+  /** Present and `true` only when an unverified same-pair registration resumed. */
+  resumed?: boolean;
 }
 
 export interface LoginResult {
@@ -193,6 +222,30 @@ function normalizeEmail(email: string): string {
 function makeVerificationUrl(base: string, token: string): string {
   const trimmed = base.replace(/\/+$/, '');
   return `${trimmed}/verify?token=${token}`;
+}
+
+const RESUME_RATE_LIMIT = 3;
+const RESUME_RATE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Maps the two identifier lookups onto the ordered conflict fields. Two rows
+ * (or two matches on one row) mean `both`; no match keeps the non-omittable
+ * `both` fallback used by the unknown DB-race branch.
+ */
+function buildDuplicateError(
+  byUsername: User | null,
+  byEmail: User | null,
+): DuplicateAccountError {
+  if (byUsername !== null && byEmail !== null) {
+    return new DuplicateAccountError(['username', 'email']);
+  }
+  if (byUsername !== null) {
+    return new DuplicateAccountError('username');
+  }
+  if (byEmail !== null) {
+    return new DuplicateAccountError('email');
+  }
+  return new DuplicateAccountError('unknown');
 }
 
 function pick<T>(...candidates: Array<T | undefined | null>): T | undefined {
@@ -290,12 +343,25 @@ export class AuthService {
     }
 
     const existingByUsername = await this.users.findByUsername(username);
-    if (existingByUsername) {
-      throw new DuplicateAccountError('username');
-    }
     const existingByEmail = await this.users.findByEmail(email);
-    if (existingByEmail) {
-      throw new DuplicateAccountError('email');
+
+    if (
+      existingByUsername !== null &&
+      existingByEmail !== null &&
+      existingByUsername.id === existingByEmail.id &&
+      !existingByUsername.verified
+    ) {
+      const passwordMatches = await this.passwordHasher.verify(
+        existingByUsername.passwordHash,
+        password,
+      );
+      if (passwordMatches) {
+        return this.resumeUnverifiedRegistration(existingByUsername);
+      }
+    }
+
+    if (existingByUsername !== null || existingByEmail !== null) {
+      throw buildDuplicateError(existingByUsername, existingByEmail);
     }
 
     const passwordHash = await this.passwordHasher.hash(password);
@@ -304,19 +370,78 @@ export class AuthService {
     try {
       user = await this.users.create({ username, email, passwordHash });
     } catch (error) {
-      const dup = error as DuplicateUserError;
-      if (dup && (dup as { name?: string }).name === 'DuplicateUserError') {
-        throw new DuplicateAccountError(dup.field);
+      const duplicate = error as { name?: unknown; field?: unknown } | null;
+      if (duplicate !== null && duplicate.name === 'DuplicateUserError') {
+        const field = duplicate.field;
+        if (field === 'username' || field === 'email') {
+          throw new DuplicateAccountError(field);
+        }
+        const [byUsername, byEmail] = await Promise.all([
+          this.users.findByUsername(username),
+          this.users.findByEmail(email),
+        ]);
+        throw buildDuplicateError(byUsername, byEmail);
       }
       throw error;
     }
 
-    const { token } = await this.verificationTokens.issue(user.id, this.verificationTokenTtlMs, this.clock());
-    const verificationUrl = makeVerificationUrl(this.appBaseUrl, token);
-    await this.email.sendVerification(user.email, verificationUrl, {
-      expiresInMs: this.verificationTokenTtlMs,
-    });
+    const { token } = await this.verificationTokens.issue(
+      user.id,
+      this.verificationTokenTtlMs,
+      this.clock(),
+    );
+    await this.sendVerificationEmail(user, token);
 
+    return this.buildRegisterResult(user);
+  }
+
+  /**
+   * Resumes an unverified same-pair registration: password already verified by
+   * the caller, rate-limited per account, old tokens retired, one fresh token.
+   */
+  private async resumeUnverifiedRegistration(user: User): Promise<RegisterResult> {
+    const allowed = this.rateLimiter.allow(
+      `account:${user.id}:register-resume`,
+      RESUME_RATE_LIMIT,
+      RESUME_RATE_WINDOW_MS,
+    );
+    if (!allowed) {
+      throw new RateLimitError();
+    }
+
+    await this.verificationTokens.invalidateForUser(user.id);
+    const { token } = await this.verificationTokens.issue(
+      user.id,
+      this.verificationTokenTtlMs,
+      this.clock(),
+    );
+    await this.sendVerificationEmail(user, token);
+
+    return this.buildRegisterResult(user, true);
+  }
+
+  /**
+   * Sends the verification email for an already-issued token. A failed send
+   * retires the user's tokens (best-effort) and rethrows the delivery error
+   * (AC-3(c)); no route-level mapping happens here.
+   */
+  private async sendVerificationEmail(user: User, token: string): Promise<void> {
+    const verificationUrl = makeVerificationUrl(this.appBaseUrl, token);
+    try {
+      await this.email.sendVerification(user.email, verificationUrl, {
+        expiresInMs: this.verificationTokenTtlMs,
+      });
+    } catch (error) {
+      try {
+        await this.verificationTokens.invalidateForUser(user.id);
+      } catch {
+        // Best-effort invalidation: the delivery failure must surface unchanged.
+      }
+      throw error;
+    }
+  }
+
+  private buildRegisterResult(user: User, resumed?: boolean): RegisterResult {
     const sanitized = sanitize(user);
     const result: RegisterResult = {
       user: sanitized,
@@ -326,6 +451,9 @@ export class AuthService {
       verified: sanitized.verified,
       message: 'verification email sent',
     };
+    if (resumed) {
+      result.resumed = true;
+    }
     return result;
   }
 
@@ -347,10 +475,14 @@ export class AuthService {
 
   async login(inputOrUsername: LoginInput | string, passwordArg?: string): Promise<LoginResult> {
     const input = this.normalizeLoginInput(inputOrUsername, passwordArg);
-    const username = input.username;
+    const identifier = input.username;
     const password = input.password;
 
-    const user = await this.users.findByUsername(username);
+    // AC-6(e): an `@` identifier resolves only by email, otherwise only by
+    // username — never a fallback from one lookup to the other.
+    const user = identifier.includes('@')
+      ? await this.users.findByEmail(identifier)
+      : await this.users.findByUsername(identifier);
     if (!user) {
       throw new InvalidCredentialsError();
     }
@@ -464,10 +596,7 @@ export class AuthService {
 
     await this.verificationTokens.invalidateForUser(user.id);
     const { token } = await this.verificationTokens.issue(user.id, this.verificationTokenTtlMs, this.clock());
-    const verificationUrl = makeVerificationUrl(this.appBaseUrl, token);
-    await this.email.sendVerification(user.email, verificationUrl, {
-      expiresInMs: this.verificationTokenTtlMs,
-    });
+    await this.sendVerificationEmail(user, token);
 
     return { message: 'verification email sent' };
   }
