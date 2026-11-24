@@ -23,7 +23,7 @@ const SMTP_KEYS = [
 
 const SMTP_VALUES: SmtpValues = {
   SMTP_HOST: 'smtp-relay.brevo.com',
-  SMTP_PORT: '587',
+  SMTP_PORT: '2525',
   SMTP_SECURE: 'false',
   SMTP_CONNECTION_TIMEOUT_MS: '10000',
   SMTP_FROM: 'CubeClicker <no-reply@example.com>',
@@ -54,6 +54,9 @@ const DEVELOPMENT_PLACEHOLDER_ENV = {
 const PRODUCTION_PLACEHOLDER_ENV = {
   ...DEVELOPMENT_PLACEHOLDER_ENV,
   TARGET_ENVIRONMENT: 'production',
+  // Production stays at the placeholder-era 587: the catalog rejects it before
+  // the port guard, proving catalog precedence under the new strict guard.
+  SMTP_PORT: '587',
   RENDER_SERVICE_ID: '<CHANGEME-render-service-id>',
 };
 
@@ -69,7 +72,7 @@ const EXPECTED_URLS = [
 
 const EXPECTED_BODIES = [
   '{"value":"smtp-relay.brevo.com"}',
-  '{"value":"587"}',
+  '{"value":"2525"}',
   '{"value":"false"}',
   '{"value":"10000"}',
   '{"value":"CubeClicker <no-reply@example.com>"}',
@@ -130,6 +133,43 @@ const ALL_MISSING_BLOCK = [
   '  secrets:   gh secret set <NAME> --env unknown --repo raultorres2603/CubeClicker',
   'Runbook: README.md § Deployment Brevo runbook',
 ].join('\n');
+
+/** Exact AC-1(b) block for a development fixture pinned to blocked port 587. */
+const BLOCKED_PORT_BLOCK = [
+  "Deploy blocked: SMTP_PORT=587 is blocked for outbound SMTP on the Render free plan ('development' environment).",
+  '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS); ports 25, 465 and 587 stay blocked on Render free.',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-1(b) block for a malformed development port. */
+const INVALID_PORT_BLOCK = [
+  'Deploy blocked: SMTP_PORT="587abc" must be an integer between 1 and 65535 (\'development\' environment).',
+  '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS) on Render free.',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-1(b) block for the local Mailpit port. */
+const LOCAL_PORT_BLOCK = [
+  "Deploy blocked: SMTP_PORT=1025 is the local Mailpit port and is not reachable from a deployed Render service ('development' environment).",
+  '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS).',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-1(b) block for 2525 with implicit TLS requested. */
+const STARTTLS_BLOCK = [
+  'Deploy blocked: SMTP_SECURE must be "false" when SMTP_PORT=2525 (\'development\' environment); received "true".',
+  '  Port 2525 uses STARTTLS; set SMTP_SECURE=false.',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+const BLOCKED_PORT_ENV = { ...COMPLETE_ENV, SMTP_PORT: '587' };
+const INVALID_PORT_ENV = { ...COMPLETE_ENV, SMTP_PORT: '587abc' };
+const LOCAL_PORT_ENV = { ...COMPLETE_ENV, SMTP_PORT: '1025' };
+const NON_STARTTLS_ENV = {
+  ...COMPLETE_ENV,
+  SMTP_PORT: '2525',
+  SMTP_SECURE: 'true',
+};
 
 interface RecordedCall {
   url: string;
@@ -255,7 +295,7 @@ describe('runRenderEnvCli --check-only (AC-4)', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('prints the exact AC-4(a) production placeholder block and exits 1', async () => {
+  it('prints the exact production placeholder block at 587 (catalog wins over the port guard) and exits 1', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
     expect(
@@ -301,6 +341,69 @@ describe('runRenderEnvCli --check-only (AC-4)', () => {
     ]);
     expect(calls).toHaveLength(0);
     expectNoFixtureSecrets(lines);
+  });
+});
+
+describe('runRenderEnvCli strict SMTP transport guard (AC-1)', () => {
+  it('rejects a development 587 in --check-only before any success line or fetch', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], BLOCKED_PORT_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([BLOCKED_PORT_BLOCK]);
+    expect(calls).toHaveLength(0);
+    expectNoFixtureSecrets(lines);
+  });
+
+  it('rejects a malformed development port in --check-only', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], INVALID_PORT_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([INVALID_PORT_BLOCK]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects the local Mailpit port in --check-only', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], LOCAL_PORT_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([LOCAL_PORT_BLOCK]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects 2525 with SMTP_SECURE=true in --check-only', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], NON_STARTTLS_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([STARTTLS_BLOCK]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('prints no DRY RUN line and makes no fetch for a blocked or malformed port', async () => {
+    for (const [fixture, block] of [
+      [BLOCKED_PORT_ENV, BLOCKED_PORT_BLOCK],
+      [INVALID_PORT_ENV, INVALID_PORT_BLOCK],
+    ] as const) {
+      const { io, calls, lines } = createNoNetworkHarness();
+
+      expect(await runRenderEnvCli(['--dry-run'], fixture, io)).toBe(1);
+
+      expect(lines).toStrictEqual([block]);
+      expect(lines.join('\n')).not.toContain('DRY RUN:');
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('fails the default sync mode on 587 without a network call', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli([], BLOCKED_PORT_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([BLOCKED_PORT_BLOCK]);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -496,6 +599,18 @@ describe('integration through the process boundary (AC-4/AC-6)', () => {
 
       expect(result.status).toBe(1);
       expect(result.stdout).toBe(`${PRODUCTION_BLOCK}\n`);
+      expect(result.stderr).toBe('');
+    },
+    20_000,
+  );
+
+  it(
+    'exits 1 with the exact blocked-port block for a development 587 fixture',
+    () => {
+      const result = runCliProcess(['--check-only'], BLOCKED_PORT_ENV);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe(`${BLOCKED_PORT_BLOCK}\n`);
       expect(result.stderr).toBe('');
     },
     20_000,

@@ -87,7 +87,9 @@ jobs:
       # so no `NAME=value` string exists for the repository credential guard to
       # match, and every value is an angle-bracket placeholder or shorter than
       # 12 characters. The `run` block asserts the CLI's own output line; the
-      # populated `env:` values are what the guard classifies.
+      # populated `env:` values are what the guard classifies. The development
+      # fixture uses the Render-free STARTTLS port 2525; the production
+      # placeholder fixture stays at 587, which the catalog rejects first.
       - name: Guard rejects placeholder values
         env:
           TARGET_ENVIRONMENT: production
@@ -116,7 +118,7 @@ jobs:
           RENDER_SERVICE_ID: srv-fixture
           RENDER_API_KEY: fixture-key
           SMTP_HOST: smtp-relay.brevo.com
-          SMTP_PORT: '587'
+          SMTP_PORT: '2525'
           SMTP_SECURE: 'false'
           SMTP_CONNECTION_TIMEOUT_MS: '10000'
           SMTP_FROM: 'CubeClicker <no-reply@example.com>'

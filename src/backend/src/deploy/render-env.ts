@@ -45,6 +45,18 @@ export const PLACEHOLDER_TOKEN = 'CHANGEME';
 /** Per-request timeout the CLI applies to the real fetch (AC-5(b)). */
 export const RENDER_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Ports the Render free plan blocks for outbound SMTP (in force since
+ * 2025-09-26). A deployed free web service cannot reach any of them.
+ */
+export const BLOCKED_RENDER_FREE_SMTP_PORTS: readonly number[] = [25, 465, 587];
+
+/** The local Mailpit SMTP port; never reachable from a deployed service. */
+export const LOCAL_MAILPIT_PORT = 1025;
+
+/** Brevo's alternate STARTTLS port, reachable from the Render free plan. */
+export const RENDER_FREE_SMTP_PORT = 2525;
+
 /** `true` exactly when `value` contains the literal `CHANGEME` (case-sensitive). */
 export function isPlaceholder(value: string): boolean {
   return value.includes(PLACEHOLDER_TOKEN);
@@ -120,6 +132,109 @@ export function formatGuardFailure(
     'Runbook: README.md § Deployment Brevo runbook',
   );
   return lines.join('\n');
+}
+
+/**
+ * The single strict SMTP transport failure kind (AC-1(a)). `invalid_port`
+ * keeps the unmodified input in `raw`; `starttls_required` keeps the raw
+ * `SMTP_SECURE` value so the operator block can echo it verbatim.
+ */
+export type SmtpPortFailure =
+  | { ok: false; reason: 'render_free_blocked'; port: number }
+  | { ok: false; reason: 'invalid_port'; raw: string }
+  | { ok: false; reason: 'local_port'; port: number }
+  | { ok: false; reason: 'starttls_required'; value: string };
+
+/**
+ * Strict Render-free SMTP transport guard (AC-1(a)). Development only:
+ * production is unprovisioned and placeholder-only, so every input passes
+ * there (decision D-2).
+ *
+ * Presence and `CHANGEME` are the catalog's job; a missing, empty or
+ * placeholder `SMTP_PORT` passes here. A present value must match `/^\d+$/`
+ * (no trimming, no sign, no decimal) and be 1–65535, else `invalid_port` with
+ * the untouched input. Valid ports then reject the Render-free blocklist and
+ * the local Mailpit port; `2525` additionally requires `SMTP_SECURE` to be
+ * unset, empty, `false` or `0`, because it is a STARTTLS port. Any other
+ * valid port is accepted: this guard does not validate `SMTP_HOST`
+ * reachability (operator/live-proof scope).
+ */
+export function validateSmtpTransportPort(
+  env: Record<string, string | undefined>,
+): { ok: true } | SmtpPortFailure {
+  if (env.TARGET_ENVIRONMENT !== 'development') {
+    return { ok: true };
+  }
+
+  const raw = env.SMTP_PORT;
+  if (raw === undefined || raw === '' || isPlaceholder(raw)) {
+    return { ok: true };
+  }
+  if (!/^\d+$/.test(raw)) {
+    return { ok: false, reason: 'invalid_port', raw };
+  }
+
+  const port = Number(raw);
+  if (port < 1 || port > 65535) {
+    return { ok: false, reason: 'invalid_port', raw };
+  }
+  if (BLOCKED_RENDER_FREE_SMTP_PORTS.includes(port)) {
+    return { ok: false, reason: 'render_free_blocked', port };
+  }
+  if (port === LOCAL_MAILPIT_PORT) {
+    return { ok: false, reason: 'local_port', port };
+  }
+  if (port === RENDER_FREE_SMTP_PORT) {
+    const secure = env.SMTP_SECURE;
+    if (
+      secure !== undefined &&
+      secure !== '' &&
+      secure !== 'false' &&
+      secure !== '0'
+    ) {
+      return { ok: false, reason: 'starttls_required', value: secure };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Renders the pinned AC-1(b) operator block for one transport failure: a
+ * header naming the port problem and the environment, a remediation line and
+ * the runbook pointer. Only the rejected port or raw value is echoed; no
+ * other configured value is ever printed.
+ */
+export function formatSmtpPortFailure(
+  environment: string,
+  failure: SmtpPortFailure,
+): string {
+  const runbook = '  Runbook: README.md § Deployment Brevo runbook';
+  switch (failure.reason) {
+    case 'render_free_blocked':
+      return [
+        `Deploy blocked: SMTP_PORT=${failure.port} is blocked for outbound SMTP on the Render free plan ('${environment}' environment).`,
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS); ports 25, 465 and 587 stay blocked on Render free.',
+        runbook,
+      ].join('\n');
+    case 'invalid_port':
+      return [
+        `Deploy blocked: SMTP_PORT="${failure.raw}" must be an integer between 1 and 65535 ('${environment}' environment).`,
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS) on Render free.',
+        runbook,
+      ].join('\n');
+    case 'local_port':
+      return [
+        `Deploy blocked: SMTP_PORT=${failure.port} is the local Mailpit port and is not reachable from a deployed Render service ('${environment}' environment).`,
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS).',
+        runbook,
+      ].join('\n');
+    case 'starttls_required':
+      return [
+        `Deploy blocked: SMTP_SECURE must be "false" when SMTP_PORT=2525 ('${environment}' environment); received "${failure.value}".`,
+        '  Port 2525 uses STARTTLS; set SMTP_SECURE=false.',
+        runbook,
+      ].join('\n');
+  }
 }
 
 /** `https://api.render.com/v1/services/<serviceId>/env-vars/<key>`. */

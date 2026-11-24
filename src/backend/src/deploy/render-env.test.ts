@@ -1,22 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BLOCKED_RENDER_FREE_SMTP_PORTS,
   buildEnvVarPayload,
   CATALOG,
   formatGuardFailure,
+  formatSmtpPortFailure,
   isPlaceholder,
+  LOCAL_MAILPIT_PORT,
   PLACEHOLDER_TOKEN,
   redactValues,
+  RENDER_FREE_SMTP_PORT,
   renderEnvVarUrl,
   RENDER_REQUEST_TIMEOUT_MS,
   RENDER_WIRING,
   SMTP_CATALOG,
   syncRenderEnv,
   validateDeployEnv,
+  validateSmtpTransportPort,
   type DeployEnvFailure,
   type DeployEnvValidation,
   type FetchLike,
   type FetchResponseLike,
+  type SmtpPortFailure,
   type SmtpValues,
 } from './render-env.js';
 
@@ -318,6 +324,196 @@ describe('formatGuardFailure (AC-4)', () => {
         '  variables: gh variable set <NAME> --env production --repo raultorres2603/CubeClicker',
         '  secrets:   gh secret set <NAME> --env production --repo raultorres2603/CubeClicker',
         'Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('validateSmtpTransportPort (AC-1(a))', () => {
+  /** Development environment holding only the two transport names. */
+  function developmentEnv(
+    port?: string,
+    secure?: string,
+  ): Record<string, string | undefined> {
+    const env: Record<string, string | undefined> = {
+      TARGET_ENVIRONMENT: 'development',
+    };
+    if (port !== undefined) {
+      env.SMTP_PORT = port;
+    }
+    if (secure !== undefined) {
+      env.SMTP_SECURE = secure;
+    }
+    return env;
+  }
+
+  it('pins the Render-free blocklist, the local Mailpit port and the STARTTLS port', () => {
+    expect(BLOCKED_RENDER_FREE_SMTP_PORTS).toStrictEqual([25, 465, 587]);
+    expect(LOCAL_MAILPIT_PORT).toBe(1025);
+    expect(RENDER_FREE_SMTP_PORT).toBe(2525);
+  });
+
+  it('rejects the three Render-free blocked ports', () => {
+    for (const [raw, port] of [
+      ['25', 25],
+      ['465', 465],
+      ['587', 587],
+    ] as const) {
+      expect(validateSmtpTransportPort(developmentEnv(raw, 'false'))).toStrictEqual({
+        ok: false,
+        reason: 'render_free_blocked',
+        port,
+      });
+    }
+  });
+
+  it('rejects every non-integer or out-of-range port with the untouched raw input', () => {
+    for (const raw of ['0', '65536', '-1', '587abc', '25.5', ' 2525']) {
+      expect(validateSmtpTransportPort(developmentEnv(raw, 'false'))).toStrictEqual({
+        ok: false,
+        reason: 'invalid_port',
+        raw,
+      });
+    }
+  });
+
+  it('rejects the local Mailpit port', () => {
+    expect(validateSmtpTransportPort(developmentEnv('1025', 'false'))).toStrictEqual({
+      ok: false,
+      reason: 'local_port',
+      port: 1025,
+    });
+  });
+
+  it('accepts 2525 with an unset, empty, false or 0 SMTP_SECURE', () => {
+    for (const secure of [undefined, '', 'false', '0']) {
+      expect(
+        validateSmtpTransportPort(developmentEnv('2525', secure)),
+      ).toStrictEqual({ ok: true });
+    }
+  });
+
+  it('requires STARTTLS on 2525 and keeps the raw SMTP_SECURE value', () => {
+    for (const secure of ['true', '1', 'yes']) {
+      expect(
+        validateSmtpTransportPort(developmentEnv('2525', secure)),
+      ).toStrictEqual({ ok: false, reason: 'starttls_required', value: secure });
+    }
+  });
+
+  it('leaves presence and CHANGEME to the catalog', () => {
+    expect(validateSmtpTransportPort(developmentEnv())).toStrictEqual({ ok: true });
+    expect(validateSmtpTransportPort(developmentEnv('', 'true'))).toStrictEqual({
+      ok: true,
+    });
+    expect(validateSmtpTransportPort(developmentEnv('CHANGEME', 'true'))).toStrictEqual({
+      ok: true,
+    });
+  });
+
+  it('accepts the inclusive 1-65535 boundaries and other non-blocked ports', () => {
+    for (const port of ['1', '65535', '2465']) {
+      expect(
+        validateSmtpTransportPort(developmentEnv(port, 'false')),
+      ).toStrictEqual({ ok: true });
+    }
+  });
+
+  it('passes every port in production and in an unlabelled environment', () => {
+    for (const port of ['25', '1025', '587abc', '2525']) {
+      expect(
+        validateSmtpTransportPort({
+          TARGET_ENVIRONMENT: 'production',
+          SMTP_PORT: port,
+          SMTP_SECURE: 'true',
+        }),
+      ).toStrictEqual({ ok: true });
+    }
+    expect(validateSmtpTransportPort({ SMTP_PORT: '587' })).toStrictEqual({
+      ok: true,
+    });
+  });
+});
+
+describe('formatSmtpPortFailure (AC-1(b))', () => {
+  it('renders the exact blocked-port block naming the port', () => {
+    const failure: SmtpPortFailure = {
+      ok: false,
+      reason: 'render_free_blocked',
+      port: 587,
+    };
+
+    expect(formatSmtpPortFailure('development', failure)).toBe(
+      [
+        "Deploy blocked: SMTP_PORT=587 is blocked for outbound SMTP on the Render free plan ('development' environment).",
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS); ports 25, 465 and 587 stay blocked on Render free.',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the equivalent first line for 25 and 465', () => {
+    for (const port of [25, 465]) {
+      const failure: SmtpPortFailure = {
+        ok: false,
+        reason: 'render_free_blocked',
+        port,
+      };
+
+      expect(formatSmtpPortFailure('development', failure)).toBe(
+        [
+          `Deploy blocked: SMTP_PORT=${port} is blocked for outbound SMTP on the Render free plan ('development' environment).`,
+          '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS); ports 25, 465 and 587 stay blocked on Render free.',
+          '  Runbook: README.md § Deployment Brevo runbook',
+        ].join('\n'),
+      );
+    }
+  });
+
+  it('renders the exact malformed-port block quoting the raw value', () => {
+    const failure: SmtpPortFailure = {
+      ok: false,
+      reason: 'invalid_port',
+      raw: '587abc',
+    };
+
+    expect(formatSmtpPortFailure('development', failure)).toBe(
+      [
+        'Deploy blocked: SMTP_PORT="587abc" must be an integer between 1 and 65535 (\'development\' environment).',
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS) on Render free.',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact local Mailpit block', () => {
+    const failure: SmtpPortFailure = {
+      ok: false,
+      reason: 'local_port',
+      port: 1025,
+    };
+
+    expect(formatSmtpPortFailure('development', failure)).toBe(
+      [
+        "Deploy blocked: SMTP_PORT=1025 is the local Mailpit port and is not reachable from a deployed Render service ('development' environment).",
+        '  Use SMTP_PORT=2525 with SMTP_SECURE=false (STARTTLS).',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact STARTTLS block echoing the raw SMTP_SECURE value', () => {
+    const failure: SmtpPortFailure = {
+      ok: false,
+      reason: 'starttls_required',
+      value: 'true',
+    };
+
+    expect(formatSmtpPortFailure('development', failure)).toBe(
+      [
+        'Deploy blocked: SMTP_SECURE must be "false" when SMTP_PORT=2525 (\'development\' environment); received "true".',
+        '  Port 2525 uses STARTTLS; set SMTP_SECURE=false.',
+        '  Runbook: README.md § Deployment Brevo runbook',
       ].join('\n'),
     );
   });

@@ -17,11 +17,13 @@ import { pathToFileURL } from 'node:url';
 import {
   CATALOG,
   formatGuardFailure,
+  formatSmtpPortFailure,
   renderEnvVarUrl,
   RENDER_REQUEST_TIMEOUT_MS,
   SMTP_CATALOG,
   syncRenderEnv,
   validateDeployEnv,
+  validateSmtpTransportPort,
   type FetchLike,
   type SmtpValues,
 } from './render-env.js';
@@ -109,6 +111,15 @@ export async function runRenderEnvCli(
   const validation = validateDeployEnv(env);
   if (!validation.ok) {
     io.log(formatGuardFailure(environment, validation));
+    return 1;
+  }
+
+  // The strict transport guard runs only after the catalog accepted all nine
+  // names (catalog precedence) and before any mode prints or fetches, so a
+  // blocked, malformed, local or non-STARTTLS port can never be synced.
+  const portFailure = validateSmtpTransportPort(env);
+  if (!portFailure.ok) {
+    io.log(formatSmtpPortFailure(environment, portFailure));
     return 1;
   }
 
