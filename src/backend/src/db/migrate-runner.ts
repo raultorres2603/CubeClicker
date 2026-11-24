@@ -7,9 +7,9 @@
  * `pg.Client`, passes it to the existing {@link runMigrations} runner, and always
  * closes it, pinning the whole transaction to a single connection.
  *
- * `runStartupMigrations` is the conditional startup seam: with no database URL
- * configured it returns `null` without creating a client, throwing or exiting, so
- * the host-only in-memory repositories keep working.
+ * `resolveStartupMigrationUrl` is shared with the startup phase (`startup.ts`),
+ * which owns the advisory lock, the migrations and the schema bootstrap on one
+ * dedicated client; the CLI uses `resolveMigrationUrl` + `runMigrationsAgainst`.
  */
 
 import { Client } from 'pg';
@@ -26,7 +26,7 @@ export interface MigrationClient extends MigrationDb {
   end(): Promise<void>;
 }
 
-/** Inputs accepted by {@link runMigrationsAgainst} and {@link runStartupMigrations}. */
+/** Inputs accepted by {@link runMigrationsAgainst}. */
 export interface MigrationRunnerDeps extends RunMigrationsOptions {
   /** Test seam: builds the dedicated client for the resolved connection string. */
   createClient?: (connectionString: string) => MigrationClient;
@@ -68,8 +68,8 @@ export function resolveMigrationUrl(
 /**
  * Resolves the startup migration URL, or `null` when no database is configured.
  *
- * The direct URL is preferred (Fly receives `DIRECT_DATABASE_URL` as a secret);
- * `DATABASE_URL` is the local fallback.
+ * The direct URL is preferred (`DIRECT_DATABASE_URL` is the session-capable Neon
+ * URL used by the advisory-lock/DDL phase); `DATABASE_URL` is the local fallback.
  */
 export function resolveStartupMigrationUrl(
   env: Record<string, string | undefined>,
@@ -114,22 +114,4 @@ export async function runMigrationsAgainst(
       // Best-effort close: the migration result or failure must propagate.
     }
   }
-}
-
-/**
- * Runs startup migrations when a database URL is configured.
- *
- * Returns `null` without creating a client, throwing or exiting when neither
- * `DIRECT_DATABASE_URL` nor `DATABASE_URL` is set, preserving the in-memory
- * startup used by `npm run dev`/`node dist/server.js` without a database.
- */
-export async function runStartupMigrations(
-  env: Record<string, string | undefined>,
-  deps: MigrationRunnerDeps = {},
-): Promise<string[] | null> {
-  const connectionString = resolveStartupMigrationUrl(env);
-  if (connectionString === null) {
-    return null;
-  }
-  return runMigrationsAgainst(connectionString, deps);
 }

@@ -81,7 +81,6 @@ import {
   MISSING_MIGRATION_URL_ERROR,
   resolveMigrationUrl,
   runMigrationsAgainst,
-  runStartupMigrations,
 } from './migrate-runner.js';
 
 const CREATE_TABLE_SQL =
@@ -237,65 +236,5 @@ describe('runMigrationsAgainst', () => {
       { createClient: () => injected, migrations: ONE_MIGRATION },
     );
     expect(applied).toEqual(['001_init.sql']);
-  });
-});
-
-describe('runStartupMigrations', () => {
-  it('returns null without creating a client when no database URL is configured', async () => {
-    const createClient = vi.fn((): MigrationClient => {
-      throw new Error('client must not be created');
-    });
-
-    const result = await runStartupMigrations({}, { createClient });
-
-    expect(result).toBeNull();
-    expect(createClient).not.toHaveBeenCalled();
-    expect(mocks.clientInstances).toEqual([]);
-  });
-
-  it('returns null for empty URL values', async () => {
-    const result = await runStartupMigrations({
-      DIRECT_DATABASE_URL: '',
-      DATABASE_URL: '',
-    });
-    expect(result).toBeNull();
-    expect(mocks.clientInstances).toEqual([]);
-  });
-
-  it('uses DIRECT_DATABASE_URL when both URLs are configured', async () => {
-    const applied = await runStartupMigrations(
-      {
-        DIRECT_DATABASE_URL: 'postgres://direct.example:5432/app',
-        DATABASE_URL: 'postgres://pooled.example:5432/app',
-      },
-      { migrations: ONE_MIGRATION },
-    );
-
-    expect(applied).toEqual(['001_init.sql']);
-    expect(mocks.clientInstances[0].config).toEqual({
-      connectionString: 'postgres://direct.example:5432/app',
-    });
-  });
-
-  it('uses DATABASE_URL as the local fallback', async () => {
-    const applied = await runStartupMigrations(
-      { DATABASE_URL: 'postgres://pooled.example:5432/app' },
-      { migrations: ONE_MIGRATION },
-    );
-
-    expect(applied).toEqual(['001_init.sql']);
-    expect(mocks.clientInstances[0].config).toEqual({
-      connectionString: 'postgres://pooled.example:5432/app',
-    });
-  });
-
-  it('propagates a migration failure (the server aborts startup)', async () => {
-    await expect(
-      runStartupMigrations(
-        { DATABASE_URL: 'postgres://pooled.example:5432/app' },
-        { migrations: [{ name: '001_bad.sql', sql: 'FAIL' }] },
-      ),
-    ).rejects.toThrow('migration failed: boom');
-    expect(mocks.clientInstances[0].ended).toBe(true);
   });
 });
