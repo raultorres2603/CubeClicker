@@ -1,5 +1,7 @@
 import { useState, type FormEvent, type ReactElement } from 'react';
 
+import { parseAccountFields, type AccountField } from '../auth/api';
+
 type Mode = 'login' | 'register';
 
 /** The authoritative user fields the forms need after a login (server-provided). */
@@ -20,6 +22,7 @@ export interface AuthFormStore {
 export interface AuthFormApi {
   login?(input: { username: string; password: string }): Promise<unknown>;
   register?(input: { username: string; email: string; password: string }): Promise<unknown>;
+  resend?(input: { email: string }): Promise<unknown>;
 }
 
 export interface AuthFormData {
@@ -32,7 +35,13 @@ export type AuthSubmitResult =
   | { outcome: 'success'; mode: 'login'; user: AuthFormUser | null }
   | { outcome: 'success'; mode: 'register' }
   | { outcome: 'verification'; email: string }
-  | { outcome: 'error'; message: string };
+  | { outcome: 'email_delivery_failed'; email: string }
+  | { outcome: 'error'; message: string; fields?: AccountField[] };
+
+/** The inline error states the rendered form distinguishes. */
+type FormError =
+  | { kind: 'message'; message: string }
+  | { kind: 'fields'; fields: AccountField[] };
 
 export interface SubmitAuthFormOptions {
   mode: Mode;
@@ -113,6 +122,19 @@ function errorMessage(err: unknown): string {
   return 'request failed';
 }
 
+function errorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || Array.isArray(err)) {
+    return undefined;
+  }
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errorFields(err: unknown): AccountField[] | undefined {
+  const fields = parseAccountFields(err);
+  return fields !== undefined && fields.length > 0 ? fields : undefined;
+}
+
 /**
  * The form's submit pipeline, exported so the real login/register → store →
  * session-join wiring can be exercised without a DOM.
@@ -173,7 +195,13 @@ export async function submitAuthForm(options: SubmitAuthFormOptions): Promise<Au
     await options.onRegisterSuccess?.(data);
     return { outcome: 'success', mode: 'register' };
   } catch (err) {
-    return { outcome: 'error', message: errorMessage(err) };
+    if (mode === 'register' && errorCode(err) === 'verification_email_failed') {
+      return { outcome: 'email_delivery_failed', email: data.email };
+    }
+    const fields = errorFields(err);
+    return fields !== undefined
+      ? { outcome: 'error', message: errorMessage(err), fields }
+      : { outcome: 'error', message: errorMessage(err) };
   }
 }
 
@@ -224,12 +252,18 @@ export function AuthForms({
   // `initialError` is captured at mount only; a later change to the prop does not
   // resync. AuthForms is remounted via `key` on view transitions (see App.tsx), so
   // a fresh mount re-reads the prop. Documented as mount-only (review F5).
-  const [error, setError] = useState<string | null>(initialError ?? null);
+  const [error, setError] = useState<FormError | null>(
+    initialError ? { kind: 'message', message: initialError } : null,
+  );
+  const [deliveryEmail, setDeliveryEmail] = useState<string | null>(null);
+  const [resendState, setResendState] = useState<'idle' | 'pending' | 'sent' | 'failed'>('idle');
   const [pending, setPending] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setError(null);
+    setDeliveryEmail(null);
+    setResendState('idle');
     setPending(true);
     try {
       const result = await submitAuthForm({
@@ -243,10 +277,33 @@ export function AuthForms({
         onVerificationRequired,
       });
       if (result.outcome === 'error') {
-        setError(result.message);
+        setError(
+          result.fields !== undefined && result.fields.length > 0
+            ? { kind: 'fields', fields: result.fields }
+            : { kind: 'message', message: result.message },
+        );
+      } else if (result.outcome === 'email_delivery_failed') {
+        setDeliveryEmail(result.email);
       }
     } finally {
       setPending(false);
+    }
+  }
+
+  async function handleResend(): Promise<void> {
+    if (deliveryEmail === null || resendState === 'pending') {
+      return;
+    }
+    setResendState('pending');
+    try {
+      const target = (api ?? null) as AuthFormApi | null;
+      if (!target || typeof target.resend !== 'function') {
+        throw new Error('resend unavailable');
+      }
+      await target.resend({ email: deliveryEmail });
+      setResendState('sent');
+    } catch {
+      setResendState('failed');
     }
   }
 
@@ -254,9 +311,28 @@ export function AuthForms({
   const title = isRegister ? 'Create an account' : 'Welcome back';
   const subtitle = isRegister
     ? 'Register to keep a stable identity. We will email you a verification link.'
-    : 'Sign in to play with your account identity.';
+    : 'Sign in with your username or email.';
   const submitLabel = isRegister ? 'Register' : 'Login';
   const pendingLabel = isRegister ? 'Registering…' : 'Logging in…';
+
+  const fieldErrors = error !== null && error.kind === 'fields' ? error.fields : null;
+  const usernameHasError = fieldErrors?.includes('username') ?? false;
+  const emailHasError = fieldErrors?.includes('email') ?? false;
+  const accountHasError = usernameHasError && emailHasError;
+  const usernameErrorId = accountHasError ? 'auth-error-account' : 'auth-error-username';
+  const emailErrorId = accountHasError ? 'auth-error-account' : 'auth-error-email';
+  const fieldErrorMessage = accountHasError
+    ? 'That username and email are already registered.'
+    : usernameHasError
+      ? 'That username is already taken.'
+      : emailHasError
+        ? 'That email is already registered.'
+        : null;
+  const fieldErrorId = accountHasError
+    ? 'auth-error-account'
+    : usernameHasError
+      ? 'auth-error-username'
+      : 'auth-error-email';
 
   return (
     <div className="auth-forms">
@@ -276,6 +352,9 @@ export function AuthForms({
               name="username"
               type="text"
               autoComplete="username"
+              placeholder={isRegister ? undefined : 'Username or email'}
+              aria-invalid={usernameHasError ? 'true' : undefined}
+              aria-describedby={usernameHasError ? usernameErrorId : undefined}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoFocus
@@ -289,6 +368,8 @@ export function AuthForms({
                 name="email"
                 type="email"
                 autoComplete="email"
+                aria-invalid={emailHasError ? 'true' : undefined}
+                aria-describedby={emailHasError ? emailErrorId : undefined}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -305,10 +386,39 @@ export function AuthForms({
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {error ? (
-            <p className="auth-error" role="alert">
-              {error}
+          {fieldErrorMessage !== null ? (
+            <p className="auth-error" role="alert" id={fieldErrorId}>
+              {fieldErrorMessage}
             </p>
+          ) : error !== null && error.kind === 'message' ? (
+            <p className="auth-error" role="alert">
+              {error.message}
+            </p>
+          ) : null}
+          {deliveryEmail !== null ? (
+            <div className="auth-delivery-error">
+              <p className="auth-error" role="alert">
+                Account created, but the verification email could not be sent.
+              </p>
+              <button
+                className="auth-button auth-button-secondary"
+                type="button"
+                onClick={handleResend}
+                disabled={resendState === 'pending'}
+              >
+                Resend verification email
+              </button>
+              {resendState === 'sent' ? (
+                <p className="auth-status" role="status">
+                  Verification email sent.
+                </p>
+              ) : null}
+              {resendState === 'failed' ? (
+                <p className="auth-error" role="alert">
+                  Could not resend the verification email. Try again.
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <div className="auth-actions">
             <button className="auth-button auth-button-primary" type="submit" disabled={pending}>

@@ -53,6 +53,9 @@ export interface MeResult {
   user: AuthUser;
 }
 
+/** The account fields the server can blame in a `409 duplicate_account` response. */
+export type AccountField = 'username' | 'email';
+
 export interface AuthApiOptions {
   /** Request base; defaults to the resolved `VITE_API_URL` (`''` = same origin). */
   baseUrl?: string;
@@ -64,13 +67,22 @@ export class AuthError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly retryAfter?: number;
+  /** Ordered account fields a duplicate response blames; `undefined` when the body has none. */
+  readonly fields?: AccountField[];
 
-  constructor(message: string, status: number, code?: string, retryAfter?: number) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    retryAfter?: number,
+    fields?: AccountField[],
+  ) {
     super(message);
     this.name = 'AuthError';
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.fields = fields;
   }
 }
 
@@ -170,6 +182,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isAccountField(value: unknown): value is AccountField {
+  return value === 'username' || value === 'email';
+}
+
+/**
+ * Reads the optional `fields` array of a duplicate response. Unknown values are
+ * dropped and the server order is kept; a body with no `fields` array yields
+ * `undefined` (AC-7(a)).
+ */
+export function parseAccountFields(value: unknown): AccountField[] | undefined {
+  const record = asRecord(value);
+  if (!record || !Array.isArray(record.fields)) return undefined;
+  return record.fields.filter(isAccountField);
+}
+
 export function createAuthApi(options: AuthApiOptions = {}): AuthApi {
   const configuredBaseUrl =
     options.baseUrl !== undefined
@@ -226,6 +253,7 @@ export function createAuthApi(options: AuthApiOptions = {}): AuthApi {
         res.status,
         code,
         Number.isFinite(retryAfter) ? retryAfter : undefined,
+        parseAccountFields(record),
       );
     }
     return data;

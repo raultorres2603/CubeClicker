@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AuthError } from '../auth/api';
 import {
   AuthForms,
   LoginForm,
@@ -41,6 +42,21 @@ function storeFor(
   } = {},
 ): AuthFormStore {
   return { user, login: calls.login, register: calls.register };
+}
+
+function conflictError(fields: ('username' | 'email')[]): AuthError {
+  return new AuthError('account already exists', 409, 'duplicate_account', undefined, fields);
+}
+
+function deliveryError(): AuthError {
+  return new AuthError('verification email could not be sent', 502, 'verification_email_failed');
+}
+
+async function fillRegisterForm(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.type(screen.getByLabelText('Username'), 'alice');
+  await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+  await user.type(screen.getByLabelText('Password'), 'correct horse battery');
+  await user.click(screen.getByRole('button', { name: 'Register' }));
 }
 
 describe('AuthForms', () => {
@@ -576,5 +592,284 @@ describe('AuthForms — interaction extra', () => {
   it('renders the error from initialError and keeps it until submit', async () => {
     render(<AuthForms mode="login" initialError="initial problem" />);
     expect(screen.getByRole('alert').textContent).toBe('initial problem');
+  });
+});
+
+describe('AuthForms — login identifier hint (AC-7(b))', () => {
+  it('keeps the Username label and adds the username-or-email placeholder and subtitle', () => {
+    const html = renderToStaticMarkup(<AuthForms mode="login" />);
+
+    expect(html).toContain(
+      '<p class="auth-subtitle">Sign in with your username or email.</p>',
+    );
+    expect(html).toContain('placeholder="Username or email"');
+  });
+
+  it('resolves the Username label to the same input that carries the hint', () => {
+    render(<AuthForms mode="login" />);
+
+    const input = screen.getByLabelText('Username');
+    expect(input.getAttribute('name')).toBe('username');
+    expect(input.getAttribute('placeholder')).toBe('Username or email');
+  });
+
+  it('keeps the username placeholder off the register form', () => {
+    const html = renderToStaticMarkup(<AuthForms mode="register" />);
+
+    expect(html).not.toContain('placeholder="Username or email"');
+  });
+});
+
+describe('AuthForms — field-scoped conflicts (AC-7(c))', () => {
+  it('pins the username conflict to exactly one alert and the username input', async () => {
+    const register = vi.fn(async () => {
+      throw conflictError(['username']);
+    });
+    render(<AuthForms mode="register" api={{ register }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].id).toBe('auth-error-username');
+    expect(alerts[0].textContent).toBe('That username is already taken.');
+    const usernameInput = screen.getByLabelText('Username');
+    expect(usernameInput.getAttribute('aria-invalid')).toBe('true');
+    expect(usernameInput.getAttribute('aria-describedby')).toBe('auth-error-username');
+    const emailInput = screen.getByLabelText('Email');
+    expect(emailInput.getAttribute('aria-invalid')).toBeNull();
+    expect(emailInput.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('pins the email conflict to exactly one alert and the email input', async () => {
+    const register = vi.fn(async () => {
+      throw conflictError(['email']);
+    });
+    render(<AuthForms mode="register" api={{ register }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].id).toBe('auth-error-email');
+    expect(alerts[0].textContent).toBe('That email is already registered.');
+    const emailInput = screen.getByLabelText('Email');
+    expect(emailInput.getAttribute('aria-invalid')).toBe('true');
+    expect(emailInput.getAttribute('aria-describedby')).toBe('auth-error-email');
+    const usernameInput = screen.getByLabelText('Username');
+    expect(usernameInput.getAttribute('aria-invalid')).toBeNull();
+    expect(usernameInput.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('pins the account-wide conflict to one alert shared by both inputs', async () => {
+    const register = vi.fn(async () => {
+      throw conflictError(['username', 'email']);
+    });
+    render(<AuthForms mode="register" api={{ register }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].id).toBe('auth-error-account');
+    expect(alerts[0].textContent).toBe('That username and email are already registered.');
+    const usernameInput = screen.getByLabelText('Username');
+    expect(usernameInput.getAttribute('aria-invalid')).toBe('true');
+    expect(usernameInput.getAttribute('aria-describedby')).toBe('auth-error-account');
+    const emailInput = screen.getByLabelText('Email');
+    expect(emailInput.getAttribute('aria-invalid')).toBe('true');
+    expect(emailInput.getAttribute('aria-describedby')).toBe('auth-error-account');
+  });
+
+  it('renders the email conflict through the store registration path', async () => {
+    const register = vi.fn(async () => {
+      throw conflictError(['email']);
+    });
+    const store = storeFor(null, { register });
+    render(<AuthForms mode="register" store={store} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.id).toBe('auth-error-email');
+    expect(alert.textContent).toBe('That email is already registered.');
+  });
+
+  it('keeps the generic duplicate message when the response carries no fields', async () => {
+    const register = vi.fn(async () => {
+      throw new AuthError('account already exists', 409, 'duplicate_account');
+    });
+    render(<AuthForms mode="register" api={{ register }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe('account already exists');
+    expect(alerts[0].getAttribute('id')).toBeNull();
+    expect(screen.getByLabelText('Username').getAttribute('aria-invalid')).toBeNull();
+    expect(screen.getByLabelText('Email').getAttribute('aria-invalid')).toBeNull();
+  });
+});
+
+describe('AuthForms — 502 delivery block (AC-7(d))', () => {
+  it('renders the delivery block and resends to the submitted email', async () => {
+    const register = vi.fn(async () => {
+      throw deliveryError();
+    });
+    const resend = vi.fn(async () => ({ message: 'verification email sent' }));
+    render(<AuthForms mode="register" api={{ register, resend }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe(
+      'Account created, but the verification email could not be sent.',
+    );
+    const resendButton = screen.getByRole('button', { name: 'Resend verification email' });
+    expect((resendButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    await user.click(resendButton);
+
+    expect(resend).toHaveBeenCalledTimes(1);
+    expect(resend).toHaveBeenCalledWith({ email: 'alice@example.com' });
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe('Verification email sent.');
+  });
+
+  it('keeps the button enabled and shows the exact alert when resend rejects', async () => {
+    const register = vi.fn(async () => {
+      throw deliveryError();
+    });
+    const resend = vi.fn(async () => {
+      throw deliveryError();
+    });
+    render(<AuthForms mode="register" api={{ register, resend }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const resendButton = screen.getByRole('button', { name: 'Resend verification email' });
+    await user.click(resendButton);
+
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts[0].textContent).toBe(
+      'Account created, but the verification email could not be sent.',
+    );
+    expect(alerts[1].textContent).toBe('Could not resend the verification email. Try again.');
+    expect(screen.queryByText('Verification email sent.')).toBeNull();
+    expect((resendButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('reports the failure instead of a false success when no resend client exists', async () => {
+    const register = vi.fn(async () => {
+      throw deliveryError();
+    });
+    render(<AuthForms mode="register" api={{ register }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    await user.click(screen.getByRole('button', { name: 'Resend verification email' }));
+
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+    expect(screen.getAllByRole('alert')[1].textContent).toBe(
+      'Could not resend the verification email. Try again.',
+    );
+    expect(screen.queryByText('Verification email sent.')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Resend verification email' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('shows success after a rejected resend is retried', async () => {
+    const register = vi.fn(async () => {
+      throw deliveryError();
+    });
+    const resend = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('transport down'))
+      .mockResolvedValueOnce({ message: 'verification email sent' });
+    render(<AuthForms mode="register" api={{ register, resend }} />);
+    const user = userEvent.setup();
+    await fillRegisterForm(user);
+
+    const resendButton = screen.getByRole('button', { name: 'Resend verification email' });
+    await user.click(resendButton);
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+
+    await user.click(resendButton);
+
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe('Verification email sent.');
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe(
+      'Account created, but the verification email could not be sent.',
+    );
+    expect(resend).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('submitAuthForm — conflict and delivery outcomes (AC-7)', () => {
+  it('returns the delivery outcome for a verification_email_failed rejection', async () => {
+    const register = vi.fn(async () => {
+      throw deliveryError();
+    });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      api: { register },
+    });
+
+    expect(result).toEqual({ outcome: 'email_delivery_failed', email: 'alice@example.com' });
+  });
+
+  it('returns the parsed fields with a duplicate rejection', async () => {
+    const register = vi.fn(async () => {
+      throw conflictError(['username', 'email']);
+    });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      api: { register },
+    });
+
+    expect(result).toEqual({
+      outcome: 'error',
+      message: 'account already exists',
+      fields: ['username', 'email'],
+    });
+  });
+
+  it('does not treat a login rejection as a delivery failure', async () => {
+    const login = vi.fn(async () => {
+      throw deliveryError();
+    });
+
+    const result = await submitAuthForm({
+      mode: 'login',
+      data: LOGIN_DATA,
+      api: { login },
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'verification email could not be sent' });
+  });
+
+  it('falls back to the plain message when register throws a non-object', async () => {
+    const register = vi.fn(async () => {
+      throw 'boom';
+    });
+
+    const result = await submitAuthForm({
+      mode: 'register',
+      data: REGISTER_DATA,
+      api: { register },
+    });
+
+    expect(result).toEqual({ outcome: 'error', message: 'boom' });
   });
 });

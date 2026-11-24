@@ -5,7 +5,8 @@ import { useState, type ReactElement } from 'react';
  *
  * Offers a resend action. The email is optional display-only context; resend
  * uses the supplied `email` (or the entered value) and never changes auth state
- * on its own — the caller owns the API call.
+ * on its own — the caller owns the API call. A rejected resend renders the
+ * pinned inline alert and never a false success (AC-7(e)).
  */
 export function VerificationPending({
   email: initialEmail = '',
@@ -25,12 +26,17 @@ export function VerificationPending({
   const [email, setEmail] = useState(initialEmail);
   const [pending, setPending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleResend(): Promise<void> {
     setPending(true);
+    setSent(false);
+    setError(null);
     try {
       await onResend?.(email);
       setSent(true);
+    } catch {
+      setError('Could not resend the verification email. Try again.');
     } finally {
       setPending(false);
     }
@@ -52,7 +58,8 @@ export function VerificationPending({
       <button type="button" onClick={handleResend} disabled={pending}>
         {resendLabel}
       </button>
-      {sent ? <p>Verification email sent.</p> : null}
+      {sent ? <p role="status">Verification email sent.</p> : null}
+      {error !== null ? <p role="alert">{error}</p> : null}
     </div>
   );
 }

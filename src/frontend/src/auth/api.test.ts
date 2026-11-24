@@ -100,6 +100,74 @@ describe('auth api client', () => {
     expect(err.message).toBe('account already exists');
   });
 
+  it('parses the ordered fields array from a 409 duplicate body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(409, {
+        message: 'account already exists',
+        code: 'duplicate_account',
+        error: 'duplicate_account',
+        field: 'both',
+        fields: ['username', 'email'],
+      }),
+    );
+    const api = createAuthApi({ fetch: fetchMock });
+
+    let thrown: unknown;
+    try {
+      await api.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(AuthError);
+    const err = thrown as AuthError;
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('duplicate_account');
+    expect(err.fields).toEqual(['username', 'email']);
+  });
+
+  it('leaves fields undefined when a 409 body has no fields array', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(409, {
+        message: 'account already exists',
+        code: 'duplicate_account',
+        error: 'duplicate_account',
+      }),
+    );
+    const api = createAuthApi({ fetch: fetchMock });
+
+    let thrown: unknown;
+    try {
+      await api.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(AuthError);
+    expect((thrown as AuthError).fields).toBeUndefined();
+  });
+
+  it('drops unknown entries from a fields array and keeps the server order', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(409, {
+        message: 'account already exists',
+        code: 'duplicate_account',
+        fields: ['email', 'password', 'username'],
+      }),
+    );
+    const api = createAuthApi({ fetch: fetchMock });
+
+    let thrown: unknown;
+    try {
+      await api.register({ username: 'alice', email: 'a@x.com', password: 'password1234' });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(AuthError);
+    expect((thrown as AuthError).fields).toEqual(['email', 'username']);
+  });
+
   it('login returns the user on success', async () => {
     const user = { id: 'u1', username: 'alice', email: 'a@x.com', verified: false };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { user }));
