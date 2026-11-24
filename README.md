@@ -78,7 +78,7 @@ Both commands produce reproducible evidence recorded in the feature build logs; 
 | `DB_EXPIRED_TOKEN_CLEANUP_ENABLED` | `true` | in-process expired-verification cleanup: after `listen`, delete `verification_tokens` rows with `expires_at <= now`; `false` starts no scheduler |
 | `DB_EXPIRED_TOKEN_CLEANUP_INTERVAL_MS` | `3600000` | delay in ms between cleanup runs, measured from the previous run's settlement; integer 60000–86400000 (default one hour) |
 | `SMTP_HOST` | `mailpit` | SMTP host used by the backend (`smtp-relay.brevo.com` for Brevo) |
-| `SMTP_PORT` | `1025` | SMTP port used by the backend (`587` STARTTLS or `465` implicit TLS for Brevo) |
+| `SMTP_PORT` | `1025` | SMTP port used by the backend (`1025` local Mailpit; `2525` STARTTLS for Brevo on Render free; `587` STARTTLS or `465` implicit TLS only off Render free) |
 | `SMTP_SECURE` | _(empty → derived: `true` when `SMTP_PORT` is `465`)_ | implicit TLS for the SMTP connection; `true`/`1`/`false`/`0`, empty derives it from the port |
 | `SMTP_USER` | _(empty)_ | SMTP login (optional; must be set together with `SMTP_PASS`) |
 | `SMTP_PASS` | _(empty)_ | SMTP password — the Brevo **SMTP key** (optional; must be set together with `SMTP_USER`) |
@@ -103,13 +103,13 @@ Local `podman compose up` needs no email configuration: the backend defaults to 
 
 ### Brevo SMTP recipe
 
-`SMTP_HOST` is `smtp-relay.brevo.com`. Port `587` with STARTTLS is the pinned recipe, `465` (implicit TLS, `SMTP_SECURE=true`) is supported, and `2525` (STARTTLS) is the documented fallback when a network blocks 587.
+`SMTP_HOST` is `smtp-relay.brevo.com`. **Render free blocks outbound SMTP on ports 25, 465 and 587.** The deployed `development` recipe is therefore `SMTP_PORT=2525` with `SMTP_SECURE=false` (STARTTLS); `587` (STARTTLS) and `465` (implicit TLS, `SMTP_SECURE=true`) are valid only where outbound SMTP is not blocked (a host run, a paid plan or another provider).
 
 | Variable | Brevo value |
 | --- | --- |
 | `SMTP_HOST` | `smtp-relay.brevo.com` |
-| `SMTP_PORT` | `587` (STARTTLS) or `465` (implicit TLS) |
-| `SMTP_SECURE` | empty (derived: `465` → `true`, `587` → `false`) or an explicit `true`/`false` |
+| `SMTP_PORT` | `2525 (STARTTLS, Render free)`; `587` (STARTTLS) or `465` (implicit TLS) only off Render free |
+| `SMTP_SECURE` | `false` with `2525`; empty (derived: `465` → `true`, `587` → `false`) or an explicit `true`/`false` |
 | `SMTP_USER` | the **SMTP login** shown on Brevo's SMTP page (`<id>@smtp-brevo.com`) |
 | `SMTP_PASS` | the **SMTP key** from **Settings → SMTP & API → SMTP** — **not the REST API key** |
 | `SMTP_FROM` | a Brevo **verified sender**, with the display name when possible: `CubeClicker <verified sender>` |
@@ -120,13 +120,14 @@ Local `podman compose up` needs no email configuration: the backend defaults to 
 - `SMTP_USER` and `SMTP_PASS` are both-or-neither: setting only one fails startup with `SMTP_USER and SMTP_PASS must be provided together (both or neither)`.
 - With credentials set and `SMTP_SECURE` off, STARTTLS is required, so the key is never sent cleartext; certificate verification stays enabled. `SMTP_CONNECTION_TIMEOUT_MS` bounds the connection, greeting and socket phases, so a stalled provider cannot hang registration.
 - `SMTP_FROM` must be a Brevo-verified sender; the display name is passed through verbatim (`CubeClicker <verified sender>`). Sender verification plus SPF/DKIM/DMARC are Brevo-console/DNS actions owned by the repository owner.
-- A transport failure surfaces as HTTP `500` on registration (the account stays persisted and unverified) and through the CLI below; a successful resend recovers.
+- A transport failure returns HTTP `502` with code `verification_email_failed` on registration and on resend; the account stays persisted and unverified, the just-issued token is invalidated, and the pending screen (or § Registration recovery (development) below) offers a working resend.
 
-The canonical local setup is a shell export (a gitignored `.env` consumed by the compose provider is an accepted alternative; agents never read it):
+The canonical setup is a shell export with the same values the deployed `development` environment uses (a gitignored `.env` consumed by the compose provider is an accepted alternative; agents never read it):
 
 ```bash
 export SMTP_HOST=smtp-relay.brevo.com
-export SMTP_PORT=587
+export SMTP_PORT=2525
+export SMTP_SECURE=false
 export SMTP_USER=<your-smtp-login>
 export SMTP_PASS='<SMTP key>'
 export SMTP_FROM='CubeClicker <your verified sender>'
@@ -174,7 +175,7 @@ podman compose exec backend npm run email:test -w @cubeclicker/backend -- --to <
 Prerequisites: `SMTP_USER` (SMTP login), `SMTP_PASS` (SMTP key) and a verified sender in `SMTP_FROM`. Expected success line:
 
 ```text
-Test email sent to <address> via smtp-relay.brevo.com:587 (secure=false, starttls=required, auth=yes, from="CubeClicker <verified sender>")
+Test email sent to <address> via smtp-relay.brevo.com:2525 (secure=false, starttls=required, auth=yes, from="CubeClicker <verified sender>")
 ```
 
 When `SMTP_FROM` is still the local default the CLI also prints `Warning: SMTP_FROM is the local default; set it to a verified sender before real delivery.` Failures exit `1`, and every failure line is redacted first, so neither the SMTP login nor the SMTP key can appear in the output. The link in the message is a synthetic `/verify?token=cli-test` URL: the CLI proves delivery and rendering, it does not verify an account.
@@ -306,13 +307,13 @@ Also required: a Vercel project whose Root Directory is `src/frontend` (Node 24,
 
 The deploy workflow treats the GitHub Environment as the single source of truth for deployment email: `Check deployment Brevo configuration` validates **nine** names (six variables, three secrets) and `Sync Brevo SMTP settings to Render` writes only the seven SMTP names to the Render service before the deploy hook — nine validated, seven synced. `RENDER_SERVICE_ID` (URL path coordinate) and `RENDER_API_KEY` (bearer credential) are validated but **never written to the Render service**. The guard is strict: it fails closed on a missing value or on any value containing `CHANGEME`, and a production dispatch therefore stops at `Check deployment Brevo configuration` before any provider is touched.
 
-The catalog and the live state after T5 (names only; no value is recorded here):
+The catalog and its state (names only; no value is recorded here):
 
 | Name | GitHub type | `development` state | `production` value | Synced to Render? |
 | --- | --- | --- | --- | --- |
 | `SMTP_HOST` | variable | preserved (existing) | `smtp-relay.brevo.com` | yes |
-| `SMTP_PORT` | variable | preserved (existing) | `587` | yes |
-| `SMTP_SECURE` | variable | created by T5 (`false`) | `false` | yes |
+| `SMTP_PORT` | variable | `2525 (set before merge)` | `587` | yes |
+| `SMTP_SECURE` | variable | `false` (set before merge) | `false` | yes |
 | `SMTP_CONNECTION_TIMEOUT_MS` | variable | created by T5 (`10000`) | `10000` | yes |
 | `SMTP_FROM` | variable | preserved (existing) | `<CHANGEME-verified-sender>` | yes |
 | `SMTP_USER` | secret | preserved (existing; the variable value moved to the secret) | `<CHANGEME-smtp-login>` | yes |
@@ -320,14 +321,16 @@ The catalog and the live state after T5 (names only; no value is recorded here):
 | `RENDER_SERVICE_ID` | variable | created by T5 (`srv-dbtcvv9srm7s73au5bag`) | `<CHANGEME-render-service-id>` | no — URL path only |
 | `RENDER_API_KEY` | secret | placeholder created by T5 | `<CHANGEME-render-api-key>` | no — bearer header only |
 
+A Render-free production service also needs 2525. The `production` cell stays `587` placeholder-only until production is provisioned; when it is, set `SMTP_PORT=2525` with `SMTP_SECURE=false` (owner-owned, Q-2).
+
 **Entering values (UI path).** GitHub → repository → **Settings → Environments → <environment>**; open the **Environment variables** area for a variable or the **Environment secrets** area for a secret and enter the value there. The UI is for entering values only, never as verification evidence; a real secret value is entered through the UI or stdin, never as a command argument or in a file. The placeholder `--body` commands below are the only value-bearing commands in this runbook.
 
-**Exact `gh` commands (18 lines).** These are the exact per-environment create/refresh commands with the pinned literals and placeholders. The `development` block is the reference form for a clean environment: the provisioned `development` Environment already holds the preserved values, and only `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`, `RENDER_SERVICE_ID` and the `RENDER_API_KEY` placeholder were created there, so do not overwrite the preserved names (the `SMTP_USER` variable-to-secret move is the sequence in § `SMTP_USER` migration below). Run the `production` block only when provisioning production; production stays placeholder-only until then.
+**Exact `gh` commands (18 lines).** These are the exact per-environment create/refresh commands with the pinned literals and placeholders. The `development` block is the reference form for a clean environment: the provisioned `development` Environment already holds the preserved values; this feature refreshes `SMTP_PORT` to `2525` (with `SMTP_SECURE=false`) before merge, while `SMTP_CONNECTION_TIMEOUT_MS`, `RENDER_SERVICE_ID` and the `RENDER_API_KEY` placeholder were created there, so do not overwrite the other preserved names (the `SMTP_USER` variable-to-secret move is the sequence in § `SMTP_USER` migration below). Run the `production` block only when provisioning production; production stays placeholder-only until then.
 
 ```bash
 # development
 gh variable set SMTP_HOST --env development --repo raultorres2603/CubeClicker --body 'smtp-relay.brevo.com'
-gh variable set SMTP_PORT --env development --repo raultorres2603/CubeClicker --body '587'
+gh variable set SMTP_PORT --env development --repo raultorres2603/CubeClicker --body '2525'
 gh variable set SMTP_SECURE --env development --repo raultorres2603/CubeClicker --body 'false'
 gh variable set SMTP_CONNECTION_TIMEOUT_MS --env development --repo raultorres2603/CubeClicker --body '10000'
 gh variable set SMTP_FROM --env development --repo raultorres2603/CubeClicker --body '<CHANGEME-verified-sender>'
@@ -375,15 +378,15 @@ if gh variable list --env production --repo raultorres2603/CubeClicker --json na
 fi
 ```
 
-**Preserve note.** The 2026-11-22 owner decision preserves the existing development values and creates only the missing names: `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`, `RENDER_SERVICE_ID` and `RENDER_API_KEY`, with the `SMTP_USER` variable value moved to the secret through stdin without printing. The owner re-checks the preserved `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USER` and `SMTP_PASS` values rather than re-entering them; the guard cannot detect a real-but-wrong preserved value, so the deployed proof below is the delivery check.
+**Preserve note.** The 2026-11-22 owner decision preserves the existing development values and creates only the missing names: `SMTP_SECURE`, `SMTP_CONNECTION_TIMEOUT_MS`, `RENDER_SERVICE_ID` and `RENDER_API_KEY`, with the `SMTP_USER` variable value moved to the secret through stdin without printing. This feature supersedes only the preserved `SMTP_PORT` value (`587` → `2525`, with `SMTP_SECURE=false`) before merge (AC-11(a)). The owner re-checks the preserved `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER` and `SMTP_PASS` values rather than re-entering them; the guard cannot detect a real-but-wrong preserved value, so the deployed proof below is the delivery check.
 
-**Merge ordering.** Fill the `development` `RENDER_API_KEY` placeholder with a real Render key before this feature merges to main: `main` auto-deploys development and the strict guard fails closed, so the first development deploy after merge is blocked by design until the placeholder is filled. The preserved development values are already in place, so `RENDER_API_KEY` is the only remaining pre-merge `development` value; production remains placeholder-only until it is provisioned.
+**Merge ordering.** Before this feature merges to `main`, set `SMTP_PORT=2525` and `SMTP_SECURE=false` in the `development` Environment and fill the `development` `RENDER_API_KEY` placeholder with a real Render key: `main` auto-deploys development and the strict guard fails closed, so the first development deploy after merge is blocked by design until both are in place. Production remains placeholder-only until it is provisioned; a Render-free production service must also use `2525` (Q-2).
 
 **Source of truth.** The seven SMTP names are written to Render by the deploy workflow from the GitHub Environment; GitHub is the source of truth; Render dashboard edits are reverted on the next deploy. Only those seven names are written — `RENDER_API_KEY` and `RENDER_SERVICE_ID` are never written to the service, and the remaining `sync: false` names stay dashboard-owned.
 
 #### Deployed proof (user-owned)
 
-After the owner fills the development `RENDER_API_KEY` (the preserved development values are already in place), the first development deploy is the live proof. Record it as user-owned; no CI job contacts Brevo and no value is printed:
+After the owner sets `SMTP_PORT=2525`/`SMTP_SECURE=false`, fills the development `RENDER_API_KEY`, and merges, the first development deploy is the live proof. Record it as user-owned; no CI job contacts Brevo and no value is printed:
 
 1. The deploy run shows seven `SYNCED <KEY>` lines (one per SMTP name) and the summary `Synced 7 value(s) to Render service <id> for the 'development' environment.`
 2. The Render deploy list shows no deploy between the sync and the hook; if the per-key write does trigger a deploy, record the documented mitigation (cancel it before the hook or let both finish and re-run the post-deploy checks).
@@ -399,3 +402,27 @@ After the owner fills the development `RENDER_API_KEY` (the preserved developmen
 - **Bad deployed revision:** Render dashboard → service → **Deploys → Rollback** to the last known-good deploy (this bypasses the workflow and the guard), or revert on `main` and let CI → Deploy rebuild once the GitHub values are valid.
 - **Render API key:** rotate it in Render, update the `RENDER_API_KEY` GitHub Environment secret (stdin or UI, never a command argument), and re-run the workflow. A revoked key fails the preflight/sync with a clear message and never reaches the running instance; the key is never a Render service variable, so rotation does not touch the service environment.
 - **Dashboard-only emergency fix:** it applies at the next deploy only and is then overwritten from GitHub; make the same change in the GitHub Environment to persist it.
+
+### Registration recovery (development)
+
+**Render free blocks outbound SMTP on ports 25, 465 and 587.** The deployed development backend must therefore send through `SMTP_PORT=2525` with `SMTP_SECURE=false` (STARTTLS); a 587 pin can only fail inside Render.
+
+**Before merging this feature.** Set `SMTP_PORT=2525` and `SMTP_SECURE=false` in the GitHub `development` Environment (UI, or the `gh variable set` command in § Deployment Brevo runbook) and record both values in `build-log-T9.md` Phase A. If they are not set, the first post-merge deploy fails at `Check deployment Brevo configuration`; the recovery is to set them and re-run, never to bypass the guard.
+
+**Redeploy and health.** Re-run the latest **Deploy** workflow (Actions → Deploy → **Re-run all jobs**) or push a commit to `main`; the sync writes the seven SMTP names (including `SMTP_PORT=2525`) to Render and restarts the instance. Confirm `curl -fsS https://cubeclicker-development.onrender.com/healthz` returns `{"status":"ok"}`.
+
+**Resend and verify U2.** Sign in as U2's username (username login works today; email login arrives with this feature) and use **Resend verification email** on the pending screen, or call the unauthenticated resend endpoint directly:
+
+```bash
+curl -i -X POST https://cubeclicker-development.onrender.com/auth/resend-verification \
+  -H "Origin: <frontend origin>" \
+  -H "Content-Type: application/json" \
+  --data '{"email":"<the U2 address>"}'
+# expect HTTP 202 {"message":"verification email sent"}
+```
+
+A failed send returns HTTP `502` with code `verification_email_failed`; the account stays persisted and unverified, the just-issued token is invalidated, and a later resend issues a fresh one.
+
+**If the resend still fails at 2525.** Check the Brevo side with the same values: run `npm run email:test --workspace @cubeclicker/backend -- --to <owner-address>` (success prints `Test email sent to …`), then check the Brevo transactional log, the verified sender, and that `SMTP_PASS` holds the **SMTP key**, not the REST API key. Fix in Brevo or the GitHub Environment and re-run the deploy.
+
+**Exact desired pair.** The desired username + U2's address still cannot register while one unverified row holds the username and the other holds the email; cleanup is owner-only (Q-1: delete both unverified rows or keep U2), and no code deletes or merges rows. Q-2 covers the same 2525 rule when production is provisioned.

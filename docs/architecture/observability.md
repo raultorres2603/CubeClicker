@@ -65,6 +65,22 @@ The startup schema bootstrap and the in-process expired-verification cleanup log
 - **No new metric.** This feature adds no metric series and the fixed catalog below stays at exactly 30 metrics: no `cubeclicker_db_bootstrap*` or `cubeclicker_db_cleanup*` series exists, and `/metrics` continues to serve only the catalog entries listed in § Metrics catalog.
 - **Visibility.** `db_schema_bootstrap_skipped { reason: 'no_database' }` and `db_verification_cleanup_skipped { reason: 'no_database' }` are debug lines for host-only runs without a database; the `disabled` variants are info lines because an operator turned a service off explicitly.
 
+## Email delivery events
+
+Registration and resend log one redacted warning when the SMTP transport rejects, and the route maps the typed delivery error to HTTP `502` with code `verification_email_failed`, so "SMTP broken" is distinguishable from a code failure without reading a credential or a transport message. The non-blocking `onReady` startup probe logs its own outcome and never delays `listen` or `GET /healthz`.
+
+| Event | Fields | Level |
+| --- | --- | --- |
+| `verification_email_delivery_failed` | `route` (`register`/`resend-verification`), `errorType`, optional string `transportCode`, `host`, `port` | warn |
+| `smtp_transport_verify_ok` | `host`, `port` | info |
+| `smtp_transport_verify_failed` | `errorType`, optional string `transportCode`, `host`, `port` | warn |
+| `smtp_transport_verify_skipped` | `reason`: `no_credentials` or `unsupported` | debug |
+
+- **One line per failure.** A register or resend delivery failure emits exactly one `verification_email_delivery_failed` event; the startup probe catches its own rejection and logs `smtp_transport_verify_failed` instead, so neither path produces an unhandled rejection.
+- **No PII.** No email, username, account id, token, message or stack appears in any of these events. `errorType` is the source error name (or `unknown`), `transportCode` is copied only when it matches the provider-code whitelist `/^[A-Z0-9_]{1,40}$/`, and `host`/`port` are the configured relay values.
+- **Levels.** `verification_email_delivery_failed` and `smtp_transport_verify_failed` are `warn` and visible at the deployed `info` default; `smtp_transport_verify_ok` is `info`; `smtp_transport_verify_skipped` is `debug` and appears only when the configured level is `debug`.
+- **Probe visibility.** The probe runs only when both SMTP credentials are set (the deployed relay path); Mailpit skips it with `reason: 'no_credentials'` and a service without `verify` reports `reason: 'unsupported'`. Its outcome never changes `/healthz`.
+
 ## Metrics catalog
 
 The registry defines exactly the 30 metrics below. The object key is the metric name and each definition carries its type, help text, label names and **allowed values per label**. `inc`/`set`/`observe` throw for an unknown metric, an undeclared label, a missing declared label or a label value outside its allow-list, so user-controlled strings can never become a Prometheus series. There is no catalog label named `playerId`, `userId`, `accountId`, `email`, `token`, `ip`, `remoteAddress` or `serverId`.
