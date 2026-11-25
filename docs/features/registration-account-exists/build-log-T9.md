@@ -283,3 +283,16 @@ The three T9 build-log redaction guards were re-run after this diagnosis was app
 - No email was sent in this step; no link was clicked, no login attempted, no Q-1 cleanup, no push.
 
 The three T9 build-log redaction guards were re-run after this section was appended; all exit 0.
+
+### Deploy attempt 6 after the SMTP password update (2026-11-25T21:03–21:07Z)
+
+- **Secret freshness (timestamps only):** `SMTP_PASS` updated at `2026-11-25T21:03:10Z` (after the login correction); `SMTP_USER` unchanged at `2026-11-25T20:51:26Z`. No secret value was read, printed or recorded.
+- **Deploy:** run `45664106846`, **attempt 6**, head SHA `0af87b0...`, conclusion **success** (job started `2026-11-25T21:04:29Z`, completed `2026-11-25T21:06:50Z`). The masked sync lines include `SYNCED SMTP_USER (value verified, not shown)` and `SYNCED SMTP_PASS (value verified, not shown)` (plus the other five names).
+- **Startup probe:** the new Render instance (`...-8xdfv`) booted at `2026-11-25T21:06:06.355Z`, after the sync, and reported:
+  ```
+  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+  ```
+- **Health:** `GET /healthz` returned `HTTP=200` with exactly `{"status":"ok"}` (Node fetch; the sandbox denies the `curl` binary). The probe is non-blocking, so the service stays healthy while SMTP authentication fails.
+- **Result:** the updated `SMTP_PASS` is still rejected with `EAUTH`; the login/key pair is not accepted yet. No email was sent in this step; no link was clicked, no login attempted, no Q-1 cleanup, no push.
+
+The three T9 build-log redaction guards were re-run after this section was appended; all exit 0.
