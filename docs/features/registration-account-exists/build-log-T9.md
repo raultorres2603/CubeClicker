@@ -196,3 +196,77 @@ Outcome:
 - Recovery is owner-owned: correct `SMTP_USER`/`SMTP_PASS` (SMTP login and SMTP key from Brevo, **not** the REST API key), confirm `SMTP_FROM` is a verified sender, redeploy, then repeat the resend.
 
 The three T9 build-log redaction guards were re-run after this section was appended; all exit 0.
+
+### Diagnosis follow-up (2026-11-25T20:44–20:49Z)
+
+Trigger: the owner reports the deployed UI shows the registration 502 panel and that the resend still fails. This step diagnosed the cause; it sent **no** email. Its only external write was the authorized Deploy re-run in § 5.
+
+#### 1. Render app evidence since the prior failure
+```
+2026-11-25T17:55:13.232Z  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T17:55:14.766Z  verification_email_delivery_failed  route=resend-verification  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T18:07:05.153Z  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T20:06:48.051Z  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T20:43:04.352Z  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T20:43:07.758Z  verification_email_delivery_failed  route=register  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T20:43:25.007Z  verification_email_delivery_failed  route=resend-verification  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+```
+No address, username, token or request body appears in these events. The 20:43 pair is the owner's deployed UI attempt (register + resend); every failure is `EAUTH`.
+
+#### 2. Secret freshness (names and timestamps only)
+```
+SMTP_USER  updatedAt=2026-11-25T18:01:36Z
+SMTP_PASS  updatedAt=2026-11-25T18:01:52Z
+```
+The last deploy before this diagnosis (attempt 3) synced at `2026-11-25T17:33:25Z`, i.e. **before** the secret updates. The 20:43 failures therefore used the old Render credentials. No secret value was read or recorded.
+
+#### 3. Neon `development` branch (read-only)
+Read-only SELECT against project `patient-mountain-41401588`, branch `br-ancient-smoke-za1pdv7w` (`development`), filtered by the owner address and returning no email or username:
+```
+user_id 3f2903e8-33ca-4af5-b4da-54f50b5f8c13
+verified false
+created_at 2026-11-25T20:43:07.520Z  (the 20:43:07.758Z register attempt created this row)
+updated_at 2026-11-25T20:43:07.520Z
+verification tokens: 0 rows total, 0 unused, 0 used
+```
+The account exists and is unverified; the failed send deleted every verification token for it (`invalidateForUser`), so no valid token exists and a later resend will issue a fresh one.
+
+#### 4. Brevo status (no sender/domain names or addresses recorded)
+```
+account: free plan; relay enabled=true
+senders: 1 total, 1 active
+domains: 0 (none authenticated, none verified)
+transactional emails for <owner-address>, last 30 days: 0
+email events for <owner-address>, last 7 days: 0
+```
+No acceptance, delivery, bounce or block event; the transport rejects authentication before Brevo accepts the message.
+
+#### 5. Credential sync Deploy re-run (authorized)
+The secrets are newer than the last deploy, so the latest Deploy run was re-run (attempt 4) to sync them:
+```
+workflow=Deploy  id=45664106846  attempt=4  headSha=0af87b0...  conclusion=success
+job=deploy  startedAt=2026-11-25T20:46:10Z  completedAt=2026-11-25T20:48:09Z
+Deploy configuration OK: 9 value(s) present for the 'development' environment.
+SYNCED SMTP_HOST (value verified, not shown)
+SYNCED SMTP_PORT (value verified, not shown)
+SYNCED SMTP_SECURE (value verified, not shown)
+SYNCED SMTP_CONNECTION_TIMEOUT_MS (value verified, not shown)
+SYNCED SMTP_FROM (value verified, not shown)
+SYNCED SMTP_USER (value verified, not shown)
+SYNCED SMTP_PASS (value verified, not shown)
+```
+Health after the deploy: `HTTP=200`, `{"status":"ok"}` (Node fetch; the sandbox denies the `curl` binary).
+
+The new Render instance (`...-vmhqt`) booted at `2026-11-25T20:47:34.580Z`, after the sync, and its startup probe still reports:
+```
+smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+```
+The freshly synced credentials are therefore also rejected. No delivery attempt occurred after the redeploy by 20:49Z.
+
+#### Diagnosis
+- The deployed backend, deploy guard, host and port are correct; registration persists the account and `/healthz` stays green (the probe is non-blocking).
+- The only failure is Brevo SMTP authentication (`EAUTH`) — first with the pre-18:01 credentials, and again with the post-18:01 credentials after they were synced to Render.
+- The remaining defect is the credential content, not the sync path: `SMTP_USER` must be the Brevo **SMTP login** and `SMTP_PASS` the Brevo **SMTP key** (Settings → SMTP & API → SMTP), not the REST API key; also ensure neither value carries a trailing newline or whitespace, and confirm the sender is verified (1 active sender; 0 authenticated domains).
+- Recovery: correct the two secrets, re-run Deploy to sync them, then resend; the unverified account currently has 0 tokens, so the next resend issues a fresh token. No link was clicked, no login attempted, no Q-1 cleanup.
+
+The three T9 build-log redaction guards were re-run after this diagnosis was appended; all exit 0.
