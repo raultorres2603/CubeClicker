@@ -47,9 +47,14 @@ Deployed development registration returns 409 / no verification email because Re
 - 2026-11-24 — building → code_review — T1–T8 complete, full gate green (backend 96.96/91.88/99.64/96.96; frontend 97.22/96.8/98.6/97.22; smoke 29/29 via PODMAN_COMPOSE_PROVIDER; actionlint/config/audits pass); T9 owner post-merge pending; code review round 1 dispatched — build-log-T8.md
 - 2026-11-24 — code_review — review r1 approved (0 blocking; 6 MINOR + 6 INFO); AC-1–AC-10 verified; AC-11/T9 owner-pending post-merge; owner hand-off checkpoint — reviews/code-r1.md
 - 2026-11-24 — code_review — owner chose to run T9; Phase A/B instructions handed off; awaiting build-log-T9.md — build-log-T9.md (pending)
+- 2026-11-25 — code_review — owner authorized T9 Phase A via GitHub MCP and reported the merge to main; builder dispatched to set development vars and deploy — build-log-T9.md (pending)
+- 2026-11-25 — code_review — Deploy run 45664106846 green after 2525/false, but SMTP_HOST still points at local Mailpit; owner-authorized follow-up to set smtp-relay.brevo.com and redeploy — build-log-T9.md
+- 2026-11-25 — code_review — Deploy attempt 3 success after SMTP_HOST=smtp-relay.brevo.com; /healthz 200; Phase B live proof pending (owner resend/click/login) — build-log-T9.md
+- 2026-11-25 — code_review — owner authorized the Phase B resend to the requested account; builder dispatched to trigger it and record send evidence — build-log-T9.md
+- 2026-11-25 — code_review — Phase B resend blocked: HTTP 502 verification_email_failed, Render EAUTH at smtp-relay.brevo.com:2525; Brevo credentials rejected, zero Brevo records; owner must correct SMTP_USER/SMTP_PASS and redeploy — build-log-T9.md
 
 ## Blockers / open questions
-- T9 (owner): pre-merge development vars + merge/deploy + Phase B live proof; AC-11 is not yet verified.
+- T9 Phase B blocked: SMTP AUTH rejected (EAUTH); owner must set the Brevo SMTP login/key in `development`, redeploy, and retry the resend.
 - Q-1 (owner, destructive): delete both unverified rows or keep U2 for the exact `raultorraco` + U2-email pair; no merge implementation is in scope.
 - Q-2: extend the blocked-port guard to production when provisioned.
 - Q-5: Brevo sender/domain authentication remains owner-owned; AC-11 distinguishes it.
