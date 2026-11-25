@@ -66,5 +66,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | deploy-brevo-env-placeholders | Deployment Brevo Environment Placeholders (GitHub development/production env vars+secrets, strict placeholder guard, GitHub→Render SMTP sync, Mailpit kept local) | accepted | 2026-11-23 |
 | db-schema-bootstrap-and-expiry-cleanup | DB Schema Bootstrap & Expired Verification Cleanup (in-process required-table check/create with advisory lock, structured traces, hourly expired verification-token cleanup) | accepted | 2026-11-24 |
 | registration-account-exists | Registration Account Exists: Working Verification Delivery, Honest Conflicts & Resumable Registration | code_review | 2026-11-24 |
+| deploy-development-manual-trigger | Manual Development Deploy Trigger | accepted | 2026-11-25 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
