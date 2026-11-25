@@ -270,3 +270,16 @@ The freshly synced credentials are therefore also rejected. No delivery attempt 
 - Recovery: correct the two secrets, re-run Deploy to sync them, then resend; the unverified account currently has 0 tokens, so the next resend issues a fresh token. No link was clicked, no login attempted, no Q-1 cleanup.
 
 The three T9 build-log redaction guards were re-run after this diagnosis was appended; all exit 0.
+
+### SMTP login correction and redeploy (2026-11-25T20:51–20:54Z)
+
+- **Login correction:** `SMTP_USER` in the GitHub `development` Environment was replaced with the Brevo relay username reported by Brevo's account API — **SMTP login corrected to the Brevo relay username (value not shown)**. The secret's `updatedAt` is `2026-11-25T20:51:26Z`; `SMTP_PASS` is unchanged (`updatedAt=2026-11-25T18:01:52Z`). No secret value was printed, logged or recorded.
+- **Deploy:** run `45664106846`, **attempt 5**, head SHA `0af87b0...`, conclusion **success** (job started `2026-11-25T20:51:34Z`, completed `2026-11-25T20:53:52Z`). The masked sync lines include `SYNCED SMTP_USER (value verified, not shown)` and `SYNCED SMTP_PASS (value verified, not shown)` (plus the other five names).
+- **Startup probe:** the new Render instance (`...-rdqpr`) booted at `2026-11-25T20:53:07.699Z`, after the sync, and reported:
+  ```
+  smtp_transport_verify_failed  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+  ```
+- **Interpretation:** the relay username is the correct SMTP login per Brevo's account API, so the remaining fault is `SMTP_PASS`: it must be the Brevo **SMTP key** from Settings → SMTP & API → SMTP (not the REST API key), with no trailing whitespace or newline.
+- No email was sent in this step; no link was clicked, no login attempted, no Q-1 cleanup, no push.
+
+The three T9 build-log redaction guards were re-run after this section was appended; all exit 0.
