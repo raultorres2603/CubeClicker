@@ -127,7 +127,8 @@ Again the sandbox denies the `curl` binary; the same GET ran via Node's `fetch` 
 ## Acceptance audit (AC-11 — Phase A + Deploy only)
 - AC-11(a) → met for the values, with the ordering note above: both non-secret values were set and read back; the Phase A assertions pass.
 - AC-11(b) → met: the latest Deploy run `45664106846` succeeded (attempt 3) and its log carries `SYNCED SMTP_HOST (value verified, not shown)` and `SYNCED SMTP_PORT (value verified, not shown)`; `/healthz` returns exactly `{"status":"ok"}`.
-- AC-11(c)/(d) → not executed: Phase B live Render/Brevo evidence, the resend/registration proof and `joined as account` remain owner-only and are outside this step's authorization.
+- AC-11(c) → **blocked**: the Render probe events for the new instances are `smtp_transport_verify_failed` with `transportCode=EAUTH` at `smtp-relay.brevo.com:2525`; no probe-success event exists, and the info-filtered fallback does not apply because a delivery-failure line exists (below).
+- AC-11(d) → **blocked**: the single owner-authorized resend returned HTTP `502 verification_email_failed`; the Brevo transactional log has zero records and zero events for `<owner-address>`, so nothing was delivered; account verification and the account-mode join proof were not reached (no link click, no login).
 - AC-11(e) → met for this file: the T9 build-log redaction guards pass (below); no address, username, token, link or credential is recorded.
 
 ## Redaction guards over this file
@@ -146,3 +147,52 @@ BUILD-LOG GUARDS: ALL THREE EXITED 0
 - **Ordering.** Phase A was applied post-merge under the owner's explicit authorization, not pre-merge; the first Deploy attempt failed at the guard and was re-run after the values were set, exactly the documented recovery path.
 - **Health transport.** The health GET used Node's `fetch` because this sandbox denies the `curl` binary; the requested body and status are asserted exactly.
 - No source, test, config, workflow, compose, Dockerfile, migration or other feature-artifact change.
+
+## Phase B (post-merge)
+
+**Status: blocked at SMTP authentication — no email delivered.** One owner-authorized live resend was attempted (exactly one attempt; no retry).
+
+Request, as pinned by the deployed backend route and the deployed frontend's resend call (redacted):
+```
+POST https://cubeclicker-development.onrender.com/auth/resend-verification
+Content-Type: application/json
+Origin: <frontend origin>
+{"email":"<owner-address>"}
+```
+The body field is `email` (`src/backend/src/auth/auth-routes.ts` resend handler; `src/frontend/src/auth/api.ts` resend call); the request used Node 24 `fetch` because this sandbox denies the `curl` binary.
+
+Response:
+```
+HTTP 502  (Retry-After: none)
+{"message":"verification email could not be sent","code":"verification_email_failed","error":"verification_email_failed"}
+```
+
+Render evidence (redacted fields only; no request body, address, username or token):
+```
+2026-11-25T17:55:14.766Z  level=40  msg=verification_email_delivery_failed
+  route=resend-verification  errorType=Error  transportCode=EAUTH
+  host=smtp-relay.brevo.com  port=2525
+```
+The startup probe on the same instance and on the attempt-3 instance recorded the same cause:
+```
+2026-11-25T17:55:13.232Z  msg=smtp_transport_verify_failed
+  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+2026-11-25T17:33:59.278Z  msg=smtp_transport_verify_failed
+  errorType=Error  transportCode=EAUTH  host=smtp-relay.brevo.com  port=2525
+```
+`EAUTH` is the SMTP transport rejecting the configured credentials; the host and port are correct and reachable (the session reached the authentication stage).
+
+Brevo transactional log (queries filtered by `<owner-address>`; no address recorded):
+```
+transactional-emails list, last 30 days -> 0 records
+email event report, last 7 days          -> 0 events
+```
+No acceptance, delivery, bounce or block event exists, so the failure happened before Brevo accepted the message.
+
+Outcome:
+- No verification email was sent or delivered; no verification link reached the mailbox.
+- The failed send invalidated the just-issued token (`sendVerificationEmail` invalidates on failure), so a later resend must be used after the credentials are fixed.
+- Account verification and the account-mode join proof were **not** reached; no link was clicked and no login was attempted, per the instruction.
+- Recovery is owner-owned: correct `SMTP_USER`/`SMTP_PASS` (SMTP login and SMTP key from Brevo, **not** the REST API key), confirm `SMTP_FROM` is a verified sender, redeploy, then repeat the resend.
+
+The three T9 build-log redaction guards were re-run after this section was appended; all exit 0.
