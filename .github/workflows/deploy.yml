@@ -10,11 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: GitHub Environment to deploy (manual production only)
+        description: GitHub Environment to deploy (development or production)
         type: choice
         required: true
         default: production
-        options: [production]
+        options: [production, development]
 
 concurrency:
   group: deploy-${{ github.event.inputs.environment || 'development' }}
