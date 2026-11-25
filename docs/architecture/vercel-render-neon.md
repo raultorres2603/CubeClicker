@@ -29,7 +29,7 @@ flowchart LR
 - **Spin-down and cold start (development-only trade-off).** A free instance hibernates after **15 minutes without traffic**. While at least one WebSocket is connected the instance counts as active and stays up. After hibernation the next HTTP request or WebSocket connection waits for a cold start — tens of seconds, around 30–60 s in practice — and then serves normally. Every restart (cold start, deploy, manual restart) resets the in-memory rooms; clients rejoin fresh.
 - **WebSocket reconnect.** The client's reconnect policy is unchanged: up to **10 attempts** with a 500 ms → 5 s exponential backoff (about 38 s of waiting) before the connection banner shows `Connection lost` with a `Retry` button. A cold start can outlast that budget, so the first visit after idle may need one manual `Retry` click; the retry itself wakes the instance. Presence/heartbeat behavior (30 s server heartbeat, server-side reconnect grace) is identical to local.
 - **TLS and WebSocket edge.** Render terminates TLS, serves `https://` and proxies `wss://` upgrades; no proxy or certificate asset is configured by this repository. Render's free edge may drop a close frame after an upgrade, which is why the backend rejects a disallowed WebSocket `Origin` with an HTTP **403 before** the upgrade (the deployed smoke asserts this). Vercel serves only static assets and never proxies `/auth/*` or `/ws`.
-- **Deploy flow and ordering (CI once).** A push to `main` runs **CI once** (`ci.yml`: lint, typecheck, test, coverage, build, containerized smoke, workflow/config checks, and the two Brevo guard fixtures). Only a successful `workflow_run` of that CI run triggers **Deploy**; the deploy job does **not** call `ci.yml` again, so gates are not duplicated. Order is fixed: **`Check deployment Brevo configuration` → Neon migration with the direct URL → `Sync Brevo SMTP settings to Render` → Render deploy hook → 45 s head start → `/healthz` poll → Vercel `pull`/`build`/`deploy --prebuilt --prod` → warm `/healthz` → deployed smoke**. Migrate before backend before frontend: the frontend build bakes the API/WS URLs and should only point at a live, migrated backend.
+- **Deploy flow and ordering (CI once).** A push to `main` runs **CI once** (`ci.yml`: lint, typecheck, test, coverage, build, containerized smoke, workflow/config checks, and the two Brevo guard fixtures). On the automatic path, only a successful `workflow_run` of that CI run triggers **Deploy**; a manual `workflow_dispatch` with `environment: development` re-runs the same job for a commit whose CI already succeeded, so the manual path never bypasses CI; the deploy job does **not** call `ci.yml` again, so gates are not duplicated. Order is fixed: **`Check deployment Brevo configuration` → Neon migration with the direct URL → `Sync Brevo SMTP settings to Render` → Render deploy hook → 45 s head start → `/healthz` poll → Vercel `pull`/`build`/`deploy --prebuilt --prod` → warm `/healthz` → deployed smoke**. Migrate before backend before frontend: the frontend build bakes the API/WS URLs and should only point at a live, migrated backend.
 - **Why there is no `vercel alias` step.** The only Vercel project is the development project and `vercel deploy --prod` updates its production domain (`cubeclicker-development.vercel.app`) directly, so no separate alias command is needed and a second source of truth is avoided.
 - **Neon contract.** One Neon project with `development` and `production` branches. `DATABASE_URL` is the **pooled** `-pooler` URL with `sslmode=require` for runtime queries. `DIRECT_DATABASE_URL` is the **direct** URL with `sslmode=require`, used by the CI migration job and by the Render startup phase (advisory lock, migrations and schema bootstrap); both run on a dedicated `pg.Client` (one connection) so `BEGIN`, every migration statement and `COMMIT` share the same connection — never a `pg.Pool` through PgBouncer. The startup `pg.Client` must be direct/session-capable: when `DIRECT_DATABASE_URL` is absent, the `DATABASE_URL` fallback carries the session advisory lock, which a pooled URL cannot. The bootstrap checks the five required tables and creates a missing one with idempotent DDL, so the startup role needs `CREATE` on `public` (the default Neon role owns it). Migrations are forward-only and add-only. Only accounts, sessions, verification tokens, economy and customization live in Postgres.
 - **Resilience and recovery.** A failed migration fails the deploy before Render or Vercel is touched. The startup migration and schema bootstrap are an idempotent safety net and a no-op after CI. Render uses zero-downtime deploys: the build runs first, then a new instance starts and traffic switches over; the 45 s wait gives the build a head start so the health poll cannot pass against the old instance, and the deployed smoke is the end-to-end proof of the deployed revision. During the short overlap the old and new instances are separate processes, so a client still attached to the old one sees a different room registry until its socket closes and it reconnects — a consequence of in-memory rooms, not a bug, and not application-level zero-downtime for clients (see `deployment.md` § Single-instance trade-off). The overlap is safe for the startup phase because one dedicated direct/session-capable `pg.Client` holds a session advisory lock across migrations and the schema bootstrap, so the second instance waits (bounded at 30 s) instead of racing DDL.
@@ -43,7 +43,7 @@ flowchart LR
 
 ## Environment catalog
 
-All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, holds the nine deployment names `placeholder-only`, and `no Render service, Vercel project or Neon branch is provisioned`. It fails at the Brevo placeholder guard until it is provisioned with a production Render service, a production Vercel project and a production Neon branch.
+All GitHub values are per Environment; only names are listed, never values. `development` is the provisioned environment and is deployed automatically from `main`; the same `workflow_dispatch` input can re-deploy it with `environment: development`, and the same `environment` input offers `development` and `production`. `production` is **not provisioned**: it is reachable only by `workflow_dispatch`, holds the nine deployment names `placeholder-only`, and `no Render service, Vercel project or Neon branch is provisioned`. It fails at the Brevo placeholder guard until it is provisioned with a production Render service, a production Vercel project and a production Neon branch.
 
 ### GitHub Environment `development` (provisioned)
 
@@ -76,7 +76,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 
 ### GitHub Environment `production` (not provisioned, manual only)
 
-- Trigger: `workflow_dispatch` only, with the single `production` choice. The job first verifies that CI for the target SHA succeeded, then runs the deploy job. The `production` Environment has **no protection rules and no deployment branch policy** today; required reviewers and a `main`-only branch policy must be configured before production is used.
+- Trigger: `workflow_dispatch` only, with `environment=production`. The job first verifies that CI for the target SHA succeeded, then runs the deploy job. The `production` Environment has **no protection rules and no deployment branch policy** today; required reviewers and a `main`-only branch policy must be configured before production is used.
 - Values: the same **nine names** as `development`, all `placeholder-only` (six variables, three secrets). `no Render service, Vercel project or Neon branch is provisioned`; before production can deploy, a user must create a production Render service (with its own deploy hook URL), a production Vercel project/domain, and a Neon `production` branch with protected URL secrets, then fill the nine values and add the protection rules.
 - Nothing in the repository hardcodes a production hostname; production has no committed host or credential.
 
@@ -130,7 +130,7 @@ All GitHub values are per Environment; only names are listed, never values. `dev
 ### Routine development deploy
 
 1. Push or merge to `main`.
-2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, a `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared, the guard that `deploy.yml` never mentions Fly, `Guard rejects placeholder values` and `Guard accepts a complete value set`).
+2. **CI** runs once: `npm ci`, lint, typecheck, test, coverage, build, `smoke-e2e`, and `verify-workflows` (actionlint over both workflows, `src/frontend/vercel.json` JSON parse, a `render.yaml` YAML parse that checks the service name/runtime/plan and that no platform health check is declared, `Validate deploy workflow dispatch choices` (both `workflow_dispatch` choices, the `production` default, the input→environment mapping and the unchanged automatic path), the guard that `deploy.yml` never mentions Fly, `Guard rejects placeholder values` and `Guard accepts a complete value set`).
 3. **Deploy** starts from the `workflow_run` event after that CI run succeeds (no `workflow_call`, no second test run):
    - `Check deployment Brevo configuration`: validates all nine GitHub Environment values and fails before any provider call when one is missing or contains `CHANGEME`.
    - Neon migration with `DIRECT_DATABASE_URL` (names applied/pending are printed, no connection strings).
@@ -140,6 +140,22 @@ All GitHub values are per Environment; only names are listed, never values. `dev
    - `vercel pull --environment=production`, `vercel build --prod`, `vercel deploy --prebuilt --prod` (the stable alias is updated by `--prod`).
    - Warm `/healthz` (up to 12 retries) and `node tests/e2e/deployed-smoke.mjs` with `SMOKE_TIMEOUT_MS=20000`.
 4. The deployed smoke prints one PASS/FAIL line per check (health, allowed and disallowed CORS preflight, SPA `/`, SPA deep link, real `/assets/*` 404, WebSocket hello/join/click, WebSocket disallowed-Origin 403). Any FAIL exits non-zero and the run is red.
+
+### Manual development deploy
+
+Development can be re-deployed by hand, for example after changing a GitHub Environment value or recovering from a provider hiccup, without a throwaway commit. Use **Actions → Deploy → Run workflow** with `environment: development`, or:
+
+```bash
+gh workflow run deploy.yml --ref main -f environment=development
+```
+
+1. The dispatch ref must be `main`. The Render deploy hook builds the service's tracked `main` branch while Vercel builds the dispatched ref, so a non-`main` dispatch would mix revisions; `--ref main` keeps both on the same commit.
+2. The job first requires a successful CI run for the dispatched SHA. `Verify CI succeeded for target commit` reads the CI conclusion with `gh run list` and refuses with `CI for <sha> is not successful` otherwise, so the manual path never bypasses CI; a dispatch re-deploys a commit whose CI already succeeded and does not re-run CI.
+3. The `environment` input defaults to `production`; select `development` before running.
+4. The job runs the same steps as the automatic path with the `development` Environment's values: `Check deployment Brevo configuration` (nine names) → Neon migration → `Sync Brevo SMTP settings to Render` → Render deploy hook → 45 s wait → `/healthz` poll → Vercel `--prod` → deployed smoke.
+5. The development SMTP port guard applies unchanged: the deployed recipe stays `SMTP_PORT=2525` with `SMTP_SECURE=false` (STARTTLS) because Render free blocks 25, 465 and 587, and the guard fails closed on the Mailpit port `1025`, a malformed port or a non-STARTTLS `SMTP_SECURE`. The sync prints `SYNCED <KEY> (value verified, not shown)` for each of the seven names and never a value.
+6. Manual and automatic development runs share the `deploy-development` concurrency group with `cancel-in-progress: false`: an in-progress deploy completes, and a newer pending run replaces an older pending one.
+7. `development` has no protection rules, so any user with Actions write access can dispatch it. Do not dispatch `production` for development work; production is manual, unprovisioned and `placeholder-only`, and a production dispatch stops at the placeholder guard.
 
 ### Verification commands
 
@@ -168,12 +184,13 @@ node tests/e2e/deployed-smoke.mjs
 ### Promote to production (currently unprovisioned)
 
 1. Provision the production assets first: a production Render service and deploy hook, a production Vercel project/domain, a Neon `production` branch, and the `production` Environment's protection rules (required reviewers and a `main`-only deployment branch policy). `no Render service, Vercel project or Neon branch is provisioned` today; the `production` Environment holds the nine placeholder names (`placeholder-only`) and has no protection rules yet.
-2. Run Actions → Deploy → Run workflow with `environment: production`. The job first verifies that CI for the target SHA succeeded.
+2. Run Actions → Deploy → Run workflow from `main` with `environment: production` (`gh workflow run deploy.yml --ref main -f environment=production`), so the `--ref main` rule covers production too. The job first verifies that CI for the target SHA succeeded.
 3. Once the environment protection is configured, the gate pauses the job for a reviewer; until then the job runs immediately and `fails at the Brevo placeholder guard` (the first deployment step that reads the nine values), before the Neon migration and before any provider call.
 4. Fill the nine production values in the GitHub Environment (the source of truth), re-run the workflow, then run the deployed smoke against the production hostnames.
 
 ### Troubleshooting
 
+- **Manual dispatch refuses to deploy:** a dispatch whose commit has red, pending or missing CI fails at `Verify CI succeeded for target commit` with `CI for <sha> is not successful`; wait for CI to pass or dispatch a commit with green CI. Keep the `--ref main` rule: the Render hook deploys the service's tracked `main` branch while Vercel builds the dispatched ref.
 - **Deploy hook fails (`curl` non-zero):** the hook URL is wrong, rotated or missing. Confirm the `RENDER_DEPLOY_HOOK_URL` secret exists and that the Render service is not suspended. A hook deploys only the service's configured branch (`main`) and cannot change environment variables.
 - **Health poll times out (180 s):** inspect the Render deploy logs (dashboard → service → Logs). A cold instance should still answer well inside the budget; a build error, a migration error at boot, or a port mismatch (`PORT=8080`) is the usual cause. The poll accepts only HTTP 200.
 - **Migration fails:** the deploy stops before Render/Vercel. Check `DIRECT_DATABASE_URL` (direct, `sslmode=require`), the branch and migration order; re-run the workflow after the fix. `node dist/db/migrate-cli.js --list` in the built image lists packaged files without a connection.
@@ -272,7 +289,7 @@ The local path is unchanged: one command, `podman compose up`, starts backend + 
 | Email | Mailpit (`mailpit:1025`, UI `:8025`) | Brevo SMTP (`smtp-relay.brevo.com`, `2525` STARTTLS); branded `/email/*.png` from the Vercel origin | not provisioned |
 | Frontend delivery | Vite dev server / nginx `prod` image for smoke | Vercel static build | not provisioned |
 | Backend runtime | container, `tsx watch`, ports 8080 | Render free Docker service, `512 MB` / `0.1 CPU` | not provisioned |
-| Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy | `workflow_dispatch` (no protection configured) |
+| Deploy trigger | manual `podman compose up` | push to `main` → CI → Deploy, or `workflow_dispatch` with `environment=development` | `workflow_dispatch` with `environment=production` (no protection configured) |
 | Smoke | containerized `npm run smoke` | deployed smoke after deploy | deployed smoke after deploy |
 | Secrets source | shell environment (user) | GitHub Environment (synced to Render for the seven SMTP names) | GitHub Environment (`placeholder-only`; not provisioned) |
 
@@ -302,7 +319,7 @@ Figures are order-of-magnitude and plan-dependent; verify current provider prici
 The authoritative ledger is `../features/vercel-fly-neon-deployment/spec.md` § Supersession ledger, extended by `../features/render-backend-migration/status.md`:
 
 - `aws-deploy-pipeline` — **superseded** (deploy target and pipeline); see `deployment.md` § Superseded AWS deployment.
-- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, with production manual and unprovisioned.
+- `manual-deploy-trigger` — **superseded** (trigger policy); replaced by CI-once → deploy-after-CI on `main` for development, development re-deployable by `workflow_dispatch` (`environment=development`), with production manual and unprovisioned.
 - `vercel-fly-neon-deployment` — **partially superseded**: Vercel and Neon are retained; the Fly backend is replaced by Render.
 - `workflow-hygiene` — **still in force**; the canonical scoped credential audit and SHA pinning are retained in `deployment.md` and in the workflows.
 - `runtime-observability` — **still in force on Render**; deployed environments keep `METRICS_ENABLED=false` as the exposure control (see `observability.md`).
