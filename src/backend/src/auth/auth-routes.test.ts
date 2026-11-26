@@ -7,6 +7,10 @@ import { InMemoryVerificationTokenRepository } from './verification-token-reposi
 import {
   EmailDeliveryError,
   FakeEmailService,
+  createEmailService,
+  renderVerificationEmail,
+  type BrevoRequest,
+  type BrevoRequestInit,
   type CapturedVerificationEmail,
   type EmailService,
 } from './email.js';
@@ -960,6 +964,7 @@ describe('delivery failure logging (AC-3)', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]['level']).toBe(40);
     expect(warnings[0]['route']).toBe('register');
+    expect(warnings[0]['transport']).toBe('smtp');
     expect(warnings[0]['errorType']).toBe('SmtpError');
     expect(warnings[0]['transportCode']).toBe('ECONNECTION');
     expect(warnings[0]['host']).toBe(SMTP_HOST);
@@ -1011,6 +1016,7 @@ describe('delivery failure logging (AC-3)', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]['level']).toBe(40);
     expect(warnings[0]['route']).toBe('resend-verification');
+    expect(warnings[0]['transport']).toBe('smtp');
     expect(warnings[0]['errorType']).toBe('Error');
     expect(warnings[0]['host']).toBe(SMTP_HOST);
     expect(warnings[0]['port']).toBe(SMTP_PORT);
@@ -1139,5 +1145,262 @@ describe('email identifier login (AC-6)', () => {
       code: 'account_locked',
       error: 'account_locked',
     });
+  });
+});
+
+/**
+ * Brevo API delivery failures (T3, AC-6). These exercise the real
+ * `BrevoApiEmailService` through `createEmailService` at the route boundary: the
+ * typed 502 mapping, the one redacted `verification_email_delivery_failed` warn
+ * with `transport`, token invalidation on a rejected send, and resend recovery.
+ */
+describe('Brevo API delivery failure and token invalidation (T3, AC-6)', () => {
+  const BREVO_API_KEY_FIXTURE = 'brevo-rest-key-for-tests';
+  const BREVO_FROM = 'CubeClicker <no-reply@example.test>';
+  const RECIPIENT = 'delivery@example.test';
+  const headers = { origin: 'http://localhost:5173' };
+  const exact502 = {
+    message: 'verification email could not be sent',
+    code: 'verification_email_failed',
+    error: 'verification_email_failed',
+  };
+
+  interface BrevoOutcome {
+    status: number;
+  }
+
+  interface BrevoCtx {
+    app: FastifyInstance;
+    users: InMemoryUserRepository;
+    sessions: InMemorySessionRepository;
+    tokens: InMemoryVerificationTokenRepository;
+    calls: Array<{ url: string; init: BrevoRequestInit }>;
+    issued: string[];
+  }
+
+  /** Builds the real API service from a scripted request seam (one outcome per call). */
+  async function buildBrevoCtx(
+    outcomes: BrevoOutcome[],
+    logger?: FastifyServerOptions['logger'],
+  ): Promise<BrevoCtx> {
+    const clock = () => FIXED_NOW;
+    const users = new InMemoryUserRepository({ now: clock });
+    const sessions = new InMemorySessionRepository({ now: clock });
+    const tokens = new InMemoryVerificationTokenRepository({ now: clock });
+    const calls: Array<{ url: string; init: BrevoRequestInit }> = [];
+    let requestIndex = 0;
+    const brevoRequest: BrevoRequest = async (url, init) => {
+      calls.push({ url, init });
+      const outcome = outcomes[Math.min(requestIndex, outcomes.length - 1)] ?? { status: 500 };
+      requestIndex += 1;
+      return { ok: outcome.status >= 200 && outcome.status < 300, status: outcome.status };
+    };
+    const email = createEmailService(
+      {
+        emailTransport: 'brevo-api',
+        brevoApiKey: BREVO_API_KEY_FIXTURE,
+        smtpHost: 'mailpit',
+        smtpPort: 1025,
+        smtpSecure: false,
+        smtpUser: null,
+        smtpPass: null,
+        smtpFrom: BREVO_FROM,
+        smtpConnectionTimeoutMs: 10_000,
+      },
+      { brevoRequest },
+    );
+    const issued: string[] = [];
+    const originalIssue = tokens.issue.bind(tokens);
+    vi.spyOn(tokens, 'issue').mockImplementation(
+      async (userId: string, ttlMs: number, nowMs?: number) => {
+        const result = await originalIssue(userId, ttlMs, nowMs);
+        issued.push(result.token);
+        return result;
+      },
+    );
+    const hasher = createPasswordHasher(DEFAULT_ARGON2_PARAMS);
+    const rateLimiter = createRateLimiter(clock);
+    const service = createAuthService({
+      users,
+      sessions,
+      verificationTokens: tokens,
+      email,
+      passwordHasher: hasher,
+      rateLimiter,
+      clock,
+      config: {
+        appBaseUrl: 'http://localhost:5173',
+        sessionTtlMs: SESSION_TTL_MS,
+        verificationTokenTtlMs: VERIFICATION_TTL_MS,
+      },
+    });
+    const app = Fastify({ logger });
+    await app.register(authRoutes, {
+      authService: service,
+      sessions,
+      rateLimiter,
+      clock,
+      allowedOrigin: 'http://localhost:5173',
+      sessionCookieSecure: false,
+      sessionCookieSameSite: 'lax',
+      sessionTtlMs: SESSION_TTL_MS,
+    });
+    await app.ready();
+    return { app, users, sessions, tokens, calls, issued };
+  }
+
+  async function register(ctx: BrevoCtx) {
+    return ctx.app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers,
+      payload: { username: 'brevo-delivery', email: RECIPIENT, password: 'password1234' },
+    });
+  }
+
+  it('register returns the exact 502, logs one transport-tagged warn and invalidates the issued token (AC-6(a), AC-6(c), AC-6(d))', async () => {
+    const capture = createCaptureStream();
+    const ctx = await buildBrevoCtx(
+      [{ status: 401 }],
+      buildLoggerOptions({ LOG_LEVEL: 'warn' }, capture.stream),
+    );
+    const sessionCreate = vi.spyOn(ctx.sessions, 'create');
+
+    try {
+      const res = await register(ctx);
+
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toEqual(exact502);
+      expect(getSetCookie(res)).toBe('');
+      expect(sessionCreate).not.toHaveBeenCalled();
+
+      expect(ctx.issued).toHaveLength(1);
+      const issuedToken = ctx.issued[0]!;
+      expect(await ctx.tokens.consume(issuedToken)).toBeNull();
+
+      const persisted = await ctx.users.findByEmail(RECIPIENT);
+      expect(persisted).not.toBeNull();
+      expect(persisted!.username).toBe('brevo-delivery');
+      expect(persisted!.verified).toBe(false);
+
+      const warnings = deliveryFailureWarnings(capture);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!['level']).toBe(40);
+      expect(warnings[0]!['msg']).toBe('verification_email_delivery_failed');
+      expect(warnings[0]!['route']).toBe('register');
+      expect(warnings[0]!['transport']).toBe('brevo-api');
+      expect(warnings[0]!['errorType']).toBe('BrevoApiError');
+      expect(warnings[0]!['transportCode']).toBe('HTTP_401');
+      expect(warnings[0]!['host']).toBe('api.brevo.com');
+      expect(warnings[0]!['port']).toBe(443);
+      expect('err' in warnings[0]!).toBe(false);
+      expect('stack' in warnings[0]!).toBe(false);
+
+      const text = capture.text();
+      expect(text).not.toContain(RECIPIENT);
+      expect(text).not.toContain('brevo-delivery');
+      expect(text).not.toContain(persisted!.id);
+      expect(text).not.toContain(BREVO_API_KEY_FIXTURE);
+      expect(text).not.toContain('no-reply@example.test');
+      expect(text).not.toContain(issuedToken);
+      expect(text).not.toContain('verify?token=');
+      expect(text).not.toContain('Brevo API responded');
+    } finally {
+      await ctx.app.close();
+    }
+  });
+
+  it('resend returns the same exact 502 and invalidates the resend token when the API rejects (AC-6(b), AC-6(c), AC-6(d))', async () => {
+    const capture = createCaptureStream();
+    const ctx = await buildBrevoCtx(
+      [{ status: 201 }, { status: 401 }],
+      buildLoggerOptions({ LOG_LEVEL: 'warn' }, capture.stream),
+    );
+
+    try {
+      const registered = await register(ctx);
+      expect(registered.statusCode).toBe(202);
+      expect(registered.json()).toEqual({ message: 'verification email sent' });
+      expect(ctx.issued).toHaveLength(1);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/auth/resend-verification',
+        headers,
+        payload: { email: RECIPIENT },
+      });
+
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toEqual(exact502);
+      expect(getSetCookie(res)).toBe('');
+      expect(ctx.issued).toHaveLength(2);
+      expect(await ctx.tokens.consume(ctx.issued[1]!)).toBeNull();
+
+      const warnings = deliveryFailureWarnings(capture);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!['level']).toBe(40);
+      expect(warnings[0]!['route']).toBe('resend-verification');
+      expect(warnings[0]!['transport']).toBe('brevo-api');
+      expect(warnings[0]!['errorType']).toBe('BrevoApiError');
+      expect(warnings[0]!['transportCode']).toBe('HTTP_401');
+      expect(warnings[0]!['host']).toBe('api.brevo.com');
+      expect(warnings[0]!['port']).toBe(443);
+      expect(capture.text()).not.toContain(RECIPIENT);
+      expect(capture.text()).not.toContain('Brevo API responded');
+    } finally {
+      await ctx.app.close();
+    }
+  });
+
+  it('a later resend returns the exact 202 body and sends exactly once through the API (AC-6(e))', async () => {
+    const ctx = await buildBrevoCtx([{ status: 401 }, { status: 201 }]);
+
+    try {
+      const failed = await register(ctx);
+      expect(failed.statusCode).toBe(502);
+      expect(failed.json()).toEqual(exact502);
+      expect(ctx.issued).toHaveLength(1);
+      expect(await ctx.tokens.consume(ctx.issued[0]!)).toBeNull();
+
+      const resend = await ctx.app.inject({
+        method: 'POST',
+        url: '/auth/resend-verification',
+        headers,
+        payload: { email: RECIPIENT },
+      });
+
+      expect(resend.statusCode).toBe(202);
+      expect(resend.json()).toEqual({ message: 'verification email sent' });
+      expect(ctx.issued).toHaveLength(2);
+      const recoveryToken = ctx.issued[1]!;
+      const persisted = await ctx.users.findByEmail(RECIPIENT);
+      expect(persisted).not.toBeNull();
+      expect(await ctx.tokens.consume(recoveryToken)).toEqual({ userId: persisted!.id });
+
+      // The failed register plus exactly one successful resend attempt reach the API.
+      expect(ctx.calls).toHaveLength(2);
+      const recoverySends = ctx.calls.filter((call) =>
+        (call.init.body ?? '').includes(recoveryToken),
+      );
+      expect(recoverySends).toHaveLength(1);
+      const send = recoverySends[0]!;
+      expect(send.url).toBe('https://api.brevo.com/v3/smtp/email');
+      expect(send.init.method).toBe('POST');
+      expect(send.init.headers).toEqual({
+        'api-key': BREVO_API_KEY_FIXTURE,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      });
+      const verificationUrl = `http://localhost:5173/verify?token=${recoveryToken}`;
+      expect(JSON.parse(send.init.body as string)).toEqual({
+        sender: { email: 'no-reply@example.test', name: 'CubeClicker' },
+        to: [{ email: RECIPIENT }],
+        subject: 'Verify your CubeClicker email',
+        htmlContent: renderVerificationEmail(verificationUrl).html,
+        textContent: renderVerificationEmail(verificationUrl).text,
+      });
+    } finally {
+      await ctx.app.close();
+    }
   });
 });

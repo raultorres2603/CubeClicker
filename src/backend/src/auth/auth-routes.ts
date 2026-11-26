@@ -137,10 +137,10 @@ function deliveryFailureRoute(request: FastifyRequest): DeliveryFailureRoute {
 }
 
 /**
- * Emits exactly one redacted `warn` event for a typed SMTP delivery failure.
- * Only the route, the source error name, the whitelisted transport code and the
- * configured host/port reach the log; the transport message (which stays on the
- * error for the operator CLI) never does.
+ * Emits exactly one redacted `warn` event for a typed email delivery failure.
+ * Only the route, the selected transport, the source error name, the whitelisted
+ * transport code and the configured host/port reach the log; the transport
+ * message (which stays on the error for the operator CLI) never does.
  */
 function logDeliveryFailure(
   request: FastifyRequest,
@@ -149,6 +149,7 @@ function logDeliveryFailure(
 ): void {
   const fields: LogFields = {
     route,
+    transport: error.transport,
     errorType: error.errorType,
     host: error.host,
     port: error.port,

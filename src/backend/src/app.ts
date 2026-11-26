@@ -13,9 +13,11 @@ import { InMemorySessionRepository, PgSessionRepository } from './auth/session-r
 import { InMemoryVerificationTokenRepository, PgVerificationTokenRepository } from './auth/verification-token-repository.js';
 import { InMemoryEconomyRepository, PgEconomyRepository } from './auth/economy-repository.js';
 import {
+  BREVO_API_HOST,
+  BREVO_API_PORT,
   EmailDeliveryError,
-  FakeEmailService,
-  createSmtpEmailService,
+  createEmailService,
+  type BrevoRequest,
   type EmailService,
   type SmtpTransportFactory,
 } from './auth/email.js';
@@ -118,8 +120,10 @@ export interface BuildAppOptions {
     verificationTokens?: unknown;
     economy?: unknown;
     email?: unknown;
-    /** Test seam: SMTP transport factory used by `createSmtpEmailService` (defaults to nodemailer). */
+    /** Test seam: SMTP transport factory used by `createSmtpEmailService` (SMTP transport only). */
     emailTransportFactory?: SmtpTransportFactory;
+    /** Test seam: Brevo HTTPS request used by `BrevoApiEmailService` (API transport only). */
+    brevoRequest?: BrevoRequest;
     rateLimiter?: unknown;
     pool?: unknown;
     authConfig?: Partial<AuthConfig>;
@@ -148,14 +152,14 @@ function parseCookieHeader(header: string | undefined, name: string): string | n
 }
 
 /**
- * The redacted fields for a failed startup transport probe (AC-8(c)).
+ * The redacted fields for a failed startup transport probe (AC-5(e), AC-8(c)).
  *
  * A typed `EmailDeliveryError` contributes its source error type, its whitelisted
  * provider code and the configured host/port; any other rejection contributes its
  * error name and the configuration this app probed. The rejection message, stack
  * and any credential are never copied, so the warn line cannot leak them.
  */
-function smtpProbeFailureFields(error: unknown, host: string, port: number): LogFields {
+function probeFailureFields(error: unknown, host: string, port: number): LogFields {
   if (error instanceof EmailDeliveryError) {
     const fields: LogFields = {
       errorType: error.errorType,
@@ -248,17 +252,44 @@ export function buildApp(
 
   const email =
     options.auth?.email ??
-    (authConfig.smtpHost
-      ? createSmtpEmailService(authConfig, options.auth?.emailTransportFactory)
-      : new FakeEmailService());
+    createEmailService(authConfig, {
+      smtpTransportFactory: options.auth?.emailTransportFactory,
+      brevoRequest: options.auth?.brevoRequest,
+    });
 
-  // Non-blocking startup transport probe (AC-8). Only the authenticated relay path
-  // is probed (the local Mailpit is unauthenticated), and the `onReady` hook starts
-  // `verify()` and attaches `.then`/`.catch` without awaiting it, so `listen` and
-  // `/healthz` never wait on SMTP. Outcomes are event names plus configuration
-  // only: no credential, email, message or stack reaches a line.
+  // Non-blocking startup transport probe (AC-5, AC-8). The selected transport owns
+  // the probe: the API path always probes (config guarantees the key) and reports
+  // `brevo_api_transport_*`; the SMTP path keeps its credential gate and
+  // `smtp_transport_*` events (the local Mailpit is unauthenticated). The `onReady`
+  // hook starts `verify()` and attaches `.then`/`.catch` without awaiting it, so
+  // `listen` and `/healthz` never wait on the provider. Outcomes are event names
+  // plus configuration only: no credential, email, message or stack reaches a line.
   const emailService = email as EmailService;
   app.addHook('onReady', () => {
+    if (authConfig.emailTransport === 'brevo-api') {
+      const verify = emailService.verify;
+      if (verify === undefined) {
+        log.debug('brevo_api_transport_verify_skipped', { reason: 'unsupported' });
+        return;
+      }
+      // `Promise.resolve().then` starts the probe asynchronously: a synchronous
+      // throw becomes the same caught rejection instead of failing readiness.
+      void Promise.resolve()
+        .then(() => verify.call(emailService))
+        .then(() => {
+          log.info('brevo_api_transport_verify_ok', {
+            host: BREVO_API_HOST,
+            port: BREVO_API_PORT,
+          });
+        })
+        .catch((error: unknown) => {
+          log.warn(
+            'brevo_api_transport_verify_failed',
+            probeFailureFields(error, BREVO_API_HOST, BREVO_API_PORT),
+          );
+        });
+      return;
+    }
     if (authConfig.smtpUser === null || authConfig.smtpPass === null) {
       log.debug('smtp_transport_verify_skipped', { reason: 'no_credentials' });
       return;
@@ -279,7 +310,7 @@ export function buildApp(
       .catch((error: unknown) => {
         log.warn(
           'smtp_transport_verify_failed',
-          smtpProbeFailureFields(error, authConfig.smtpHost, authConfig.smtpPort),
+          probeFailureFields(error, authConfig.smtpHost, authConfig.smtpPort),
         );
       });
   });

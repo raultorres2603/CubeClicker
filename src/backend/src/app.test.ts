@@ -9,6 +9,9 @@ import {
   EmailDeliveryError,
   FakeEmailService,
   renderVerificationEmail,
+  type BrevoRequest,
+  type BrevoRequestInit,
+  type BrevoResponseLike,
   type EmailTransport,
   type OutgoingEmail,
   type SmtpTransportOptions,
@@ -608,6 +611,243 @@ describe('SMTP startup probe (T5, AC-8)', () => {
       expect(events[0]!['reason']).toBe('unsupported');
       expect(probeEvents(capture, 'smtp_transport_verify_ok')).toEqual([]);
       expect(probeEvents(capture, 'smtp_transport_verify_failed')).toEqual([]);
+
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * API composition root and startup probe (T3, AC-5). `buildApp` composes the
+ * service through `createEmailService`: the API path uses the injected
+ * `brevoRequest` seam and the `brevo_api_transport_*` events, while the SMTP
+ * path keeps its factory and `smtp_transport_*` events. The probe is started
+ * from `onReady` and never awaited, so readiness/`/healthz` cannot hang.
+ */
+const BREVO_API_ENV = {
+  EMAIL_TRANSPORT: 'brevo-api',
+  BREVO_API_KEY: 'brevo-rest-key-for-tests',
+  SMTP_FROM: 'CubeClicker <no-reply@example.test>',
+} as const;
+
+const BREVO_API_KEY_FIXTURE = 'brevo-rest-key-for-tests';
+
+describe('API composition root and startup probe (T3, AC-5)', () => {
+  function apiProbeLogger(capture: CaptureStream) {
+    return buildLoggerOptions({ LOG_LEVEL: 'debug' }, capture.stream);
+  }
+
+  function apiProbeEvents(
+    capture: CaptureStream,
+    message: string,
+  ): Array<Record<string, unknown>> {
+    return parseLogLines(capture).filter((entry) => entry['msg'] === message);
+  }
+
+  it('constructs the API service through brevoRequest, never the SMTP factory (AC-5(a))', async () => {
+    const calls: Array<{ url: string; init: BrevoRequestInit }> = [];
+    const brevoRequest = vi.fn<BrevoRequest>(async (url, init) => {
+      calls.push({ url, init });
+      return init.method === 'POST' ? { ok: true, status: 201 } : { ok: true, status: 200 };
+    });
+    const factory = vi.fn<(options: SmtpTransportOptions) => EmailTransport>();
+    const app = buildApp(BREVO_API_ENV, {
+      auth: { brevoRequest, emailTransportFactory: factory },
+      logger: false,
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      const register = await app.inject({
+        method: 'POST',
+        url: '/auth/register',
+        headers: { origin: 'http://localhost:5173' },
+        payload: {
+          username: 'api-mailer',
+          email: 'api-mailer@example.test',
+          password: 'password-for-api-mailer',
+        },
+      });
+      expect(register.statusCode).toBe(202);
+      expect(register.json()).toEqual({ message: 'verification email sent' });
+
+      expect(factory).not.toHaveBeenCalled();
+      expect(brevoRequest).toHaveBeenCalledTimes(2);
+
+      const [account, send] = calls as [
+        { url: string; init: BrevoRequestInit },
+        { url: string; init: BrevoRequestInit },
+      ];
+      expect(account.url).toBe('https://api.brevo.com/v3/account');
+      expect(account.init.method).toBe('GET');
+      expect(account.init.headers).toEqual({
+        'api-key': BREVO_API_KEY_FIXTURE,
+        accept: 'application/json',
+      });
+      expect(account.init.body).toBe(undefined);
+      expect(account.init.signal).toBeInstanceOf(AbortSignal);
+
+      expect(send.url).toBe('https://api.brevo.com/v3/smtp/email');
+      expect(send.init.method).toBe('POST');
+      expect(send.init.headers).toEqual({
+        'api-key': BREVO_API_KEY_FIXTURE,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      });
+      expect(send.init.signal).toBeInstanceOf(AbortSignal);
+      const body = JSON.parse(send.init.body as string) as {
+        sender: unknown;
+        to: unknown;
+        subject: string;
+        htmlContent: string;
+        textContent: string;
+      };
+      const verificationUrl = body.textContent.split('\n')[3]!;
+      expect(new URL(verificationUrl).searchParams.get('token')).toHaveLength(64);
+      expect(body).toEqual({
+        sender: { email: 'no-reply@example.test', name: 'CubeClicker' },
+        to: [{ email: 'api-mailer@example.test' }],
+        subject: 'Verify your CubeClicker email',
+        htmlContent: renderVerificationEmail(verificationUrl).html,
+        textContent: renderVerificationEmail(verificationUrl).text,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps the SMTP factory path and never calls the brevoRequest seam (AC-5(b))', async () => {
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'msg-1' });
+    const factory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>()
+      .mockReturnValue({ sendMail });
+    const brevoRequest = vi.fn<BrevoRequest>();
+    const app = buildApp(BREVO_SMTP_ENV, {
+      auth: { emailTransportFactory: factory, brevoRequest },
+      logger: false,
+    });
+
+    try {
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(brevoRequest).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('serves /healthz while a never-settling API probe is pending and starts it once (AC-5(c), AC-5(g))', async () => {
+    const brevoRequest = vi.fn<BrevoRequest>(
+      () => new Promise<BrevoResponseLike>(() => undefined),
+    );
+    const app = buildApp(BREVO_API_ENV, { auth: { brevoRequest }, logger: false });
+
+    try {
+      const first = await app.inject({ method: 'GET', url: '/healthz' });
+      const second = await app.inject({ method: 'GET', url: '/healthz' });
+
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toEqual({ status: 'ok' });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual({ status: 'ok' });
+
+      // `inject` boots the app; a later explicit `ready()` never re-runs the hook.
+      await app.ready();
+      expect(brevoRequest).toHaveBeenCalledTimes(1);
+      expect(brevoRequest.mock.calls[0]![0]).toBe('https://api.brevo.com/v3/account');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs exactly one info brevo_api_transport_verify_ok with host and port (AC-5(d))', async () => {
+    const capture = createCaptureStream();
+    const brevoRequest = vi.fn<BrevoRequest>(async () => ({ ok: true, status: 200 }));
+    const app = buildApp(BREVO_API_ENV, {
+      auth: { brevoRequest },
+      logger: apiProbeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(brevoRequest).toHaveBeenCalledTimes(1);
+      const events = apiProbeEvents(capture, 'brevo_api_transport_verify_ok');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(30);
+      expect(events[0]!['msg']).toBe('brevo_api_transport_verify_ok');
+      expect(events[0]!['host']).toBe('api.brevo.com');
+      expect(events[0]!['port']).toBe(443);
+      expect(apiProbeEvents(capture, 'brevo_api_transport_verify_failed')).toEqual([]);
+      expect(apiProbeEvents(capture, 'brevo_api_transport_verify_skipped')).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs exactly one warn brevo_api_transport_verify_failed with fields only and keeps /healthz green (AC-5(e), AC-5(g))', async () => {
+    const capture = createCaptureStream();
+    const brevoRequest = vi.fn<BrevoRequest>(async () => ({ ok: false, status: 401 }));
+    const app = buildApp(BREVO_API_ENV, {
+      auth: { brevoRequest },
+      logger: apiProbeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      expect(brevoRequest).toHaveBeenCalledTimes(1);
+      const events = apiProbeEvents(capture, 'brevo_api_transport_verify_failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(40);
+      expect(events[0]!['msg']).toBe('brevo_api_transport_verify_failed');
+      expect(events[0]!['errorType']).toBe('BrevoApiError');
+      expect(events[0]!['transportCode']).toBe('HTTP_401');
+      expect(events[0]!['host']).toBe('api.brevo.com');
+      expect(events[0]!['port']).toBe(443);
+      // The rejection itself never reaches the line: no serializer, message or stack.
+      expect('err' in events[0]!).toBe(false);
+      expect('stack' in events[0]!).toBe(false);
+      expect(capture.text()).not.toContain(BREVO_API_KEY_FIXTURE);
+      expect(capture.text()).not.toContain('no-reply@example.test');
+      expect(capture.text()).not.toContain('Brevo API responded with HTTP 401');
+      expect(apiProbeEvents(capture, 'brevo_api_transport_verify_ok')).toEqual([]);
+
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('logs one debug brevo_api_transport_verify_skipped with unsupported and never fails readiness (AC-5(f))', async () => {
+    const capture = createCaptureStream();
+    const app = buildApp(BREVO_API_ENV, {
+      auth: { email: { sendVerification: async () => undefined } },
+      logger: apiProbeLogger(capture),
+    });
+
+    try {
+      await app.ready();
+      await flushMicrotasks();
+
+      const events = apiProbeEvents(capture, 'brevo_api_transport_verify_skipped');
+      expect(events).toHaveLength(1);
+      expect(events[0]!['level']).toBe(20);
+      expect(events[0]!['msg']).toBe('brevo_api_transport_verify_skipped');
+      expect(events[0]!['reason']).toBe('unsupported');
+      expect(apiProbeEvents(capture, 'brevo_api_transport_verify_ok')).toEqual([]);
+      expect(apiProbeEvents(capture, 'brevo_api_transport_verify_failed')).toEqual([]);
 
       const health = await app.inject({ method: 'GET', url: '/healthz' });
       expect(health.statusCode).toBe(200);
