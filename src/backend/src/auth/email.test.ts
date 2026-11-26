@@ -3,13 +3,23 @@ import { describe, expect, it, vi } from 'vitest';
 import * as template from './email-template.js';
 import { runEmailTestCli } from './email-cli.js';
 import {
+  BREVO_API_ACCOUNT_URL,
+  BREVO_API_HOST,
+  BREVO_API_PORT,
+  BREVO_API_SEND_URL,
+  BREVO_API_TIMEOUT_MS,
+  BrevoApiEmailService,
   EmailDeliveryError,
   FakeEmailService,
   SmtpEmailService,
   VERIFICATION_EMAIL_SUBJECT,
   buildSmtpTransportOptions,
+  createEmailService,
   createSmtpEmailService,
   renderVerificationEmail,
+  type BrevoRequest,
+  type BrevoRequestInit,
+  type BrevoResponseLike,
   type CapturedVerificationEmail,
   type EmailTransport,
   type OutgoingEmail,
@@ -38,6 +48,22 @@ const BREVO_CONFIG: SmtpEmailConfig = {
   smtpFrom: 'CubeClicker <no-reply@example.com>',
   smtpConnectionTimeoutMs: 10_000,
 };
+
+/** Synthetic REST-key-shaped fixture; never recorded in an artifact. */
+const API_KEY = 'xkeysib-' + 'A'.repeat(24);
+const API_FROM = 'CubeClicker <no-reply@example.com>';
+const BARE_API_FROM = 'no-reply@example.com';
+const API_RECIPIENT = 'verification-recipient@example.com';
+
+/** Runs a constructor/factory and returns the thrown `Error`, or null. */
+function captureError(run: () => unknown): Error | null {
+  try {
+    run();
+    return null;
+  } catch (error) {
+    return error as Error;
+  }
+}
 
 function createTransportMock() {
   const sendMail = vi
@@ -605,5 +631,465 @@ describe('EmailDeliveryError (AC-2)', () => {
     const source = Object.assign(new Error('rejected'), { code });
 
     expect(new EmailDeliveryError(source, 'smtp.example.com', 587).transportCode).toBe(expected);
+  });
+
+  it('keeps the SMTP form and verbatim message while accepting an explicit transport', () => {
+    const source = Object.assign(new Error('Unauthorized'), { code: 'HTTP_401' });
+
+    const smtp = new EmailDeliveryError(source, 'smtp-relay.brevo.com', 587);
+    const api = new EmailDeliveryError(source, 'api.brevo.com', 443, 'brevo-api');
+
+    expect(smtp.transport).toBe('smtp');
+    expect(smtp.message).toBe('Unauthorized');
+    expect(smtp.transportCode).toBe('HTTP_401');
+    expect(api.transport).toBe('brevo-api');
+    expect(api.message).toBe('Unauthorized');
+    expect(api.errorType).toBe('Error');
+    expect(api.transportCode).toBe('HTTP_401');
+    expect(api.host).toBe('api.brevo.com');
+    expect(api.port).toBe(443);
+  });
+});
+
+describe('Brevo API constants (AC-3, AC-4)', () => {
+  it('pins the exported endpoint and 10-second timeout by value', () => {
+    expect(BREVO_API_TIMEOUT_MS).toBe(10000);
+    expect(BREVO_API_HOST).toBe('api.brevo.com');
+    expect(BREVO_API_PORT).toBe(443);
+    expect(BREVO_API_SEND_URL).toBe('https://api.brevo.com/v3/smtp/email');
+    expect(BREVO_API_ACCOUNT_URL).toBe('https://api.brevo.com/v3/account');
+  });
+});
+
+describe('BrevoApiEmailService request contract (AC-3)', () => {
+  it('pins the exact POST request with a display-name sender and the branded template', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: true, status: 201 });
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+    const options = { expiresInMs: 3_600_000 };
+
+    await expect(
+      service.sendVerification(API_RECIPIENT, VERIFICATION_URL, options),
+    ).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe('https://api.brevo.com/v3/smtp/email');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toStrictEqual({
+      'api-key': API_KEY,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    });
+    expect(init.body).toBe(
+      JSON.stringify({
+        sender: { email: 'no-reply@example.com', name: 'CubeClicker' },
+        to: [{ email: 'verification-recipient@example.com' }],
+        subject: 'Verify your CubeClicker email',
+        htmlContent: renderVerificationEmail(VERIFICATION_URL, options).html,
+        textContent: PLAIN_TEXT,
+      }),
+    );
+    expect(Object.keys(JSON.parse(init.body!) as Record<string, unknown>)).toStrictEqual([
+      'sender',
+      'to',
+      'subject',
+      'htmlContent',
+      'textContent',
+    ]);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it('omits the sender name for a bare sender and matches the SMTP payload byte-for-byte', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: true, status: 202 });
+    const apiService = new BrevoApiEmailService(
+      { apiKey: API_KEY, from: BARE_API_FROM },
+      request,
+    );
+    const sendMail = vi
+      .fn<(options: OutgoingEmail) => Promise<unknown>>()
+      .mockResolvedValue({ messageId: 'smtp-parity' });
+    const smtpService = new SmtpEmailService(
+      { host: 'smtp-relay.brevo.com', port: 587, from: BARE_API_FROM },
+      () => ({ sendMail }),
+    );
+    const options = { expiresInMs: 3_600_000 };
+
+    await apiService.sendVerification(API_RECIPIENT, VERIFICATION_URL, options);
+    await smtpService.sendVerification(API_RECIPIENT, VERIFICATION_URL, options);
+
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe(BREVO_API_SEND_URL);
+    const body = JSON.parse(init.body!) as {
+      sender: unknown;
+      to: unknown;
+      subject: string;
+      htmlContent: string;
+      textContent: string;
+    };
+    expect(body.sender).toStrictEqual({ email: 'no-reply@example.com' });
+    expect(body.to).toStrictEqual([{ email: 'verification-recipient@example.com' }]);
+    const smtpPayload = sendMail.mock.calls[0]![0];
+    expect(body.subject).toBe(smtpPayload.subject);
+    expect(body.textContent).toBe(smtpPayload.text);
+    expect(body.htmlContent).toBe(smtpPayload.html);
+    expect(body.subject).toBe('Verify your CubeClicker email');
+  });
+
+  it.each([201, 202])(
+    'resolves on HTTP %i without reading the response body',
+    async (status) => {
+      let bodyReads = 0;
+      const response = {
+        ok: true,
+        status,
+        get text(): string {
+          bodyReads += 1;
+          return 'provider body';
+        },
+      };
+      const request = vi.fn<BrevoRequest>().mockResolvedValue(response);
+      const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+      await expect(
+        service.sendVerification(API_RECIPIENT, VERIFICATION_URL),
+      ).resolves.toBeUndefined();
+
+      expect(bodyReads).toBe(0);
+      expect(request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('rejects an unparseable SMTP_FROM at construction with the config message', () => {
+    const failure = captureError(
+      () => new BrevoApiEmailService({ apiKey: API_KEY, from: 'not an address' }),
+    );
+
+    expect(failure?.message).toBe(
+      'SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api',
+    );
+  });
+});
+
+describe('BrevoApiEmailService failures (AC-4)', () => {
+  it.each([400, 401, 403, 429, 500])(
+    'maps HTTP %i to the fixed typed failure',
+    async (status) => {
+      const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: false, status });
+      const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+      const error = await service
+        .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+        .catch((reason: unknown) => reason as EmailDeliveryError);
+
+      expect(error).toBeInstanceOf(EmailDeliveryError);
+      expect(error.name).toBe('EmailDeliveryError');
+      expect(error.code).toBe('verification_email_failed');
+      expect(error.transport).toBe('brevo-api');
+      expect(error.host).toBe('api.brevo.com');
+      expect(error.port).toBe(443);
+      expect(error.errorType).toBe('BrevoApiError');
+      expect(error.transportCode).toBe(`HTTP_${status}`);
+      expect(error.message).toBe(`Brevo API responded with HTTP ${status}`);
+      expect(request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('maps a TimeoutError to the fixed timeout message with no transport code', async () => {
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), {
+      name: 'TimeoutError',
+    });
+    const request = vi.fn<BrevoRequest>().mockRejectedValue(timeout);
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.transport).toBe('brevo-api');
+    expect(error.errorType).toBe('TimeoutError');
+    expect(error.transportCode).toBeUndefined();
+    expect(error.message).toBe('Brevo API request timed out after 10000ms');
+  });
+
+  it('uses the configured timeout in the timeout message', async () => {
+    const timeout = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    const request = vi.fn<BrevoRequest>().mockRejectedValue(timeout);
+    const service = new BrevoApiEmailService(
+      { apiKey: API_KEY, from: API_FROM, timeoutMs: 2500 },
+      request,
+    );
+
+    const error = await service
+      .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.message).toBe('Brevo API request timed out after 2500ms');
+  });
+
+  it('maps any other rejection without smuggling its provider code', async () => {
+    const source = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    const request = vi.fn<BrevoRequest>().mockRejectedValue(source);
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.transport).toBe('brevo-api');
+    expect(error.errorType).toBe('Error');
+    expect(error.transportCode).toBeUndefined();
+    expect(error.message).toBe('Brevo API request failed');
+  });
+
+  it('reports unknown for a non-Error rejection', async () => {
+    const request = vi.fn<BrevoRequest>().mockRejectedValue('relay refused');
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.errorType).toBe('unknown');
+    expect(error.transportCode).toBeUndefined();
+    expect(error.message).toBe('Brevo API request failed');
+  });
+
+  it('never reads or leaks a provider body and never exposes the API key', async () => {
+    const syntheticRestKey = 'xkeysib-' + 'b'.repeat(24);
+    const syntheticSmtpKey = 'xsmtpsib-' + 'c'.repeat(15);
+    const providerBody = `${API_RECIPIENT} ${syntheticRestKey} ${syntheticSmtpKey}`;
+    let bodyReads = 0;
+    const response = {
+      ok: false,
+      status: 401,
+      get text(): Promise<string> {
+        bodyReads += 1;
+        return Promise.resolve(providerBody);
+      },
+    };
+    const request = vi.fn<BrevoRequest>().mockResolvedValue(response);
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .sendVerification(API_RECIPIENT, VERIFICATION_URL)
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(providerBody).toContain(API_RECIPIENT);
+    expect(bodyReads).toBe(0);
+    expect(error.message).toBe('Brevo API responded with HTTP 401');
+    expect(error.transportCode).toBe('HTTP_401');
+
+    const enumerableStrings = Object.entries(error)
+      .filter(([key]) => key !== 'message')
+      .map(([, value]) => value)
+      .filter((value): value is string => typeof value === 'string');
+    for (const secret of [API_RECIPIENT, syntheticRestKey, syntheticSmtpKey, API_KEY]) {
+      expect(enumerableStrings.filter((value) => value.includes(secret))).toStrictEqual([]);
+      expect(error.message.includes(secret)).toBe(false);
+    }
+  });
+});
+
+describe('BrevoApiEmailService.verify (AC-4(e))', () => {
+  it('calls GET /v3/account once with the exact headers and a timeout signal', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: true, status: 200 });
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    await expect(service.verify()).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe('https://api.brevo.com/v3/account');
+    expect(init.method).toBe('GET');
+    expect(init.headers).toStrictEqual({
+      'api-key': API_KEY,
+      accept: 'application/json',
+    });
+    expect(Object.hasOwn(init, 'body')).toBe(false);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it('maps a 401 probe rejection without reading the account body', async () => {
+    let bodyReads = 0;
+    const response = {
+      ok: false,
+      status: 401,
+      get json(): Promise<unknown> {
+        bodyReads += 1;
+        return Promise.resolve({ email: API_RECIPIENT });
+      },
+    };
+    const request = vi.fn<BrevoRequest>().mockResolvedValue(response);
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .verify()
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(bodyReads).toBe(0);
+    expect(error.name).toBe('EmailDeliveryError');
+    expect(error.transport).toBe('brevo-api');
+    expect(error.errorType).toBe('BrevoApiError');
+    expect(error.transportCode).toBe('HTTP_401');
+    expect(error.message).toBe('Brevo API responded with HTTP 401');
+  });
+
+  it('maps a probe timeout with the fixed message', async () => {
+    const timeout = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    const request = vi.fn<BrevoRequest>().mockRejectedValue(timeout);
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .verify()
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.errorType).toBe('TimeoutError');
+    expect(error.transportCode).toBeUndefined();
+    expect(error.message).toBe('Brevo API request timed out after 10000ms');
+  });
+
+  it('maps any other probe rejection with the fixed message', async () => {
+    const request = vi.fn<BrevoRequest>().mockRejectedValue(new Error('dns failure'));
+    const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM }, request);
+
+    const error = await service
+      .verify()
+      .catch((reason: unknown) => reason as EmailDeliveryError);
+
+    expect(error.errorType).toBe('Error');
+    expect(error.transportCode).toBeUndefined();
+    expect(error.message).toBe('Brevo API request failed');
+  });
+
+  it('posts through the default global-fetch seam and reads only ok/status', async () => {
+    let bodyReads = 0;
+    const response = {
+      ok: true,
+      status: 201,
+      get text(): Promise<string> {
+        bodyReads += 1;
+        return Promise.resolve('provider body');
+      },
+    };
+    const fetchMock = vi
+      .fn<(url: string, init: BrevoRequestInit) => Promise<BrevoResponseLike>>()
+      .mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const service = new BrevoApiEmailService({ apiKey: API_KEY, from: API_FROM });
+
+      await expect(
+        service.sendVerification(API_RECIPIENT, VERIFICATION_URL),
+      ).resolves.toBeUndefined();
+
+      expect(bodyReads).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe(BREVO_API_SEND_URL);
+      expect(init.method).toBe('POST');
+      expect(init.headers).toStrictEqual({
+        'api-key': API_KEY,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      });
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('createEmailService (AC-5 transport selection)', () => {
+  it('constructs the SMTP service and never calls the API request seam', () => {
+    const { transport } = createTransportMock();
+    const smtpTransportFactory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>()
+      .mockReturnValue(transport);
+    const brevoRequest = vi.fn<BrevoRequest>();
+
+    const service = createEmailService(
+      { ...BREVO_CONFIG, emailTransport: 'smtp', brevoApiKey: null },
+      { smtpTransportFactory, brevoRequest },
+    );
+
+    expect(service).toBeInstanceOf(SmtpEmailService);
+    expect(smtpTransportFactory).toHaveBeenCalledTimes(1);
+    expect(smtpTransportFactory).toHaveBeenCalledWith({
+      host: 'smtp-relay.brevo.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      auth: { user: 'smtp-login@example.test', pass: 'smtp-key-for-tests' },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+    });
+    expect(brevoRequest).toHaveBeenCalledTimes(0);
+  });
+
+  it('constructs the API service and never calls the SMTP transport factory', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: true, status: 201 });
+    const smtpTransportFactory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>()
+      .mockReturnValue(createTransportMock().transport);
+
+    const service = createEmailService(
+      {
+        ...BREVO_CONFIG,
+        emailTransport: 'brevo-api',
+        brevoApiKey: API_KEY,
+        smtpFrom: API_FROM,
+      },
+      { smtpTransportFactory, brevoRequest: request },
+    );
+
+    expect(service).toBeInstanceOf(BrevoApiEmailService);
+    expect(smtpTransportFactory).toHaveBeenCalledTimes(0);
+
+    await service.sendVerification(API_RECIPIENT, VERIFICATION_URL);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe(BREVO_API_SEND_URL);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toStrictEqual({
+      'api-key': API_KEY,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    });
+    expect(JSON.parse(init.body!)).toStrictEqual({
+      sender: { email: 'no-reply@example.com', name: 'CubeClicker' },
+      to: [{ email: 'verification-recipient@example.com' }],
+      subject: 'Verify your CubeClicker email',
+      htmlContent: renderVerificationEmail(VERIFICATION_URL).html,
+      textContent: PLAIN_TEXT,
+    });
+  });
+
+  it.each([
+    { label: 'null', key: null },
+    { label: 'empty', key: '' },
+  ])('fails closed for brevo-api with a $label key', ({ key }) => {
+    const smtpTransportFactory = vi
+      .fn<(options: SmtpTransportOptions) => EmailTransport>();
+
+    const failure = captureError(() =>
+      createEmailService(
+        {
+          ...BREVO_CONFIG,
+          emailTransport: 'brevo-api',
+          brevoApiKey: key,
+          smtpFrom: API_FROM,
+        },
+        { smtpTransportFactory },
+      ),
+    );
+
+    expect(failure?.message).toBe(
+      'BREVO_API_KEY must be a non-empty string when EMAIL_TRANSPORT=brevo-api',
+    );
+    expect(smtpTransportFactory).toHaveBeenCalledTimes(0);
   });
 });

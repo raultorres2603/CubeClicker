@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_SMTP_FROM } from './config.js';
 import {
+  BREVO_API_SEND_URL,
+  createEmailService,
   createSmtpEmailService,
   renderVerificationEmail,
+  type BrevoRequest,
   type EmailTransport,
   type OutgoingEmail,
 } from './email.js';
@@ -45,6 +48,17 @@ const BREVO_ENV = {
   SMTP_PASS: 'cli-pass-9f3a',
   SMTP_FROM: 'no-reply@example.com',
 };
+
+/** Synthetic API fixture: a non-secret placeholder key and a valid sender. */
+const API_ENV = {
+  EMAIL_TRANSPORT: 'brevo-api',
+  BREVO_API_KEY: 'fixture.api.key',
+  SMTP_FROM: 'CubeClicker <no-reply@example.com>',
+};
+
+const API_SUCCESS_LINE =
+  'Test email sent to user@example.com via Brevo API ' +
+  '(api.brevo.com:443, transport=brevo-api, from="CubeClicker <no-reply@example.com>")';
 
 function createRecordingService() {
   const sendVerification = vi
@@ -296,6 +310,133 @@ describe('runEmailTestCli transport rejections (AC-9)', () => {
   });
 });
 
+describe('runEmailTestCli Brevo API transport (AC-9)', () => {
+  it('prints exactly the API success line and no SMTP fields', async () => {
+    const { deps, stdout, stderr, createService, service } = createHarness();
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], API_ENV, deps)).toBe(0);
+
+    expect(createService).toHaveBeenCalledTimes(1);
+    expect(service.sendVerification).toHaveBeenCalledTimes(1);
+    expect(service.sendVerification).toHaveBeenCalledWith(RECIPIENT, VERIFICATION_URL);
+    expect(stdout).toStrictEqual([API_SUCCESS_LINE]);
+    expect(stderr).toStrictEqual([]);
+    expect(stdout.join('\n')).not.toContain('secure=');
+    expect(stdout.join('\n')).not.toContain('starttls=');
+    expect(stdout.join('\n')).not.toContain('auth=');
+    expect(stdout.join('\n')).not.toContain(API_ENV.BREVO_API_KEY);
+  });
+
+  it('sends the branded API request through the real factory and prints the success line', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: true, status: 201 });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const deps: EmailTestCliDeps = {
+      createService: (config) => createEmailService(config, { brevoRequest: request }),
+      log: (line) => stdout.push(line),
+      logError: (line) => stderr.push(line),
+    };
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], API_ENV, deps)).toBe(0);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe(BREVO_API_SEND_URL);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toStrictEqual({
+      'api-key': API_ENV.BREVO_API_KEY,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    });
+    expect(JSON.parse(init.body!)).toStrictEqual({
+      sender: { email: 'no-reply@example.com', name: 'CubeClicker' },
+      to: [{ email: RECIPIENT }],
+      subject: 'Verify your CubeClicker email',
+      htmlContent: renderVerificationEmail(VERIFICATION_URL).html,
+      textContent: PLAIN_TEXT,
+    });
+    expect(stdout).toStrictEqual([API_SUCCESS_LINE]);
+    expect(stderr).toStrictEqual([]);
+  });
+
+  it('prints exactly the API failure line for a 401 without a key or address', async () => {
+    const request = vi.fn<BrevoRequest>().mockResolvedValue({ ok: false, status: 401 });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const deps: EmailTestCliDeps = {
+      createService: (config) => createEmailService(config, { brevoRequest: request }),
+      log: (line) => stdout.push(line),
+      logError: (line) => stderr.push(line),
+    };
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], API_ENV, deps)).toBe(1);
+
+    expect(stdout).toStrictEqual([]);
+    expect(stderr).toStrictEqual([
+      'Failed to send test email via Brevo API (api.brevo.com:443): Brevo API responded with HTTP 401',
+    ]);
+    expect(stderr.join('\n')).not.toContain(API_ENV.BREVO_API_KEY);
+    expect(stderr.join('\n')).not.toContain(RECIPIENT);
+  });
+
+  it('redacts the configured API key and the SMTP values from an injected rejection', async () => {
+    const { deps, stdout, stderr, service } = createHarness();
+    const env = {
+      ...API_ENV,
+      SMTP_USER: BREVO_ENV.SMTP_USER,
+      SMTP_PASS: BREVO_ENV.SMTP_PASS,
+    };
+    service.sendVerification.mockRejectedValueOnce(
+      new Error(
+        `provider rejected ${env.BREVO_API_KEY} ${env.SMTP_USER} ${env.SMTP_PASS}`,
+      ),
+    );
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], env, deps)).toBe(1);
+
+    expect(stdout).toStrictEqual([]);
+    expect(stderr).toStrictEqual([
+      'Failed to send test email via Brevo API (api.brevo.com:443): provider rejected [redacted] [redacted] [redacted]',
+    ]);
+    expect(stderr.join('\n')).not.toContain(env.BREVO_API_KEY);
+    expect(stderr.join('\n')).not.toContain(env.SMTP_USER);
+    expect(stderr.join('\n')).not.toContain(env.SMTP_PASS);
+  });
+
+  it('prints exactly the missing-key configuration line and constructs no service', async () => {
+    const { deps, stdout, stderr, createService } = createHarness();
+    const env = {
+      EMAIL_TRANSPORT: 'brevo-api',
+      SMTP_FROM: 'CubeClicker <no-reply@example.com>',
+    };
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], env, deps)).toBe(1);
+
+    expect(stdout).toStrictEqual([]);
+    expect(stderr).toStrictEqual([
+      'Invalid email configuration: BREVO_API_KEY must be a non-empty string when EMAIL_TRANSPORT=brevo-api',
+    ]);
+    expect(createService).toHaveBeenCalledTimes(0);
+  });
+
+  it('redacts the configured API key from a configuration error', async () => {
+    const { deps, stdout, stderr, createService } = createHarness();
+    const env = {
+      ...API_ENV,
+      SESSION_COOKIE_SAMESITE: API_ENV.BREVO_API_KEY,
+    };
+
+    expect(await runEmailTestCli(['--to', RECIPIENT], env, deps)).toBe(1);
+
+    expect(stdout).toStrictEqual([]);
+    expect(stderr).toStrictEqual([
+      'Invalid email configuration: SESSION_COOKIE_SAMESITE must be one of "lax", "strict", or "none"; received "[redacted]"',
+    ]);
+    expect(createService).toHaveBeenCalledTimes(0);
+    expect(stderr.join('\n')).not.toContain(API_ENV.BREVO_API_KEY);
+  });
+});
+
 describe('redactSecrets (AC-9)', () => {
   it('replaces every occurrence of every configured credential value', () => {
     expect(
@@ -304,6 +445,12 @@ describe('redactSecrets (AC-9)', () => {
         [BREVO_ENV.SMTP_USER, BREVO_ENV.SMTP_PASS],
       ),
     ).toBe('login [redacted] with [redacted] then [redacted] again');
+  });
+
+  it('redacts the configured Brevo API key value', () => {
+    expect(
+      redactSecrets(`sent with ${API_ENV.BREVO_API_KEY} now`, [API_ENV.BREVO_API_KEY]),
+    ).toBe('sent with [redacted] now');
   });
 
   it('ignores empty, null and undefined secret values', () => {

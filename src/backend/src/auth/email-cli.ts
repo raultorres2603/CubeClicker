@@ -2,15 +2,17 @@
  * `email:test` operator CLI (T6, AC-8, AC-9).
  *
  * Sends exactly one real message through the same configuration loading and
- * service factory the app uses, rendered by the branded verification template
- * with a synthetic `.../verify?token=cli-test` link. The address is therefore a
- * transport test, not a working verification link.
+ * service factory the app uses (`createEmailService`), rendered by the branded
+ * verification template with a synthetic `.../verify?token=cli-test` link. The
+ * address is therefore a transport test, not a working verification link.
  *
- * Every printed failure or configuration line passes through `redactSecrets`,
- * so a nodemailer error that embeds the SMTP login or key prints `[redacted]`
- * instead. The CLI returns an exit code instead of exiting (mirroring
- * `db/migrate-cli.ts`) and the module-level `import.meta.url` guard is the
- * executable entry for both `tsx src/auth/email-cli.ts` and
+ * The selected transport chooses the success/failure line, while every SMTP
+ * line and argument path stays byte-identical. Every printed failure or
+ * configuration line passes through `redactSecrets`, so a nodemailer error that
+ * embeds the SMTP login or key, or a Brevo error that embeds the API key, prints
+ * `[redacted]` instead. The CLI returns an exit code instead of exiting
+ * (mirroring `db/migrate-cli.ts`) and the module-level `import.meta.url` guard
+ * is the executable entry for both `tsx src/auth/email-cli.ts` and
  * `node dist/auth/email-cli.js`.
  */
 
@@ -18,14 +20,16 @@ import { pathToFileURL } from 'node:url';
 
 import { DEFAULT_SMTP_FROM, loadAuthConfig, type AuthConfig } from './config.js';
 import {
-  createSmtpEmailService,
+  BREVO_API_HOST,
+  BREVO_API_PORT,
+  createEmailService,
   type EmailService,
-  type SmtpEmailConfig,
+  type EmailServiceConfig,
 } from './email.js';
 
 /** Injectable seams: the service factory plus the two output writers. */
 export interface EmailTestCliDeps {
-  createService?: (config: SmtpEmailConfig) => Pick<EmailService, 'sendVerification'>;
+  createService?: (config: EmailServiceConfig) => Pick<EmailService, 'sendVerification'>;
   log?: (line: string) => void;
   logError?: (line: string) => void;
 }
@@ -85,7 +89,7 @@ export function redactSecrets(
 function rawCredentialValues(
   env: Record<string, string | undefined>,
 ): Array<string | undefined> {
-  return [env.SMTP_USER, env.SMTP_PASS];
+  return [env.SMTP_USER, env.SMTP_PASS, env.BREVO_API_KEY];
 }
 
 /**
@@ -135,7 +139,7 @@ export async function runEmailTestCli(
   let service: Pick<EmailService, 'sendVerification'>;
   try {
     config = loadAuthConfig(env);
-    service = (deps.createService ?? createSmtpEmailService)(config);
+    service = (deps.createService ?? createEmailService)(config);
   } catch (error) {
     logError(
       `Invalid email configuration: ${redactSecrets(errorMessage(error), secrets)}`,
@@ -146,11 +150,26 @@ export async function runEmailTestCli(
   try {
     await service.sendVerification(to, `${config.appBaseUrl}${CLI_VERIFICATION_URL_PATH}`);
   } catch (error) {
+    const apiTransport = config.emailTransport === 'brevo-api';
+    const target = apiTransport
+      ? `Brevo API (${BREVO_API_HOST}:${BREVO_API_PORT})`
+      : `${config.smtpHost}:${config.smtpPort}`;
+    const failureSecrets = apiTransport
+      ? [config.brevoApiKey, config.smtpUser, config.smtpPass]
+      : [config.smtpUser, config.smtpPass];
     logError(
-      `Failed to send test email via ${config.smtpHost}:${config.smtpPort}: ` +
-        redactSecrets(errorMessage(error), [config.smtpUser, config.smtpPass]),
+      `Failed to send test email via ${target}: ` +
+        redactSecrets(errorMessage(error), failureSecrets),
     );
     return 1;
+  }
+
+  if (config.emailTransport === 'brevo-api') {
+    log(
+      `Test email sent to ${to} via Brevo API ` +
+        `(${BREVO_API_HOST}:${BREVO_API_PORT}, transport=brevo-api, from="${config.smtpFrom}")`,
+    );
+    return 0;
   }
 
   const auth = config.smtpUser !== null && config.smtpPass !== null;
