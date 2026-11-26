@@ -67,19 +67,22 @@ The startup schema bootstrap and the in-process expired-verification cleanup log
 
 ## Email delivery events
 
-Registration and resend log one redacted warning when the SMTP transport rejects, and the route maps the typed delivery error to HTTP `502` with code `verification_email_failed`, so "SMTP broken" is distinguishable from a code failure without reading a credential or a transport message. The non-blocking `onReady` startup probe logs its own outcome and never delays `listen` or `GET /healthz`.
+Registration and resend log one redacted warning when the email transport rejects, and the route maps the typed delivery error to HTTP `502` with code `verification_email_failed`, so a delivery failure is distinguishable from a code failure without reading a credential or a transport message. The non-blocking `onReady` startup probe logs its own outcome per transport and never delays `listen` or `GET /healthz`: the deployed API path reports `brevo_api_transport_*`, while the local/off-Render SMTP path keeps `smtp_transport_*`.
 
 | Event | Fields | Level |
 | --- | --- | --- |
-| `verification_email_delivery_failed` | `route` (`register`/`resend-verification`), `errorType`, optional string `transportCode`, `host`, `port` | warn |
+| `verification_email_delivery_failed` | `route` (`register`/`resend-verification`), `transport` (`smtp`/`brevo-api`), `errorType`, optional string `transportCode`, `host`, `port` | warn |
 | `smtp_transport_verify_ok` | `host`, `port` | info |
 | `smtp_transport_verify_failed` | `errorType`, optional string `transportCode`, `host`, `port` | warn |
 | `smtp_transport_verify_skipped` | `reason`: `no_credentials` or `unsupported` | debug |
+| `brevo_api_transport_verify_ok` | `host` (`api.brevo.com`), `port` (`443`) | info |
+| `brevo_api_transport_verify_failed` | `errorType`, optional string `transportCode`, `host`, `port` | warn |
+| `brevo_api_transport_verify_skipped` | `reason`: `unsupported` | debug |
 
-- **One line per failure.** A register or resend delivery failure emits exactly one `verification_email_delivery_failed` event; the startup probe catches its own rejection and logs `smtp_transport_verify_failed` instead, so neither path produces an unhandled rejection.
-- **No PII.** No email, username, account id, token, message or stack appears in any of these events. `errorType` is the source error name (or `unknown`), `transportCode` is copied only when it matches the provider-code whitelist `/^[A-Z0-9_]{1,40}$/`, and `host`/`port` are the configured relay values.
-- **Levels.** `verification_email_delivery_failed` and `smtp_transport_verify_failed` are `warn` and visible at the deployed `info` default; `smtp_transport_verify_ok` is `info`; `smtp_transport_verify_skipped` is `debug` and appears only when the configured level is `debug`.
-- **Probe visibility.** The probe runs only when both SMTP credentials are set (the deployed relay path); Mailpit skips it with `reason: 'no_credentials'` and a service without `verify` reports `reason: 'unsupported'`. Its outcome never changes `/healthz`.
+- **One line per failure.** A register or resend delivery failure emits exactly one `verification_email_delivery_failed` event for either transport; the startup probe catches its own rejection and logs `brevo_api_transport_verify_failed` or `smtp_transport_verify_failed` instead, so neither path produces an unhandled rejection.
+- **No PII.** No email, username, account id, token, message or stack appears in any of these events. `errorType` is the source error name (or `unknown`), `transport` is the selected transport (`smtp` or `brevo-api`), `transportCode` is copied only when it matches the provider-code whitelist `/^[A-Z0-9_]{1,40}$/`, and `host`/`port` are the configured transport values. For Brevo API failures `transportCode` is `HTTP_<status>`; a provider response body is never read, so it cannot contribute an address, message or code to a field.
+- **Levels.** `verification_email_delivery_failed`, `smtp_transport_verify_failed` and `brevo_api_transport_verify_failed` are `warn` and visible at the deployed `info` default; `smtp_transport_verify_ok` and `brevo_api_transport_verify_ok` are `info`; both `*_transport_verify_skipped` events are `debug` and appear only when the configured level is `debug`.
+- **Probe visibility.** The API path always probes because configuration guarantees a `BREVO_API_KEY`; the SMTP path runs only when both SMTP credentials are set (the local/off-Render relay path). Mailpit skips the SMTP probe with `reason: 'no_credentials'` and a service without `verify` reports `reason: 'unsupported'`. Either outcome never changes `/healthz`.
 
 ## Metrics catalog
 
