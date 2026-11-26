@@ -25,10 +25,30 @@ import {
   MIN_SMTP_CONNECTION_TIMEOUT_MS,
   MIN_VERIFICATION_TOKEN_TTL_MS,
   loadAuthConfig,
+  parseEmailSender,
 } from './config.js';
+
+const SENDER_FIXTURE = 'brevo-sender@example.test';
+
+const BREVO_API_KEY_ERROR =
+  'BREVO_API_KEY must be a non-empty string when EMAIL_TRANSPORT=brevo-api';
+const BREVO_SENDER_PARSE_ERROR =
+  'SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api';
+const BREVO_LOCAL_SENDER_ERROR =
+  'SMTP_FROM must be a Brevo-verified sender when EMAIL_TRANSPORT=brevo-api; the local default is not deliverable';
+
+function brevoApiEnv(smtpFrom: string): Record<string, string> {
+  return {
+    EMAIL_TRANSPORT: 'brevo-api',
+    BREVO_API_KEY: 'brevo-api-key-fixture',
+    SMTP_FROM: smtpFrom,
+  };
+}
 
 const DEFAULT_CONFIG = {
   databaseUrl: null,
+  emailTransport: 'smtp',
+  brevoApiKey: null,
   smtpHost: 'mailpit',
   smtpPort: 1025,
   smtpSecure: false,
@@ -95,6 +115,166 @@ describe('loadAuthConfig defaults', () => {
 
   it('treats an empty DATABASE_URL as unset', () => {
     expect(loadAuthConfig({ DATABASE_URL: '' }).databaseUrl).toBeNull();
+  });
+});
+
+describe('EMAIL_TRANSPORT selection', () => {
+  it('defaults to smtp when unset or empty for every NODE_ENV', () => {
+    expect(loadAuthConfig({}).emailTransport).toBe('smtp');
+    expect(loadAuthConfig({ EMAIL_TRANSPORT: '' }).emailTransport).toBe('smtp');
+    expect(loadAuthConfig({ NODE_ENV: 'development' }).emailTransport).toBe('smtp');
+    expect(loadAuthConfig({ NODE_ENV: 'test' }).emailTransport).toBe('smtp');
+    expect(loadAuthConfig({ NODE_ENV: 'production' }).emailTransport).toBe('smtp');
+    expect(
+      loadAuthConfig({ NODE_ENV: 'production', EMAIL_TRANSPORT: '' }).emailTransport,
+    ).toBe('smtp');
+  });
+
+  it('honors an explicit smtp in every NODE_ENV', () => {
+    expect(loadAuthConfig({ EMAIL_TRANSPORT: 'smtp' }).emailTransport).toBe('smtp');
+    expect(
+      loadAuthConfig({ NODE_ENV: 'development', EMAIL_TRANSPORT: 'smtp' }).emailTransport,
+    ).toBe('smtp');
+    expect(
+      loadAuthConfig({ NODE_ENV: 'production', EMAIL_TRANSPORT: 'smtp' }).emailTransport,
+    ).toBe('smtp');
+  });
+
+  it('accepts and ignores a set BREVO_API_KEY on the smtp path', () => {
+    const config = loadAuthConfig({
+      EMAIL_TRANSPORT: 'smtp',
+      BREVO_API_KEY: 'unused-api-key-fixture',
+    });
+    expect(config.emailTransport).toBe('smtp');
+    expect(config.brevoApiKey).toBe('unused-api-key-fixture');
+    expect(config.smtpFrom).toBe(DEFAULT_SMTP_FROM);
+  });
+
+  it('selects brevo-api with a key and a bare sender', () => {
+    const config = loadAuthConfig(brevoApiEnv(SENDER_FIXTURE));
+    expect(config.emailTransport).toBe('brevo-api');
+    expect(config.brevoApiKey).toBe('brevo-api-key-fixture');
+    expect(config.smtpFrom).toBe(SENDER_FIXTURE);
+    expect(config.smtpHost).toBe('mailpit');
+    expect(config.smtpPort).toBe(1025);
+  });
+
+  it('rejects an unknown transport naming the variable and value', () => {
+    expect(() => loadAuthConfig({ EMAIL_TRANSPORT: 'mailgun' })).toThrowError(
+      'EMAIL_TRANSPORT must be "smtp" or "brevo-api"; received "mailgun"',
+    );
+    expect(() =>
+      loadAuthConfig({ NODE_ENV: 'production', EMAIL_TRANSPORT: 'SMTP' }),
+    ).toThrowError('EMAIL_TRANSPORT must be "smtp" or "brevo-api"; received "SMTP"');
+  });
+
+  it('rejects brevo-api with an absent or empty key', () => {
+    expect(() =>
+      loadAuthConfig({ EMAIL_TRANSPORT: 'brevo-api', SMTP_FROM: SENDER_FIXTURE }),
+    ).toThrowError(BREVO_API_KEY_ERROR);
+    expect(() =>
+      loadAuthConfig({
+        EMAIL_TRANSPORT: 'brevo-api',
+        BREVO_API_KEY: '',
+        SMTP_FROM: SENDER_FIXTURE,
+      }),
+    ).toThrowError(BREVO_API_KEY_ERROR);
+  });
+});
+
+describe('brevo-api sender contract', () => {
+  it('accepts bare, angle-only and display-name senders and keeps smtpFrom unchanged', () => {
+    const forms = [
+      SENDER_FIXTURE,
+      `<${SENDER_FIXTURE}>`,
+      `CubeClicker <${SENDER_FIXTURE}>`,
+    ];
+    for (const smtpFrom of forms) {
+      expect(loadAuthConfig(brevoApiEnv(smtpFrom)).smtpFrom).toBe(smtpFrom);
+    }
+  });
+
+  it('keeps the stored sender byte-identical (no trimming)', () => {
+    const padded = `  CubeClicker   <${SENDER_FIXTURE}>  `;
+    expect(loadAuthConfig(brevoApiEnv(padded)).smtpFrom).toBe(padded);
+  });
+
+  it.each([
+    '   ',
+    'not an address',
+    `CubeClicker <not-an-address>`,
+    `<${SENDER_FIXTURE}><${SENDER_FIXTURE}>`,
+  ])('rejects the unparseable sender value %j', (smtpFrom) => {
+    expect(() => loadAuthConfig(brevoApiEnv(smtpFrom))).toThrowError(
+      BREVO_SENDER_PARSE_ERROR,
+    );
+  });
+
+  it('rejects an unset or empty SMTP_FROM with the existing non-empty message', () => {
+    expect(() =>
+      loadAuthConfig({
+        EMAIL_TRANSPORT: 'brevo-api',
+        BREVO_API_KEY: 'brevo-api-key-fixture',
+      }),
+    ).toThrowError('SMTP_FROM must be a non-empty string; received ""');
+    expect(() =>
+      loadAuthConfig({
+        EMAIL_TRANSPORT: 'brevo-api',
+        BREVO_API_KEY: 'brevo-api-key-fixture',
+        SMTP_FROM: '',
+      }),
+    ).toThrowError('SMTP_FROM must be a non-empty string; received ""');
+  });
+
+  it('rejects the local default sender in bare, angle-only and display-name forms', () => {
+    for (const smtpFrom of [
+      DEFAULT_SMTP_FROM,
+      `<${DEFAULT_SMTP_FROM}>`,
+      `CubeClicker <${DEFAULT_SMTP_FROM}>`,
+    ]) {
+      expect(() => loadAuthConfig(brevoApiEnv(smtpFrom))).toThrowError(
+        BREVO_LOCAL_SENDER_ERROR,
+      );
+    }
+  });
+});
+
+describe('parseEmailSender', () => {
+  it('parses a display-name sender exactly', () => {
+    expect(parseEmailSender(`CubeClicker <${SENDER_FIXTURE}>`)).toStrictEqual({
+      name: 'CubeClicker',
+      email: SENDER_FIXTURE,
+    });
+  });
+
+  it('parses bare and angle-only senders without a name property', () => {
+    // `toStrictEqual` fails if the result carries an explicit `name: undefined`.
+    expect(parseEmailSender(SENDER_FIXTURE)).toStrictEqual({ email: SENDER_FIXTURE });
+    expect(parseEmailSender(`<${SENDER_FIXTURE}>`)).toStrictEqual({
+      email: SENDER_FIXTURE,
+    });
+  });
+
+  it('trims whitespace around the whole value and the display name', () => {
+    expect(parseEmailSender(`   CubeClicker   <${SENDER_FIXTURE}>   `)).toStrictEqual({
+      name: 'CubeClicker',
+      email: SENDER_FIXTURE,
+    });
+    expect(parseEmailSender(`   ${SENDER_FIXTURE}   `)).toStrictEqual({
+      email: SENDER_FIXTURE,
+    });
+  });
+
+  it('returns null for every unparseable form', () => {
+    expect(parseEmailSender(`CubeClicker <not-an-address>`)).toBeNull();
+    expect(parseEmailSender('not an address')).toBeNull();
+    expect(parseEmailSender('')).toBeNull();
+    expect(parseEmailSender('   ')).toBeNull();
+    expect(parseEmailSender(`<${SENDER_FIXTURE}><${SENDER_FIXTURE}>`)).toBeNull();
+    expect(parseEmailSender('no-at-sign.example')).toBeNull();
+    expect(parseEmailSender('@example.test')).toBeNull();
+    expect(parseEmailSender(`CubeClicker <${SENDER_FIXTURE}`)).toBeNull();
+    expect(parseEmailSender(`${SENDER_FIXTURE}>`)).toBeNull();
   });
 });
 

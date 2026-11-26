@@ -28,6 +28,15 @@ export const DEFAULT_APP_BASE_URL = 'http://localhost:5173';
 /** Default allowed Origin for CSRF checks (frontend dev server). */
 export const DEFAULT_ALLOWED_ORIGIN = 'http://localhost:5173';
 
+/** Outbound email transports accepted from `EMAIL_TRANSPORT`. */
+export type EmailTransportKind = 'smtp' | 'brevo-api';
+
+/** A sender parsed from `SMTP_FROM`; `name` is absent for a bare address. */
+export interface ParsedEmailSender {
+  email: string;
+  name?: string;
+}
+
 /** Session-cookie SameSite values accepted from `SESSION_COOKIE_SAMESITE`. */
 export type SessionCookieSameSite = 'lax' | 'strict' | 'none';
 
@@ -59,6 +68,10 @@ export const MAX_VERIFICATION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export interface AuthConfig {
   /** Postgres connection string, or null when no database is configured (in-memory repos). */
   databaseUrl: string | null;
+  /** Selected outbound email transport (`EMAIL_TRANSPORT`, default `smtp`). */
+  emailTransport: EmailTransportKind;
+  /** Brevo REST API key, or null when unset/empty; required when the transport is `brevo-api`. */
+  brevoApiKey: string | null;
   /** SMTP host used by the email service. */
   smtpHost: string;
   /** SMTP port used by the email service. */
@@ -214,6 +227,93 @@ function readDatabaseUrl(
 }
 
 /**
+ * Pragmatic address shape: one `@`, non-empty local part and domain, and no
+ * whitespace or angle brackets. Delivery validity is Brevo's responsibility.
+ */
+const EMAIL_ADDRESS_PATTERN = /^[^\s<>@]+@[^\s<>@]+$/;
+/** `Display Name <address>` / angle-only `<address>`; at most one bracket pair. */
+const BRACKETED_SENDER_PATTERN = /^([^<>]*)<([^<>]+)>$/;
+
+/**
+ * Reads `EMAIL_TRANSPORT`: unset or empty means `smtp` for every `NODE_ENV`;
+ * an explicit `smtp` or `brevo-api` is honored; anything else is rejected.
+ */
+function readEmailTransport(
+  env: Record<string, string | undefined>,
+): EmailTransportKind {
+  const raw = env.EMAIL_TRANSPORT;
+  if (raw === undefined || raw === '') {
+    return 'smtp';
+  }
+  if (raw === 'smtp' || raw === 'brevo-api') {
+    return raw;
+  }
+  throw new Error(
+    `EMAIL_TRANSPORT must be "smtp" or "brevo-api"; received "${raw}"`,
+  );
+}
+
+/**
+ * Parses a sender value: a bare `address`, an angle-only `<address>`, or
+ * `Display Name <address>`. Surrounding whitespace (whole value and display
+ * name) is trimmed. Returns null for every other non-empty value.
+ */
+export function parseEmailSender(value: string): ParsedEmailSender | null {
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  const bracketed = BRACKETED_SENDER_PATTERN.exec(trimmed);
+  if (bracketed !== null) {
+    const address = bracketed[2].trim();
+    if (!EMAIL_ADDRESS_PATTERN.test(address)) {
+      return null;
+    }
+    const name = bracketed[1].trim();
+    return name === '' ? { email: address } : { email: address, name };
+  }
+  if (trimmed.includes('<') || trimmed.includes('>')) {
+    return null;
+  }
+  if (!EMAIL_ADDRESS_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return { email: trimmed };
+}
+
+/**
+ * Applies the `brevo-api` fail-closed rules: the API key is required and
+ * `SMTP_FROM` must be explicitly set, parseable, and not the local default.
+ * Unset/empty `SMTP_FROM` keeps the existing non-empty message; whitespace
+ * falls through to the parser and its dedicated message.
+ */
+function validateBrevoApiSelection(
+  env: Record<string, string | undefined>,
+  brevoApiKey: string | null,
+  smtpFrom: string,
+): void {
+  if (brevoApiKey === null) {
+    throw new Error(
+      'BREVO_API_KEY must be a non-empty string when EMAIL_TRANSPORT=brevo-api',
+    );
+  }
+  if (env.SMTP_FROM === undefined) {
+    throw new Error('SMTP_FROM must be a non-empty string; received ""');
+  }
+  const sender = parseEmailSender(smtpFrom);
+  if (sender === null) {
+    throw new Error(
+      'SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api',
+    );
+  }
+  if (sender.email === DEFAULT_SMTP_FROM) {
+    throw new Error(
+      'SMTP_FROM must be a Brevo-verified sender when EMAIL_TRANSPORT=brevo-api; the local default is not deliverable',
+    );
+  }
+}
+
+/**
  * Parses and validates the authentication configuration from an environment object.
  *
  * Throws (naming the variable) for an invalid value, so startup fails loudly
@@ -223,6 +323,8 @@ export function loadAuthConfig(
   env: Record<string, string | undefined>,
 ): AuthConfig {
   const databaseUrl = readDatabaseUrl(env);
+  const emailTransport = readEmailTransport(env);
+  const brevoApiKey = readOptionalString(env, 'BREVO_API_KEY');
   const smtpHost = readRequiredString(env, 'SMTP_HOST', DEFAULT_SMTP_HOST);
   const smtpPort = readInteger(env, 'SMTP_PORT', DEFAULT_SMTP_PORT, 1, 65535);
   const smtpSecure =
@@ -235,6 +337,9 @@ export function loadAuthConfig(
     );
   }
   const smtpFrom = readRequiredString(env, 'SMTP_FROM', DEFAULT_SMTP_FROM);
+  if (emailTransport === 'brevo-api') {
+    validateBrevoApiSelection(env, brevoApiKey, smtpFrom);
+  }
   const smtpConnectionTimeoutMs = readInteger(
     env,
     'SMTP_CONNECTION_TIMEOUT_MS',
@@ -291,6 +396,8 @@ export function loadAuthConfig(
 
   return {
     databaseUrl,
+    emailTransport,
+    brevoApiKey,
     smtpHost,
     smtpPort,
     smtpSecure,

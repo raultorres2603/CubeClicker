@@ -24,6 +24,10 @@ services:
       SMTP_PASS: ""
       SMTP_FROM: "no-reply@cubeclicker.local"
       SMTP_SECURE: "false"
+      # Pin the transport to the local SMTP path with an empty API key so a
+      # host/provider export cannot switch the smoke run to the Brevo API.
+      EMAIL_TRANSPORT: "smtp"
+      BREVO_API_KEY: ""
 
   frontend-prod:
     build:
