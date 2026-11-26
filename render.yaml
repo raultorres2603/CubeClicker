@@ -74,3 +74,7 @@ services:
         sync: false
       - key: SMTP_CONNECTION_TIMEOUT_MS
         sync: false
+      - key: EMAIL_TRANSPORT
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false

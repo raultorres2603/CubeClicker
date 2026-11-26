@@ -105,6 +105,8 @@ jobs:
           SMTP_FROM: '<CHANGEME-verified-sender>'
           SMTP_USER: '<CHANGEME-smtp-login>'
           SMTP_PASS: '<CHANGEME-smtp-key>'
+          EMAIL_TRANSPORT: brevo-api
+          BREVO_API_KEY: '<CHANGEME-brevo-api-key>'
         run: |
           set -euo pipefail
           status=0
@@ -114,7 +116,7 @@ jobs:
             echo 'The placeholder fixture must be rejected, but the guard exited 0.' >&2
             exit 1
           fi
-          printf '%s\n' "$output" | grep -qx "Deploy blocked: the 'production' environment has 5 unset or placeholder value(s)."
+          printf '%s\n' "$output" | grep -qx "Deploy blocked: the 'production' environment has 6 unset or placeholder value(s)."
       - name: Guard accepts a complete value set
         env:
           TARGET_ENVIRONMENT: development
@@ -127,8 +129,10 @@ jobs:
           SMTP_FROM: 'CubeClicker <no-reply@example.com>'
           SMTP_USER: fixture
           SMTP_PASS: fixture
+          EMAIL_TRANSPORT: brevo-api
+          BREVO_API_KEY: fixture-key
         run: |
           set -euo pipefail
           output=$(npx --no-install tsx src/backend/src/deploy/render-env-cli.ts --check-only)
           printf '%s\n' "$output"
-          printf '%s\n' "$output" | grep -qx "Deploy configuration OK: 9 value(s) present for the 'development' environment."
+          printf '%s\n' "$output" | grep -qx "Deploy configuration OK: 11 value(s) present for the 'development' environment."

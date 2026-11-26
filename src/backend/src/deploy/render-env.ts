@@ -1,19 +1,23 @@
 /**
- * Deployment Brevo guard and Render env-var sync (T1, AC-2/AC-3/AC-5/AC-9).
+ * Deployment Brevo guard and Render env-var sync (T1, AC-7/AC-8).
  *
- * The GitHub Environment is the deployment source of truth for nine names. The
- * first seven (`SMTP_CATALOG`) are the accepted Brevo contract and the only
- * names this module writes to Render; the last two (`RENDER_WIRING`) are
- * pipeline wiring that is validated but never written to the service:
+ * The GitHub Environment is the deployment source of truth for eleven names.
+ * The first nine (`SYNC_CATALOG`: the seven accepted SMTP names then the two
+ * email-transport names) are the deployment contract and the only names this
+ * module writes to Render; the last two (`RENDER_WIRING`) are pipeline wiring
+ * that is validated but never written to the service:
  *   - `RENDER_SERVICE_ID` is only the URL path coordinate.
  *   - `RENDER_API_KEY` is only the `authorization` header.
  *
  * Everything here is pure or injected: `syncRenderEnv` receives a `FetchLike`
- * and a line logger, so the guard and the sync are testable with no network,
+ * and a line logger, so the guards and the sync are testable with no network,
  * no timers and no live credentials. Failure output never contains a value:
- * transport errors pass through `redactValues`, and only the Render `code` of a
- * failed response body is ever printed.
+ * transport errors pass through `redactValues`, the email-transport guard
+ * echoes only the rejected non-secret `EMAIL_TRANSPORT` value, and only the
+ * Render `code` of a failed response body is ever printed.
  */
+
+import { DEFAULT_SMTP_FROM, parseEmailSender } from '../auth/config.js';
 
 /** The seven accepted SMTP names, pinned order, with their GitHub classification. */
 export const SMTP_CATALOG = [
@@ -26,18 +30,27 @@ export const SMTP_CATALOG = [
   { key: 'SMTP_PASS', source: 'secret' },
 ] as const;
 
+/** The two Brevo HTTPS API names, pinned order, with their GitHub classification. */
+export const EMAIL_CATALOG = [
+  { key: 'EMAIL_TRANSPORT', source: 'variable' },
+  { key: 'BREVO_API_KEY', source: 'secret' },
+] as const;
+
+/** The nine-name sync catalog: `SMTP_CATALOG` then `EMAIL_CATALOG`. */
+export const SYNC_CATALOG = [...SMTP_CATALOG, ...EMAIL_CATALOG] as const;
+
 /** The two Render-wiring names: validated, never synced to the service. */
 export const RENDER_WIRING = [
   { key: 'RENDER_SERVICE_ID', source: 'variable' },
   { key: 'RENDER_API_KEY', source: 'secret' },
 ] as const;
 
-/** The nine-name validation catalog: `SMTP_CATALOG` then `RENDER_WIRING`. */
-export const CATALOG = [...SMTP_CATALOG, ...RENDER_WIRING] as const;
+/** The eleven-name validation catalog: `SYNC_CATALOG` then `RENDER_WIRING`. */
+export const CATALOG = [...SYNC_CATALOG, ...RENDER_WIRING] as const;
 
-/** The seven-key sync payload. The two wiring names are not part of it. */
-export type SmtpKey = (typeof SMTP_CATALOG)[number]['key'];
-export type SmtpValues = Record<SmtpKey, string>;
+/** The nine-key sync payload. The two wiring names are not part of it. */
+export type SyncKey = (typeof SYNC_CATALOG)[number]['key'];
+export type SyncValues = Record<SyncKey, string>;
 
 /** A value containing this sentinel is a placeholder, not configuration. */
 export const PLACEHOLDER_TOKEN = 'CHANGEME';
@@ -62,7 +75,7 @@ export function isPlaceholder(value: string): boolean {
   return value.includes(PLACEHOLDER_TOKEN);
 }
 
-/** Outcome of classifying the nine-name catalog against an environment object. */
+/** Outcome of classifying the eleven-name catalog against an environment object. */
 export interface DeployEnvSuccess {
   ok: true;
   values: Record<string, string>;
@@ -79,7 +92,7 @@ export type DeployEnvValidation = DeployEnvSuccess | DeployEnvFailure;
 /**
  * Classifies every name in `CATALOG` as `missing` (empty or whitespace-only),
  * `placeholder` (contains `CHANGEME`) or `ok`, preserving catalog order in both
- * lists. `ok: true` requires all nine names to be `ok`; the success payload
+ * lists. `ok: true` requires all eleven names to be `ok`; the success payload
  * keeps the raw configured values (no silent trimming).
  */
 export function validateDeployEnv(
@@ -132,6 +145,115 @@ export function formatGuardFailure(
     'Runbook: README.md § Deployment Brevo runbook',
   );
   return lines.join('\n');
+}
+
+/**
+ * The five deployed email-transport failure kinds (AC-7(c)). Each carries the
+ * minimum needed to render the pinned block: the two transport blocks echo the
+ * rejected non-secret `EMAIL_TRANSPORT` value; the other three echo nothing.
+ */
+export type EmailTransportFailure =
+  | { ok: false; reason: 'deployed_requires_api'; transport: string }
+  | { ok: false; reason: 'unsupported_transport'; transport: string }
+  | { ok: false; reason: 'smtp_key_reused' }
+  | { ok: false; reason: 'local_sender' }
+  | { ok: false; reason: 'invalid_sender' };
+
+/** The environments whose verification email must use the Brevo HTTPS API. */
+const DEPLOYED_ENVIRONMENTS: readonly string[] = ['development', 'production'];
+
+/**
+ * Strict deployed email-transport guard (AC-7(c)). Applies only when
+ * `TARGET_ENVIRONMENT` is `development` or `production`; every other value is
+ * the local/CLI path and passes. The deployed transport must be exactly
+ * `brevo-api` (unset/empty resolves to the runtime default `smtp`, which is
+ * rejected), the API key must not be the Brevo SMTP key or the configured
+ * `SMTP_PASS`, and `SMTP_FROM` must parse and must not be the local Mailpit
+ * default in any accepted form.
+ *
+ * Presence and `CHANGEME` are the catalog's job (the guard runs after
+ * `validateDeployEnv`), so a missing/empty `BREVO_API_KEY` does not fail here;
+ * the key-shape checks only inspect a configured value. Nothing configured is
+ * ever echoed: `formatEmailTransportFailure` prints only `EMAIL_TRANSPORT`.
+ */
+export function validateEmailTransport(
+  env: Record<string, string | undefined>,
+): { ok: true } | EmailTransportFailure {
+  const environment = env.TARGET_ENVIRONMENT;
+  if (!DEPLOYED_ENVIRONMENTS.includes(environment ?? '')) {
+    return { ok: true };
+  }
+
+  const raw = env.EMAIL_TRANSPORT;
+  const transport = raw === undefined || raw === '' ? 'smtp' : raw;
+  if (transport === 'smtp') {
+    return { ok: false, reason: 'deployed_requires_api', transport };
+  }
+  if (transport !== 'brevo-api') {
+    return { ok: false, reason: 'unsupported_transport', transport };
+  }
+
+  const apiKey = env.BREVO_API_KEY;
+  if (
+    apiKey !== undefined &&
+    apiKey !== '' &&
+    (apiKey.startsWith('xsmtpsib-') ||
+      (env.SMTP_PASS !== undefined && apiKey === env.SMTP_PASS))
+  ) {
+    return { ok: false, reason: 'smtp_key_reused' };
+  }
+
+  const sender = parseEmailSender(env.SMTP_FROM ?? '');
+  if (sender === null) {
+    return { ok: false, reason: 'invalid_sender' };
+  }
+  if (sender.email === DEFAULT_SMTP_FROM) {
+    return { ok: false, reason: 'local_sender' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Renders the pinned AC-7(d) operator block for one email-transport failure.
+ * Only the two transport blocks echo a configured value, and it is the
+ * non-secret `EMAIL_TRANSPORT`; no sender, key or `SMTP_PASS` is ever printed.
+ */
+export function formatEmailTransportFailure(
+  environment: string,
+  failure: EmailTransportFailure,
+): string {
+  const runbook = '  Runbook: README.md § Deployment Brevo runbook';
+  switch (failure.reason) {
+    case 'deployed_requires_api':
+      return [
+        `Deploy blocked: EMAIL_TRANSPORT must be "brevo-api" for the '${environment}' environment; received "${failure.transport}".`,
+        "  Deployed verification email uses Brevo's HTTPS API (port 443); SMTP authentication is not used.",
+        runbook,
+      ].join('\n');
+    case 'unsupported_transport':
+      return [
+        `Deploy blocked: EMAIL_TRANSPORT must be "smtp" or "brevo-api" ('${environment}' environment); received "${failure.transport}".`,
+        runbook,
+      ].join('\n');
+    case 'smtp_key_reused':
+      return [
+        `Deploy blocked: BREVO_API_KEY is the Brevo SMTP key, not the REST API key ('${environment}' environment).`,
+        '  Create a Brevo API key under Settings → SMTP & API → API Keys and store it as the BREVO_API_KEY secret.',
+        runbook,
+      ].join('\n');
+    case 'local_sender':
+      return [
+        `Deploy blocked: SMTP_FROM is the local Mailpit default and cannot deliver through the Brevo API ('${environment}' environment).`,
+        '  Set SMTP_FROM to the Brevo-verified sender.',
+        runbook,
+      ].join('\n');
+    case 'invalid_sender':
+      return [
+        `Deploy blocked: SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api ('${environment}' environment).`,
+        '  Set SMTP_FROM to the Brevo-verified sender.',
+        runbook,
+      ].join('\n');
+  }
 }
 
 /**
@@ -309,8 +431,8 @@ export interface SyncRenderEnvInput {
   serviceId: string;
   /** Bearer credential only; never sent in a body. */
   apiKey: string;
-  /** Exactly the seven SMTP keys; extra properties are ignored by the loop. */
-  smtpValues: SmtpValues;
+  /** Exactly the nine synced names; extra properties are ignored by the loop. */
+  syncValues: SyncValues;
   fetchImpl: FetchLike;
   log: (line: string) => void;
   /** Message label for the summary line (the CLI passes `TARGET_ENVIRONMENT`). */
@@ -319,7 +441,7 @@ export interface SyncRenderEnvInput {
 
 /** Sync outcome: the keys written and verified before any stop. */
 export interface SyncRenderEnvResult {
-  synced: SmtpKey[];
+  synced: SyncKey[];
 }
 
 interface JsonObject {
@@ -360,7 +482,7 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Writes the seven SMTP names to the Render service in `SMTP_CATALOG` order,
+ * Writes the nine synced names to the Render service in `SYNC_CATALOG` order,
  * one per-key `PUT` each, and verifies the echoed `key` and `value`. The wiring
  * names never reach a body: `RENDER_SERVICE_ID` is only the URL and
  * `RENDER_API_KEY` only the authorization header.
@@ -368,22 +490,22 @@ function errorMessage(error: unknown): string {
  * On the first failure (non-2xx, timeout, other transport rejection, or a
  * response that does not echo the sent value) the pinned line is logged, the
  * loop stops and the already-synced keys are returned without a summary. The
- * caller compares the result with `SMTP_CATALOG.length` to choose the exit
- * code. An extra property on `smtpValues` is ignored by the loop.
+ * caller compares the result with `SYNC_CATALOG.length` to choose the exit
+ * code. An extra property on `syncValues` is ignored by the loop.
  */
 export async function syncRenderEnv(
   input: SyncRenderEnvInput,
 ): Promise<SyncRenderEnvResult> {
-  const { serviceId, apiKey, smtpValues, fetchImpl, log } = input;
+  const { serviceId, apiKey, syncValues, fetchImpl, log } = input;
   const environment = input.environment ?? 'unknown';
-  const synced: SmtpKey[] = [];
+  const synced: SyncKey[] = [];
 
   // Redact every configured string plus the bearer credential, even though the
   // API key is never part of a request body.
-  const sensitiveValues = [...Object.values(smtpValues), apiKey];
+  const sensitiveValues = [...Object.values(syncValues), apiKey];
 
-  for (const { key } of SMTP_CATALOG) {
-    const value = smtpValues[key];
+  for (const { key } of SYNC_CATALOG) {
+    const value = syncValues[key];
     try {
       const response = await fetchImpl(renderEnvVarUrl(serviceId, key), {
         method: 'PUT',

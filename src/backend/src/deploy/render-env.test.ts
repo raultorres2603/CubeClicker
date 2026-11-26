@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_SMTP_FROM } from '../auth/config.js';
+
 import {
   BLOCKED_RENDER_FREE_SMTP_PORTS,
   buildEnvVarPayload,
   CATALOG,
+  EMAIL_CATALOG,
+  formatEmailTransportFailure,
   formatGuardFailure,
   formatSmtpPortFailure,
   isPlaceholder,
@@ -15,15 +19,18 @@ import {
   RENDER_REQUEST_TIMEOUT_MS,
   RENDER_WIRING,
   SMTP_CATALOG,
+  SYNC_CATALOG,
   syncRenderEnv,
   validateDeployEnv,
+  validateEmailTransport,
   validateSmtpTransportPort,
   type DeployEnvFailure,
   type DeployEnvValidation,
+  type EmailTransportFailure,
   type FetchLike,
   type FetchResponseLike,
   type SmtpPortFailure,
-  type SmtpValues,
+  type SyncValues,
 } from './render-env.js';
 
 const SMTP_KEYS = [
@@ -36,9 +43,11 @@ const SMTP_KEYS = [
   'SMTP_PASS',
 ] as const;
 
-const ALL_KEYS = [...SMTP_KEYS, 'RENDER_SERVICE_ID', 'RENDER_API_KEY'] as const;
+const SYNC_KEYS = [...SMTP_KEYS, 'EMAIL_TRANSPORT', 'BREVO_API_KEY'] as const;
 
-const SMTP_VALUES: SmtpValues = {
+const ALL_KEYS = [...SYNC_KEYS, 'RENDER_SERVICE_ID', 'RENDER_API_KEY'] as const;
+
+const SMTP_VALUES = {
   SMTP_HOST: 'smtp-relay.brevo.com',
   SMTP_PORT: '587',
   SMTP_SECURE: 'false',
@@ -46,6 +55,16 @@ const SMTP_VALUES: SmtpValues = {
   SMTP_FROM: 'CubeClicker <no-reply@example.com>',
   SMTP_USER: 'smtp-login@example.com',
   SMTP_PASS: 'smtp-pass-value',
+} as const;
+
+// 11 characters: a fixture, not a credential shape, and short enough never to
+// match the repository credential guard.
+const API_FIXTURE = 'fixture-key';
+
+const SYNC_VALUES: SyncValues = {
+  ...SMTP_VALUES,
+  EMAIL_TRANSPORT: 'brevo-api',
+  BREVO_API_KEY: API_FIXTURE,
 };
 
 const SERVICE_ID = 'srv-dbtcvv9srm7s73au5bag';
@@ -54,7 +73,7 @@ const API_KEY = 'rnd_' + 'k'.repeat(24);
 const ENVIRONMENT = 'development';
 
 const COMPLETE_ENV = {
-  ...SMTP_VALUES,
+  ...SYNC_VALUES,
   RENDER_SERVICE_ID: SERVICE_ID,
   RENDER_API_KEY: API_KEY,
 };
@@ -64,11 +83,13 @@ const DEVELOPMENT_PLACEHOLDER_ENV = {
   SMTP_FROM: '<CHANGEME-verified-sender>',
   SMTP_USER: '<CHANGEME-smtp-login>',
   SMTP_PASS: '<CHANGEME-smtp-key>',
+  BREVO_API_KEY: '<CHANGEME-brevo-api-key>',
   RENDER_API_KEY: '<CHANGEME-render-api-key>',
 };
 
 const PRODUCTION_PLACEHOLDER_ENV = {
   ...DEVELOPMENT_PLACEHOLDER_ENV,
+  TARGET_ENVIRONMENT: 'production',
   RENDER_SERVICE_ID: '<CHANGEME-render-service-id>',
 };
 
@@ -80,6 +101,8 @@ const EXPECTED_URLS = [
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_FROM',
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_USER',
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_PASS',
+  'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/EMAIL_TRANSPORT',
+  'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/BREVO_API_KEY',
 ];
 
 const EXPECTED_BODIES = [
@@ -90,15 +113,33 @@ const EXPECTED_BODIES = [
   '{"value":"CubeClicker <no-reply@example.com>"}',
   '{"value":"smtp-login@example.com"}',
   '{"value":"smtp-pass-value"}',
+  '{"value":"brevo-api"}',
+  `{"value":"${API_FIXTURE}"}`,
 ];
 
-const EXPECTED_SYNCED = [...SMTP_KEYS];
+const EXPECTED_SYNCED = [...SYNC_KEYS];
 
 function expectFailure(result: DeployEnvValidation): DeployEnvFailure {
   if (result.ok) {
     throw new Error('expected the fixture to fail validation');
   }
   return result;
+}
+
+function expectTransportFailure(
+  result: { ok: true } | EmailTransportFailure,
+): EmailTransportFailure {
+  if (result.ok) {
+    throw new Error('expected the fixture to fail the email-transport guard');
+  }
+  return result;
+}
+
+/** Development fixture with a complete, API-valid deployment configuration. */
+function developmentEnv(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return { TARGET_ENVIRONMENT: 'development', ...COMPLETE_ENV, ...overrides };
 }
 
 interface RecordedCall {
@@ -154,7 +195,7 @@ function createHarness(
   return { fetchImpl, calls, lines, log };
 }
 
-describe('deployment catalog (AC-2)', () => {
+describe('deployment catalog (AC-7(a))', () => {
   it('pins the seven SMTP names in order with their GitHub classification', () => {
     expect(SMTP_CATALOG).toStrictEqual([
       { key: 'SMTP_HOST', source: 'variable' },
@@ -169,13 +210,37 @@ describe('deployment catalog (AC-2)', () => {
     expect(SMTP_CATALOG.map((entry) => entry.key)).toStrictEqual([...SMTP_KEYS]);
   });
 
-  it('pins the two Render-wiring names and the nine-name validation catalog', () => {
+  it('pins the two email-transport names', () => {
+    expect(EMAIL_CATALOG).toStrictEqual([
+      { key: 'EMAIL_TRANSPORT', source: 'variable' },
+      { key: 'BREVO_API_KEY', source: 'secret' },
+    ]);
+    expect(EMAIL_CATALOG).toHaveLength(2);
+  });
+
+  it('pins the nine-name sync catalog as SMTP then email transport', () => {
+    expect(SYNC_CATALOG).toStrictEqual([
+      { key: 'SMTP_HOST', source: 'variable' },
+      { key: 'SMTP_PORT', source: 'variable' },
+      { key: 'SMTP_SECURE', source: 'variable' },
+      { key: 'SMTP_CONNECTION_TIMEOUT_MS', source: 'variable' },
+      { key: 'SMTP_FROM', source: 'variable' },
+      { key: 'SMTP_USER', source: 'secret' },
+      { key: 'SMTP_PASS', source: 'secret' },
+      { key: 'EMAIL_TRANSPORT', source: 'variable' },
+      { key: 'BREVO_API_KEY', source: 'secret' },
+    ]);
+    expect(SYNC_CATALOG).toHaveLength(9);
+    expect(SYNC_CATALOG.map((entry) => entry.key)).toStrictEqual([...SYNC_KEYS]);
+  });
+
+  it('pins the two Render-wiring names and the eleven-name validation catalog', () => {
     expect(RENDER_WIRING).toStrictEqual([
       { key: 'RENDER_SERVICE_ID', source: 'variable' },
       { key: 'RENDER_API_KEY', source: 'secret' },
     ]);
     expect(RENDER_WIRING).toHaveLength(2);
-    expect(CATALOG).toHaveLength(9);
+    expect(CATALOG).toHaveLength(11);
     expect(CATALOG).toStrictEqual([
       { key: 'SMTP_HOST', source: 'variable' },
       { key: 'SMTP_PORT', source: 'variable' },
@@ -184,6 +249,8 @@ describe('deployment catalog (AC-2)', () => {
       { key: 'SMTP_FROM', source: 'variable' },
       { key: 'SMTP_USER', source: 'secret' },
       { key: 'SMTP_PASS', source: 'secret' },
+      { key: 'EMAIL_TRANSPORT', source: 'variable' },
+      { key: 'BREVO_API_KEY', source: 'secret' },
       { key: 'RENDER_SERVICE_ID', source: 'variable' },
       { key: 'RENDER_API_KEY', source: 'secret' },
     ]);
@@ -196,7 +263,7 @@ describe('deployment catalog (AC-2)', () => {
   });
 });
 
-describe('isPlaceholder (AC-3)', () => {
+describe('isPlaceholder (AC-7(b))', () => {
   it('is true exactly when the value contains the literal CHANGEME', () => {
     expect(isPlaceholder('<CHANGEME-verified-sender>')).toBe(true);
     expect(isPlaceholder('CHANGEME')).toBe(true);
@@ -207,12 +274,18 @@ describe('isPlaceholder (AC-3)', () => {
   });
 });
 
-describe('validateDeployEnv (AC-3)', () => {
+describe('validateDeployEnv (AC-7(b))', () => {
   it('classifies the pinned development placeholders in catalog order', () => {
     expect(validateDeployEnv(DEVELOPMENT_PLACEHOLDER_ENV)).toStrictEqual({
       ok: false,
       missing: [],
-      placeholders: ['SMTP_FROM', 'SMTP_USER', 'SMTP_PASS', 'RENDER_API_KEY'],
+      placeholders: [
+        'SMTP_FROM',
+        'SMTP_USER',
+        'SMTP_PASS',
+        'BREVO_API_KEY',
+        'RENDER_API_KEY',
+      ],
     });
   });
 
@@ -224,6 +297,7 @@ describe('validateDeployEnv (AC-3)', () => {
         'SMTP_FROM',
         'SMTP_USER',
         'SMTP_PASS',
+        'BREVO_API_KEY',
         'RENDER_SERVICE_ID',
         'RENDER_API_KEY',
       ],
@@ -254,7 +328,7 @@ describe('validateDeployEnv (AC-3)', () => {
     });
   });
 
-  it('returns all nine values only when every name is real', () => {
+  it('returns all eleven values only when every name is real', () => {
     expect(validateDeployEnv(COMPLETE_ENV)).toStrictEqual({
       ok: true,
       values: {
@@ -265,6 +339,8 @@ describe('validateDeployEnv (AC-3)', () => {
         SMTP_FROM: 'CubeClicker <no-reply@example.com>',
         SMTP_USER: 'smtp-login@example.com',
         SMTP_PASS: 'smtp-pass-value',
+        EMAIL_TRANSPORT: 'brevo-api',
+        BREVO_API_KEY: API_FIXTURE,
         RENDER_SERVICE_ID: 'srv-dbtcvv9srm7s73au5bag',
         RENDER_API_KEY: API_KEY,
       },
@@ -272,14 +348,14 @@ describe('validateDeployEnv (AC-3)', () => {
   });
 });
 
-describe('formatGuardFailure (AC-4)', () => {
+describe('formatGuardFailure (AC-7(b))', () => {
   it('renders the exact production placeholder block', () => {
     const result = expectFailure(validateDeployEnv(PRODUCTION_PLACEHOLDER_ENV));
 
     expect(formatGuardFailure('production', result)).toBe(
       [
-        "Deploy blocked: the 'production' environment has 5 unset or placeholder value(s).",
-        '  Placeholder: SMTP_FROM, SMTP_USER, SMTP_PASS, RENDER_SERVICE_ID, RENDER_API_KEY',
+        "Deploy blocked: the 'production' environment has 6 unset or placeholder value(s).",
+        '  Placeholder: SMTP_FROM, SMTP_USER, SMTP_PASS, BREVO_API_KEY, RENDER_SERVICE_ID, RENDER_API_KEY',
         'Remediation (names only; never paste a value into a command argument):',
         '  variables: gh variable set <NAME> --env production --repo raultorres2603/CubeClicker',
         '  secrets:   gh secret set <NAME> --env production --repo raultorres2603/CubeClicker',
@@ -326,6 +402,231 @@ describe('formatGuardFailure (AC-4)', () => {
         'Runbook: README.md § Deployment Brevo runbook',
       ].join('\n'),
     );
+  });
+});
+
+describe('validateEmailTransport (AC-7(c))', () => {
+  it('accepts the complete development API fixture', () => {
+    expect(validateEmailTransport(developmentEnv())).toStrictEqual({ ok: true });
+  });
+
+  it('accepts the complete production API fixture', () => {
+    expect(
+      validateEmailTransport({
+        TARGET_ENVIRONMENT: 'production',
+        ...COMPLETE_ENV,
+      }),
+    ).toStrictEqual({ ok: true });
+  });
+
+  it('rejects an explicit smtp selection in development and production', () => {
+    for (const TARGET_ENVIRONMENT of ['development', 'production']) {
+      expect(
+        validateEmailTransport({
+          TARGET_ENVIRONMENT,
+          ...COMPLETE_ENV,
+          EMAIL_TRANSPORT: 'smtp',
+        }),
+      ).toStrictEqual({
+        ok: false,
+        reason: 'deployed_requires_api',
+        transport: 'smtp',
+      });
+    }
+  });
+
+  it('treats an unset or empty transport as the runtime default smtp', () => {
+    for (const EMAIL_TRANSPORT of [undefined, '']) {
+      expect(
+        validateEmailTransport(developmentEnv({ EMAIL_TRANSPORT })),
+      ).toStrictEqual({
+        ok: false,
+        reason: 'deployed_requires_api',
+        transport: 'smtp',
+      });
+    }
+  });
+
+  it('rejects an unknown non-empty transport with the value kept for the block', () => {
+    expect(
+      validateEmailTransport(developmentEnv({ EMAIL_TRANSPORT: 'mailgun' })),
+    ).toStrictEqual({
+      ok: false,
+      reason: 'unsupported_transport',
+      transport: 'mailgun',
+    });
+  });
+
+  it('rejects an SMTP-key-shaped API key', () => {
+    const smtpKey = 'xsmtpsib-' + 'e'.repeat(15);
+
+    expect(
+      validateEmailTransport(developmentEnv({ BREVO_API_KEY: smtpKey })),
+    ).toStrictEqual({ ok: false, reason: 'smtp_key_reused' });
+  });
+
+  it('rejects an API key equal to the configured SMTP_PASS', () => {
+    const reusedPass = SYNC_VALUES.SMTP_PASS;
+
+    expect(
+      validateEmailTransport(developmentEnv({ BREVO_API_KEY: reusedPass })),
+    ).toStrictEqual({ ok: false, reason: 'smtp_key_reused' });
+  });
+
+  it('rejects the local Mailpit sender in bare, angle-only and display-name form', () => {
+    for (const SMTP_FROM of [
+      DEFAULT_SMTP_FROM,
+      `<${DEFAULT_SMTP_FROM}>`,
+      `CubeClicker <${DEFAULT_SMTP_FROM}>`,
+    ]) {
+      expect(validateEmailTransport(developmentEnv({ SMTP_FROM }))).toStrictEqual({
+        ok: false,
+        reason: 'local_sender',
+      });
+    }
+  });
+
+  it('rejects a sender that does not parse', () => {
+    for (const SMTP_FROM of ['not an address', 'CubeClicker <not-an-address>', '']) {
+      expect(validateEmailTransport(developmentEnv({ SMTP_FROM }))).toStrictEqual({
+        ok: false,
+        reason: 'invalid_sender',
+      });
+    }
+    expect(
+      validateEmailTransport(developmentEnv({ SMTP_FROM: undefined })),
+    ).toStrictEqual({ ok: false, reason: 'invalid_sender' });
+  });
+
+  it('leaves key presence to the catalog after a valid sender', () => {
+    const withoutKey: Record<string, string | undefined> = { ...COMPLETE_ENV };
+    delete withoutKey.BREVO_API_KEY;
+
+    expect(
+      validateEmailTransport({ TARGET_ENVIRONMENT: 'development', ...withoutKey }),
+    ).toStrictEqual({ ok: true });
+    expect(
+      validateEmailTransport(developmentEnv({ BREVO_API_KEY: '' })),
+    ).toStrictEqual({ ok: true });
+    expect(
+      validateEmailTransport(developmentEnv({ SMTP_PASS: undefined })),
+    ).toStrictEqual({ ok: true });
+  });
+
+  it('passes every non-deployed target regardless of transport or sender', () => {
+    for (const env of [
+      {},
+      { TARGET_ENVIRONMENT: 'staging', ...COMPLETE_ENV, EMAIL_TRANSPORT: 'smtp' },
+      { TARGET_ENVIRONMENT: 'test', SMTP_FROM: 'not an address' },
+    ]) {
+      expect(validateEmailTransport(env)).toStrictEqual({ ok: true });
+    }
+  });
+});
+
+describe('formatEmailTransportFailure (AC-7(d))', () => {
+  it('renders the exact deployed_requires_api block and echoes only the transport', () => {
+    expect(
+      formatEmailTransportFailure('development', {
+        ok: false,
+        reason: 'deployed_requires_api',
+        transport: 'smtp',
+      }),
+    ).toBe(
+      [
+        'Deploy blocked: EMAIL_TRANSPORT must be "brevo-api" for the \'development\' environment; received "smtp".',
+        "  Deployed verification email uses Brevo's HTTPS API (port 443); SMTP authentication is not used.",
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact unsupported_transport block', () => {
+    expect(
+      formatEmailTransportFailure('development', {
+        ok: false,
+        reason: 'unsupported_transport',
+        transport: 'mailgun',
+      }),
+    ).toBe(
+      [
+        'Deploy blocked: EMAIL_TRANSPORT must be "smtp" or "brevo-api" (\'development\' environment); received "mailgun".',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact smtp_key_reused block', () => {
+    expect(
+      formatEmailTransportFailure('development', {
+        ok: false,
+        reason: 'smtp_key_reused',
+      }),
+    ).toBe(
+      [
+        "Deploy blocked: BREVO_API_KEY is the Brevo SMTP key, not the REST API key ('development' environment).",
+        '  Create a Brevo API key under Settings → SMTP & API → API Keys and store it as the BREVO_API_KEY secret.',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact local_sender block', () => {
+    expect(
+      formatEmailTransportFailure('development', {
+        ok: false,
+        reason: 'local_sender',
+      }),
+    ).toBe(
+      [
+        "Deploy blocked: SMTP_FROM is the local Mailpit default and cannot deliver through the Brevo API ('development' environment).",
+        '  Set SMTP_FROM to the Brevo-verified sender.',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('renders the exact invalid_sender block', () => {
+    expect(
+      formatEmailTransportFailure('production', {
+        ok: false,
+        reason: 'invalid_sender',
+      }),
+    ).toBe(
+      [
+        'Deploy blocked: SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api (\'production\' environment).',
+        '  Set SMTP_FROM to the Brevo-verified sender.',
+        '  Runbook: README.md § Deployment Brevo runbook',
+      ].join('\n'),
+    );
+  });
+
+  it('never echoes a configured sender or key in any block', () => {
+    const leakySender = 'leaky-sender-value';
+    const leakyKey = 'leaky-key-value';
+    const failures: EmailTransportFailure[] = [
+      expectTransportFailure(
+        validateEmailTransport(
+          developmentEnv({ SMTP_FROM: leakySender, BREVO_API_KEY: leakyKey }),
+        ),
+      ),
+      expectTransportFailure(
+        validateEmailTransport(
+          developmentEnv({ EMAIL_TRANSPORT: 'mailgun', BREVO_API_KEY: leakyKey }),
+        ),
+      ),
+      expectTransportFailure(
+        validateEmailTransport(
+          developmentEnv({ SMTP_FROM: leakySender, EMAIL_TRANSPORT: 'smtp' }),
+        ),
+      ),
+    ];
+
+    for (const failure of failures) {
+      const block = formatEmailTransportFailure('development', failure);
+      expect(block).not.toContain(leakySender);
+      expect(block).not.toContain(leakyKey);
+    }
   });
 });
 
@@ -519,7 +820,7 @@ describe('formatSmtpPortFailure (AC-1(b))', () => {
   });
 });
 
-describe('renderEnvVarUrl (AC-5)', () => {
+describe('renderEnvVarUrl (AC-8(d))', () => {
   it('builds the pinned per-key Render URL', () => {
     expect(renderEnvVarUrl(SERVICE_ID, 'SMTP_HOST')).toBe(
       'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_HOST',
@@ -527,10 +828,16 @@ describe('renderEnvVarUrl (AC-5)', () => {
     expect(renderEnvVarUrl(SERVICE_ID, 'SMTP_PASS')).toBe(
       'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_PASS',
     );
+    expect(renderEnvVarUrl(SERVICE_ID, 'EMAIL_TRANSPORT')).toBe(
+      'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/EMAIL_TRANSPORT',
+    );
+    expect(renderEnvVarUrl(SERVICE_ID, 'BREVO_API_KEY')).toBe(
+      'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/BREVO_API_KEY',
+    );
   });
 });
 
-describe('buildEnvVarPayload (AC-5)', () => {
+describe('buildEnvVarPayload (AC-8(d))', () => {
   it('JSON-encodes exactly one value field', () => {
     expect(buildEnvVarPayload('smtp-relay.brevo.com')).toBe(
       '{"value":"smtp-relay.brevo.com"}',
@@ -544,7 +851,7 @@ describe('buildEnvVarPayload (AC-5)', () => {
   });
 });
 
-describe('redactValues (AC-5(c), AC-9)', () => {
+describe('redactValues (AC-8(d), AC-9)', () => {
   it('replaces every configured value', () => {
     expect(
       redactValues(
@@ -586,14 +893,14 @@ describe('redactValues (AC-5(c), AC-9)', () => {
   });
 });
 
-describe('syncRenderEnv success (AC-5)', () => {
-  it('sends exactly seven PUTs in catalog order with the pinned URL, headers and body', async () => {
+describe('syncRenderEnv success (AC-8(d))', () => {
+  it('sends exactly nine PUTs in catalog order with the pinned URL, headers and body', async () => {
     const { fetchImpl, calls, lines, log } = createHarness();
 
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -601,6 +908,8 @@ describe('syncRenderEnv success (AC-5)', () => {
 
     expect(calls.map((call) => call.url)).toStrictEqual(EXPECTED_URLS);
     expect(calls.map((call) => call.init.method)).toStrictEqual([
+      'PUT',
+      'PUT',
       'PUT',
       'PUT',
       'PUT',
@@ -626,7 +935,9 @@ describe('syncRenderEnv success (AC-5)', () => {
       'SYNCED SMTP_FROM (value verified, not shown)',
       'SYNCED SMTP_USER (value verified, not shown)',
       'SYNCED SMTP_PASS (value verified, not shown)',
-      "Synced 7 value(s) to Render service srv-dbtcvv9srm7s73au5bag for the 'development' environment.",
+      'SYNCED EMAIL_TRANSPORT (value verified, not shown)',
+      'SYNCED BREVO_API_KEY (value verified, not shown)',
+      "Synced 9 value(s) to Render service srv-dbtcvv9srm7s73au5bag for the 'development' environment.",
     ]);
   });
 
@@ -636,7 +947,7 @@ describe('syncRenderEnv success (AC-5)', () => {
     await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -652,12 +963,12 @@ describe('syncRenderEnv success (AC-5)', () => {
         `https://api.render.com/v1/services/${SERVICE_ID}/env-vars/${keyFromUrl(call.url)}`,
       );
     }
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(9);
   });
 
   it('ignores a stray RENDER_API_KEY property on the sync payload', async () => {
-    const smtpValuesWithStray = {
-      ...SMTP_VALUES,
+    const syncValuesWithStray = {
+      ...SYNC_VALUES,
       RENDER_API_KEY: 'stray-api-key-value',
     };
     const { fetchImpl, calls, lines, log } = createHarness();
@@ -665,12 +976,12 @@ describe('syncRenderEnv success (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: smtpValuesWithStray,
+      syncValues: syncValuesWithStray,
       fetchImpl,
       log,
     });
 
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(9);
     expect(calls.map((call) => call.init.body)).toStrictEqual(EXPECTED_BODIES);
     for (const call of calls) {
       expect(call.init.body).not.toContain('RENDER_API_KEY');
@@ -678,12 +989,12 @@ describe('syncRenderEnv success (AC-5)', () => {
     }
     expect(result).toStrictEqual({ synced: EXPECTED_SYNCED });
     expect(lines.at(-1)).toBe(
-      "Synced 7 value(s) to Render service srv-dbtcvv9srm7s73au5bag for the 'unknown' environment.",
+      "Synced 9 value(s) to Render service srv-dbtcvv9srm7s73au5bag for the 'unknown' environment.",
     );
   });
 });
 
-describe('syncRenderEnv failures (AC-5)', () => {
+describe('syncRenderEnv failures (AC-8(d))', () => {
   it('stops on the first non-2xx response and prints the Render code only', async () => {
     const { fetchImpl, calls, lines, log } = createHarness((call, index) => {
       if (index === 0) {
@@ -703,7 +1014,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -730,7 +1041,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -754,7 +1065,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -780,7 +1091,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -806,7 +1117,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -830,7 +1141,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -854,7 +1165,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -877,7 +1188,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,
@@ -900,7 +1211,7 @@ describe('syncRenderEnv failures (AC-5)', () => {
     const result = await syncRenderEnv({
       serviceId: SERVICE_ID,
       apiKey: API_KEY,
-      smtpValues: SMTP_VALUES,
+      syncValues: SYNC_VALUES,
       environment: ENVIRONMENT,
       fetchImpl,
       log,

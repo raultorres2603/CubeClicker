@@ -3,12 +3,14 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_SMTP_FROM } from '../auth/config.js';
+
 import { runRenderEnvCli, type RenderEnvCliIo } from './render-env-cli.js';
 import {
   CATALOG,
   type FetchLike,
   type FetchResponseLike,
-  type SmtpValues,
+  type SyncValues,
 } from './render-env.js';
 
 const SMTP_KEYS = [
@@ -21,7 +23,9 @@ const SMTP_KEYS = [
   'SMTP_PASS',
 ] as const;
 
-const SMTP_VALUES: SmtpValues = {
+const SYNC_KEYS = [...SMTP_KEYS, 'EMAIL_TRANSPORT', 'BREVO_API_KEY'] as const;
+
+const SMTP_VALUES = {
   SMTP_HOST: 'smtp-relay.brevo.com',
   SMTP_PORT: '2525',
   SMTP_SECURE: 'false',
@@ -29,6 +33,16 @@ const SMTP_VALUES: SmtpValues = {
   SMTP_FROM: 'CubeClicker <no-reply@example.com>',
   SMTP_USER: 'smtp-login@example.com',
   SMTP_PASS: 'smtp-pass-value',
+} as const;
+
+// 11 characters: a fixture, not a credential shape, and short enough never to
+// match the repository credential guard.
+const API_FIXTURE = 'fixture-key';
+
+const SYNC_VALUES: SyncValues = {
+  ...SMTP_VALUES,
+  EMAIL_TRANSPORT: 'brevo-api',
+  BREVO_API_KEY: API_FIXTURE,
 };
 
 const SERVICE_ID = 'srv-dbtcvv9srm7s73au5bag';
@@ -38,7 +52,7 @@ const ENVIRONMENT = 'development';
 
 const COMPLETE_ENV = {
   TARGET_ENVIRONMENT: ENVIRONMENT,
-  ...SMTP_VALUES,
+  ...SYNC_VALUES,
   RENDER_SERVICE_ID: SERVICE_ID,
   RENDER_API_KEY: API_KEY,
 };
@@ -48,6 +62,7 @@ const DEVELOPMENT_PLACEHOLDER_ENV = {
   SMTP_FROM: '<CHANGEME-verified-sender>',
   SMTP_USER: '<CHANGEME-smtp-login>',
   SMTP_PASS: '<CHANGEME-smtp-key>',
+  BREVO_API_KEY: '<CHANGEME-brevo-api-key>',
   RENDER_API_KEY: '<CHANGEME-render-api-key>',
 };
 
@@ -55,7 +70,7 @@ const PRODUCTION_PLACEHOLDER_ENV = {
   ...DEVELOPMENT_PLACEHOLDER_ENV,
   TARGET_ENVIRONMENT: 'production',
   // Production stays at the placeholder-era 587: the catalog rejects it before
-  // the port guard, proving catalog precedence under the new strict guard.
+  // the transport or port guard, proving catalog precedence.
   SMTP_PORT: '587',
   RENDER_SERVICE_ID: '<CHANGEME-render-service-id>',
 };
@@ -68,6 +83,8 @@ const EXPECTED_URLS = [
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_FROM',
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_USER',
   'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/SMTP_PASS',
+  'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/EMAIL_TRANSPORT',
+  'https://api.render.com/v1/services/srv-dbtcvv9srm7s73au5bag/env-vars/BREVO_API_KEY',
 ];
 
 const EXPECTED_BODIES = [
@@ -78,16 +95,18 @@ const EXPECTED_BODIES = [
   '{"value":"CubeClicker <no-reply@example.com>"}',
   '{"value":"smtp-login@example.com"}',
   '{"value":"smtp-pass-value"}',
+  '{"value":"brevo-api"}',
+  `{"value":"${API_FIXTURE}"}`,
 ];
 
 const CHECK_ONLY_SUCCESS =
-  "Deploy configuration OK: 9 value(s) present for the 'development' environment.";
+  "Deploy configuration OK: 11 value(s) present for the 'development' environment.";
 
 const DRY_RUN_SUMMARY =
-  "DRY RUN complete: 9 value(s) validated for the 'development' environment; 7 would be synced; no network calls made.";
+  "DRY RUN complete: 11 value(s) validated for the 'development' environment; 9 would be synced; no network calls made.";
 
 const EXPECTED_DRY_RUN_LINES = [
-  ...SMTP_KEYS.map(
+  ...SYNC_KEYS.map(
     (key) =>
       `DRY RUN: would set ${key} (PUT https://api.render.com/v1/services/${SERVICE_ID}/env-vars/${key})`,
   ),
@@ -95,43 +114,78 @@ const EXPECTED_DRY_RUN_LINES = [
 ];
 
 const EXPECTED_SYNC_LINES = [
-  ...SMTP_KEYS.map((key) => `SYNCED ${key} (value verified, not shown)`),
-  `Synced 7 value(s) to Render service ${SERVICE_ID} for the 'development' environment.`,
+  ...SYNC_KEYS.map((key) => `SYNCED ${key} (value verified, not shown)`),
+  `Synced 9 value(s) to Render service ${SERVICE_ID} for the 'development' environment.`,
 ];
 
-/** Independent copy of the usage pinned by `--help` (AC-4(c)). */
+/** Independent copy of the usage pinned by `--help` (AC-8(c)). */
 const USAGE = [
   'Usage: npx --no-install tsx src/backend/src/deploy/render-env-cli.ts [--check-only | --dry-run]',
   '       node dist/deploy/render-env-cli.js [--check-only | --dry-run]',
   '',
-  'Validates the nine deployment names from the environment, then writes the',
-  'seven Brevo SMTP values to the Render service. --check-only and --dry-run',
-  'never make a network call. Configured values are never printed.',
+  'Validates the eleven deployment names from the environment, then writes the',
+  'nine deployed values (SMTP plus the Brevo HTTPS API transport) to the Render',
+  'service. --check-only and --dry-run never make a network call. Configured',
+  'values are never printed.',
   '',
   'Options:',
-  '  --check-only  Validate the nine names and exit (no network calls)',
-  '  --dry-run     Validate the nine names and list the seven writes (no network calls)',
+  '  --check-only  Validate the eleven names and exit (no network calls)',
+  '  --dry-run     Validate the eleven names and list the nine writes (no network calls)',
   '  --help        Show this help and exit',
 ].join('\n');
 
-/** Exact AC-4(a) block for the pinned production placeholder set. */
+/** Exact AC-7(b) block for the pinned production placeholder set. */
 const PRODUCTION_BLOCK = [
-  "Deploy blocked: the 'production' environment has 5 unset or placeholder value(s).",
-  '  Placeholder: SMTP_FROM, SMTP_USER, SMTP_PASS, RENDER_SERVICE_ID, RENDER_API_KEY',
+  "Deploy blocked: the 'production' environment has 6 unset or placeholder value(s).",
+  '  Placeholder: SMTP_FROM, SMTP_USER, SMTP_PASS, BREVO_API_KEY, RENDER_SERVICE_ID, RENDER_API_KEY',
   'Remediation (names only; never paste a value into a command argument):',
   '  variables: gh variable set <NAME> --env production --repo raultorres2603/CubeClicker',
   '  secrets:   gh secret set <NAME> --env production --repo raultorres2603/CubeClicker',
   'Runbook: README.md § Deployment Brevo runbook',
 ].join('\n');
 
-/** Exact AC-4(a) block for an environment with every name unset. */
+/** Exact AC-7(b) block for an environment with every name unset. */
 const ALL_MISSING_BLOCK = [
-  "Deploy blocked: the 'unknown' environment has 9 unset or placeholder value(s).",
-  '  Missing: SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_CONNECTION_TIMEOUT_MS, SMTP_FROM, SMTP_USER, SMTP_PASS, RENDER_SERVICE_ID, RENDER_API_KEY',
+  "Deploy blocked: the 'unknown' environment has 11 unset or placeholder value(s).",
+  '  Missing: SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_CONNECTION_TIMEOUT_MS, SMTP_FROM, SMTP_USER, SMTP_PASS, EMAIL_TRANSPORT, BREVO_API_KEY, RENDER_SERVICE_ID, RENDER_API_KEY',
   'Remediation (names only; never paste a value into a command argument):',
   '  variables: gh variable set <NAME> --env unknown --repo raultorres2603/CubeClicker',
   '  secrets:   gh secret set <NAME> --env unknown --repo raultorres2603/CubeClicker',
   'Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-7(d) block for an explicit smtp selection in development. */
+const DEPLOYED_SMTP_BLOCK = [
+  'Deploy blocked: EMAIL_TRANSPORT must be "brevo-api" for the \'development\' environment; received "smtp".',
+  "  Deployed verification email uses Brevo's HTTPS API (port 443); SMTP authentication is not used.",
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-7(d) block for an unknown transport value. */
+const UNKNOWN_TRANSPORT_BLOCK = [
+  'Deploy blocked: EMAIL_TRANSPORT must be "smtp" or "brevo-api" (\'development\' environment); received "mailgun".',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-7(d) block for the SMTP key reused as the API key. */
+const SMTP_KEY_REUSE_BLOCK = [
+  "Deploy blocked: BREVO_API_KEY is the Brevo SMTP key, not the REST API key ('development' environment).",
+  '  Create a Brevo API key under Settings → SMTP & API → API Keys and store it as the BREVO_API_KEY secret.',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-7(d) block for the local Mailpit sender. */
+const LOCAL_SENDER_BLOCK = [
+  "Deploy blocked: SMTP_FROM is the local Mailpit default and cannot deliver through the Brevo API ('development' environment).",
+  '  Set SMTP_FROM to the Brevo-verified sender.',
+  '  Runbook: README.md § Deployment Brevo runbook',
+].join('\n');
+
+/** Exact AC-7(d) block for a sender that does not parse. */
+const INVALID_SENDER_BLOCK = [
+  'Deploy blocked: SMTP_FROM must be an address or "Display Name <address>" when EMAIL_TRANSPORT=brevo-api (\'development\' environment).',
+  '  Set SMTP_FROM to the Brevo-verified sender.',
+  '  Runbook: README.md § Deployment Brevo runbook',
 ].join('\n');
 
 /** Exact AC-1(b) block for a development fixture pinned to blocked port 587. */
@@ -170,6 +224,29 @@ const NON_STARTTLS_ENV = {
   SMTP_PORT: '2525',
   SMTP_SECURE: 'true',
 };
+
+/**
+ * Deployed development fixture that selects SMTP, also pinned to the blocked
+ * port 587. The transport guard must win, proving it runs before the port
+ * guard; if the port block appears instead, the test fails.
+ */
+const DEPLOYED_SMTP_ENV = {
+  ...COMPLETE_ENV,
+  EMAIL_TRANSPORT: 'smtp',
+  SMTP_PORT: '587',
+};
+
+const UNKNOWN_TRANSPORT_ENV = { ...COMPLETE_ENV, EMAIL_TRANSPORT: 'mailgun' };
+
+/** The API key is the configured SMTP password, so the guard must reject it. */
+const SMTP_KEY_REUSE_ENV = {
+  ...COMPLETE_ENV,
+  BREVO_API_KEY: SMTP_VALUES.SMTP_PASS,
+};
+
+const LOCAL_SENDER_ENV = { ...COMPLETE_ENV, SMTP_FROM: DEFAULT_SMTP_FROM };
+
+const INVALID_SENDER_ENV = { ...COMPLETE_ENV, SMTP_FROM: 'not an address' };
 
 interface RecordedCall {
   url: string;
@@ -237,13 +314,14 @@ function expectNoFixtureSecrets(lines: string[]): void {
     SMTP_VALUES.SMTP_FROM,
     SMTP_VALUES.SMTP_USER,
     SMTP_VALUES.SMTP_PASS,
+    API_FIXTURE,
     API_KEY,
   ]) {
     expect(output).not.toContain(value);
   }
 }
 
-describe('runRenderEnvCli flags (AC-4(c))', () => {
+describe('runRenderEnvCli flags (AC-8(c))', () => {
   it('prints exactly the usage for --help and returns 0 without a fetch', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
@@ -285,7 +363,7 @@ describe('runRenderEnvCli flags (AC-4(c))', () => {
   });
 });
 
-describe('runRenderEnvCli --check-only (AC-4)', () => {
+describe('runRenderEnvCli --check-only (AC-8(a))', () => {
   it('prints the exact success line for the complete development fixture', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
@@ -295,7 +373,7 @@ describe('runRenderEnvCli --check-only (AC-4)', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('prints the exact production placeholder block at 587 (catalog wins over the port guard) and exits 1', async () => {
+  it('prints the exact production placeholder block at 587 (catalog wins) and exits 1', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
     expect(
@@ -304,10 +382,12 @@ describe('runRenderEnvCli --check-only (AC-4)', () => {
 
     expect(lines).toStrictEqual([PRODUCTION_BLOCK]);
     expect(calls).toHaveLength(0);
+    expect(lines.join('\n')).not.toContain('Deploy blocked: SMTP_PORT=');
+    expect(lines.join('\n')).not.toContain('Deploy blocked: EMAIL_TRANSPORT must be');
     expectNoFixtureSecrets(lines);
   });
 
-  it('labels an absent TARGET_ENVIRONMENT as unknown and lists all nine names', async () => {
+  it('labels an absent TARGET_ENVIRONMENT as unknown and lists all eleven names', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
     expect(await runRenderEnvCli(['--check-only'], {}, io)).toBe(1);
@@ -344,7 +424,80 @@ describe('runRenderEnvCli --check-only (AC-4)', () => {
   });
 });
 
-describe('runRenderEnvCli strict SMTP transport guard (AC-1)', () => {
+describe('runRenderEnvCli deployed email transport guard (AC-7)', () => {
+  it('rejects an explicit smtp selection before the SMTP port guard', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], DEPLOYED_SMTP_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([DEPLOYED_SMTP_BLOCK]);
+    expect(lines.join('\n')).not.toContain('Deploy blocked: SMTP_PORT=');
+    expect(calls).toHaveLength(0);
+    expectNoFixtureSecrets(lines);
+  });
+
+  it('rejects an unknown transport value with the pinned block', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(
+      await runRenderEnvCli(['--check-only'], UNKNOWN_TRANSPORT_ENV, io),
+    ).toBe(1);
+
+    expect(lines).toStrictEqual([UNKNOWN_TRANSPORT_BLOCK]);
+    expect(calls).toHaveLength(0);
+    expectNoFixtureSecrets(lines);
+  });
+
+  it('rejects the SMTP key reused as the Brevo API key', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], SMTP_KEY_REUSE_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([SMTP_KEY_REUSE_BLOCK]);
+    expect(calls).toHaveLength(0);
+    expectNoFixtureSecrets(lines);
+  });
+
+  it('rejects the local Mailpit sender without echoing it', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], LOCAL_SENDER_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([LOCAL_SENDER_BLOCK]);
+    expect(lines.join('\n')).not.toContain(DEFAULT_SMTP_FROM);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects an unparseable sender without echoing it', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli(['--check-only'], INVALID_SENDER_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([INVALID_SENDER_BLOCK]);
+    expect(lines.join('\n')).not.toContain('not an address');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('prints no DRY RUN line and makes no fetch for any transport failure', async () => {
+    for (const [fixture, block] of [
+      [DEPLOYED_SMTP_ENV, DEPLOYED_SMTP_BLOCK],
+      [UNKNOWN_TRANSPORT_ENV, UNKNOWN_TRANSPORT_BLOCK],
+      [SMTP_KEY_REUSE_ENV, SMTP_KEY_REUSE_BLOCK],
+      [LOCAL_SENDER_ENV, LOCAL_SENDER_BLOCK],
+      [INVALID_SENDER_ENV, INVALID_SENDER_BLOCK],
+    ] as const) {
+      const { io, calls, lines } = createNoNetworkHarness();
+
+      expect(await runRenderEnvCli(['--dry-run'], fixture, io)).toBe(1);
+
+      expect(lines).toStrictEqual([block]);
+      expect(lines.join('\n')).not.toContain('DRY RUN:');
+      expect(calls).toHaveLength(0);
+    }
+  });
+});
+
+describe('runRenderEnvCli strict SMTP transport guard (AC-7(d))', () => {
   it('rejects a development 587 in --check-only before any success line or fetch', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
@@ -407,8 +560,8 @@ describe('runRenderEnvCli strict SMTP transport guard (AC-1)', () => {
   });
 });
 
-describe('runRenderEnvCli --dry-run (AC-6)', () => {
-  it('lists the seven writes in catalog order and prints the summary without a fetch', async () => {
+describe('runRenderEnvCli --dry-run (AC-8(c))', () => {
+  it('lists the nine writes in catalog order and prints the summary without a fetch', async () => {
     const { io, calls, lines } = createNoNetworkHarness();
 
     expect(await runRenderEnvCli(['--dry-run'], COMPLETE_ENV, io)).toBe(0);
@@ -431,14 +584,16 @@ describe('runRenderEnvCli --dry-run (AC-6)', () => {
   });
 });
 
-describe('runRenderEnvCli default sync mode (AC-5)', () => {
-  it('validates nine, then sends exactly the seven SMTP PUTs in order and exits 0', async () => {
+describe('runRenderEnvCli default sync mode (AC-8(d))', () => {
+  it('validates eleven, then sends exactly the nine PUTs in order and exits 0', async () => {
     const { io, calls, lines } = createHarness();
 
     expect(await runRenderEnvCli([], COMPLETE_ENV, io)).toBe(0);
 
     expect(calls.map((call) => call.url)).toStrictEqual(EXPECTED_URLS);
     expect(calls.map((call) => call.init.method)).toStrictEqual([
+      'PUT',
+      'PUT',
       'PUT',
       'PUT',
       'PUT',
@@ -465,7 +620,7 @@ describe('runRenderEnvCli default sync mode (AC-5)', () => {
 
     expect(await runRenderEnvCli([], COMPLETE_ENV, io)).toBe(0);
 
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(9);
     for (const call of calls) {
       expect(call.init.body).not.toContain('RENDER_API_KEY');
       expect(call.init.body).not.toContain('RENDER_SERVICE_ID');
@@ -546,6 +701,15 @@ describe('runRenderEnvCli default sync mode (AC-5)', () => {
     expectNoFixtureSecrets(lines);
   });
 
+  it('fails the transport guard without a network call before syncing', async () => {
+    const { io, calls, lines } = createNoNetworkHarness();
+
+    expect(await runRenderEnvCli([], DEPLOYED_SMTP_ENV, io)).toBe(1);
+
+    expect(lines).toStrictEqual([DEPLOYED_SMTP_BLOCK]);
+    expect(calls).toHaveLength(0);
+  });
+
   it('labels the sync summary as unknown when TARGET_ENVIRONMENT is absent', async () => {
     const withoutLabel: Record<string, string> = { ...COMPLETE_ENV };
     delete withoutLabel.TARGET_ENVIRONMENT;
@@ -554,12 +718,12 @@ describe('runRenderEnvCli default sync mode (AC-5)', () => {
     expect(await runRenderEnvCli([], withoutLabel, io)).toBe(0);
 
     expect(lines.at(-1)).toBe(
-      `Synced 7 value(s) to Render service ${SERVICE_ID} for the 'unknown' environment.`,
+      `Synced 9 value(s) to Render service ${SERVICE_ID} for the 'unknown' environment.`,
     );
   });
 });
 
-describe('integration through the process boundary (AC-4/AC-6)', () => {
+describe('integration through the process boundary (AC-8(a)/AC-8(b))', () => {
   const CLI_PATH = fileURLToPath(new URL('./render-env-cli.ts', import.meta.url));
   const FIXTURE_KEYS = [
     'TARGET_ENVIRONMENT',
@@ -593,7 +757,7 @@ describe('integration through the process boundary (AC-4/AC-6)', () => {
   );
 
   it(
-    'exits 1 with the exact AC-4(a) block for the production placeholder fixture',
+    'exits 1 with the exact production placeholder block for the production fixture',
     () => {
       const result = runCliProcess(['--check-only'], PRODUCTION_PLACEHOLDER_ENV);
 
@@ -617,7 +781,43 @@ describe('integration through the process boundary (AC-4/AC-6)', () => {
   );
 
   it(
-    'exits 0 with the exact AC-4(b) line for the complete development fixture',
+    'exits 1 with the exact deployed-transport block for a development smtp fixture',
+    () => {
+      const result = runCliProcess(['--check-only'], DEPLOYED_SMTP_ENV);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe(`${DEPLOYED_SMTP_BLOCK}\n`);
+      expect(result.stderr).toBe('');
+    },
+    20_000,
+  );
+
+  it(
+    'exits 1 with the exact SMTP-key-reuse block for the reuse fixture',
+    () => {
+      const result = runCliProcess(['--check-only'], SMTP_KEY_REUSE_ENV);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe(`${SMTP_KEY_REUSE_BLOCK}\n`);
+      expect(result.stderr).toBe('');
+    },
+    20_000,
+  );
+
+  it(
+    'exits 1 with the exact local-sender block for the local-sender fixture',
+    () => {
+      const result = runCliProcess(['--check-only'], LOCAL_SENDER_ENV);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe(`${LOCAL_SENDER_BLOCK}\n`);
+      expect(result.stderr).toBe('');
+    },
+    20_000,
+  );
+
+  it(
+    'exits 0 with the exact AC-8(a) line for the complete development fixture',
     () => {
       const result = runCliProcess(['--check-only'], COMPLETE_ENV);
 

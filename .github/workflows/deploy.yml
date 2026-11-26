@@ -82,6 +82,8 @@ jobs:
           SMTP_FROM: ${{ vars.SMTP_FROM }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TRANSPORT: ${{ vars.EMAIL_TRANSPORT }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: npx --no-install tsx src/backend/src/deploy/render-env-cli.ts --check-only
@@ -92,8 +94,9 @@ jobs:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: npx --no-install tsx src/backend/src/db/migrate-cli.ts
 
-      # The GitHub Environment is the source of truth: write the seven Brevo
-      # SMTP values to the Render service before the deploy hook starts a build.
+      # The GitHub Environment is the source of truth: write the nine deployed
+      # values (SMTP plus the Brevo HTTPS API transport) to the Render service
+      # before the deploy hook starts a build.
       - name: Sync Brevo SMTP settings to Render
         env:
           SMTP_HOST: ${{ vars.SMTP_HOST }}
@@ -103,6 +106,8 @@ jobs:
           SMTP_FROM: ${{ vars.SMTP_FROM }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TRANSPORT: ${{ vars.EMAIL_TRANSPORT }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: npx --no-install tsx src/backend/src/deploy/render-env-cli.ts
