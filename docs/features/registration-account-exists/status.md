@@ -52,9 +52,15 @@ Deployed development registration returns 409 / no verification email because Re
 - 2026-11-25 — code_review — Deploy attempt 3 success after SMTP_HOST=smtp-relay.brevo.com; /healthz 200; Phase B live proof pending (owner resend/click/login) — build-log-T9.md
 - 2026-11-25 — code_review — owner authorized the Phase B resend to the requested account; builder dispatched to trigger it and record send evidence — build-log-T9.md
 - 2026-11-25 — code_review — Phase B resend blocked: HTTP 502 verification_email_failed, Render EAUTH at smtp-relay.brevo.com:2525; Brevo credentials rejected, zero Brevo records; owner must correct SMTP_USER/SMTP_PASS and redeploy — build-log-T9.md
+- 2026-11-25 — code_review — deployed UI now shows the 502/resend panel; latest attempt still fails; diagnosing Render/Brevo/GitHub-secret timestamps before another resend — build-log-T9.md
+- 2026-11-25 — code_review — post-sync Deploy attempt 4 green but the fresh instance still EAUTHs; Brevo SMTP login/key remains wrong; read-only Brevo account/sender check dispatched — build-log-T9.md
+- 2026-11-25 — code_review — Brevo SMTP login identified as the relay username (not the account email); builder dispatched to correct SMTP_USER and redeploy — build-log-T9.md
+- 2026-11-25 — code_review — SMTP_USER corrected and Deploy attempt 5 green, but the fresh instance still EAUTHs; SMTP_PASS is not the Brevo SMTP key; owner must replace it — build-log-T9.md
+- 2026-11-25 — code_review — owner requested another Deploy after updating SMTP_PASS; builder dispatched to re-run and read the startup probe — build-log-T9.md
+- 2026-11-25 — code_review — Deploy attempt 6 green but SMTP_PASS is still rejected (EAUTH); owner must regenerate the Brevo SMTP key and set it without whitespace before another retry — build-log-T9.md
 
 ## Blockers / open questions
-- T9 Phase B blocked: SMTP AUTH rejected (EAUTH); owner must set the Brevo SMTP login/key in `development`, redeploy, and retry the resend.
+- T9 Phase B blocked: login corrected; `SMTP_PASS` still rejected (`EAUTH`); owner must replace it with the Brevo SMTP key (`xsmtpsib-…`), then redeploy and retry the resend.
 - Q-1 (owner, destructive): delete both unverified rows or keep U2 for the exact `raultorraco` + U2-email pair; no merge implementation is in scope.
 - Q-2: extend the blocked-port guard to production when provisioned.
 - Q-5: Brevo sender/domain authentication remains owner-owned; AC-11 distinguishes it.
