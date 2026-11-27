@@ -58,6 +58,7 @@ Deployed development registration returns 409 / no verification email because Re
 - 2026-11-25 — code_review — SMTP_USER corrected and Deploy attempt 5 green, but the fresh instance still EAUTHs; SMTP_PASS is not the Brevo SMTP key; owner must replace it — build-log-T9.md
 - 2026-11-25 — code_review — owner requested another Deploy after updating SMTP_PASS; builder dispatched to re-run and read the startup probe — build-log-T9.md
 - 2026-11-25 — code_review — Deploy attempt 6 green but SMTP_PASS is still rejected (EAUTH); owner must regenerate the Brevo SMTP key and set it without whitespace before another retry — build-log-T9.md
+- 2026-11-26 — code_review — owner reports the deployed resend still fails; SMTP auth has failed six times, so a follow-up feature (brevo-api-email-transport) is dispatched to move deployed delivery to Brevo's HTTPS API; T9/AC-11 live proof will be satisfied/superseded there — docs/features/brevo-api-email-transport/status.md
 
 ## Blockers / open questions
 - T9 Phase B blocked: login corrected; `SMTP_PASS` still rejected (`EAUTH`); owner must replace it with the Brevo SMTP key (`xsmtpsib-…`), then redeploy and retry the resend.
