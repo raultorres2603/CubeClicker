@@ -13,8 +13,8 @@ Add an optional `build_sha` to the manual production deploy: empty selects the l
 
 ## Task board
 - [x] T1 — Build-selection workflow contract, CI parse and dry-runs `[seq]` (rework for `build_sha`-only)
-- [>] T2 — Documentation and feature-index proposal `[P]` (rework for `build_sha`-only)
-- [ ] T3 — Live selected-build proof and automatic development proof `[owner]` `[P]` (rework with `build_sha`)
+- [x] T2 — Documentation and feature-index proposal `[P]` (rework for `build_sha`-only)
+- [>] T3 — Live selected-build proof and automatic development proof `[owner]` `[P]` (rework with `build_sha`)
 - [ ] T4 — Verify & integrate `[seq]`
 
 ## Loop log
@@ -39,10 +39,11 @@ Add an optional `build_sha` to the manual production deploy: empty selects the l
 - 2026-11-27 — planning → spec_review — targeted contract-change re-check dispatched — reviews/spec-r2.md
 - 2026-11-27 — spec_review — targeted `build_sha` re-check approved (0 blocking; F27 docs-scan wording fix applied, F21 status cleanup done here); T1 rework dispatched on `feat/production-build-selection` — reviews/spec-r2.md
 - 2026-11-27 — building — T1 rework completed (commit `209aed7`; inputs `environment` + optional `build_sha`; empty → newest successful CI push on `main`, set → exact SHA; resolver `.workflow_runs[0] // empty` + parsed-SHA check; 31/31 harness PASS; coverage backend 97.09/92.24/99.65/97.09, frontend 97.22/96.8/98.6/97.22; actionlint/parses pass; T1 verify exit 0; no app/container change); T2 rework dispatched — build-log-T1.md
+- 2026-11-27 — building — T2 rework completed (commits `0e85012` r4 artifacts + `e82f7ac` docs; README/deployment/vercel updated to `build_sha`-only, old dropdown sections removed; T2 verify exit 0 in place; links/actionlint/parses/no-edit/credential guards pass; proposed index row recorded); T3 needs the updated branch merged to `main` — build-log-T2.md
 
 ## Blockers / open questions
 - **Q-1 superseded by the owner:** the dropdown and relative choices are removed; the only selector is the optional `build_sha` field (empty = latest, set = exact SHA).
-- **Rework in progress:** T1 is reworked; T2 docs and T3's live proof (exact prior SHA + latest restore) remain. The updated branch must be merged to `main` before the new T3 live proof; T4 follows.
+- **T3 owner gate:** T1/T2 are reworked; the updated `feat/production-build-selection` (commits `209aed7`, `0e85012`, `e82f7ac`) must be merged to `main` before the new live proof. T3 then dispatches `build_sha=<known-good-40-hex>` and a latest restore omitting `build_sha`; T4 follows.
 - The orchestrator-owned `status.md` is uncommitted; the eventual T4 builder is authorized to commit it unchanged with its build log.
 - **Q-2 (default):** empty `build_sha` means the newest successful `CI` push build on `main`; a set SHA is the exact commit (may not be the latest). **Q-3:** old builds fail closed on schema/contract mismatch. **Q-4:** selection is production-only.
 - **F27 (MINOR):** the broad docs negative would reject a correct “no dropdown” sentence; the T2 wording/scan needs a bounded fix before T2 runs.
