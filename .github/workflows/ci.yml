@@ -91,12 +91,17 @@ jobs:
           if (JSON.stringify(wr.branches) !== JSON.stringify(['main'])) throw new Error('workflow_run branches changed');
           if (t.push !== undefined) throw new Error('deploy must not gain a push trigger');
           const inputs = t.workflow_dispatch.inputs;
-          if (Object.keys(inputs).sort().join(',') !== 'build,build_sha,environment') throw new Error('workflow_dispatch inputs changed');
+          if (Object.keys(inputs).sort().join(',') !== 'build_sha,environment') throw new Error('workflow_dispatch inputs changed');
+          if (inputs.build) throw new Error('build choice must be removed');
           const environment = inputs.environment;
           if (Object.keys(environment).sort().join(',') !== 'default,description,options,required,type') throw new Error('environment input fields changed');
           if (environment.type !== 'choice' || environment.required !== true || environment.default !== 'production') throw new Error('environment input must stay a required choice defaulting to production');
           if (JSON.stringify(environment.options) !== JSON.stringify(['production', 'development'])) throw new Error('environment choices must be exactly [production, development]');
           if (environment.description !== 'GitHub Environment to deploy (development or production)') throw new Error('environment input description must name both environments');
+          const buildSha = inputs.build_sha;
+          if (Object.keys(buildSha).sort().join(',') !== 'default,description,required,type') throw new Error('build_sha input fields changed');
+          if (buildSha.type !== 'string' || buildSha.required !== false || buildSha.default !== '') throw new Error('build_sha input must be an optional string with an empty default');
+          if (buildSha.description !== 'Optional full 40-character lowercase commit SHA; empty = latest successful CI build on main; set = that exact commit, which may not be the latest on main') throw new Error('build_sha description changed');
           const d = w.jobs.deploy;
           if (Object.keys(w.jobs).length !== 1) throw new Error('deploy.yml must keep exactly one job');
           const expectedIf = "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')";
@@ -109,7 +114,7 @@ jobs:
           }
           if (w.permissions.contents !== 'read' || w.permissions.actions !== 'read' || Object.keys(w.permissions).length !== 2) throw new Error('permissions must stay contents: read, actions: read');
           if (d['timeout-minutes'] !== 45) throw new Error('deploy timeout must stay 45 minutes');
-          console.log('deploy.yml: workflow_dispatch offers development and production with build selection; environment mapping and automatic trigger unchanged');
+          console.log('deploy.yml: workflow_dispatch offers environment plus the optional build_sha; environment mapping and automatic trigger unchanged');
           NODE
       - name: Validate deploy build selection contract
         run: |
@@ -124,20 +129,16 @@ jobs:
           if (JSON.stringify(wr.workflows) !== JSON.stringify(['CI']) || JSON.stringify(wr.types) !== JSON.stringify(['completed']) || JSON.stringify(wr.branches) !== JSON.stringify(['main'])) throw new Error('workflow_run trigger changed');
           if (t.push !== undefined) throw new Error('deploy must not gain a push trigger');
           const inputs = t.workflow_dispatch.inputs;
-          if (Object.keys(inputs).sort().join(',') !== 'build,build_sha,environment') throw new Error('dispatch inputs changed');
+          if (Object.keys(inputs).sort().join(',') !== 'build_sha,environment') throw new Error('dispatch inputs changed');
+          if (inputs.build) throw new Error('build choice must be removed');
           const environment = inputs.environment;
           if (environment.description !== 'GitHub Environment to deploy (development or production)') throw new Error('environment input description changed');
           if (environment.type !== 'choice' || environment.required !== true || environment.default !== 'production') throw new Error('environment input changed');
           if (JSON.stringify(environment.options) !== JSON.stringify(['production', 'development'])) throw new Error('environment choices changed');
-          const build = inputs.build;
-          if (Object.keys(build).sort().join(',') !== 'default,description,options,required,type') throw new Error('build input fields changed');
-          if (build.type !== 'choice' || build.required !== true || build.default !== 'latest') throw new Error('build input must be a required choice defaulting to latest');
-          if (JSON.stringify(build.options) !== JSON.stringify(['latest', 'previous-1', 'previous-2', 'previous-3', 'previous-4', 'previous-5', 'previous-6', 'previous-7', 'previous-8', 'previous-9'])) throw new Error('build options changed');
-          if (build.description !== 'Build to deploy (production only; latest = newest successful CI build on main)') throw new Error('build description changed');
           const buildSha = inputs.build_sha;
           if (Object.keys(buildSha).sort().join(',') !== 'default,description,required,type') throw new Error('build_sha input fields changed');
           if (buildSha.type !== 'string' || buildSha.required !== false || buildSha.default !== '') throw new Error('build_sha input must be an optional string with an empty default');
-          if (buildSha.description !== 'Optional full 40-character lowercase commit SHA for an exact build (production only)') throw new Error('build_sha description changed');
+          if (buildSha.description !== 'Optional full 40-character lowercase commit SHA; empty = latest successful CI build on main; set = that exact commit, which may not be the latest on main') throw new Error('build_sha description changed');
           const d = w.jobs.deploy;
           if (Object.keys(w.jobs).length !== 1) throw new Error('job count changed');
           const expectedIf = "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')";
@@ -161,9 +162,10 @@ jobs:
           const resolve = step('Resolve selected build');
           if (resolve.id !== 'resolve_build' || resolve.if !== dispatchOnly) throw new Error('resolver step changed');
           const resolveRun = resolve.run;
-          for (const anchor of ['actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100', '!seen[$1]++', 'sed -n "$((index + 1))p"', '^[0-9a-f]{40}$', 'build_sha must be a full 40-character lowercase commit SHA.', 'Set either build=previous-N or build_sha, not both.', 'Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch.', 'Build choice $BUILD is unavailable: fewer than $((index + 1)) successful CI builds on main.', 'Resolved build: $sha ($source)', 'CI run:', 'sha=$sha', 'source=$source']) {
+          for (const anchor of ['actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=1', '.workflow_runs[0] // empty', '^[0-9a-f]{40}$', 'build_sha must be a full 40-character lowercase commit SHA.', 'Build SHA selection is available for environment=production only; clear build_sha for a development dispatch.', 'No successful CI push build found on main; refusing to deploy.', 'Resolved build: $sha ($source)', 'CI run: $ci_run $ci_created', 'sha=$sha', 'source=$source']) {
             if (!resolveRun.includes(anchor)) throw new Error('resolver run missing: ' + anchor);
           }
+          if (resolveRun.includes('previous-') || resolveRun.includes('!seen[')) throw new Error('resolver must not select relative builds');
           const guard = step('Verify CI succeeded for target commit');
           if (guard.if !== dispatchOnly) throw new Error('guard must stay dispatch-only');
           if (!guard.env || guard.env.TARGET_SHA !== '$' + '{{ steps.resolve_build.outputs.sha }}') throw new Error('guard target changed');
@@ -207,7 +209,7 @@ jobs:
           const ciSteps = cw.jobs['verify-workflows'].steps.map((s) => s.name);
           const expectedCi = ['Checkout', 'Setup Node', 'Install dependencies', 'Lint GitHub Actions workflows', 'Validate Vercel config', 'Validate Render blueprint', 'Validate deploy workflow dispatch choices', 'Validate deploy build selection contract', 'Check deploy workflow has no Fly deploy path', 'Guard rejects placeholder values', 'Guard accepts a complete value set'];
           if (JSON.stringify(ciSteps) !== JSON.stringify(expectedCi)) throw new Error('verify-workflows steps changed: ' + JSON.stringify(ciSteps));
-          console.log('deploy.yml: build selection contract pinned (resolver, guard, contract, schema, Render API/completion, Vercel and 21-step order)');
+          console.log('deploy.yml: build_sha contract pinned (resolver, guard, contract, schema, Render API/completion, Vercel and 21-step order)');
           NODE
       - name: Check deploy workflow has no Fly deploy path
         run: |
