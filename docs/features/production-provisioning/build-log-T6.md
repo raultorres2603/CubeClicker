@@ -1,47 +1,101 @@
 # Build log — T6 — Live production deploy proof
 
-Task: T6 (2026-11-27)
+Task: T6 (2026-11-27; seventh live attempt, final success)
 Files changed: `docs/features/production-provisioning/build-log-T6.md` (only; no application code, workflow, provider asset, architecture doc, `status.md` or `docs/features/README.md` edit)
-What changed & why: Confirmed the `main` SHA's CI success, confirmed the 23 production names and the protection gate, dispatched the production deploy from `main`, approved the protection gate through the authenticated owner session, and captured the run. The run failed at the pre-provider `Verify CI succeeded for target commit` step because `gh run list` runs before `Checkout` and has no repository argument; no provider was touched. T6 is blocked on a one-line workflow fix that the feature spec's Non-goals forbid and this task does not own, so no out-of-scope edit and no second dispatch were made.
-Decisions: Approval used the authenticated owner session through the GitHub API (not the UI); the guard was not bypassed, no development deploy was dispatched, no rollback was performed and the pre-existing Neon branch was not deleted. The failure is a pre-existing `deploy.yml` defect, not a value/catalog/protection failure; the only available fix changes a CI step body on `main`, so the task reports blocked with a candidate fix instead of improvising scope.
-Testing note: T6 is the feature's live-proof infrastructure task per `tasks.md` (provider/GitHub state plus a build log; no application code). The feature-appropriate end-to-end proof is the workflow run with the deployed smoke; it could not execute because the run stopped before any provider step. No repository unit/integration test boundary exists for the live deploy, and T8 owns the full repository suite/no-regression gate.
+What changed & why: After the owner's team-scoped `VERCEL_TOKEN` re-save advanced its metadata to `2026-11-27T13:04:34Z`, the seventh production dispatch completed end to end: the CI preflight, the eleven-name guard, the Neon migration (no pending), the nine-name Render sync, the Render deploy hook, the `/healthz` poll, the Vercel pull/build/deploy and the deployed smoke all passed. The Render deploy and Vercel deployment IDs and the post-run health are recorded; the live proof is complete. Prior failed attempts are retained as history.
+Decisions: Approval used the authenticated owner session through the GitHub API; the metadata gate was applied before the dispatch (the failed sixth run had used the older `13:03:01Z` token because its job started before the `13:04:34Z` re-save). No guard was bypassed, no development dispatch was made by this task, no rollback was performed and the pre-existing Neon branch was not deleted. The builder did not read, copy or set any secret value.
+Testing note: T6 is the feature's live-proof infrastructure task per `tasks.md` (provider/GitHub state plus a build log; no application code). The feature-appropriate end-to-end proof is this workflow run with the deployed smoke, which passed. No repository unit/integration test boundary exists for the live deploy, and T8 owns the full repository suite/no-regression gate.
 
-## Status: BLOCKED
+## Final status: COMPLETED — live production deploy proven
 
-- The production deploy run `45993542551` failed at `Verify CI succeeded for target commit` with `failed to determine base repo: failed to run git: fatal: not a git repository (or any of the parent directories): .git`.
-- The step executes before `actions/checkout`, and its `gh run list` command has neither `--repo` nor a `GH_REPO` environment mapping, so `gh` cannot resolve the repository from the empty runner workspace.
-- Fixing it requires a non-comment CI step-body change to `.github/workflows/deploy.yml` on `main`. The feature spec § Non-goals explicitly forbids a "CI step-body change", T7's verify requires an empty non-comment diff for `deploy.yml`, and T6's `files_owned` is this build log only; the builder cannot push to `main` in any case. See § Blocker for the exact question and candidate answers.
+- run_id=46004355405
+- Run metadata: event `workflow_dispatch`, head branch `main`, head SHA `d10dfb1`, status `completed`, conclusion `success`, created `2026-11-27T13:07:11Z`, updated `2026-11-27T13:09:31Z`, URL `https://github.com/raultorres2603/CubeClicker/actions/runs/46004355405`.
+- `CI succeeded for d10dfb1`
+- `Deploy configuration OK: 11 value(s) present for the 'production' environment.`
+- `SYNCED SMTP_HOST (value verified, not shown)`
+- `SYNCED SMTP_PORT (value verified, not shown)`
+- `SYNCED SMTP_SECURE (value verified, not shown)`
+- `SYNCED SMTP_CONNECTION_TIMEOUT_MS (value verified, not shown)`
+- `SYNCED SMTP_FROM (value verified, not shown)`
+- `SYNCED SMTP_USER (value verified, not shown)`
+- `SYNCED SMTP_PASS (value verified, not shown)`
+- `SYNCED EMAIL_TRANSPORT (value verified, not shown)`
+- `SYNCED BREVO_API_KEY (value verified, not shown)`
+- `Synced 9 value(s) to Render service srv-dc4mjd15efls739ua63g for the 'production' environment.`
+- `Neon migration: 0 applied (No pending migrations.)`
+- `Sync: 9 SYNCED`
+- `healthz OK after 0s: {"status":"ok"}`
+- `DEPLOYED SMOKE PASS (8/8 checks)`
+- `Render deploy: dep-dc4o1fff3r2c73c4asp0 live`
+- `Vercel deployment: dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq ready`
+- `POST-RUN HEALTH 200` — exactly `{"status":"ok"}`.
+- `production frontend: https://cubeclicker.vercel.app`
+- `production api: https://cubeclicker.onrender.com`
+- `No rollback to development`
+- `No deletion of the existing Neon production branch`
 
-## Pre-dispatch gates
+### Secret metadata gates (names/metadata only)
 
-### CI for the `main` SHA
+- `VERCEL_TOKEN`: `updated_at: 2026-11-27T13:04:34Z` (previous value `2026-11-27T11:37:16Z`); the token used by this run was the `13:04:34Z` value.
+- `BREVO_API_KEY`: `updated_at: 2026-11-27T12:49:02Z` (creation time `2026-11-27T11:36:46Z`).
+- No secret value was read.
+
+### Runtime Brevo probe (read-only Render logs)
+
+- `brevo_api_transport_verify_ok` with `host: api.brevo.com`, `port: 443` at `2026-11-27T13:08:41.57545297Z` on the new instance.
+
+## Pre-dispatch gate (seventh attempt)
+
+### Vercel token metadata
+
+`GET /repos/raultorres2603/CubeClicker/environments/production/secrets/VERCEL_TOKEN`:
+
+```
+VERCEL_TOKEN	2026-11-27T11:37:16Z	2026-11-27T13:04:34Z
+```
+
+- The `updated_at` advanced past the previous value (`11:37:16Z`), satisfying the gate. The `13:03:01Z` state was used by the failed sixth run because its job started before the `13:04:34Z` re-save; the seventh dispatch used the current value.
+
+### Brevo key metadata
+
+`GET /repos/raultorres2603/CubeClicker/environments/production/secrets/BREVO_API_KEY`:
+
+```
+BREVO_API_KEY	2026-11-27T11:36:46Z	2026-11-27T12:49:02Z
+```
+
+- The `updated_at` remains advanced past `2026-11-27T11:36:46Z`; the value was never read.
+
+### CI for `origin/main` (`d10dfb1`)
 
 `gh run list --workflow CI --commit "$(git rev-parse origin/main)" --limit 3 --json databaseId,conclusion,headSha,status`:
 
 ```
-45957565326	completed	success	00e2359c79e2713422a0a0ef8421d6fff47f16b2
+45997877865	completed	success	d10dfb1
 ```
 
-- The `main` SHA is `00e2359c79e2713422a0a0ef8421d6fff47f16b2`; its CI run `45957565326` is `completed` / `success`.
-- The workflow's own `CI succeeded for <commit>` line was never reached (the guard failed before printing it); see § Failure.
+- `origin/main` is `d10dfb1` (PR #4 merge); CI run `45997877865` is event `push`, head branch `main`, head SHA `d10dfb1`, conclusion `success`.
 
 ### Production Environment (names only)
 
-- `gh variable list --env production ... --json name`: 15 variables; `gh secret list --env production ... --json name`: 8 secrets; total 23 names.
-- Protection read-back: `required_reviewers` naming `raultorres2603` (id `55553058`) with `prevent_self_review: false`, plus the `branch_policy` rule; `deployment_branch_policy` is `custom_branch_policies: true`, and the deployment-branch-policies list contains exactly the `main` policy (id `68496749`).
-- Environment id: `25891960251`. No secret or variable value was read.
+- Counts: **15 variables / 8 secrets = 23 names**.
+- Protection: environment id `25891960251`; `required_reviewers` naming `raultorres2603` with `prevent_self_review: false`, plus the `branch_policy` rule; `deployment_branch_policy` is `custom_branch_policies: true`, with exactly one branch policy, `main`.
+- No variable or secret value was read.
 
-### Dispatch baselines
+### Pinned production URLs (from the T3/T4 records)
 
-`gh run list --workflow Deploy --event workflow_dispatch --limit 5` before dispatch:
+production frontend: https://cubeclicker.vercel.app
+production api: https://cubeclicker.onrender.com
 
-```
-45700752621	2026-11-25T21:03:20Z	main	completed	failure
-```
+## T6a fix reference
 
-- The only prior manual deploy run was `45700752621` (2026-11-25, commit `b7dbcb985e31c56619a87386179900c081b2f052`), also a failure; it failed at the same guard with the same `failed to determine base repo` message (corroboration in § Failure).
+Fix PR: https://github.com/raultorres2603/CubeClicker/pull/4
+Fix commit: d10dfb1
 
-## Dispatch
+- PR #4 — `fix: add repository context to the deploy CI preflight` — merged to `main` as `d10dfb1`.
+- The fix adds `--repo "$GITHUB_REPOSITORY"` to the `gh run list` call in `Verify CI succeeded for target commit`; the seventh attempt's step is `success` and printed `CI succeeded for d10dfb1`.
+
+## Seventh dispatch
 
 Command:
 
@@ -49,103 +103,114 @@ Command:
 gh workflow run deploy.yml --ref main -f environment=production --repo raultorres2603/CubeClicker
 ```
 
-- Response: `https://github.com/raultorres2603/CubeClicker/actions/runs/45993542551`.
-- The post-dispatch list contains exactly one new run:
+- Response: `https://github.com/raultorres2603/CubeClicker/actions/runs/46004355405`.
+- run_id=46004355405
+- The post-dispatch manual list contains exactly one new run (`46004355405`), the failed sixth attempt (`46003860223`), the fifth attempt (`46001870210`), the fourth attempt (`46001011034`), the third attempt (`46000139093`), the second attempt (`45998841039`), the first attempt (`45993542551`) and the pre-feature `45700752621`.
 
-```
-45993542551	2026-11-27T11:49:03Z	main	waiting		https://github.com/raultorres2603/CubeClicker/actions/runs/45993542551
-45700752621	2026-11-25T21:03:20Z	main	completed	failure	https://github.com/raultorres2603/CubeClicker/actions/runs/45700752621
-```
-
-- run_id=45993542551
-- Run metadata: event `workflow_dispatch`, head branch `main`, head SHA `00e2359c79e2713422a0a0ef8421d6fff47f16b2`, created `2026-11-27T11:49:03Z`, updated `2026-11-27T11:49:21Z`, conclusion `failure`, URL `https://github.com/raultorres2603/CubeClicker/actions/runs/45993542551`.
-
-## Approval
+## Approval (seventh attempt)
 
 - The run paused with status `waiting` for the `production` Environment.
-- `GET /repos/raultorres2603/CubeClicker/actions/runs/45993542551/pending_deployments` returned the `production` environment (id `25891960251`) with `current_user_can_approve: true`.
-- `POST /repos/raultorres2603/CubeClicker/actions/runs/45993542551/pending_deployments` with body `{"environment_ids":[25891960251],"state":"approved","comment":"T6 live production deploy proof: approved by the authenticated repository owner."}` was accepted; the run moved to `in_progress` and the pending list became empty.
-- Approval read-back (`GET .../runs/45993542551/approvals`): `{"comment":"T6 live production deploy proof: approved by the authenticated repository owner.","environments":["production"],"state":"approved","user":"raultorres2603"}`.
+- `GET /repos/raultorres2603/CubeClicker/actions/runs/46004355405/pending_deployments` returned the `production` environment (id `25891960251`) with `current_user_can_approve: true`.
+- `POST /repos/raultorres2603/CubeClicker/actions/runs/46004355405/pending_deployments` with body `{"environment_ids":[25891960251],"state":"approved","comment":"T6 live production deploy proof (seventh attempt after the owner re-saved the production VERCEL_TOKEN): approved by the authenticated repository owner."}` was accepted.
+- Approval read-back (`GET .../runs/46004355405/approvals`): `{"comment":"T6 live production deploy proof (seventh attempt after the owner re-saved the production VERCEL_TOKEN): approved by the authenticated repository owner.","environments":["production"],"state":"approved","user":"raultorres2603"}`.
 - approval: authenticated owner via GitHub API
 - The protection gate was not bypassed: the `required_reviewers` rule and the `main`-only branch policy remained in place; no protection was removed or weakened.
 
-## Failure
+## Seventh outcome — all steps success
 
-Run `45993542551` conclusion `failure`, job `deploy` started `2026-11-27T11:49:18Z` and completed `2026-11-27T11:49:21Z`.
-
-Failing step: `Verify CI succeeded for target commit` (`conclusion: failure`). `Set up job` succeeded; `Reject non-push CI runs` was skipped (dispatch path); every step after the guard — `Checkout`, `Setup Node`, `Install dependencies`, `Check deployment Brevo configuration`, `Migrate Neon database`, `Sync Brevo SMTP settings to Render`, `Deploy Render backend`, `Wait for Render deploy to start`, `Wait for Render backend health`, `Install Vercel CLI`, `Pull Vercel project settings`, `Build Vercel frontend`, `Deploy Vercel frontend`, `Warm Render backend before smoke`, `Run deployed smoke` — is `skipped`.
-
-Exact guard block (the failing step's run body):
-
-```bash
-if ! conclusion=$(gh run list --workflow CI --commit "$TARGET_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'); then
-  echo "Unable to query CI runs for $TARGET_SHA; the token may lack actions:read" >&2
-  exit 1
-fi
-if [ "$conclusion" != "success" ]; then
-  echo "CI for $TARGET_SHA is not successful (conclusion: ${conclusion:-none}); refusing to deploy" >&2
-  exit 1
-fi
-echo "CI succeeded for $TARGET_SHA"
-```
-
-Exact failure output:
+- Job `deploy` started `2026-11-27T13:07:27Z` and completed `2026-11-27T13:09:30Z` with conclusion `success`.
+- Every non-skipped step is `success`: `Set up job`, `Verify CI succeeded for target commit`, `Checkout`, `Setup Node`, `Install dependencies`, `Check deployment Brevo configuration`, `Migrate Neon database`, `Sync Brevo SMTP settings to Render`, `Deploy Render backend`, `Wait for Render deploy to start`, `Wait for Render backend health`, `Install Vercel CLI`, `Pull Vercel project settings`, `Build Vercel frontend`, `Deploy Vercel frontend`, `Warm Render backend before smoke`, `Run deployed smoke`, `Post Setup Node`, `Post Checkout`, `Complete job`. `Reject non-push CI runs` is `skipped` on the dispatch path as designed.
+- Exact workflow lines:
 
 ```
-failed to determine base repo: failed to run git: fatal: not a git repository (or any of the parent directories): .git
-Unable to query CI runs for 00e2359c79e2713422a0a0ef8421d6fff47f16b2; the token may lack actions:read
-##[error]Process completed with exit code 1.
+CI succeeded for d10dfb1
+Deploy configuration OK: 11 value(s) present for the 'production' environment.
+SYNCED SMTP_HOST (value verified, not shown)
+SYNCED SMTP_PORT (value verified, not shown)
+SYNCED SMTP_SECURE (value verified, not shown)
+SYNCED SMTP_CONNECTION_TIMEOUT_MS (value verified, not shown)
+SYNCED SMTP_FROM (value verified, not shown)
+SYNCED SMTP_USER (value verified, not shown)
+SYNCED SMTP_PASS (value verified, not shown)
+SYNCED EMAIL_TRANSPORT (value verified, not shown)
+SYNCED BREVO_API_KEY (value verified, not shown)
+Synced 9 value(s) to Render service srv-dc4mjd15efls739ua63g for the 'production' environment.
+No pending migrations.
+healthz OK after 0s: {"status":"ok"}
+DEPLOYED SMOKE PASS (8/8 checks)
 ```
 
-- Root cause: the step runs before `Checkout`, so the runner workspace has no `.git`; `gh run list` resolves the target repository from the git remote and fails before querying. The job has `actions: read` permission, so the "token may lack actions:read" hint is not the cause.
-- Corroboration: the only prior manual dispatch (`45700752621`, 2026-11-25, commit `b7dbcb98…`) failed at the same step with the identical `failed to determine base repo` message; this is a pre-existing defect of the manual path, not a production value, catalog or protection failure.
-- The failure happened before the guard read any GitHub Environment value and before any provider step; no Neon migration, sync, Render hook, Vercel build or smoke ran. The full workflow log was written only to a temp file under `/tmp/opencode` and deleted after this extraction.
+- Vercel deploy output tail: `https://cubeclicker-i32bizms0-raultorres2603s-projects.vercel.app`; `vercel deploy --prebuilt --prod` updated the stable `cubeclicker.vercel.app` domain, and the deployed smoke passed against that stable origin.
+- No `DEPLOYED SMOKE FAIL` line exists in the log.
 
-## Provider state after the failed run (read-only)
+## Provider state after the seventh attempt (read-only)
 
-- Render service `srv-dc4mjd15efls739ua63g` (`cubeclicker`): `suspended: not_suspended`, `updatedAt: 2026-11-27T11:32:48.677457Z`. Its latest deploy is `dep-dc4mjuu1egvs7391bjgg`, status `live`, created `2026-11-27T11:31:07Z`, finished `2026-11-27T11:32:48Z` — i.e. the T4-era provider deploy, created before the `11:49:03Z` dispatch. No new Render deploy was created by this run.
-- Vercel project `prj_1NUoVWaPsgmFe8QtKJ1JuckhwplH` (`cubeclicker`): `latestDeployment: null`; `list_deployments` returns `count: 0`. No T6 Vercel build or deployment exists.
-- Neon project `patient-mountain-41401588`: branch `production` is still present exactly as `br-floral-dream-zarerhtw` (`primary: true`, `default: true`, `current_state: ready`, `protected: false`); the `development` branch `br-ancient-smoke-za1pdv7w` is also present. No branch was created, deleted or re-created; the migration step never ran.
-- Read-only `/healthz` observation on `https://cubeclicker.onrender.com`: HTTP `200` with exactly `{"status":"ok"}`, served by the T4-era deploy. This is a liveness observation only, not the T6 post-deploy proof.
+- Render service `srv-dc4mjd15efls739ua63g` (`cubeclicker`): `Render deploy: dep-dc4o1fff3r2c73c4asp0 live`, trigger `deploy_hook`, commit `d10dfb1`, created `2026-11-27T13:08:13Z`, finished `2026-11-27T13:08:43Z`; the previous deploy `dep-dc4o0317lnhs7397lrpg` is `deactivated`. Service `not_suspended`.
+- Vercel production project `prj_1NUoVWaPsgmFe8QtKJ1JuckhwplH` (`cubeclicker`): deployment `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq`, state `READY`, target `production`, commit `d10dfb1`; `list_deployments` returns `count: 1`. The stable `https://cubeclicker.vercel.app` origin served the deployed smoke.
+- Neon project `patient-mountain-41401588`: branch `production` is present as `br-floral-dream-zarerhtw` (`primary: true`, `default: true`, `current_state: ready`, `protected: false`); the `development` branch `br-ancient-smoke-za1pdv7w` is also present. The migration ran with the production `DIRECT_DATABASE_URL` and applied 0 migrations (already current).
+- Post-run `/healthz` on `https://cubeclicker.onrender.com`: `POST-RUN HEALTH 200` with exactly `{"status":"ok"}`.
 - `No rollback to development`
 - `No deletion of the existing Neon production branch`
 
-## Blocker
+## Prior failed attempts (retained history)
 
-Exact question: may the `production` deploy guard be fixed by a one-line CI step-body change to `.github/workflows/deploy.yml` on `main` before T6 is re-dispatched — adding `--repo "$GITHUB_REPOSITORY"` to the `gh run list` call (or a step-level `GH_REPO: ${{ github.repository }}` env mapping) in `Verify CI succeeded for target commit`?
+### Sixth attempt (Vercel token scope) — run `46003860223`
 
-Why the current spec cannot proceed:
+- 2026-11-27T13:03:50Z, `workflow_dispatch`, `main`, commit `d10dfb1`; passed the CI preflight, the eleven-name guard, the migration, the sync, the Render deploy and the health poll, then failed at `Pull Vercel project settings` with `Error: Project not found ({"VERCEL_PROJECT_ID":"prj_1NUoVWaPsgmFe8QtKJ1JuckhwplH","VERCEL_ORG_ID":"team_7cz2iixGr020Vqvjhj7Y1DNp"})`; the Vercel build/deploy and smoke were skipped. Its `VERCEL_TOKEN` metadata advanced to `13:03:01Z` before dispatch and to `13:04:34Z` after the job had started, so the run used the older token.
+- No rollback or deletion; the backend was live and healthy.
 
-- The feature spec § Non-goals says "No ... CI step-body change."
-- T7's verify requires the `deploy.yml` non-comment diff to be empty, so the required fix would fail T7 as written; the manual-path docs (`deployment.md`, `vercel-render-neon.md`) also describe the guard as working.
-- T6's `files_owned` is only this build log, and the builder cannot push; the fix must reach `main` before `gh workflow run --ref main` can exercise it.
-- The guard must not be bypassed, so re-dispatching the same broken workflow would produce the identical failure.
+### Fifth attempt (Vercel token scope) — run `46001870210`
 
-Candidate answers:
+- 2026-11-27T12:49:28Z, `workflow_dispatch`, `main`, commit `d10dfb1`; passed the CI preflight, the eleven-name guard, `Neon migration: 0 applied`, `Sync: 9 SYNCED`, the Render deploy, `healthz OK after 1s: {"status":"ok"}` and the post-run health, then failed at `Pull Vercel project settings` with the same `Project not found` error; the Vercel build/deploy and smoke were skipped.
 
-1. **Authorize a spec amendment and a small workflow-fix step** (e.g., a T6a task or a T7 pre-step) that adds `--repo "$GITHUB_REPOSITORY"` (or the `GH_REPO` step env) to the guard, updates T7's non-comment-diff guard and the two architecture references, merges to `main`, and then re-runs the same `gh workflow run deploy.yml --ref main -f environment=production` dispatch. This keeps the CI-success guard intact (it would then query and enforce the same conclusion) and makes the documented manual path functional for both environments.
-2. **Keep the no-step-body-change rule** and leave the feature fail-closed at T6: provisioning stays complete but production stays unpromoted, with the live proof recorded as unobtainable until a follow-up feature fixes the manual path. No bypass, no development deploy, no rollback, no Neon branch deletion.
+### Fourth attempt (Brevo key) — run `46001011034`
+
+- 2026-11-27T12:43:19Z, `workflow_dispatch`, `main`, commit `d10dfb1`; passed the CI preflight and failed at `Check deployment Brevo configuration` with `Deploy blocked: BREVO_API_KEY is the Brevo SMTP key, not the REST API key ('production' environment).`; all later steps skipped; secret metadata was `updated_at: 2026-11-27T11:36:46Z` before and after.
+
+### Third attempt (Brevo key) — run `46000139093`
+
+- 2026-11-27T12:37:06Z, `workflow_dispatch`, `main`, commit `d10dfb1`; same Brevo SMTP-key guard failure; all later steps skipped.
+
+### Second attempt (Brevo key) — run `45998841039`
+
+- 2026-11-27T12:27:50Z, `workflow_dispatch`, `main`, commit `d10dfb1`; same Brevo SMTP-key guard failure; all later steps skipped.
+
+### First attempt (CI preflight) — run `45993542551`
+
+- 2026-11-27T11:49:03Z, `workflow_dispatch`, `main`, commit `00e2359c`; failed at `Verify CI succeeded for target commit` because the step ran before `Checkout` and called `gh run list` without `--repo`/`GH_REPO`. Exact output then:
+
+```
+failed to determine base repo: failed to run git: fatal: not a git repository (or any of the parent directories): .git
+Unable to query CI runs for 00e2359c; the token may lack actions:read
+##[error]Process completed with exit code 1.
+```
+
+- The pre-feature manual run `45700752621` (2026-11-25, commit `b7dbcb98`) failed at the same step with the identical message. T6a (PR #4, merge `d10dfb1`) fixed the missing repository context; the later attempts prove the guard now executes and prints `CI succeeded for d10dfb1`.
 
 ## Verify
 
-Command: the exact T6 verify block from `tasks.md` (the `bash` block under `## T6 — Live production deploy proof`, lines 264–290), extracted to `/tmp/opencode/t6/t6-verify.sh` and run as `bash /tmp/opencode/t6/t6-verify.sh`; `set -euo pipefail` is inside the block. Raw output:
+Command: the exact T6 verify block from `tasks.md` (the `bash` block under `## T6 — Live production deploy proof`, lines 298–326), extracted to `/tmp/opencode/t6/t6-verify.sh` and run as `bash /tmp/opencode/t6/t6-verify.sh`; `set -euo pipefail` is inside the block. The first `run_id=` in this log is the successful `46004355405`, so the block asserts the success. Raw output:
 
 ```
 $ bash /tmp/opencode/t6/t6-verify.sh
 $ echo "VERIFY_EXIT=$?"
-VERIFY_EXIT=1
+VERIFY_EXIT=0
 ```
 
-- The block is silent on success and stops at the first failing assertion. Here it fails at the run-conclusion check because run `45993542551` is `workflow_dispatch` / `main` / `failure`, not `success`; the later log greps (guard line, nine `SYNCED` lines, migration, health poll, smoke) are unreachable because the run never reached those steps.
-- Supplementary checks over this build log (the verify block's credential guards, run separately): connection-string pattern and credential-shape pattern both find no match.
+- The block is silent on success (every check is a `test`, a `grep -q`/negated `grep`, or the `node -e` health assertion); exit `0` means every assertion passed:
+  - The successful run is `workflow_dispatch` / `main` / `success`.
+  - The workflow log contains the eleven-value guard line, exactly nine `SYNCED` lines, `Synced 9 value(s) to Render service ...`, `healthz OK after <n>s: {"status":"ok"}`, `DEPLOYED SMOKE PASS (8/8 checks)` and no `DEPLOYED SMOKE FAIL`.
+  - The build log contains the anchored production URLs, the `Neon migration` record, `Render deploy: dep-… live`, `Vercel deployment: dpl_… ready`, `CI succeeded for`, `No rollback to development` and `No deletion of the existing Neon production branch`.
+  - The post-verify `node -e fetch(…/healthz)` returns `HTTP 200` and exactly `{"status":"ok"}`.
+  - The credential-shaped and connection-string guards find no match.
 
 ## Acceptance audit
 
-- **AC-7 — live production deploy proves the path end to end:** **unmet / blocked.** (a) is partly satisfied — the run is a `workflow_dispatch` from `main` with `environment=production`, dispatched only after CI for the `main` SHA reported `success`, and no push-triggered production deploy exists — but (b)–(i) are unproven: the guard step printed neither the 11-value line nor `CI succeeded for`; the nine `SYNCED` lines, `Synced 9 value(s) to Render service`, migration output, `healthz OK after <n>s: {"status":"ok"}`, Vercel deployment, `DEPLOYED SMOKE PASS (8/8 checks)` and the post-run proof did not run. The 200 `/healthz` observation is from the T4-era deploy.
-- **AC-8(c) — no rollback to development, no Neon branch deletion:** **met so far.** `No rollback to development`; `No deletion of the existing Neon production branch`; the branch is present (`br-floral-dream-zarerhtw`) and no development resource or deployment was targeted.
-- **AC-11 — partial failure handled safely:** **met for the failure that occurred.** The failure was before any migration or provider call; no resource was deleted or suspended, no rollback to development occurred, and the pre-existing Neon branch was retained. The fix-forward requirement needs the workflow fix authorized above; this log does not bypass the guard.
-- **Testing tiers:** T6 is an infrastructure task (`tasks.md` T1–T6 add no application tests or coverage target); the live run and deployed smoke are the feature-appropriate E2E proof but could not execute. T8 owns the full repository suite/no-regression gate.
+- **AC-7 — live production deploy proves the path end to end:** **met.** (a) `workflow_dispatch` from `main` with `environment=production`, dispatched only after CI for `d10dfb1` reported `success`, no push-triggered production deploy; (b) exact `Deploy configuration OK: 11 value(s) present for the 'production' environment.`; (c) nine `SYNCED` lines and `Synced 9 value(s) to Render service srv-dc4mjd15efls739ua63g for the 'production' environment.`; (d) the migration ran with the production URL and reported `No pending migrations.` (0 applied, idempotent); (e) exact `healthz OK after 0s: {"status":"ok"}`; (f) the Vercel step deployed the production project with `--prod` and the stable domain served the deployment (the deployed smoke ran against it); (g) exact `DEPLOYED SMOKE PASS (8/8 checks)` with no `FAIL`; (h) the run URL, `Render deploy: dep-dc4o1fff3r2c73c4asp0 live`, `Vercel deployment: dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq ready` and `POST-RUN HEALTH 200` are recorded; (i) the anchored `production frontend:`/`production api:` lines are recorded.
+- **AC-8(c) — no rollback to development, no Neon branch deletion:** **met.** `No rollback to development`; `No deletion of the existing Neon production branch`; the production branch is present and no development resource was targeted by this task.
+- **AC-11 — partial failure handled safely:** **met.** The earlier failures were fixed forward (workflow preflight via T6a, then the owner-held Brevo key, then the owner-held Vercel token); no resource was deleted or suspended, no rollback to development occurred, and the pre-existing Neon branch was retained. The final deploy is green.
+- **Testing tiers:** T6 is an infrastructure task (`tasks.md` T1–T6 add no application tests or coverage target); this live run and the deployed smoke are the feature-appropriate E2E proof. T8 owns the full repository suite/no-regression gate.
 
 ## Deviations from spec
 
-- None performed. The task stopped at a pre-existing workflow defect rather than editing an out-of-scope CI step body or bypassing the guard. No provider write, no development deploy, no rollback, no deletion and no push occurred; `.env*` is untouched.
+- None performed. The task did not edit a workflow, bypass a guard, set an owner-held secret, dispatch development, roll back or delete the Neon branch. The only repository change is this build log; `.env*` is untouched and nothing was pushed.

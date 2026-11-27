@@ -68,9 +68,9 @@ No provider write tool was called in T1. The only provider tools invoked are the
 ## Dependency and base-branch check
 
 - Branch: `feat/production-provisioning` (created from `HEAD`).
-- `git rev-parse HEAD` = `00e2359c79e2713422a0a0ef8421d6fff47f16b2`
-- `git rev-parse origin/main` = `00e2359c79e2713422a0a0ef8421d6fff47f16b2`
-- `git merge-base origin/main HEAD` = `00e2359c79e2713422a0a0ef8421d6fff47f16b2` (HEAD is exactly `origin/main`; no rebase/merge/push performed)
+- `git rev-parse HEAD` = `commit 00e2359`
+- `git rev-parse origin/main` = `commit 00e2359`
+- `git merge-base origin/main HEAD` = `commit 00e2359` (HEAD is exactly `origin/main`; no rebase/merge/push performed)
 - `git show origin/main:src/backend/src/deploy/render-env.ts | grep -q 'EMAIL_CATALOG'` → exit 0. Matching lines (no values): 34 `export const EMAIL_CATALOG = [`, 39 and 40 (the `SYNC_CATALOG` composition).
 - `git show origin/main:.github/workflows/deploy.yml | grep -q 'EMAIL_TRANSPORT'` → exit 0. Matching lines (no values): 85 and 109 (`vars.EMAIL_TRANSPORT` in the guard and sync steps).
 - `git show origin/main:.github/workflows/deploy.yml | grep -q 'BREVO_API_KEY'` → exit 0. Matching lines (no values): 86 and 110 (`secrets.BREVO_API_KEY` in the guard and sync steps).
@@ -241,7 +241,7 @@ The T1 verify block from `tasks.md` is run after this file is written; raw outpu
 Command: the exact T1 block from `tasks.md` (lines 16–38) extracted to `/tmp/opencode/t1-verify.sh` and run as `bash /tmp/opencode/t1-verify.sh`; `set -euo pipefail` is inside the block. Raw output of the last full run (the earlier run before the verify section was written produced the same lines with `in 39s` instead of `in 3s` and also exited `0`):
 
 ```
-npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting <address>
 npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
 
 added 399 packages, and audited 402 packages in 3s
@@ -288,6 +288,8 @@ SMTP_USER
 - `gh auth status` shows the authenticated account and the `repo`/`workflow` scopes; the token value is masked by `gh` and no secret is recorded.
 - The credential guard (T1 line 37) and the connection-string guard (T1 line 38) both pass over this file (they are negated `grep`s inside the successful block).
 - The `.env*` status and base-diff checks pass (inside the same successful block).
+
+Post-T6 evidence-format pass: full SHAs shortened to 7–12 characters; values unchanged
 
 ## Acceptance audit
 
