@@ -16,14 +16,8 @@ on:
         required: true
         default: production
         options: [production, development]
-      build:
-        description: Build to deploy (production only; latest = newest successful CI build on main)
-        type: choice
-        required: true
-        default: latest
-        options: [latest, previous-1, previous-2, previous-3, previous-4, previous-5, previous-6, previous-7, previous-8, previous-9]
       build_sha:
-        description: Optional full 40-character lowercase commit SHA for an exact build (production only)
+        description: Optional full 40-character lowercase commit SHA; empty = latest successful CI build on main; set = that exact commit, which may not be the latest on main
         type: string
         required: false
         default: ''
@@ -58,64 +52,50 @@ jobs:
           exit 1
 
       # A build is a successful CI push run on main; the commit SHA is the build
-      # identity. `previous-N` labels are relative positions in that list, so the
-      # run prints the resolved SHA (and the CI run) before anything is checked out.
+      # identity. An empty build_sha resolves the newest such build; a set
+      # build_sha is deployed exactly (it may not be the latest on main). The run
+      # prints the resolved SHA (and the CI run) before anything is checked out.
       - name: Resolve selected build
         if: github.event_name == 'workflow_dispatch'
         id: resolve_build
         env:
           GH_TOKEN: ${{ github.token }}
           ENVIRONMENT: ${{ github.event.inputs.environment }}
-          BUILD: ${{ github.event.inputs.build }}
           BUILD_SHA: ${{ github.event.inputs.build_sha }}
           DISPATCH_SHA: ${{ github.sha }}
         run: |
           source=""
           sha=""
           ci_run=""
+          ci_created=""
           if [ "$ENVIRONMENT" != "production" ]; then
-            if [ "$BUILD" != "latest" ] || [ -n "$BUILD_SHA" ]; then
-              echo "Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch." >&2
+            if [ -n "$BUILD_SHA" ]; then
+              echo "Build SHA selection is available for environment=production only; clear build_sha for a development dispatch." >&2
               exit 1
             fi
             sha="$DISPATCH_SHA"
             source="dispatch-ref"
-          else
-            if [ -n "$BUILD_SHA" ] && [ "$BUILD" != "latest" ]; then
-              echo "Set either build=previous-N or build_sha, not both." >&2
+          elif [ -n "$BUILD_SHA" ]; then
+            if ! printf '%s' "$BUILD_SHA" | grep -Eq "^[0-9a-f]{40}$"; then
+              echo "build_sha must be a full 40-character lowercase commit SHA." >&2
               exit 1
             fi
-            if [ -n "$BUILD_SHA" ]; then
-              if ! printf '%s' "$BUILD_SHA" | grep -Eq "^[0-9a-f]{40}$"; then
-                echo "build_sha must be a full 40-character lowercase commit SHA." >&2
-                exit 1
-              fi
-              sha="$BUILD_SHA"
-              source="pinned"
-            else
-              index=""
-              case "$BUILD" in
-                latest) index=0 ;;
-                previous-[1-9]) index=${BUILD#previous-} ;;
-              esac
-              if [ -z "$index" ]; then
-                echo "Build choice $BUILD is unavailable: fewer than 1 successful CI builds on main." >&2
-                exit 1
-              fi
-              runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" --jq '.workflow_runs[] | [.head_sha, (.id|tostring), .created_at] | @tsv')
-              selected=$(printf '%s\n' "$runs" | awk -F'\t' 'NF && !seen[$1]++' | sed -n "$((index + 1))p")
-              if [ -z "$selected" ]; then
-                echo "Build choice $BUILD is unavailable: fewer than $((index + 1)) successful CI builds on main." >&2
-                exit 1
-              fi
-              sha=$(printf '%s' "$selected" | cut -f1)
-              ci_run=$(printf '%s' "$selected" | cut -f2-)
-              source="$BUILD"
+            sha="$BUILD_SHA"
+            source="pinned"
+          else
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=1" --jq '.workflow_runs[0] // empty | [.head_sha, (.id|tostring), .created_at] | @tsv')
+            sha=$(printf '%s' "$runs" | cut -f1)
+            if [ -z "$sha" ]; then
+              echo "No successful CI push build found on main; refusing to deploy." >&2
+              exit 1
             fi
+            ci_run=$(printf '%s' "$runs" | cut -f2)
+            ci_created=$(printf '%s' "$runs" | cut -f3)
+            source="latest"
           fi
           echo "Resolved build: $sha ($source)"
           if [ -n "$ci_run" ]; then
-            echo "CI run: $ci_run"
+            echo "CI run: $ci_run $ci_created"
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "source=$source" >> "$GITHUB_OUTPUT"

@@ -72,15 +72,19 @@ function newOutputFile() {
   return file;
 }
 
-// `gh` stub: Actions runs list (TSV, newest first), guard conclusion and
-// compare status come from the per-case GH_SCENARIO JSON file.
+// `gh` stub: Actions runs list (the resolver's `.workflow_runs[0] // empty`
+// filter), guard conclusion and compare status come from the per-case
+// GH_SCENARIO JSON file.
 writeExecutable('gh', `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const scenario = JSON.parse(fs.readFileSync(process.env.GH_SCENARIO, 'utf8'));
 const target = args.find((arg) => arg.startsWith('repos/')) || '';
 if (target.includes('/actions/workflows/ci.yml/runs')) {
-  for (const run of scenario.runs || []) process.stdout.write(run.join('\\t') + '\\n');
+  const workflowRuns = (scenario.runsResponse && scenario.runsResponse.workflow_runs) || [];
+  if (workflowRuns.length === 0) process.exit(0);
+  const run = workflowRuns[0];
+  process.stdout.write([run.head_sha, String(run.id), run.created_at].join('\\t') + '\\n');
   process.exit(0);
 }
 if (target.includes('/compare/')) {
@@ -202,46 +206,33 @@ function assertContains(haystack, needle, label) {
 
 const SHA = {
   latest: '1111111111111111111111111111111111111111',
-  previous1: '2222222222222222222222222222222222222222',
-  previous2: '3333333333333333333333333333333333333333',
-  previous3: '4444444444444444444444444444444444444444',
-  previous4: '5555555555555555555555555555555555555555',
-  previous5: '6666666666666666666666666666666666666666',
-  previous6: '7777777777777777777777777777777777777777',
-  previous7: '8888888888888888888888888888888888888888',
-  previous8: '9999999999999999999999999999999999999999',
-  previous9: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  selected: '2222222222222222222222222222222222222222',
   pinned: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   dispatch: 'cccccccccccccccccccccccccccccccccccccccc',
   other: 'dddddddddddddddddddddddddddddddddddddddd',
 };
 
-// Newest-first successful CI push runs on main, with a duplicate SHA to prove
-// the resolver dedupes by head_sha while preserving order.
-const CI_RUNS = [
-  [SHA.latest, '5001', '2026-11-27T12:00:00Z'],
-  [SHA.latest, '5000', '2026-11-27T11:00:00Z'],
-  [SHA.previous1, '4999', '2026-11-27T10:00:00Z'],
-  [SHA.previous2, '4998', '2026-11-27T09:00:00Z'],
-  [SHA.previous3, '4997', '2026-11-27T08:00:00Z'],
-  [SHA.previous4, '4996', '2026-11-27T07:00:00Z'],
-  [SHA.previous5, '4995', '2026-11-27T06:00:00Z'],
-  [SHA.previous6, '4994', '2026-11-27T05:00:00Z'],
-  [SHA.previous7, '4993', '2026-11-27T04:00:00Z'],
-  [SHA.previous8, '4992', '2026-11-27T03:00:00Z'],
-  [SHA.previous9, '4991', '2026-11-27T02:00:00Z'],
-];
+// Real Actions API response shape for the newest successful CI push run on main.
+const LATEST_RUN_RESPONSE = {
+  total_count: 3,
+  workflow_runs: [
+    { head_sha: SHA.latest, id: 6001, created_at: '2026-11-27T12:00:00Z' },
+    { head_sha: SHA.selected, id: 6000, created_at: '2026-11-27T11:00:00Z' },
+    { head_sha: SHA.other, id: 5999, created_at: '2026-11-27T10:00:00Z' },
+  ],
+};
 
-function runResolver(name, overrides, scenario) {
+const EMPTY_RUN_RESPONSE = { total_count: 0, workflow_runs: [] };
+
+function runResolver(name, { runsResponse = LATEST_RUN_RESPONSE, ...overrides } = {}) {
   const output = newOutputFile();
   const result = runStep(resolverRun, {
     env: {
       GH_TOKEN: 'fixture-token',
       ENVIRONMENT: 'production',
-      BUILD: 'latest',
       BUILD_SHA: '',
       DISPATCH_SHA: SHA.dispatch,
-      GH_SCENARIO: writeJson(`gh-${name}.json`, scenario),
+      GH_SCENARIO: writeJson(`gh-${name}.json`, { runsResponse }),
       GITHUB_OUTPUT: output,
       ...overrides,
     },
@@ -261,88 +252,55 @@ function testCase(name, fn) {
 }
 
 testCase('resolver-latest', () => {
-  const { result, output } = runResolver('latest', {}, { runs: CI_RUNS });
+  const { result, output } = runResolver('latest', { runsResponse: LATEST_RUN_RESPONSE });
   assertStatus(result, 0, 'resolver-latest');
   assertLine(result.stdout, `Resolved build: ${SHA.latest} (latest)`, 'resolver-latest');
-  assertContains(result.stdout, 'CI run: 5001\t2026-11-27T12:00:00Z', 'resolver-latest');
+  assertLine(result.stdout, 'CI run: 6001 2026-11-27T12:00:00Z', 'resolver-latest');
   assertContains(output, `sha=${SHA.latest}\n`, 'resolver-latest');
   assertContains(output, 'source=latest\n', 'resolver-latest');
 });
 
-testCase('resolver-previous-1', () => {
-  const { result, output } = runResolver('previous-1', { BUILD: 'previous-1' }, { runs: CI_RUNS });
-  assertStatus(result, 0, 'resolver-previous-1');
-  assertLine(result.stdout, `Resolved build: ${SHA.previous1} (previous-1)`, 'resolver-previous-1');
-  assertContains(result.stdout, 'CI run: 4999\t2026-11-27T10:00:00Z', 'resolver-previous-1');
-  assertContains(output, `sha=${SHA.previous1}\n`, 'resolver-previous-1');
-});
-
-testCase('resolver-previous-9', () => {
-  const { result, output } = runResolver('previous-9', { BUILD: 'previous-9' }, { runs: CI_RUNS });
-  assertStatus(result, 0, 'resolver-previous-9');
-  assertLine(result.stdout, `Resolved build: ${SHA.previous9} (previous-9)`, 'resolver-previous-9');
-  assertContains(output, `sha=${SHA.previous9}\n`, 'resolver-previous-9');
-});
-
-testCase('resolver-unavailable', () => {
-  const { result } = runResolver(
-    'unavailable',
-    { BUILD: 'previous-9' },
-    { runs: CI_RUNS.slice(0, 3) },
-  );
-  assertStatus(result, 1, 'resolver-unavailable');
+testCase('resolver-latest-unavailable', () => {
+  const { result } = runResolver('latest-unavailable', { runsResponse: EMPTY_RUN_RESPONSE });
+  assertStatus(result, 1, 'resolver-latest-unavailable');
   assertContains(
     result.stderr,
-    'Build choice previous-9 is unavailable: fewer than 10 successful CI builds on main.',
-    'resolver-unavailable',
+    'No successful CI push build found on main; refusing to deploy.',
+    'resolver-latest-unavailable',
   );
 });
 
-testCase('resolver-pinned', () => {
-  const { result, output } = runResolver('pinned', { BUILD_SHA: SHA.pinned }, { runs: CI_RUNS });
-  assertStatus(result, 0, 'resolver-pinned');
-  assertLine(result.stdout, `Resolved build: ${SHA.pinned} (pinned)`, 'resolver-pinned');
-  assert(!result.stdout.includes('CI run:'), 'resolver-pinned: pinned builds must not print a CI run line');
-  assertContains(output, `sha=${SHA.pinned}\n`, 'resolver-pinned');
-});
-
-testCase('resolver-dispatch-ref', () => {
-  const { result, output } = runResolver(
-    'dispatch-ref',
-    { ENVIRONMENT: 'development', BUILD: 'latest', BUILD_SHA: '' },
-    { runs: CI_RUNS },
-  );
-  assertStatus(result, 0, 'resolver-dispatch-ref');
-  assertLine(result.stdout, `Resolved build: ${SHA.dispatch} (dispatch-ref)`, 'resolver-dispatch-ref');
-  assertContains(output, 'source=dispatch-ref\n', 'resolver-dispatch-ref');
+testCase('resolver-exact', () => {
+  const { result, output } = runResolver('exact', { BUILD_SHA: SHA.pinned });
+  assertStatus(result, 0, 'resolver-exact');
+  assertLine(result.stdout, `Resolved build: ${SHA.pinned} (pinned)`, 'resolver-exact');
+  assert(!result.stdout.includes('CI run:'), 'resolver-exact: a pinned build must not print a CI run line');
+  assertContains(output, `sha=${SHA.pinned}\n`, 'resolver-exact');
+  assertContains(output, 'source=pinned\n', 'resolver-exact');
 });
 
 testCase('resolver-malformed', () => {
-  const { result } = runResolver('malformed', { BUILD_SHA: 'abc123' }, { runs: CI_RUNS });
+  const { result } = runResolver('malformed', { BUILD_SHA: 'abc123' });
   assertStatus(result, 1, 'resolver-malformed');
   assertContains(result.stderr, 'build_sha must be a full 40-character lowercase commit SHA.', 'resolver-malformed');
 });
 
-testCase('resolver-mixed', () => {
-  const { result } = runResolver(
-    'mixed',
-    { BUILD: 'previous-2', BUILD_SHA: SHA.pinned },
-    { runs: CI_RUNS },
-  );
-  assertStatus(result, 1, 'resolver-mixed');
-  assertContains(result.stderr, 'Set either build=previous-N or build_sha, not both.', 'resolver-mixed');
+testCase('resolver-development-default', () => {
+  const { result, output } = runResolver('development-default', { ENVIRONMENT: 'development' });
+  assertStatus(result, 0, 'resolver-development-default');
+  assertLine(result.stdout, `Resolved build: ${SHA.dispatch} (dispatch-ref)`, 'resolver-development-default');
+  assertContains(output, 'source=dispatch-ref\n', 'resolver-development-default');
 });
 
 testCase('resolver-development-non-default', () => {
-  const { result } = runResolver(
-    'development-non-default',
-    { ENVIRONMENT: 'development', BUILD: 'previous-1', BUILD_SHA: '' },
-    { runs: CI_RUNS },
-  );
+  const { result } = runResolver('development-non-default', {
+    ENVIRONMENT: 'development',
+    BUILD_SHA: SHA.pinned,
+  });
   assertStatus(result, 1, 'resolver-development-non-default');
   assertContains(
     result.stderr,
-    'Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch.',
+    'Build SHA selection is available for environment=production only; clear build_sha for a development dispatch.',
     'resolver-development-non-default',
   );
 });
@@ -500,7 +458,7 @@ function runSchema(name, scenario) {
   return runStep(schemaRun, {
     cwd: schemaWorktree,
     env: {
-      TARGET_SHA: SHA.previous1,
+      TARGET_SHA: SHA.selected,
       DIRECT_DATABASE_URL: 'postgresql://stub.invalid/cubeclicker',
       PG_SCENARIO: writeJson(`pg-${name}.json`, scenario),
     },
@@ -515,7 +473,7 @@ testCase('schema-pass', () => {
   assertStatus(result, 0, 'schema-pass');
   assertLine(
     result.stdout,
-    `Schema compatibility OK for ${SHA.previous1}: 2 migration(s) in build, 2 applied on the target branch.`,
+    `Schema compatibility OK for ${SHA.selected}: 2 migration(s) in build, 2 applied on the target branch.`,
     'schema-pass',
   );
 });
@@ -528,7 +486,7 @@ testCase('schema-missing-007', () => {
   assertStatus(result, 1, 'schema-missing-007');
   assertContains(
     result.stderr,
-    `Build ${SHA.previous1} predates applied migration(s): 007_economy_revision.sql; refusing to deploy a build older than the migrated schema.`,
+    `Build ${SHA.selected} predates applied migration(s): 007_economy_revision.sql; refusing to deploy a build older than the migrated schema.`,
     'schema-missing-007',
   );
 });
@@ -538,7 +496,7 @@ testCase('schema-missing-table', () => {
   assertStatus(result, 0, 'schema-missing-table');
   assertLine(
     result.stdout,
-    `Schema compatibility OK for ${SHA.previous1}: 2 migration(s) in build, 0 applied on the target branch.`,
+    `Schema compatibility OK for ${SHA.selected}: 2 migration(s) in build, 0 applied on the target branch.`,
     'schema-missing-table',
   );
 });
@@ -551,7 +509,7 @@ function runRenderCreate(name, scenario) {
       RENDER_SERVICE_ID: 'srv-fixture',
       RENDER_API_KEY: 'fixture-key',
       RENDER_DEPLOY_HOOK_URL: 'https://api.render.com/deploy/fixture-hook',
-      TARGET_SHA: SHA.previous1,
+      TARGET_SHA: SHA.selected,
       CURL_SCENARIO: writeJson(`curl-${name}.json`, scenario),
       GITHUB_OUTPUT: output,
     },
@@ -562,10 +520,10 @@ function runRenderCreate(name, scenario) {
 testCase('render-creation-201', () => {
   const { result, output } = runRenderCreate('create-201', {
     postStatus: 201,
-    postBody: JSON.stringify({ id: 'dep-fixture-created', status: 'created', commit: { id: SHA.previous1 } }),
+    postBody: JSON.stringify({ id: 'dep-fixture-created', status: 'created', commit: { id: SHA.selected } }),
   });
   assertStatus(result, 0, 'render-creation-201');
-  assertLine(result.stdout, `Render deploy: dep-fixture-created created for ${SHA.previous1}`, 'render-creation-201');
+  assertLine(result.stdout, `Render deploy: dep-fixture-created created for ${SHA.selected}`, 'render-creation-201');
   assertContains(output, 'deploy_id=dep-fixture-created\n', 'render-creation-201');
 });
 
@@ -582,7 +540,7 @@ testCase('render-creation-202', () => {
 testCase('render-creation-non-dep', () => {
   const { result } = runRenderCreate('create-non-dep', {
     postStatus: 201,
-    postBody: JSON.stringify({ id: 'srv-not-a-deploy', status: 'created', commit: { id: SHA.previous1 } }),
+    postBody: JSON.stringify({ id: 'srv-not-a-deploy', status: 'created', commit: { id: SHA.selected } }),
   });
   assertStatus(result, 1, 'render-creation-non-dep');
   assertContains(
@@ -600,12 +558,12 @@ testCase('render-creation-commit-mismatch', () => {
   assertStatus(result, 1, 'render-creation-commit-mismatch');
   assertContains(
     result.stderr,
-    `Render deploy commit mismatch: expected ${SHA.previous1}, got ${SHA.other}; refusing to continue.`,
+    `Render deploy commit mismatch: expected ${SHA.selected}, got ${SHA.other}; refusing to continue.`,
     'render-creation-commit-mismatch',
   );
 });
 
-function renderCompleteScenario(name, { deployId, statuses, latestId = deployId, latestCommit = SHA.previous1, timeoutSeconds = '10' }) {
+function renderCompleteScenario(name, { deployId, statuses, latestId = deployId, latestCommit = SHA.selected, timeoutSeconds = '10' }) {
   return {
     result: runStep(renderCompleteRun, {
       env: {
@@ -613,12 +571,12 @@ function renderCompleteScenario(name, { deployId, statuses, latestId = deployId,
         RENDER_SERVICE_ID: 'srv-fixture',
         RENDER_API_KEY: 'fixture-key',
         DEPLOY_ID: deployId,
-        TARGET_SHA: SHA.previous1,
+        TARGET_SHA: SHA.selected,
         RENDER_DEPLOY_TIMEOUT_SECONDS: timeoutSeconds,
         RENDER_DEPLOY_POLL_INTERVAL_SECONDS: '1',
         CURL_SCENARIO: writeJson(`curl-${name}.json`, {
           deployId,
-          commitId: SHA.previous1,
+          commitId: SHA.selected,
           latestBody: JSON.stringify([{ deploy: { id: latestId, commit: { id: latestCommit } } }]),
         }),
         CURL_STATUS_SEQUENCE: writeJson(`curl-${name}-sequence.json`, statuses),
@@ -633,8 +591,8 @@ testCase('render-completion-live', () => {
     statuses: [{ status: 'created' }, { status: 'live' }],
   });
   assertStatus(result, 0, 'render-completion-live');
-  assertLine(result.stdout, `Render current deploy: dep-fixture-live ${SHA.previous1}`, 'render-completion-live');
-  assertLine(result.stdout, `Render deploy live: dep-fixture-live for ${SHA.previous1}`, 'render-completion-live');
+  assertLine(result.stdout, `Render current deploy: dep-fixture-live ${SHA.selected}`, 'render-completion-live');
+  assertLine(result.stdout, `Render deploy live: dep-fixture-live for ${SHA.selected}`, 'render-completion-live');
 });
 
 for (const [name, terminalStatus] of [
@@ -652,7 +610,7 @@ for (const [name, terminalStatus] of [
     assertStatus(result, 1, name);
     assertContains(
       result.stderr,
-      `Render deploy dep-fixture-terminal ended with status ${terminalStatus} for ${SHA.previous1}; refusing to continue.`,
+      `Render deploy dep-fixture-terminal ended with status ${terminalStatus} for ${SHA.selected}; refusing to continue.`,
       name,
     );
   });
@@ -683,7 +641,7 @@ testCase('render-completion-transient-retry', () => {
     'Render deploy status GET failed transiently; retrying in 1s.',
     'render-completion-transient-retry',
   );
-  assertLine(result.stdout, `Render deploy live: dep-fixture-transient for ${SHA.previous1}`, 'render-completion-transient-retry');
+  assertLine(result.stdout, `Render deploy live: dep-fixture-transient for ${SHA.selected}`, 'render-completion-transient-retry');
 });
 
 testCase('render-completion-current-match', () => {
@@ -692,8 +650,8 @@ testCase('render-completion-current-match', () => {
     statuses: [{ status: 'queued' }, { status: 'live' }],
   });
   assertStatus(result, 0, 'render-completion-current-match');
-  assertLine(result.stdout, `Render current deploy: dep-fixture-current ${SHA.previous1}`, 'render-completion-current-match');
-  assertLine(result.stdout, `Render deploy live: dep-fixture-current for ${SHA.previous1}`, 'render-completion-current-match');
+  assertLine(result.stdout, `Render current deploy: dep-fixture-current ${SHA.selected}`, 'render-completion-current-match');
+  assertLine(result.stdout, `Render deploy live: dep-fixture-current for ${SHA.selected}`, 'render-completion-current-match');
 });
 
 testCase('render-completion-current-mismatch', () => {
@@ -706,7 +664,7 @@ testCase('render-completion-current-mismatch', () => {
   assertStatus(result, 1, 'render-completion-current-mismatch');
   assertContains(
     result.stderr,
-    `Render service current deploy dep-fixture-other (${SHA.other}) does not match the selected deploy dep-fixture-current (${SHA.previous1}); refusing to continue.`,
+    `Render service current deploy dep-fixture-other (${SHA.other}) does not match the selected deploy dep-fixture-current (${SHA.selected}); refusing to continue.`,
     'render-completion-current-mismatch',
   );
 });
@@ -716,7 +674,7 @@ testCase('ci-build-parse', () => {
   assertStatus(result, 0, 'ci-build-parse');
   assertContains(
     result.stdout,
-    'deploy.yml: build selection contract pinned (resolver, guard, contract, schema, Render API/completion, Vercel and 21-step order)',
+    'deploy.yml: build_sha contract pinned (resolver, guard, contract, schema, Render API/completion, Vercel and 21-step order)',
     'ci-build-parse',
   );
 });
