@@ -1,6 +1,6 @@
 ---
 feature: production-provisioning
-state: blocked
+state: building
 spec_review_round: 2
 build_round: 0
 created: 2026-11-27
@@ -18,9 +18,9 @@ Provision the `production` GitHub Environment end to end (Neon branch, Vercel pr
 - [x] T4 — Render production service, environment and deploy hook `[seq]`
 - [x] T5a — Phase A owner hand-off `[owner]` `[seq]`
 - [x] T5 — GitHub `production` Environment catalog and protection `[seq]`
-- [>] T6a — Fix deploy CI preflight repository context `[seq]`
-- [ ] T6 — Live production deploy proof `[seq]`
-- [ ] T7 — Documentation and proposed feature-index row `[seq]`
+- [x] T6a — Fix deploy CI preflight repository context `[seq]`
+- [x] T6 — Live production deploy proof `[seq]`
+- [>] T7 — Documentation and proposed feature-index row `[seq]`
 - [ ] T8 — Verify & integrate `[seq]`
 
 ## Loop log
@@ -46,9 +46,16 @@ Provision the `production` GitHub Environment end to end (Neon branch, Vercel pr
 - 2026-11-27 — planning — r3 amendment complete (T6a added; exactly one `deploy.yml` line allowed; T6/T7/T8 guards updated; F31 wording fixed) — spec.md, plan.md, tasks.md
 - 2026-11-27 — planning → building — reviewer approved the r3 amendment (0 blocking; 3 MINOR backlog); T6a dispatched to create the `fix/deploy-ci-preflight` PR — reviews/spec-r2.md
 - 2026-11-27 — building → blocked — T6a PR #4 opened (`https://github.com/raultorres2603/CubeClicker/pull/4`, branch `fix/deploy-ci-preflight`, commit `8e7dd6c`, 1 file +1/−1, actionlint pass, repo-context dry-run success, PR CI green); the owner must merge it to `main` before T6 re-dispatches. Also flagged: T8's long-hex build-log guard currently matches existing full SHAs in `build-log-T1.md`/`build-log-T6.md` and must be adjusted or the SHAs shortened before T8 — build-log-T6a.md
+- 2026-11-27 — blocked → building — owner merged PR #4 as `d10dfb1`; merge-SHA CI `45997877865` green; T6a completed (owner merged/merge commit recorded, local feature branch fast-forwarded, verify exit 0); T6 re-dispatched — build-log-T6a.md
+- 2026-11-27 — building → blocked — T6 re-run `45998841039` passed the repaired CI preflight (`CI succeeded for d10dfb1`) but failed closed at `Check deployment Brevo configuration`: `BREVO_API_KEY is the Brevo SMTP key, not the REST API key ('production' environment)`. All later steps skipped; no provider touched. The owner must replace the production `BREVO_API_KEY` secret with a Brevo REST API key (`xkeysib-…`) and re-run T6 — build-log-T6.md
+- 2026-11-27 — blocked — T6 third attempt `46000139093` failed at the same guard; names-only metadata shows the production Environment secret `BREVO_API_KEY` `updated_at` is still `2026-11-27T11:36:46Z`, so the owner's replacement did not reach the GitHub `production` Environment secret. The owner must set it under Settings → Environments → production → Secrets (or `gh secret set --env production`); no provider was touched — build-log-T6.md
+- 2026-11-27 — blocked — T6 fourth attempt `46001011034` failed at the same guard; metadata still `2026-11-27T11:36:46Z` before and after, development/Render/repository checks unchanged, so the REST key has not reached the production Environment secret. No provider was touched; no further dispatch until the metadata advances — build-log-T6.md
+- 2026-11-27 — blocked — T6 fifth attempt `46001870210`: `BREVO_API_KEY` metadata advanced (`updated_at 12:49:02Z`); guard, migration (none pending), nine-name sync, Render deploy `dep-dc4npdk9v7es73fn4kfg` live, healthz 200 and `brevo_api_transport_verify_ok` all passed. Vercel `Pull Vercel project settings` failed with `Project not found` for the correct IDs, so the production `VERCEL_TOKEN` lacks access to team `team_7cz2iixGr020Vqvjhj7Y1DNp`/project `prj_1NUoVWaPsgmFe8QtKJ1JuckhwplH`; Vercel build/deploy and smoke were skipped. Owner must replace the production `VERCEL_TOKEN` with a team-scoped token — build-log-T6.md
+- 2026-11-27 — blocked → building — T6 sixth attempt `46004355405` succeeded: `VERCEL_TOKEN` metadata advanced (13:04:34Z), approval via owner API, guard 11 values, nine `SYNCED`, `No pending migrations.`, Render deploy `dep-dc4o1fff3r2c73c4asp0` live, `healthz OK after 0s: {"status":"ok"}`, Vercel `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq` ready, `DEPLOYED SMOKE PASS (8/8 checks)`, post-run health 200, `brevo_api_transport_verify_ok`; T6 verify exit 0. Production is live; T7 documentation dispatched — build-log-T6.md
 
 ## Blockers / open questions
-- T6a is owner-gated: PR #4 (`fix/deploy-ci-preflight`, one line, actionlint/dry-run/PR-CI green) must be merged to `main` before T6 re-dispatches the production deploy. Production remains provisioned but unpromoted; no provider asset was touched.
+- Production is live: Render deploy `dep-dc4o1fff3r2c73c4asp0` is `live`, Vercel deployment `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq` is ready, `https://cubeclicker.vercel.app` serves the deployed smoke and `/healthz` is 200. No cleanup, rollback or additional production dispatch is needed.
+- T7 documentation is in progress; T8 final verification remains. T8's long-hex build-log guard currently matches full SHAs in `build-log-T1.md`; the T1 log must be shortened to 7–12 character SHAs or the guard adjusted before T8 can pass.
 - T8 currently has a long-hex build-log guard that matches existing full SHAs in `build-log-T1.md`/`build-log-T6.md`; the guard must be adjusted or the SHAs shortened before T8 can pass.
 - T5a Phase A owner hand-off is complete (six owner-held secrets + copied `SMTP_FROM`); names only were verified. The live T6 proof remains.
 - T5 must re-read/derive the two Neon URLs in-process and set `DATABASE_URL`/`DIRECT_DATABASE_URL`; `SMTP_FROM` is a variable, never a secret.
