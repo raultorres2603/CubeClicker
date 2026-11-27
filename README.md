@@ -115,7 +115,7 @@ The deployed backend sends `POST https://api.brevo.com/v3/smtp/email` over HTTPS
 | `APP_BASE_URL` | the public frontend origin (`https://<frontend-host>`); it drives the verification link and the email image URLs |
 
 - The API key is created and rotated in Brevo under **Settings → SMTP & API → API Keys**; the SMTP key under **Settings → SMTP & API → SMTP** cannot authenticate the API. The key never appears in `render.yaml`, an image, the bundle, a log or a command argument; enter it through the GitHub UI or stdin.
-- The API path uses the seven SMTP names only as catalogued deployment names: `SMTP_HOST` through `SMTP_CONNECTION_TIMEOUT_MS` stay synced for local/off-Render SMTP parity but are not read by the deployed API transport. The strict SMTP port guard remains in force.
+- The API path uses the seven SMTP names only as catalogued deployment names: `SMTP_HOST` through `SMTP_CONNECTION_TIMEOUT_MS` stay synced for local/off-Render SMTP parity but are not read by the deployed API transport. The strict SMTP port guard remains in force for development.
 - The startup probe logs `brevo_api_transport_verify_ok` (or `brevo_api_transport_verify_failed`) without blocking `/healthz`; on a failure rotate the key below and re-run the deploy.
 
 ### SMTP transport (local and off-Render)
@@ -348,7 +348,7 @@ The catalog and its state (names only; no value is recorded here):
 | `RENDER_SERVICE_ID` | variable | created by T5 (`srv-dbtcvv9srm7s73au5bag`) | `srv-dc4mjd15efls739ua63g` | no — URL path only |
 | `RENDER_API_KEY` | secret | placeholder created by T5 | set (owner-held; pipeline-only) | no — bearer header only |
 
-The table records names and the non-secret production literals only; secret values live in the `production` Environment and are never recorded here. Both environments are provisioned: the live `production` Environment holds all eleven guarded names plus the workflow-read and parity names (23 names: 15 variables, 8 secrets), and the live `development` Environment holds the same 15 variables / 8 secrets. The strict SMTP port guard requires `SMTP_PORT=2525` with `SMTP_SECURE=false` for both deployed environments even though the API transport does not read the relay.
+The table records names and the non-secret production literals only; secret values live in the `production` Environment and are never recorded here. Both environments are provisioned: the live `production` Environment holds all eleven guarded names plus the workflow-read and parity names (23 names: 15 variables, 8 secrets), and the live `development` Environment holds the same 15 variables / 8 secrets. For development, the strict SMTP port guard requires `SMTP_PORT=2525` with `SMTP_SECURE=false`; production carries the same safe `2525`/`false` pair without the guard, and extending the guard to production remains open (Q-2).
 
 **Entering values (UI path).** GitHub → repository → **Settings → Environments → <environment>**; open the **Environment variables** area for a variable or the **Environment secrets** area for a secret and enter the value there. The UI is for entering values only, never as verification evidence; a real secret value is entered through the UI or stdin, never as a command argument or in a file. The placeholder `--body` commands below are the only value-bearing commands in this runbook.
 

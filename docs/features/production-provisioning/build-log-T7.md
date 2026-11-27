@@ -83,6 +83,16 @@ Each added relative link was read at its target; the target file exists.
 - link: docs/architecture/vercel-render-neon.md -> docs/features/production-provisioning/spec.md: OK
 - link: docs/architecture/vercel-render-neon.md -> docs/features/production-provisioning/build-log-T6.md: OK
 
+## Code-review correction (F1)
+
+Code-review F1 correction: strict SMTP port guard is development-only; production uses 2525/false without the guard; Q-2 remains open
+
+- Files changed: `README.md`, `docs/architecture/vercel-render-neon.md`, `docs/features/production-provisioning/build-log-T7.md`.
+- `README.md` now carries the corrected sentence in the Brevo runbook and clarifies the API-path bullet (`The strict SMTP port guard remains in force for development.`).
+- `docs/architecture/vercel-render-neon.md` now carries the corrected sentence in the runbook prerequisites; the production catalog and the `SMTP_PORT=2525` / `SMTP_SECURE=false` values are unchanged.
+- No other `both deployed environments` / `both environments` guard claim exists in the six docs; the remaining guard references in `deployment.md`, `vercel-render-neon.md` and `README.md` say `development`.
+- Re-run: the exact T7 block → `F1_VERIFY_EXIT=0`; the corrected-sentence grep passes in both files and the `both deployed environments` negative is absent from the six docs.
+
 ## Workflow and config proof (no edit by this task)
 
 - `.github/workflows/deploy.yml` was not edited: `git diff --stat HEAD -- .github/workflows/deploy.yml` is empty.
