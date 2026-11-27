@@ -2,17 +2,17 @@
 
 Task: T8 (2026-11-27)
 Files changed: `docs/features/production-provisioning/build-log-T8.md` (only). No application, test, workflow, compose, Dockerfile, `render.yaml`, `src/frontend/vercel.json`, `package.json`, lockfile, `.env*`, `docs/features/README.md` or `status.md` edit was authored by this task. No provider write, deploy dispatch, resource deletion or rollback was performed; every provider and GitHub read below is read-only.
-What changed & why: Ran the full T8 no-regression gate and reproduced the T6 live proof/provider read-backs. Every executable gate command is green (lint, typecheck, tests, `npm run coverage`, build, local smoke 29/29 via the documented provider fallback, `actionlint`, the Vercel/Render parses, the dispatch parse, the T6a one-added/one-removed diff guard, both Brevo guard fixtures, the credential-shaped audits and the stale-production scan). The exact T8 verify block is blocked by one pre-existing build-log content match: `build-log-T1.md:244` records the public npm maintainer address from an `npm ci` deprecation warning, which the strict T8 address/hex guard (`build-log-*.md`) rejects. The T8 log itself and all nine other build logs are clean of that pattern; the failure is a recorded npm output line in an already-committed T1 log, not a secret and not an application regression.
-Decisions: Executed the T8 verify block with the documented environment-level `PODMAN_COMPOSE_PROVIDER=/tmp/opencode/pcvenv/bin/podman-compose` fallback because the default `podman compose` provider hits the host `crun`/`OomScoreAdj` regression recorded in T7; the fallback is a host workaround only and changes no repository file. Recorded the exact failing guard rather than weakening or bypassing it, per the T8 brief. Did not edit `build-log-T1.md` or the T8 verify block (both outside this task's `files_owned`).
+What changed & why: Ran the full T8 no-regression gate and reproduced the T6 live proof/provider read-backs. Every executable gate command is green (lint, typecheck, tests, `npm run coverage`, build, local smoke 29/29 via the documented provider fallback, `actionlint`, the Vercel/Render parses, the dispatch parse, the T6a one-added/one-removed diff guard, both Brevo guard fixtures, the credential-shaped audits and the stale-production scan). The only earlier blocker was `build-log-T1.md:244`, which recorded the public npm maintainer address from an `npm ci` deprecation warning; that line was sanitized in commit `37d3a54` (`chore: redact npm maintainer address in T1 build log`), and the strict address/hex guard now returns no output (direct `grep` exit `1`). The exact T8 block passes in place with `FINAL_VERIFY_EXIT=0`.
+Decisions: Executed the T8 verify block with the documented environment-level `PODMAN_COMPOSE_PROVIDER=/tmp/opencode/pcvenv/bin/podman-compose` fallback because the default `podman compose` provider hits the host `crun`/`OomScoreAdj` regression recorded in T7; the fallback is a host workaround only and changes no repository file. The orchestrator authorized committing its unchanged `docs/features/production-provisioning/status.md` together with this log in the final integration commit (`status.md committed unchanged under orchestrator authorization`); the builder did not edit the file's content. The T1 sanitization was authored outside T8 (`37d3a54`), and T8 did not edit the T8 verify block.
 Testing note: T8 is the final verification/integration task per `tasks.md` (no application code, no unit/integration boundary of its own). The feature-appropriate evidence is the full repository suite plus coverage, the containerized smoke, the config/workflow parses, the diff guards, the credential audits and the live-proof/provider reproduction. No production code was excluded from coverage and no threshold was changed.
 
-## Final status: BLOCKED — one build-log content guard rejects a pre-existing T1 log line
+## Final status: COMPLETED — final gate and live proof verified in place
 
 - All executable gates pass; the live production environment and the T6 proof are reproduced (below).
-- The exact T8 verify block's exit status depends on the working tree:
-  - In place, the block exits `1` at the orchestrator-owned `status.md` no-edit check (` M docs/features/production-provisioning/status.md`; the builder did not edit it).
-  - In a clean worktree at `HEAD` with only this log applied, the block exits `0`, but that exit does **not** mean every assertion held: the address/hex guard is a negated (`! grep`) pipeline, and `set -e` ignores the failure of a `!` pipeline, so the script continues and its last command succeeds. The guard's own command exits `0` with a match at `docs/features/production-provisioning/build-log-T1.md:244` (the public npm maintainer address recorded from an `npm ci` warning). The block is therefore script-green but its content assertion is false.
-- The failing guard and candidate resolutions are recorded in § Exact failing guard. No application, provider, workflow or environment value was changed to try to make the guard pass, and the log does not claim the address guard passed.
+- The address/hex guard is genuinely empty: the direct command `grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[0-9a-f]{32,}' docs/features/production-provisioning/build-log-*.md` exits `1` with no output (`ADDRESS_GUARD_GREP_EXIT=1`, `ADDRESS_GUARD_OUTPUT=EMPTY`), so the pass is not masked by the `set -e`/`! grep` shell behavior recorded in the earlier blocked-state history.
+- The exact T8 verify block was re-run in place after the integration commit (clean `status.md`, sanitized T1 log): `FINAL_VERIFY_EXIT=0`.
+- `status.md` was committed **unchanged** under orchestrator authorization; the builder did not edit its content. The final integration commit contains only `docs/features/production-provisioning/status.md` and this `build-log-T8.md`.
+- No application, provider, workflow or environment value was changed to make the guard pass; the only content fix was the externally authored T1 sanitization `37d3a54`.
 
 ## Full gate — results
 
@@ -187,7 +187,7 @@ All of the following returned no match on the current tree (tracked and untracke
 
 `production-provisioning | Production Environment Provisioning | accepted | 2026-11-27`
 
-- Proposed only: `docs/features/README.md` is orchestrator-owned and was not edited. The row is subject to the blocked guard resolution above before the orchestrator marks the feature accepted.
+- Proposed only: `docs/features/README.md` is orchestrator-owned and was not edited. The earlier address-guard blocker is resolved (`37d3a54`), so the row is ready for the orchestrator to apply.
 
 ## Integration-hygiene note — commit `3277661`
 
@@ -212,46 +212,49 @@ M docs/features/production-provisioning/status.md
 
 - This commit mixes the production-provisioning T7 docs + build log with the orchestrator's `status.md` update and the `production-build-selection` feature artifacts. No history rewrite is performed; this note is the integration-hygiene record. T8 did not edit any of these files.
 
-## Exact failing guard (blocked)
+## Guard resolution and final in-place run
 
-### In-place run
+### Prior blocked-state history (resolved)
 
-The exact T8 block was extracted to `/tmp/opencode/t8/t8-verify.sh` and run from the repository root with the smoke-provider fallback exported; the run was repeated against the final log. It exits `1` at the no-edit check because the orchestrator-owned `status.md` is dirty in the working tree (T8 dispatch entry; the builder did not edit it). Raw trace tail of the final in-place run:
+The first T8 pass was blocked by `build-log-T1.md:244`, which recorded the public npm maintainer address from an `npm ci` deprecation warning; the strict T8 guard expands `build-log-*.md`, so it matched that line. The in-place block also stopped at the orchestrator-owned dirty `status.md`. A clean-worktree run exited 0 only because `set -e` ignores a failed `! grep` pipeline, while the address guard itself still reported the T1 match. Those observations were recorded in the earlier revision of this log and remain the audit history.
+
+### T1 sanitization
+
+- Commit `37d3a54` (`chore: redact npm maintainer address in T1 build log`) changed exactly one line in `build-log-T1.md`; line 244 now ends `... contacting <address>`.
+- `build-log-T1.md` and all other provisioning build logs are address-free.
+- Direct guard proof (not masked by `set -e` or `! grep`): `grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[0-9a-f]{32,}' docs/features/production-provisioning/build-log-*.md` → `ADDRESS_GUARD_GREP_EXIT=1`, `ADDRESS_GUARD_OUTPUT=EMPTY`. A plain `grep` with no match exits `1`, so the negated `! grep` guard now exits `0` because the build-log set is genuinely empty.
+
+### Status authorization
+
+- The orchestrator explicitly authorized committing its unchanged `docs/features/production-provisioning/status.md` with this log in the final integration commit. The builder did not edit the file's content: `status.md committed unchanged under orchestrator authorization`.
+- The final integration commit contains exactly two files: `docs/features/production-provisioning/status.md` and `docs/features/production-provisioning/build-log-T8.md`.
+
+### Final in-place exact block
+
+After the integration commit (clean `status.md` and the sanitized T1 log), the exact T8 block was extracted to `/tmp/opencode/t8/t8-verify.sh` and run from the repository root with the documented smoke-provider fallback (`PODMAN_COMPOSE_PROVIDER=/tmp/opencode/pcvenv/bin/podman-compose`). Raw tail:
 
 ```text
 $ PODMAN_COMPOSE_PROVIDER=/tmp/opencode/pcvenv/bin/podman-compose bash -x /tmp/opencode/t8/t8-verify.sh
 ...
-+ grep -qF 'production-provisioning | Production Environment Provisioning | accepted | 2026-11-27' docs/features/production-provisioning/build-log-T8.md
++ test -z ''
 ++ git status --porcelain -- docs/features/README.md docs/features/production-provisioning/status.md
-+ test -z ' M docs/features/production-provisioning/status.md'
-INPLACE_FINAL_VERIFY_EXIT=1
++ test -z ''
+++ git status --porcelain -- '.env*'
++ test -z ''
++ grep -qF 'stale-production-scan: PASS' docs/features/production-provisioning/build-log-T8.md
++ grep -qF 'allowlist: historical AWS/Fly only' docs/features/production-provisioning/build-log-T8.md
++ grep -qF 'production-provisioning | Production Environment Provisioning | accepted | 2026-11-27' docs/features/production-provisioning/build-log-T8.md
++ grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[0-9a-f]{32,}' docs/features/production-provisioning/build-log-T1.md ... docs/features/production-provisioning/build-log-T8.md
++ grep -qE 'xsmtpsib-[A-Za-z0-9]{15,}|xkeysib-[A-Za-z0-9]{20,}|...' docs/features/production-provisioning/build-log-*.md
+...
++ grep -qE 'postgres(ql)?://[^"'"'"' ]+:[^"'"'"' ]+@' docs/features/production-provisioning/build-log-T8.md
+FINAL_VERIFY_EXIT=0
 ```
 
-`docs/features/README.md` is clean; the only non-empty entry is the orchestrator's ` M docs/features/production-provisioning/status.md`. The in-place state is recorded here; the clean-worktree run below removes only this orchestrator dirtiness.
+- `SMOKE PASS (29/29 checks)` (fallback provider), `vercel.json: valid JSON`, `render.yaml: one development service, unchanged`, `deploy.yml: dispatch choices, automatic path and job count unchanged` and `DEPLOYED SMOKE PASS (8/8 checks)` all appear in the run.
 
-### Clean-worktree run
-
-A detached worktree of `HEAD` (`162b285`) was created at `/tmp/opencode/t8/cleanwt2`; `status.md` is exactly at `HEAD` and only this `build-log-T8.md` was copied in. The same exact block (with the documented smoke-provider fallback) was run there with `bash -x` for tracing. The block exits `0`; the trace shows the no-edit check passing and every non-negated command passing, but the address/hex guard itself reports a match:
-
-```text
-$ git -C /tmp/opencode/t8/cleanwt2 status --porcelain -- docs/features/README.md docs/features/production-provisioning/status.md
-[empty]
-$ grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[0-9a-f]{32,}' docs/features/production-provisioning/build-log-*.md
-docs/features/production-provisioning/build-log-T1.md:<address>
-[grep exit 0 = match; the negated `! grep ...` is a failed assertion]
-$ echo "CLEAN_WORKTREE_VERIFY_EXIT=0"
-CLEAN_WORKTREE_VERIFY_EXIT=0
-```
-
-- After the log amendments, the worktree copy was refreshed and the exact block was re-run with tracing: `CLEAN_WORKTREE_FINAL_VERIFY_EXIT=0`, and the same address guard trace over `build-log-T1.md` is present (`build-log-T1.md` is at `HEAD`).
-- Why the block still exits `0`: the guard is written as `! grep -qE ...`. POSIX shells ignore `set -e` for a pipeline beginning with `!`, so the failed negation does not abort the script; the block continues to the next credential guard and its final `! grep` connection-string check succeeds. The script-green exit therefore does **not** mean the address guard held; the log records both the exit status and the failed assertion rather than treating the exit code as a pass.
-- Exact failing file/line: `docs/features/production-provisioning/build-log-T1.md:244`.
-- The matching literal is the public npm maintainer address embedded in the recorded `npm ci` deprecation warning (`npm warn deprecated glob@10.5.0 ... contacting <address>`). It is a dependency notice, not a secret, provider credential, owner address or live-environment address.
-- The T8 log itself, `build-log-T2.md` through `build-log-T7.md` and `build-log-T6a.md` are clean for this pattern; the failure exists only because the guard expands `build-log-*.md` over the committed T1 log.
-- Candidate resolutions (owner/planner decision, not applied by T8):
-  1. Authorize a one-line sanitization of `build-log-T1.md:244` (replace the literal with `<address>`; no other content change) and re-run the exact T8 block.
-  2. Amend the T8 guard to scope the address/hex clause to `build-log-T8.md` (or add the npm deprecation notice to the documented allowlist), then re-run.
-- No other T8 content check failed in the clean worktree; the in-place failure was only the orchestrator-owned `status.md` dirtiness.
+- The full block ran `npm ci`, lint, typecheck, tests, `npm run coverage`, build, the local smoke (29/29 via the fallback), `actionlint`, the Vercel/Render/dispatch parses, the T6a diff guard, both Brevo fixtures, the deployed smoke (8/8), the build-log content checks and the credential audits.
+- The address/hex guard was checked directly as above; the green block is therefore genuine, not a `set -e`/`! grep` artifact.
 
 ## Acceptance audit
 
@@ -264,10 +267,10 @@ CLEAN_WORKTREE_VERIFY_EXIT=0
 - **AC-7 — one live production deploy proves the path end to end.** Met: `workflow_dispatch` from `main`, guard line, nine `SYNCED` lines, sync summary, no pending migrations, exact health body, Vercel deployment ready, deployed smoke 8/8, Render deploy ID/status, post-run health 200; reproduced in T8 against the live hosts.
 - **AC-8 — workflow fix and safe failure handling.** Met: the only `deploy.yml` change is the T6a one-line preflight fix (1 added / 1 removed); no guard bypass or condition/step-order/permission/trigger/concurrency change; the automatic path remains development; no rollback to development and no Neon branch deletion.
 - **AC-9 — documentation.** Met (T7): stale statements removed, provisioned/live state documented, exact ledger row present, feature-index row proposed; T8's stale scan is `stale-production-scan: PASS`.
-- **AC-10 — static gate and credential-shaped audit.** Met: `actionlint`, the Vercel/Render/dispatch parses, the T6a diff guard, both Brevo fixtures and the credential-shaped audit all pass. The only non-green content assertion is the separate address/hex build-log guard described above (the clean-worktree block exits 0 because the negated guard does not abort, but the guard itself reports the T1 match).
+- **AC-10 — static gate and credential-shaped audit.** Met: `actionlint`, the Vercel/Render/dispatch parses, the T6a diff guard, both Brevo fixtures, the credential-shaped audit and the address/hex build-log guard all pass; the direct guard check confirms the build-log set is empty (`ADDRESS_GUARD_GREP_EXIT=1`).
 - **AC-11 — partial-failure safety.** Met: production is live; no resource was deleted or rolled back; failed historical attempts were fixed forward (T6 history).
 - **AC-12 — dependency and base-branch gate.** Met (T1): `EMAIL_CATALOG`, `EMAIL_TRANSPORT` and `BREVO_API_KEY` are on `main`; the hard dependency is present.
-- **T8 task scope.** Blocked on the pre-existing T1 build-log address match (and the orchestrator-owned `status.md` dirtiness in the in-place tree). Everything else is green. No production/provider/workflow/application change and no `git push`.
+- **T8 task scope.** Met: the earlier T1 address match is resolved (`37d3a54`), the integrator-owned `status.md` is committed unchanged under orchestrator authorization, and the final in-place exact block returns `FINAL_VERIFY_EXIT=0`. No production/provider/workflow/application change and no `git push`.
 
 ## Raw gate excerpts
 
@@ -303,8 +306,8 @@ SMOKE PASS (29/29 checks)
 
 ## Verify summary
 
-- In place: the exact T8 block exits `1` at the orchestrator-owned `status.md` no-edit check (` M docs/features/production-provisioning/status.md`); `docs/features/README.md` is clean.
-- Clean worktree (`HEAD` + only this log): the exact T8 block exits `0`; the no-edit check passes. The address/hex guard's own command exits `0` with a match at `build-log-T1.md:244`, i.e. the negated assertion is false even though the block's final exit is green.
-- All other block components are green: lint, typecheck, tests, `npm run coverage`, build, smoke (29/29 via the documented fallback), the T6a diff guard, the parses, both fixtures, the credential-shaped audits, the stale scan and the live-proof reproduction.
+- In place after the final integration commit: the exact T8 block returns `FINAL_VERIFY_EXIT=0`; the `status.md`/`README.md` no-edit check passes because `status.md` is committed unchanged under orchestrator authorization.
+- The address/hex build-log guard is genuinely satisfied: `ADDRESS_GUARD_GREP_EXIT=1` and `ADDRESS_GUARD_OUTPUT=EMPTY` on the direct (non-negated) command, so the green block is not a `set -e`/`! grep` artifact.
+- All block components are green: lint, typecheck, tests, `npm run coverage`, build, smoke (29/29 via the documented fallback), the T6a diff guard, the parses, both fixtures, the credential-shaped audits, the stale scan and the live-proof reproduction.
 - `No application code change`; no provider write, deploy dispatch, resource deletion or rollback; no `git push`.
-- The single content item blocking acceptance is the address/hex build-log guard over committed `build-log-T1.md:244`; it is a cleanup/scope decision outside T8's `files_owned`.
+- Final integration commit: `docs/features/production-provisioning/status.md` (unchanged; orchestrator-authorized) + `docs/features/production-provisioning/build-log-T8.md`; no other files.

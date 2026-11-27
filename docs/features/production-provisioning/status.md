@@ -20,8 +20,8 @@ Provision the `production` GitHub Environment end to end (Neon branch, Vercel pr
 - [x] T5 — GitHub `production` Environment catalog and protection `[seq]`
 - [x] T6a — Fix deploy CI preflight repository context `[seq]`
 - [x] T6 — Live production deploy proof `[seq]`
-- [>] T7 — Documentation and proposed feature-index row `[seq]`
-- [ ] T8 — Verify & integrate `[seq]`
+- [x] T7 — Documentation and proposed feature-index row `[seq]`
+- [>] T8 — Verify & integrate `[seq]`
 
 ## Loop log
 - 2026-11-27 — created → planning — request: "We can go to production … configure the same way we configured development … do not use suffix '-production' … is just on development environment"; planner briefed with the current production `placeholder-only` state and the MCP/naming constraints.
@@ -52,10 +52,13 @@ Provision the `production` GitHub Environment end to end (Neon branch, Vercel pr
 - 2026-11-27 — blocked — T6 fourth attempt `46001011034` failed at the same guard; metadata still `2026-11-27T11:36:46Z` before and after, development/Render/repository checks unchanged, so the REST key has not reached the production Environment secret. No provider was touched; no further dispatch until the metadata advances — build-log-T6.md
 - 2026-11-27 — blocked — T6 fifth attempt `46001870210`: `BREVO_API_KEY` metadata advanced (`updated_at 12:49:02Z`); guard, migration (none pending), nine-name sync, Render deploy `dep-dc4npdk9v7es73fn4kfg` live, healthz 200 and `brevo_api_transport_verify_ok` all passed. Vercel `Pull Vercel project settings` failed with `Project not found` for the correct IDs, so the production `VERCEL_TOKEN` lacks access to team `team_7cz2iixGr020Vqvjhj7Y1DNp`/project `prj_1NUoVWaPsgmFe8QtKJ1JuckhwplH`; Vercel build/deploy and smoke were skipped. Owner must replace the production `VERCEL_TOKEN` with a team-scoped token — build-log-T6.md
 - 2026-11-27 — blocked → building — T6 sixth attempt `46004355405` succeeded: `VERCEL_TOKEN` metadata advanced (13:04:34Z), approval via owner API, guard 11 values, nine `SYNCED`, `No pending migrations.`, Render deploy `dep-dc4o1fff3r2c73c4asp0` live, `healthz OK after 0s: {"status":"ok"}`, Vercel `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq` ready, `DEPLOYED SMOKE PASS (8/8 checks)`, post-run health 200, `brevo_api_transport_verify_ok`; T6 verify exit 0. Production is live; T7 documentation dispatched — build-log-T6.md
+- 2026-11-27 — building — T7 completed: six docs updated to the provisioned/live production state (exact pins and stale-claim negatives pass); clean-worktree and in-place verify exit 0; coverage backend 97.09/92.24/99.65/97.09, frontend 97.22/96.8/98.6/97.22; local smoke 29/29 via the documented `PODMAN_COMPOSE_PROVIDER` fallback; build-log `162b285`; docs captured in commit `3277661` which also contains orchestrator `status.md` and another feature's artifacts (integration-hygiene note) — build-log-T7.md
+- 2026-11-27 — building — T8 first run: full gate, coverage, live proof, provider/development read-backs and audits pass; blocked only by a public npm maintainer address in `build-log-T1.md:244` and the orchestrator-owned dirty `status.md` no-edit check. T1 log sanitization and the authorized status/log commit dispatched — build-log-T8.md
 
 ## Blockers / open questions
 - Production is live: Render deploy `dep-dc4o1fff3r2c73c4asp0` is `live`, Vercel deployment `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq` is ready, `https://cubeclicker.vercel.app` serves the deployed smoke and `/healthz` is 200. No cleanup, rollback or additional production dispatch is needed.
-- T7 documentation is in progress; T8 final verification remains. T8's long-hex build-log guard currently matches full SHAs in `build-log-T1.md`; the T1 log must be shortened to 7–12 character SHAs or the guard adjusted before T8 can pass.
+- T8 is finishing two evidence-hygiene items: sanitize the public npm maintainer address at `build-log-T1.md:244` to `<address>`, and commit the orchestrator-owned `status.md` unchanged with the T8 log so the in-place no-edit check passes. No provider action is needed; production is live and healthy.
+- Integration hygiene note: commit `3277661` captured the six T7 docs together with orchestrator `status.md` and another feature's artifacts; the T8/reviewer should record the exact contents and flag scope if needed (no history rewrite).
 - T8 currently has a long-hex build-log guard that matches existing full SHAs in `build-log-T1.md`/`build-log-T6.md`; the guard must be adjusted or the SHAs shortened before T8 can pass.
 - T5a Phase A owner hand-off is complete (six owner-held secrets + copied `SMTP_FROM`); names only were verified. The live T6 proof remains.
 - T5 must re-read/derive the two Neon URLs in-process and set `DATABASE_URL`/`DIRECT_DATABASE_URL`; `SMTP_FROM` is a variable, never a secret.
