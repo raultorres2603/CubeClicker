@@ -12,9 +12,9 @@ updated: 2026-11-27
 Add a production deploy build-selection parameter: a dropdown of previous builds, defaulting to the latest successful build, while development automatic deploys keep deploying the latest successful build. Raw request: "I would like to, for example, when deploying to production, being able to select a previous build. So, by default, when deploying to development on this automatic deployment we've done, it will select the latest successful build. But, when deploying to production, that will be manually, we should be able to select as a pipeline param the build we want to deploy that, by default, will be the last successful build. The selection should be as a dropdown of builds."
 
 ## Task board
-- [ ] T1 — Build-selection workflow contract, CI parse and dry-runs `[seq]`
-- [ ] T2 — Documentation and feature-index proposal `[P]`
-- [ ] T3 — Live selected-build proof and automatic development proof `[owner]` `[P]`
+- [x] T1 — Build-selection workflow contract, CI parse and dry-runs `[seq]`
+- [x] T2 — Documentation and feature-index proposal `[P]`
+- [>] T3 — Live selected-build proof and automatic development proof `[owner]` `[P]`
 - [ ] T4 — Verify & integrate `[seq]`
 
 ## Loop log
@@ -28,8 +28,12 @@ Add a production deploy build-selection parameter: a dropdown of previous builds
 - 2026-11-27 — planning — r2a complete: harness extracts/executes the Render creation/completion blocks with 14 `render-*` failure-path cases; three-way containerization wording; T6-complete/production-live context; stub-first `NODE_PATH`; env-driven completion retry/timeout; 201/202 citation — spec.md, plan.md, tasks.md
 - 2026-11-27 — spec_review — targeted r2a re-check approved (0 blocking; 2 INFO: stale status note fixed here; T3 may record a single pre-live harness marker); user checkpoint dispatched — reviews/spec-r2.md
 - 2026-11-27 — awaiting_approval → building — user approved the spec including Q-1 (static relative dropdown + optional exact `build_sha`) and defaults Q-2–Q-5; T1 waits for `production-provisioning` `state: accepted` (T7/T8 pending) — reviews/spec-r2.md
+- 2026-11-27 — building — user merged `feat/production-provisioning` to `main`; accepted state and the T6a fix are now on `main`; T1 dispatched on `feat/production-build-selection` — reviews/code-r1.md (production-provisioning)
+- 2026-11-27 — building — T1 completed (commit `2e648ed`; `build`/`build_sha` inputs, resolver, same-SHA guard/checkout, contract/schema gates, Render API `commitId` + completion/current-deploy proof, Vercel metadata, 21 steps; 34/34 harness PASS; coverage backend 97.09/92.24/99.65/97.09, frontend 97.22/96.8/98.6/97.22; actionlint/parses pass; T1 verify exit 0; no app/container change); T2 dispatched — build-log-T1.md
+- 2026-11-27 — building — T2 completed (commit `142ea984`; README/deployment/vercel-render-neon/containerization updated; exact docs greps, ledger rows, links, actionlint/parses pass; clean-worktree T2 verify exit 0 after fixing `Render deploy-by-commit` and the `build_sha` sentence; proposed index row `production-build-selection | Production Build Selection | accepted | 2026-11-27`); T3 owner merge/live proof pending — build-log-T2.md
 
 ## Blockers / open questions
 - **Q-1 accepted:** the user approved the native static relative dropdown (`latest`, `previous-1` … `previous-9`) plus the optional exact `build_sha` field.
-- **T1 waiting:** `production-provisioning` must reach `state: accepted` before T1; T6 is complete and production is live (Render `dep-dc4o1fff3r2c73c4asp0`, Vercel `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq`, smoke 8/8), while T7/T8 are still pending. No build-selection task is ready yet.
+- **T3 owner gate:** the owner must merge `feat/production-build-selection` (T1 workflow + T2 docs) to `main`; then the builder dispatches `previous-1`, restores `latest`, and records the automatic-development proof. The production Environment approval is required for each production dispatch.
+- The orchestrator-owned `status.md` is uncommitted on the feature branch; T2 used a clean-worktree no-edit proof. The T1 builder's host Podman anonymous-volume lock ceiling was cleared by pruning unused test volumes (no repository change).
 - **Q-2 (default):** "previous" means previous successful `CI` build on `main`; **Q-3:** old builds fail closed on schema/contract mismatch; **Q-4:** selection is production-only; **Q-5:** dropdown depth 10.
