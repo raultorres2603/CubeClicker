@@ -241,7 +241,7 @@ The T1 verify block from `tasks.md` is run after this file is written; raw outpu
 Command: the exact T1 block from `tasks.md` (lines 16–38) extracted to `/tmp/opencode/t1-verify.sh` and run as `bash /tmp/opencode/t1-verify.sh`; `set -euo pipefail` is inside the block. Raw output of the last full run (the earlier run before the verify section was written produced the same lines with `in 39s` instead of `in 3s` and also exited `0`):
 
 ```
-npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting <address>
 npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
 
 added 399 packages, and audited 402 packages in 3s
