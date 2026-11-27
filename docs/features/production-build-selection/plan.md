@@ -1,14 +1,18 @@
 ---
 feature: production-build-selection
-revision: 3
+revision: 4
 ---
 # Plan — Production Build Selection
+
+**r4a (spec-review r2, F23–F25):** F23 fixes the empty-`build_sha` parser to use `.workflow_runs[0] // empty` and test the parsed `sha` (not the formatted TSV), with the harness unavailable stub returning `{"total_count":0,"workflow_runs":[]}` and asserting the exact failure message; F24 broadens the T2/T4 stale scan to case-insensitive `dropdown|previous-[0-9]|relative label` plus the three old headings; F25 captures the third TSV field and prints the exact `CI run: <id> <createdAt>` line, asserted by `resolver-latest`; the T3 instruction records the 20 per-case `Pre-live harness` lines (F22, no gate change).
+
+**r3 (owner contract change):** remove the `build` dropdown/`choice` and relative options entirely; keep only the optional `build_sha` text field (empty = newest successful `CI` push build on `main`; set = that exact 40-character lowercase SHA, which may not be the latest). The resolver uses the Actions API `per_page=1` for the empty case and a validated exact SHA for the set case; the existing guard verifies the CI push run and the on-`main` compare for either source. The docs omit dropdown/relative-label wording; T3 uses `build_sha=<prior-full-sha>` and a no-`build_sha` latest restore; T4 uses the post-merge base (`5209d80`) and does not expect the harness as a new addition.
 
 **r2a (spec-review r2, F15–F20):** F15 extends the gate harness to the actual `Deploy Render backend`/`Wait for Render deploy to complete` `run` blocks with a stub `curl` (POST 201/202, non-`dep-` ID, commit mismatch, every terminal status, short-override timeout, transient retry, latest-deploy match/mismatch); F16 rewrites both containerization release-identity statements to the three-way rule (selected production SHA / manual development `github.sha` / automatic `workflow_run.head_sha`); F17 updates the dependency context to T6 complete/production live, T7 in progress, T8 pending; F18 puts the stub `pg` directory first on `NODE_PATH`; F19 retries transient completion-GET failures until the deadline; F20 cites the Trigger Deploy API `responses` plus the deploy-hook docs for 202.
 
 ## Architecture
 
-The deploy workflow already has one guarded job and one environment-scoped configuration. This feature adds a **selection front-end** to the manual path, a **live Render completion proof**, and an executed **workflow-gate harness**; the automatic development path's source of truth (`workflow_run.head_sha`) is unchanged.
+The deploy workflow already has one guarded job and one environment-scoped configuration. This feature adds a **build-SHA selection** to the manual path, a **live Render completion proof**, and an executed **workflow-gate harness**; the automatic development path's source of truth (`workflow_run.head_sha`) is unchanged.
 
 ```
 Development automatic
@@ -20,10 +24,11 @@ Development automatic
                                                       → health → Vercel → smoke
 
 Production manual (workflow_dispatch, environment=production)
-  build: latest | previous-1 … previous-9 | build_sha (optional)
+  build_sha: empty = newest successful CI push build on main
+             set   = exact 40-char lowercase SHA (may not be latest)
         │
         ▼
-  Resolve selected build (Actions API: successful CI push runs on main, dedupe, index)
+  Resolve selected build (empty: Actions API per_page=1; set: regex; source latest/pinned)
         │  sha + source
         ▼
   Verify CI succeeded for target commit (gh run list --event push --branch main)
@@ -55,7 +60,8 @@ Production manual (workflow_dispatch, environment=production)
         │
         ▼
   Wait for Render deploy to complete
-    manual: GET /deploys/{id} until status=live (default 10 s poll, 900 s timeout; env-overridable)
+    manual: GET /deploys/{id} until status=live (default 10 s poll, 900 s timeout;
+            env-overridable; transient GET failures retry)
             → GET /deploys?limit=1 → current deploy id/commit must match the selection
     automatic: existing 45 s head start (no deploy id from the hook)
         │
@@ -67,9 +73,9 @@ Production manual (workflow_dispatch, environment=production)
 - **State ownership unchanged.** GitHub Environments own deployment configuration; Render owns live room/game state; Neon owns durable rows; Vercel owns no state. The selected build is a commit, not a provider artifact.
 - **One job, one order.** The production dispatch uses the same job; the resolver/guard/contract/schema steps are dispatch-only. The provider order is the accepted order, with the two safety gates inserted before the migration and the completion proof replacing the old fixed sleep.
 - **Pipeline code vs selected app code.** The workflow YAML always comes from the dispatch ref (`main`). After checkout, the guard/sync/migration/smoke scripts come from the selected build; the contract gate requires those files to be byte-identical to the dispatch ref, so a selected old build cannot run an older guard/catalog or an older smoke. The selected build's app code and its migration SQL are the only versioned payload.
-- **Live revision proof.** A manual Render API deploy response is not proof that the selected revision is serving; Render keeps the previous instance live during the build. The completion step polls the selected deploy to `status: live` and verifies the service's current/latest deploy and commit before health/Vercel/smoke. The automatic path keeps its existing hook/45 s behavior (unchanged), because the hook does not provide a deploy ID.
+- **Live revision proof.** A manual Render API deploy response is not proof that the selected revision is serving; Render keeps the previous instance live during the build. The completion step polls the selected deploy to `status: live`, retries transient GET failures, and verifies the service's current/latest deploy and commit before health/Vercel/smoke. The automatic path keeps its existing hook/45 s behavior (unchanged), because the hook does not provide a deploy ID.
 - **Why rebuild instead of promoting artifacts.** A Vercel promotion or Render rollback is per-provider, can mix revisions, skips the guard/sync/migration/smoke and can carry stale build-time configuration. Rebuilding the selected SHA through the guarded pipeline is the only path that proves the same revision on both providers with the current catalog and configuration.
-- **No native dynamic dropdown.** `workflow_dispatch.choice` `options` are static; GitHub resolves them from the workflow file at dispatch time. The relative dropdown + `build_sha` is the native, write-free design (Q-1); Q-1 requires owner acceptance at the approval checkpoint.
+- **No dropdown.** The owner contract change removes the `build` `choice`; `build_sha` is an optional text field. Empty means the latest successful `CI` push build on `main`; a set value means that exact commit (which may not be the latest). No relative labels.
 
 ## Interfaces / contracts
 
@@ -84,46 +90,55 @@ Production manual (workflow_dispatch, environment=production)
         required: true
         default: production
         options: [production, development]
-      build:
-        description: Build to deploy (production only; latest = newest successful CI build on main)
-        type: choice
-        required: true
-        default: latest
-        options: [latest, previous-1, previous-2, previous-3, previous-4, previous-5, previous-6, previous-7, previous-8, previous-9]
       build_sha:
-        description: Optional full 40-character lowercase commit SHA for an exact build (production only)
+        description: Optional full 40-character lowercase commit SHA; empty = latest successful CI build on main; set = that exact commit, which may not be the latest on main
         type: string
         required: false
         default: ''
 ```
 
-- Input key set exactly `build,build_sha,environment`.
-- `environment` is unchanged; `build` is the required dropdown with `latest` default; `build_sha` is optional, production-only, and must be a full 40-character lowercase SHA.
-- The relative labels are positions, not SHA labels; the resolver prints the selected SHA and CI run after selection.
+- Input key set exactly `build_sha,environment`; there is no `build` input, no `choice`, no dropdown and no relative labels.
+- `environment` is unchanged; `build_sha` is optional (default empty). Empty = latest successful `CI` push build on `main`; set = exact 40-character lowercase SHA.
+- A development dispatch with a non-empty `build_sha` fails closed; an empty value preserves the manual development default (`github.sha`).
 
 ### 2. Resolver contract (`Resolve selected build`, dispatch-only, pre-checkout)
 
-Step surface: `id: resolve_build`, `if: github.event_name == 'workflow_dispatch'`, env `GH_TOKEN`, `ENVIRONMENT`, `BUILD`, `BUILD_SHA`, `DISPATCH_SHA`. Outputs `sha`, `source`.
+Step surface: `id: resolve_build`, `if: github.event_name == 'workflow_dispatch'`, env `GH_TOKEN`, `ENVIRONMENT`, `BUILD_SHA`, `DISPATCH_SHA`. Outputs `sha`, `source`.
 
-Production lookup (no git context required):
-
-```bash
-gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" \
-  --jq '.workflow_runs[] | [.head_sha, (.id|tostring), .created_at] | @tsv'
-```
-
-Selection: dedupe by `head_sha` preserving the API's newest-first order, then index 0 for `latest`, N for `previous-N`:
+**Empty `build_sha` (latest):**
 
 ```bash
-awk -F'\t' 'NF && !seen[$1]++' | sed -n "$((index + 1))p"
+runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=1" \
+  --jq '.workflow_runs[0] // empty | [.head_sha, (.id|tostring), .created_at] | @tsv')
+sha=$(printf '%s' "$runs" | cut -f1)
+if [ -z "$sha" ]; then
+  echo "No successful CI push build found on main; refusing to deploy." >&2
+  exit 1
+fi
+ci_run=$(printf '%s' "$runs" | cut -f2)
+ci_created=$(printf '%s' "$runs" | cut -f3)
+source="latest"
 ```
 
-- `latest` = newest distinct successful `CI` push build on `main`; `previous-1` = the next older; … `previous-9`.
-- `build_sha` is validated by `^[0-9a-f]{40}$` and must not be combined with a non-`latest` `build`.
-- Development dispatch with defaults: `sha=$DISPATCH_SHA`, `source=dispatch-ref`.
-- Development dispatch with a selection: fail with `Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch.`
-- Unavailable choice: `Build choice <choice> is unavailable: fewer than <N+1> successful CI builds on main.`
-- Print `Resolved build: <sha> (<source>)`; for list-derived builds also `CI run: <id> <createdAt>`.
+Print `Resolved build: <sha> (latest)` and the exact `CI run: <ci_run> <ci_created>` line. The `// empty` filter emits nothing for the real empty shape `{"total_count":0,"workflow_runs":[]}`, so the parsed `sha` is empty and the exact failure message is reached; the harness `resolver-latest` asserts the `CI run` line and `resolver-latest-unavailable` returns that empty JSON shape and asserts the message.
+
+**Set `build_sha` (exact):**
+
+```bash
+if ! printf '%s' "$BUILD_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+  echo "build_sha must be a full 40-character lowercase commit SHA." >&2
+  exit 1
+fi
+sha="$BUILD_SHA"
+source="pinned"
+```
+
+Print `Resolved build: <sha> (pinned)`. The guard verifies the CI push run and the on-`main` compare for either source (§3).
+
+**Development:** `ENVIRONMENT != production` and empty `build_sha` → `sha=$DISPATCH_SHA`, `source=dispatch-ref`; a non-empty `build_sha` fails with `Build SHA selection is available for environment=production only; clear build_sha for a development dispatch.`
+
+- No `previous-N`, no dedupe/index selection, no dropdown.
+- The Actions API is used instead of a second `gh run list`; the one `gh run list` (the guard) keeps `--repo "$GITHUB_REPOSITORY"`.
 - The actual `run` block is executed by the harness (see §10).
 
 ### 3. Guard contract (`Verify CI succeeded for target commit`, dispatch-only, pre-checkout)
@@ -145,7 +160,7 @@ esac
 echo "CI succeeded for $TARGET_SHA"
 ```
 
-- `TARGET_SHA` is `${{ steps.resolve_build.outputs.sha }}` (not `github.sha`).
+- `TARGET_SHA` is `${{ steps.resolve_build.outputs.sha }}` (not `github.sha`); it applies to both latest and exact sources.
 - Exactly one `gh run list` in the file; it keeps `--repo "$GITHUB_REPOSITORY"` (T6a). The resolver uses the Actions API, so the count invariant is preserved.
 - `--event push --branch main` excludes PR runs for the same SHA; compare `ahead|identical` proves the SHA is on `main`.
 - The actual `run` block is executed by the harness with a stub `gh` for success/failure/missing/not-on-main.
@@ -198,7 +213,6 @@ echo "Deploy contract OK for $SELECTED_SHA (guard/migration/smoke identical to $
 - `PIPELINE_SHA = ${{ github.sha }}` (dispatch ref tip); `SELECTED_SHA = ${{ steps.resolve_build.outputs.sha }}`.
 - The migration **SQL** is excluded: the selected build carries its own migration set, validated by the schema gate.
 - The `auth/config.ts` file is included because `render-env.ts` imports `parseEmailSender` from it; the deployed smoke is included so an old build cannot run weaker E2E checks.
-- The fetch runs after `actions/checkout` with its persisted credentials; a fetch failure fails the run with a clear message.
 - The actual `run` block is executed by the harness against a local git remote with pass/changed/missing-pg fixtures.
 
 ### 6. Schema-compatibility gate (`Check selected build schema compatibility`, dispatch-only, before migration)
@@ -331,6 +345,8 @@ echo "Render deploy live: $DEPLOY_ID for $TARGET_SHA"
 - `RENDER_DEPLOY_TIMEOUT_SECONDS` defaults to 900 and `RENDER_DEPLOY_POLL_INTERVAL_SECONDS` to 10; the workflow sets neither, and the harness sets short overrides so the timeout path executes.
 - Transient GET/5xx/network failures and unreadable responses are retried until the deadline; only a terminal status, the timeout or a current-deploy mismatch fails closed.
 - The latest-deploy read uses bounded `curl --retry 3 --retry-delay 5 --retry-all-errors`; a persistent failure fails closed.
+- The completion step runs before `Wait for Render backend health`, the Vercel deploy and the smoke.
+- The old 45 s comment claiming the health poll cannot pass against the old instance is **false** and is removed; the completion/current-deploy proof is the live-revision guarantee (F1/F14).
 
 **7c. Automatic `workflow_run` branch.** The existing hook stays and the completion step's automatic branch keeps the existing 45 s head start (the hook does not provide a deploy ID to poll):
 
@@ -373,21 +389,20 @@ echo "Render deploy hook started; using the existing 45 s head start (no deploy 
 ### 9. Automatic-development and manual-development contracts
 
 - **Automatic:** `on.workflow_run` exactly `workflows: [CI]`, `types: [completed]`, `branches: [main]`; job `if` exactly `github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')`; `Reject non-push CI runs` unchanged; resolver/guard/contract/schema skipped; checkout `head_sha`; Render hook; completion automatic branch `sleep 45`; Vercel same checkout; warm + smoke. The only additions are `Confirm selected build checkout` and the Vercel `--meta` line.
-- **Manual development:** `environment=development`, default `build=latest` resolves `github.sha` (`dispatch-ref`); the Render API `commitId` deploys `github.sha` (instead of the hook's `main` tip), matching the Vercel build's dispatch ref; a non-default selection fails closed. This is an explicit mechanism alignment, not an unchanged path.
+- **Manual development:** `environment=development`, empty `build_sha` resolves `github.sha` (`dispatch-ref`); the Render API `commitId` deploys `github.sha` (instead of the hook's `main` tip), matching the Vercel build's dispatch ref; a non-empty `build_sha` fails closed. This is an explicit mechanism alignment, not an unchanged path.
 
 ### 10. CI parse and gate-harness contract
 
 Update `Validate deploy workflow dispatch choices`:
 - trigger keys exactly `workflow_dispatch,workflow_run`; `workflow_run` exactly `workflows: [CI]`, `types: [completed]`, `branches: [main]`;
-- input keys exactly `build,build_sha,environment`;
+- input keys exactly `build_sha,environment`; no `build` input/`choice`/relative labels;
 - environment fields/options/default/description unchanged;
+- `build_sha` fields key set exactly `default,description,required,type`; `type=string`, `required=false`, `default=''`, exact description;
 - job `if`, checkout ref (new expression), one job, concurrency, environment/TARGET_ENVIRONMENT mapping;
 - no `push` trigger.
 
 Add `Validate deploy build selection contract` after it, before `Check deploy workflow has no Fly deploy path`:
-- `build` fields key set exactly `default,description,options,required,type`; `type=choice`, `required=true`, `default=latest`, exact options array, exact description;
-- `build_sha` fields key set exactly `default,description,required,type`; `type=string`, `required=false`, `default=''`, exact description;
-- `Resolve selected build` step exists with `id=resolve_build`, dispatch `if`, the Actions API URL, the `awk`/`sed` pipeline, the `build_sha` regex and the production-only message;
+- `Resolve selected build` exists with `id=resolve_build`, dispatch `if`, the empty-`build_sha` Actions API URL (`per_page=1`) with `.workflow_runs[0] // empty`, the exact-SHA regex, the latest/pinned/development sources and the exact messages;
 - `Verify CI succeeded` uses `steps.resolve_build.outputs.sha`, has `--event push --branch main` and the compare `ahead|identical`;
 - checkout ref exact new expression; `Confirm selected build checkout` exists;
 - `Check selected build deploy contract` exists with the seven-file list and the `git diff --quiet` pattern;
@@ -401,17 +416,17 @@ Add `Validate deploy build selection contract` after it, before `Check deploy wo
 **Harness (`tests/deploy/gate-fixtures.mjs`).** The harness:
 1. loads `.github/workflows/deploy.yml` and `.github/workflows/ci.yml` with `js-yaml`;
 2. extracts the actual `run` strings for `Resolve selected build`, `Verify CI succeeded for target commit`, `Check selected build deploy contract`, `Check selected build schema compatibility`, `Deploy Render backend`, `Wait for Render deploy to complete` and `Validate deploy build selection contract`;
-3. executes them with a temp `PATH` stub `gh` (Actions runs list, guard conclusion, compare status), a temp git repo + local bare remote (selected/pipeline commits), a temp stub `curl` (POST 201/202 and bodies, GET deploy status sequences/transient failures, latest-deploy responses) and a temp `pg` stub module (`schema_migrations` rows, missing table). The temp stub `pg` directory is **first** on `NODE_PATH`, followed by the repo's `node_modules` for `js-yaml`/other imports, so both `require.resolve('pg')` (contract) and `require('pg')` (schema) resolve the stub;
+3. executes them with a temp `PATH` stub `gh` (Actions latest/exact list, guard conclusion, compare status), a temp git repo + local bare remote (selected/pipeline commits), a temp stub `curl` (POST 201/202 and bodies, GET deploy status sequences/transient failures, latest-deploy responses) and a temp `pg` stub module (`schema_migrations` rows, missing table). The temp stub `pg` directory is **first** on `NODE_PATH`, followed by the repo's `node_modules` for `js-yaml`/other imports, so both `require.resolve('pg')` (contract) and `require('pg')` (schema) resolve the stub;
 4. sets short `RENDER_DEPLOY_TIMEOUT_SECONDS`/`RENDER_DEPLOY_POLL_INTERVAL_SECONDS` overrides for the timeout case;
 5. asserts the exact messages for every case and prints `PASS <case>`; a failure exits non-zero.
 
-Required harness cases: resolver `latest`, `previous-1`, `previous-9`, unavailable, `pinned`, `dispatch-ref`, malformed `build_sha`, mixed `build`+`build_sha`, development non-default; guard success, CI failure, missing run, not-on-main; contract pass, changed contract file, missing `pg`; schema pass, missing `007_economy_revision.sql`, missing `schema_migrations` table; Render creation 201/202/non-`dep-`/commit-mismatch; Render completion `live`/`build_failed`/`update_failed`/`canceled`/`pre_deploy_failed`/`deactivated`/timeout/transient-retry/latest-deploy match/latest-deploy mismatch; CI build parse pass and its `verify-workflows` step-list position. The T1/T4 verify executes the harness and records each `PASS` line.
+Required harness cases: resolver `resolver-latest` (asserts `Resolved build` and the exact `CI run: <id> <createdAt>` line), `resolver-latest-unavailable` (stub returns `{"total_count":0,"workflow_runs":[]}` and asserts `No successful CI push build found on main; refusing to deploy.`), `resolver-exact`, `resolver-malformed`, `resolver-development-default`, `resolver-development-non-default`; guard success, CI failure, missing run, not-on-main; contract pass, changed contract file, missing `pg`; schema pass, missing `007_economy_revision.sql`, missing `schema_migrations` table; Render creation 201/202/non-`dep-`/commit-mismatch; Render completion `live`/`build_failed`/`update_failed`/`canceled`/`pre_deploy_failed`/`deactivated`/timeout/transient-retry/latest-deploy match/latest-deploy mismatch; CI build parse pass and its `verify-workflows` step-list position. The T1/T4 verify executes the harness and records each `PASS` line.
 
 ### 11. Documentation contract
 
-- `README.md` § Deployment / § What the pipelines run / § Deploy flow: production build selection, options/default, relative-label explanation, resolved-SHA/CI-run lines, `build_sha` exact selector with the lowercase full-SHA rule, same-SHA guarantee including the Render `live`/current-deploy proof, contract/schema rules and immutable-migration policy, command, automatic-development-unchanged/manual-development-aligned statement.
-- `docs/architecture/deployment.md` § Environments and triggers, § Deploy pipeline, § Rollback, § Neon migrations and the supersession ledger: production build selection, build definition, resolver/guard/contract/schema, Render completion/current-deploy proof, `--ref main` two-part rule, relative-label/resolved-line explanation, lowercase `build_sha`, immutable-migration policy, known-good-build rollback, ledger row.
-- `docs/architecture/vercel-render-neon.md` § Environment catalog, § Runbook (`### Production deploy with build selection`), § Troubleshooting, § Rollback, § Local development vs cloud, § Supersession ledger: the same contract with provider-specific notes (Render 201/202, completion poll, current-deploy mismatch, Vercel metadata or `Vercel metadata projection: unavailable`, per-provider vs coordinated rollback).
+- `README.md` § Deployment / § What the pipelines run / § Deploy flow: production optional `build_sha` text field (empty = latest successful `CI` push build on `main`; set = exact 40-character lowercase SHA, may not be latest), no dropdown/relative labels, resolved-SHA/CI-run line, same-SHA guarantee including the Render `live`/current-deploy proof, contract/schema rules and immutable-migration policy, command `gh workflow run deploy.yml --ref main -f environment=production -f build_sha=<40-hex-sha>`, latest restore omits `build_sha`, automatic-development-unchanged/manual-development-aligned statement.
+- `docs/architecture/deployment.md` § Environments and triggers, § Deploy pipeline, § Rollback, § Neon migrations and the supersession ledger: production optional `build_sha`, empty=latest/exact rule, resolver/guard/contract/schema, Render completion/current-deploy proof, `--ref main` two-part rule, resolved-SHA/CI-run line, lowercase `build_sha`, immutable-migration policy, known-good-SHA rollback, ledger row.
+- `docs/architecture/vercel-render-neon.md` § Environment catalog, § Runbook (`### Production deploy with build SHA selection`), § Troubleshooting, § Rollback, § Local development vs cloud, § Supersession ledger: the same contract with provider-specific notes (Render 201/202, completion poll, current-deploy mismatch, Vercel metadata or `Vercel metadata projection: unavailable`, per-provider vs coordinated rollback).
 - `docs/architecture/containerization.md` § Container conventions: update **both** release-identity statements (lines 37 and 42) to the selected build SHA for a manual production dispatch, the dispatch SHA (`github.sha`) for a manual development dispatch and `workflow_run.head_sha` for the automatic path; no image/port/compose change.
 - `docs/features/README.md`: propose only `production-build-selection | Production Build Selection | accepted | 2026-11-27`; do not edit. `status.md` is orchestrator-owned.
 
@@ -419,72 +434,72 @@ Required harness cases: resolver `latest`, `previous-1`, `previous-9`, unavailab
 
 | Path | New/Edit | Purpose | Owner task |
 | --- | --- | --- | --- |
-| `.github/workflows/deploy.yml` | Edit | Build/`build_sha` inputs, resolver, resolved-SHA guard + compare, checkout/confirm, contract/schema gates, Render API commitId + completion/current-deploy proof, Vercel `--meta`, automatic hook/45 s preserved | T1 |
-| `.github/workflows/ci.yml` | Edit | Updated dispatch parse + new build-selection parse in `verify-workflows` | T1 |
+| `.github/workflows/deploy.yml` | Edit | `build_sha` input, resolver (latest/exact), resolved-SHA guard + compare, checkout/confirm, contract/schema gates, Render API commitId + completion/current-deploy proof, Vercel `--meta`, automatic hook/45 s preserved | T1 |
+| `.github/workflows/ci.yml` | Edit | Updated dispatch parse + new build-SHA parse in `verify-workflows` | T1 |
 | `tests/deploy/gate-fixtures.mjs` | New | Executes the actual resolver/guard/contract/schema/Render creation/completion/CI-parse `run` blocks against fixtures (no reimplementation) | T1 |
-| `README.md` | Edit | Production build selection section, relative labels/resolved line, lowercase `build_sha`, immutable policy, commands, automatic/manual development statement | T2 |
+| `README.md` | Edit | Production build-SHA section, optional text field, empty=latest/exact, lowercase, immutable policy, commands, automatic/manual development statement | T2 |
 | `docs/architecture/deployment.md` | Edit | Trigger/pipeline/build/rollback/ledger/completion/immutable-policy updates | T2 |
 | `docs/architecture/vercel-render-neon.md` | Edit | Production runbook, completion/troubleshooting, rollback, catalog note, ledger | T2 |
 | `docs/architecture/containerization.md` | Edit | Both release-identity statements (lines 37 and 42) | T2 |
 | `docs/features/production-build-selection/build-log-T1.md` | New | Dependency gate, workflow diff, actionlint, parses, harness case results, exact-message assertions | T1 |
 | `docs/features/production-build-selection/build-log-T2.md` | New | Docs greps, link checks, proposed feature-index row | T2 |
-| `docs/features/production-build-selection/build-log-T3.md` | New | Live previous-build/live/current-deploy proof, latest restore, automatic development proof, shortened evidence | T3 |
+| `docs/features/production-build-selection/build-log-T3.md` | New | Live prior-build/`build_sha` proof, latest restore, automatic development proof, shortened evidence | T3 |
 | `docs/features/production-build-selection/build-log-T4.md` | New | Final gate, harness/parse execution, live evidence reproduction, final report | T4 |
 
-Untouched by design: `src/**`, `compose.yaml`, `compose.smoke.yaml`, `src/backend/Dockerfile`, `src/frontend/Dockerfile`, `render.yaml`, `src/frontend/vercel.json`, `package.json`, `package-lock.json`, `.env*`, `docs/features/README.md`, `docs/features/production-build-selection/status.md`, every provider resource (no resource is created, renamed or deleted), and all `tests/**` except the new `tests/deploy/gate-fixtures.mjs` harness.
+Untouched by design: `src/**`, `compose.yaml`, `compose.smoke.yaml`, `src/backend/Dockerfile`, `src/frontend/Dockerfile`, `render.yaml`, `src/frontend/vercel.json`, `package.json`, `package-lock.json`, `.env*`, `docs/features/README.md`, `docs/features/production-build-selection/status.md`, every provider resource (no resource is created, renamed or deleted), and all `tests/**` except the new `tests/deploy/gate-fixtures.mjs` harness (already merged at `5209d80`; T4 does not expect it as a new addition).
 
 ## Key decisions
 
 | # | Decision | Rationale | Alternatives considered |
 | --- | --- | --- | --- |
-| D-1 | A "build" is a successful `CI` **push** run on `main`; the commit SHA is the identity; Vercel deployments, Render deploys and Deploy-workflow runs are not the selection unit | CI already verified the exact tree; rebuilding from that SHA re-runs the guard/catalog and lets both providers ship one revision. Vercel/Render artifacts are per-provider, may carry stale build-time config, and a Deploy run re-executes an old pipeline version. | Select a Vercel deployment ID — frontend only; select a Render deploy ID — backend only; re-run a Deploy run — same commit but old pipeline/inputs; none coordinates both under the current guard. |
-| D-2 | Ship a static relative dropdown (`latest`, `previous-1` … `previous-9`) plus an optional `build_sha`; no generated/bot list and no external UI; Q-1 requires owner acceptance at the approval checkpoint | Native GitHub has no dynamically populated `choice` options; relative options are a real dropdown, default to latest, require no write to `main`, add no automation and remain reviewable. `build_sha` covers exact builds. The owner explicitly accepts the relative-label trade-off. | Generated SHA list (B) — a scheduled workflow/bot must commit to `main`, with drift and permission cost; external UI (C) — leaves native GitHub; re-run/promote/rollback (D) — uncoordinated and skips the guard. |
-| D-3 | Build selection is production-only; automatic development and manual development defaults are preserved, with the manual Render mechanism aligned | The request targets production; preserving `workflow_run.head_sha` and `github.sha` keeps the accepted defaults. The manual Render API `commitId` removes the old hook/main-tip mismatch and matches the Vercel dispatch-ref build. | Selection for development too — changes the accepted path, Q-4; leave the manual hook — can mix Render `main` with the Vercel dispatch SHA. |
-| D-4 | Guard the **resolved** SHA, not the dispatch SHA; require a successful `CI` push run on `main` and compare `ahead`/`identical` | The dispatch SHA is the workflow ref (`main` tip), not the selected build. The compare gate proves the selected SHA is on `main`; `--event push` excludes PR runs. This also enforces the documented `--ref main` rule. | Trust `build_sha` after regex only — deploys an unverified/non-main SHA; check the dispatch SHA — the wrong revision; substring/absence of compare — a merged branch SHA could slip through. |
-| D-5 | Add deploy-contract identity and schema-compatibility gates before the migration; compare applied migration **names** under the immutable-migration policy | The selected build's guard/sync/migration/smoke scripts run after checkout; an old build could run a weaker guard or an older smoke, and an old backend could run against a newer schema. The project never edits an applied migration; a name match is sufficient under that policy. | Trust the selected build's old guard — violates "same guard/catalog"; allow an override — unsafe, Q-3; run old code against new schema — can break data; content hashes now — extra complexity unless the policy is relaxed. |
+| D-1 | A "build" is a successful `CI` **push** run on `main`; the commit SHA is the identity; Vercel deployments, Render deploys and Deploy-workflow runs are not the selection unit | CI already verified the exact tree; rebuilding from that SHA re-runs the guard/catalog and lets both providers ship one revision. | Select a Vercel deployment ID — frontend only; select a Render deploy ID — backend only; re-run a Deploy run — same commit but old pipeline/inputs. |
+| D-2 | Ship **only** the optional `build_sha` text field; no `build` `choice`, no dropdown, no relative labels | Owner contract change: the relative dropdown was replaced by the simpler optional text field. Empty = latest successful `CI` push build on `main`; set = exact 40-character lowercase SHA (may not be latest). | Keep the dropdown — rejected by the owner; free-text only with no default — empty now means latest. |
+| D-3 | Build-SHA selection is production-only; automatic development and manual development defaults are preserved, with the manual Render mechanism aligned | The request targets production; preserving `workflow_run.head_sha` and `github.sha` keeps the accepted defaults. The manual Render API `commitId` removes the old hook/main-tip mismatch and matches the Vercel dispatch-ref build. | Selection for development too — changes the accepted path, Q-4; leave the manual hook — can mix Render `main` with the Vercel dispatch SHA. |
+| D-4 | Guard the **resolved** SHA (latest or exact), not the dispatch SHA; require a successful `CI` push run on `main` and compare `ahead`/`identical` | The dispatch SHA is the workflow ref (`main` tip), not the selected build. The compare gate proves the selected SHA is on `main`; `--event push` excludes PR runs. This also enforces the documented `--ref main` rule. | Trust `build_sha` after regex only — deploys an unverified/non-main SHA; check the dispatch SHA — the wrong revision. |
+| D-5 | Add deploy-contract identity and schema-compatibility gates before the migration; compare applied migration **names** under the immutable-migration policy | The selected build's guard/sync/migration/smoke scripts run after checkout; an old build could run a weaker guard or an older smoke, and an old backend could run against a newer schema. The project never edits an applied migration; a name match is sufficient under that policy. | Trust the selected build's old guard — violates "same guard/catalog"; allow an override — unsafe, Q-3; content hashes now — extra complexity unless the policy is relaxed. |
 | D-6 | Manual dispatches deploy Render through `POST /v1/services/{id}/deploys {commitId}`, poll the selected deploy to `status: live`, then verify the service's current/latest deploy and commit; the automatic path keeps the hook + 45 s | The hook builds `main` head and cannot deploy a selected SHA; a 201/created deploy is not proof the selected revision is serving. The completion/current-deploy proof closes the old-instance false positive. The automatic path has no deploy ID from the hook and stays unchanged. | Hook for selected builds — deploys `main`, not the selection; API for every path — changes automatic development and has no hook deploy ID; fixed sleep only — false positive. |
 | D-7 | Vercel builds the selected checkout and records `--meta githubCommitSha`; no `vercel promote` | The Vercel project is not Git-linked and Actions is the only deploy path; building from the selected checkout applies the current environment values and the selected `src/frontend`/`vercel.json`. Promotion reuses an old artifact and cannot prove the same current config or backend revision. | `vercel promote` a previous deployment — frontend-only, stale build config; select a Vercel deployment — not a build. |
 | D-8 | Keep the 23-name catalog, protection, trigger and fixed order; add no secret/variable/environment | The request is a selection parameter; the production environment is already provisioned and protected. A new secret/variable would widen the surface and reopen the provisioning spec. | New catalog name — unnecessary; new environment — forbidden; production push trigger — forbidden. |
-| D-9 | Update the `ci.yml` parses and add a harness that executes the actual gate `run` blocks; base the feature after `production-provisioning` acceptance (PR #4 already merged as `d10dfb1`; T6 complete/production live; T7 in progress; T8 pending) | The current parse pins the one-input dispatch shape and the 17-step list; the feature must update it in the same change. The harness proves the resolver/guard/contract/schema/Render creation/completion logic rather than a parallel reimplementation. Starting before T8 causes a `deploy.yml` conflict and makes the docs task target a pre-live state. | Edit `deploy.yml` before T8 — conflicts; skip the parse update — CI red; fixtures that reimplement the gates — F2/F15; update docs before T7 — docs drift. |
-| D-10 | The live proof is owner-gated and includes a `latest` restore; no application code | A real previous-build deploy with `status: live`/current-deploy proof is the only end-to-end proof; restoring latest leaves production healthy. The feature is workflow/config/docs plus a test harness, so no workspace source change and the coverage bar stays the final no-regression gate. | Static-only proof — cannot prove Render/Vercel same-revision; leave production on an old build — undesirable; add app code — unnecessary scope and coverage cost. |
+| D-9 | Update the `ci.yml` parses and add a harness that executes the actual gate `run` blocks; base T1 on a pre-merge base for the harness addition check and T4 on the post-merge base (`5209d80`) | The current parse pins the one-input dispatch shape and the 17-step list; the feature must update it in the same change. The harness proves the resolver/guard/contract/schema/Render creation/completion logic rather than a parallel reimplementation. The feature branch is already merged at `5209d80`, so T4 cannot expect the harness as a new addition. | Edit `deploy.yml` before T8 — conflicts; skip the parse update — CI red; fixtures that reimplement the gates — F2/F15; T4 expecting a new tests addition — fails on the merged base. |
+| D-10 | The live proof uses `build_sha=<prior-full-sha>` for the previous-build deploy and omits `build_sha` for the latest restore | The owner contract change replaces `previous-1` with the exact SHA; the first run proves an older exact commit, the second proves the empty=latest default. | Keep `previous-1` — removed by the owner; only the latest run — does not prove an older build. |
 | D-11 | Record the Trigger Deploy API's 201/202 behavior and treat 202 as fail-closed; the completion poll is the authority for 201 | The Trigger Deploy API OpenAPI definition declares `responses: 201 Created` (deploy object) and `202 Queued` (no content); the deploy-hook documentation describes `202 Accepted` as an in-progress deploy under the `Wait` policy with no deploy ID. A 202 has no deploy ID to track, so proceeding could pass against the old instance; the completion poll handles a 201 deploy that starts `created`/`queued`. | Assume 202 never happens — F5; treat 202 as success — no deploy ID; rely on the old sleep — false positive. |
 
 ## Risks & mitigations
 
 - **`production-provisioning` is not accepted** → T1 is a hard gate: it checks `state: accepted`, `origin/main` and the local `.github/workflows/deploy.yml` contain `gh run list --repo "$GITHUB_REPOSITORY"`, the 15/8 names and the branch policy; otherwise it records `BLOCKED: production-provisioning is not accepted` and stops. Current state: PR #4 merged `d10dfb1`; T6a complete; T6 complete and production live (Render `dep-dc4o1fff3r2c73c4asp0`, Vercel `dpl_2wFeBSaUSxYKkhpNtqZGFcby1Duq`, smoke 8/8); T7 in progress; T8 pending.
 - **The local `deploy.yml` lacks the T6a fix** → The current local file already has it; T1 still checks both `origin/main` and the local file and must not recreate or revert the one-line fix. The one `gh run list` stays `--repo "$GITHUB_REPOSITORY"`; the resolver uses the Actions API.
+- **The feature branch is already merged at `5209d80`** → T4 uses `base=$(git merge-base origin/main HEAD)` (post-merge) and asserts no application/container change; it does not expect `tests/deploy/gate-fixtures.mjs` as a new addition. T1 uses an explicit pre-merge base (`5209d80^1` with a fallback) or asserts the harness exists and allows an empty tests diff.
+- **The latest query returns no successful run** → The resolver fails with `No successful CI push build found on main; refusing to deploy.` before checkout; no provider is touched.
+- **The exact `build_sha` is not on `main` or has no successful push CI** → The guard fails with the exact CI/compare messages; no provider is touched. The operator picks a verified `main` commit.
 - **The Render API returns 202 (queued behind an in-progress deploy)** → Fail closed with the exact message; re-run after the in-progress deploy finishes. A 201 whose status is `created`/`queued` is polled to `live`. Never proceed without a deploy ID or against the old instance.
-- **The Render deploy never becomes live or the service's current deploy is not the selected one** → The completion step fails on terminal failure statuses, the default 900 s timeout (env-overridable; the harness uses a short override), or a current-deploy ID/commit mismatch; health/Vercel/smoke do not run. The operator inspects the Render deploy logs and re-runs the same build.
-- **The automatic `workflow_run` path has a pre-existing main-advance race** → The hook builds the service's tracked `main`, which can advance between the CI run and the hook; the Vercel build uses `workflow_run.head_sha`, so the automatic path can briefly mix revisions if `main` moves. This feature leaves that accepted behavior unchanged and pins only the production selected-build path (and the manual development dispatch) to one SHA; the docs state the scope.
-- **The harness stubs diverge from the real commands** → The harness extracts the actual `run` strings from the workflow YAML (failing if a step name or body is missing) and stubs only the external surfaces (`gh`, git remote, `curl`, `pg`); the stub `pg` directory is first on `NODE_PATH` so both `require.resolve('pg')` and `require('pg')` use it, with the repo modules after it for `js-yaml`/other imports. The T1/T4 build logs record every `PASS` line. A changed step body fails the harness until the fixture is updated.
-- **A selected build predates the current guard/catalog/migration/smoke contract** → The contract gate fails closed before the Brevo guard; the operator selects an eligible build (or `build_sha` of an eligible one). The docs state the eligibility rule.
+- **The Render deploy never becomes live or the service's current deploy is not the selected one** → The completion step fails on terminal failure statuses, the default 900 s timeout (env-overridable; the harness uses a short override), or a current-deploy ID/commit mismatch; health/Vercel/smoke do not run.
+- **The automatic `workflow_run` path has a pre-existing main-advance race** → The hook builds the service's tracked `main`, which can advance between the CI run and the hook; the Vercel build uses `workflow_run.head_sha`, so the automatic path can briefly mix revisions if `main` moves. This feature leaves that accepted behavior unchanged and pins the production selected-build path (and the manual development dispatch) to one SHA; the docs state the scope.
+- **The harness stubs diverge from the real commands** → The harness extracts the actual `run` strings from the workflow YAML (failing if a step name or body is missing) and stubs only the external surfaces (`gh`, git remote, `curl`, `pg`); the stub `pg` directory is first on `NODE_PATH` so both `require.resolve('pg')` and `require('pg')` use it, with the repo modules after it for `js-yaml`/other imports. The T1/T4 build logs record every `PASS` line.
+- **A selected build predates the current guard/catalog/migration/smoke contract** → The contract gate fails closed before the Brevo guard; the operator selects an eligible build. The docs state the eligibility rule.
 - **A selected build predates an applied migration** → The schema gate fails closed before the migration; the operator selects a build at/after the schema head. A true rollback needs the Neon PITR runbook (separate owner operation). The gate is name-based under the immutable-migration policy; a policy relaxation requires content hashes.
-- **The relative dropdown is mistaken for a fixed build list** → The resolver prints the resolved SHA and CI run; the docs define `previous-N` relative to the latest successful build, not the previous deploy; `build_sha` covers exact builds (Q-1/Q-2). Q-1 requires owner acceptance before building.
-- **A per-provider rollback creates a mixed revision** → The docs state the coordinated path is a build-selection deploy of the known-good SHA; `vercel promote`/Render rollback are emergency tools that must use same-SHA artifacts and be followed by the smoke.
-- **The selected build re-reads current config and an old config is expected** → The docs state the selected build does not restore historical environment values; restore the value explicitly in the GitHub Environment, re-deploy, and re-validate. Stale configuration is never restored silently.
-- **A non-`main` dispatch slips through** → The guard's `--branch main`/compare and the `production` Environment branch policy both block it; a manual development dispatch from a non-`main` ref also fails the guard.
-- **Secret leakage through the Render response or pg errors** → Parse only `id/status/commit.id` and the completion statuses; never print the response body; print only `error.message` from pg; no `set -x`; GitHub masks secrets; the credential guard runs over every build log.
-- **The Vercel metadata projection omits custom meta** → The `--meta` flag and the printed line remain; T3 records `Vercel metadata projection: unavailable` plus the deployment ID and the checkout/Render same-SHA evidence, matching AC-4(d). The build log does not invent a commit read-back.
-- **The CI parse update conflicts with `production-provisioning` T7/T8** → The feature starts after T8; the new parse supersedes the one-input/17-step assertions but keeps the trigger choices/defaults, automatic job `if`, permissions and concurrency.
-- **The owner cannot approve the production gate or has not accepted Q-1** → The live proof waits; the feature stays in building and no bypass is added.
-- **Docs drift** → T2 pins exact positive/negative greps (including both containerization release-identity statements and the old 45 s phrase) and a link check; T4 re-runs them and the stale-claim scan.
+- **The exact SHA is mistaken for “latest”** → Empty `build_sha` is latest; a set value is exact. The docs and resolver output (`latest` vs `pinned`) make the distinction explicit.
+- **A per-provider rollback creates a mixed revision** → The docs state the coordinated path is a `build_sha` deploy of the known-good SHA; `vercel promote`/Render rollback are emergency tools that must use same-SHA artifacts and be followed by the smoke.
+- **The selected build re-reads current config and an old config is expected** → The docs state the selected build does not restore historical environment values; restore the value explicitly in the GitHub Environment, re-deploy, and re-validate.
+- **Secret leakage through the Render response or pg errors** → Parse only `id/status/commit.id` and the completion statuses; never print the response body; print only `error.message` from pg; no `set -x`; GitHub masks secrets; the credential guard runs over every build log. The T4 tree audit excludes only the synthetic harness fixtures.
+- **The Vercel metadata projection omits custom meta** → The `--meta` flag and the printed line remain; T3 records `Vercel metadata projection: unavailable` plus the deployment ID and the checkout/Render same-SHA evidence, matching AC-4(d).
+- **The CI parse update conflicts with `production-provisioning` T7/T8** → The feature starts after T8; the new parse supersedes the input/17-step assertions but keeps the trigger choices/defaults, automatic job `if`, permissions and concurrency.
+- **The owner cannot approve the production gate** → The live proof waits; the feature stays in building and no bypass is added.
+- **Docs drift** → T2 pins exact positive/negative greps (no dropdown/relative labels, both containerization release-identity statements, the old 45 s phrase) and a link check; T4 re-runs them and the stale-claim scan.
 - **The build log contains a full SHA (the T8 long-hex issue)** → Build logs record short 7–12 character SHAs labeled `Shortened evidence: 7–12 character SHAs; full SHAs only in the temporary run logs`; fixture full SHAs live in temporary files; the `[0-9a-f]{32,}` guard runs over every build log.
 
 ## Open questions
 
 Mirrors `spec.md` § Open questions; none block planning/building.
 
-- Q-1 — dropdown design: static relative + `build_sha` (default) vs generated SHA list vs external UI vs re-run/promote/rollback; **owner acceptance required at the approval checkpoint**.
-- Q-2 — "previous" = previous successful CI build (default) vs previous production deploy.
+- Q-2 — latest vs exact SHA: empty = newest successful `CI` push build on `main` (default); set = that exact commit (may not be latest).
 - Q-3 — old-build eligibility: fail closed under the immutable-migration policy (default) vs an explicit override; a policy relaxation requires content hashes.
 - Q-4 — selection scope: production only (default) vs manual development too.
-- Q-5 — dropdown depth: 10 options (default) vs another count.
 
 ## Verification plan (task-to-command map)
 
 | Task | Primary proof |
 | --- | --- |
-| T1 | Dependency gate (`production-provisioning` `state: accepted`; `origin/main` and local T6a line; 15/8 names; branch policy/reviewers); `npm ci`; pinned actionlint over both workflows; the updated dispatch parse and new build parse (including the `ci.yml` 11-step list and execution of the new parse's `run` block); `vercel.json`/`render.yaml` parses; `node tests/deploy/gate-fixtures.mjs` executing the actual resolver/guard/contract/schema/**Render creation/completion** blocks and the CI parse (all `render-*`/other cases PASS, incl. missing `schema_migrations`, 201/202/non-`dep-`/mismatch/statuses/timeout/transient-retry/current-deploy and every exact message); `deploy.yml` diff anchors; one `gh run list` with `--repo`; `dep-`/completion/current-deploy anchors; no app/container diff and only the harness under `tests`; `npm run coverage`; build-log guards |
-| T2 | `actionlint`; the parses; exact README/deployment/vercel-render-neon/containerization positive and negative greps (relative labels, resolved line, lowercase `build_sha`, immutable policy, both release-identity statements, old 45 s phrase); link check; `docs/features/README.md`/`status.md` no-edit; `.env*` checks; credential audits; proposed index row |
-| T3 | `gh run view` on the recorded production `previous-1` and `latest` restore runs: `Resolved build`, `CI succeeded`, `Deploy contract OK`, `Schema compatibility OK`, `Deploy configuration OK: 11 …`, nine `SYNCED`, `Render deploy: dep-… …`, `Render deploy live: dep-… for <sha>`, current-deploy ID/commit, `healthz OK after <n>s: {"status":"ok"}`, `Vercel deployment: … for <sha>` (or `Vercel metadata projection: unavailable`), `DEPLOYED SMOKE PASS (8/8 checks)`; Render deploy read-back live/commit; post-run health; the automatic development run; no mixed revision; protection not bypassed; shortened-SHA evidence; credential guard |
-| T4 | Full gate (`npm ci`, lint, typecheck, test, `npm run coverage`, build, smoke, `node tests/deploy/gate-fixtures.mjs` including all `render-*` cases); actionlint; all parses/fixtures (including the executed `ci.yml` parse); docs greps and stale-claim scan (both containerization lines, old 45 s phrase); live evidence reproduction from T3 IDs; `.env*`/credential audits; no-edit checks; final report + proposed index row |
+| T1 | Dependency gate (`production-provisioning` `state: accepted`; `origin/main` and local T6a line; 15/8 names; branch policy/reviewers); `npm ci`; pinned actionlint over both workflows; the updated dispatch parse and new build-SHA parse (including the `ci.yml` 11-step list and execution of the new parse's `run` block); `vercel.json`/`render.yaml` parses; `node tests/deploy/gate-fixtures.mjs` executing the actual resolver/guard/contract/schema/**Render creation/completion** blocks and the CI parse (all `resolver-*`/`render-*`/other cases PASS, incl. missing `schema_migrations`, latest/exact, 201/202/non-`dep-`/mismatch/statuses/timeout/transient-retry/current-deploy and every exact message); `deploy.yml` diff anchors; one `gh run list` with `--repo`; `dep-`/completion/current-deploy anchors; no app/container diff; T1 pre-merge harness-addition check (or explicit pre-merge base); `npm run coverage`; build-log guards |
+| T2 | `actionlint`; the parses; exact README/deployment/vercel-render-neon/containerization positive and negative greps (optional `build_sha`, empty=latest/exact, no dropdown/relative labels, lowercase, immutable policy, both release-identity statements, old 45 s phrase); link check; `docs/features/README.md`/`status.md` no-edit; `.env*` checks; credential audits; proposed index row |
+| T3 | Pre-live harness `render-*`/resolver cases; `gh run view` on the recorded production `build_sha=<prior-full-sha>` and no-`build_sha` latest runs: `Resolved build` (`pinned`/`latest`), `CI succeeded`, `Deploy contract OK`, `Schema compatibility OK`, `Deploy configuration OK: 11 …`, nine `SYNCED`, `Render deploy: dep-… …`, `Render deploy live: dep-… for <sha>`, current-deploy ID/commit, `healthz OK after <n>s: {"status":"ok"}`, `Vercel deployment: … for <sha>` (or `Vercel metadata projection: unavailable`), `DEPLOYED SMOKE PASS (8/8 checks)`; Render deploy read-back live/commit; post-run health; the automatic development run; no mixed revision; protection not bypassed; shortened-SHA evidence; credential guard |
+| T4 | Post-merge full gate (`npm ci`, lint, typecheck, test, `npm run coverage`, build, smoke, `node tests/deploy/gate-fixtures.mjs` all cases); actionlint; all parses/fixtures (including the executed `ci.yml` parse); no application/container diff vs the post-merge base and no harness-as-new-addition expectation; docs greps and stale-claim scan (no dropdown/relative labels, both containerization lines, old 45 s phrase); live evidence reproduction from T3 IDs; `.env*`/credential audits; no-edit checks; final report + proposed index row |
