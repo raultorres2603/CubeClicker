@@ -2,7 +2,8 @@ name: Deploy
 
 on:
   # CI runs once per push to main; this workflow deploys development only after
-  # that CI run succeeds. Production is workflow_dispatch-only until provisioned.
+  # that CI run succeeds. Production is manual and can deploy the latest or a
+  # selected successful CI push build on main.
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -15,6 +16,17 @@ on:
         required: true
         default: production
         options: [production, development]
+      build:
+        description: Build to deploy (production only; latest = newest successful CI build on main)
+        type: choice
+        required: true
+        default: latest
+        options: [latest, previous-1, previous-2, previous-3, previous-4, previous-5, previous-6, previous-7, previous-8, previous-9]
+      build_sha:
+        description: Optional full 40-character lowercase commit SHA for an exact build (production only)
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: deploy-${{ github.event.inputs.environment || 'development' }}
@@ -44,13 +56,77 @@ jobs:
         run: |
           echo "Deploy follows only a push-triggered CI run; got '${WORKFLOW_EVENT}'" >&2
           exit 1
+
+      # A build is a successful CI push run on main; the commit SHA is the build
+      # identity. `previous-N` labels are relative positions in that list, so the
+      # run prints the resolved SHA (and the CI run) before anything is checked out.
+      - name: Resolve selected build
+        if: github.event_name == 'workflow_dispatch'
+        id: resolve_build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          BUILD: ${{ github.event.inputs.build }}
+          BUILD_SHA: ${{ github.event.inputs.build_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          source=""
+          sha=""
+          ci_run=""
+          if [ "$ENVIRONMENT" != "production" ]; then
+            if [ "$BUILD" != "latest" ] || [ -n "$BUILD_SHA" ]; then
+              echo "Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch." >&2
+              exit 1
+            fi
+            sha="$DISPATCH_SHA"
+            source="dispatch-ref"
+          else
+            if [ -n "$BUILD_SHA" ] && [ "$BUILD" != "latest" ]; then
+              echo "Set either build=previous-N or build_sha, not both." >&2
+              exit 1
+            fi
+            if [ -n "$BUILD_SHA" ]; then
+              if ! printf '%s' "$BUILD_SHA" | grep -Eq "^[0-9a-f]{40}$"; then
+                echo "build_sha must be a full 40-character lowercase commit SHA." >&2
+                exit 1
+              fi
+              sha="$BUILD_SHA"
+              source="pinned"
+            else
+              index=""
+              case "$BUILD" in
+                latest) index=0 ;;
+                previous-[1-9]) index=${BUILD#previous-} ;;
+              esac
+              if [ -z "$index" ]; then
+                echo "Build choice $BUILD is unavailable: fewer than 1 successful CI builds on main." >&2
+                exit 1
+              fi
+              runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" --jq '.workflow_runs[] | [.head_sha, (.id|tostring), .created_at] | @tsv')
+              selected=$(printf '%s\n' "$runs" | awk -F'\t' 'NF && !seen[$1]++' | sed -n "$((index + 1))p")
+              if [ -z "$selected" ]; then
+                echo "Build choice $BUILD is unavailable: fewer than $((index + 1)) successful CI builds on main." >&2
+                exit 1
+              fi
+              sha=$(printf '%s' "$selected" | cut -f1)
+              ci_run=$(printf '%s' "$selected" | cut -f2-)
+              source="$BUILD"
+            fi
+          fi
+          echo "Resolved build: $sha ($source)"
+          if [ -n "$ci_run" ]; then
+            echo "CI run: $ci_run"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+
       - name: Verify CI succeeded for target commit
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
+          TARGET_SHA: ${{ steps.resolve_build.outputs.sha }}
         run: |
-          if ! conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$TARGET_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'); then
+          if ! conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --event push --branch main --commit "$TARGET_SHA" --limit 1 --json conclusion --jq '.[0].conclusion'); then
             echo "Unable to query CI runs for $TARGET_SHA; the token may lack actions:read" >&2
             exit 1
           fi
@@ -58,11 +134,30 @@ jobs:
             echo "CI for $TARGET_SHA is not successful (conclusion: ${conclusion:-none}); refusing to deploy" >&2
             exit 1
           fi
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$TARGET_SHA...main" --jq '.status')
+          case "$status" in
+            ahead|identical) ;;
+            *)
+              echo "Build $TARGET_SHA is not on main (compare status: $status); refusing to deploy." >&2
+              exit 1
+              ;;
+          esac
           echo "CI succeeded for $TARGET_SHA"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.resolve_build.outputs.sha || github.event.workflow_run.head_sha || github.sha }}
+      - name: Confirm selected build checkout
+        env:
+          EXPECTED_SHA: ${{ steps.resolve_build.outputs.sha || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "Checked-out build $actual does not match the selected build $EXPECTED_SHA." >&2
+            exit 1
+          fi
+          echo "Deploying build $actual to $TARGET_ENVIRONMENT"
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -70,6 +165,34 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+
+      # The workflow YAML always comes from the dispatch ref, while the guard,
+      # sync, migration runner and deployed smoke come from the selected build.
+      # Requiring the contract files to be identical keeps an older build from
+      # running an older guard/catalog or an older smoke.
+      - name: Check selected build deploy contract
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SELECTED_SHA: ${{ steps.resolve_build.outputs.sha }}
+          PIPELINE_SHA: ${{ github.sha }}
+        run: |
+          git fetch --depth=1 origin "$PIPELINE_SHA"
+          if ! git diff --quiet "$PIPELINE_SHA" -- \
+            src/backend/src/deploy/render-env.ts \
+            src/backend/src/deploy/render-env-cli.ts \
+            src/backend/src/auth/config.ts \
+            src/backend/src/db/migrate-cli.ts \
+            src/backend/src/db/migrate-runner.ts \
+            src/backend/src/db/migrate.ts \
+            tests/e2e/deployed-smoke.mjs; then
+            echo "Build $SELECTED_SHA has a different deploy/migration/smoke contract than the dispatch ref $PIPELINE_SHA; refusing to deploy a build that predates the current deployment contract." >&2
+            exit 1
+          fi
+          if ! node -e "require.resolve('pg')" >/dev/null 2>&1; then
+            echo "Build $SELECTED_SHA does not include the pg dependency required by the deployment tooling; refusing to deploy." >&2
+            exit 1
+          fi
+          echo "Deploy contract OK for $SELECTED_SHA (guard/migration/smoke identical to $PIPELINE_SHA)."
 
       # Fail before any provider is touched when a deployment value is missing
       # or still a CHANGEME placeholder.
@@ -88,6 +211,49 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: npx --no-install tsx src/backend/src/deploy/render-env-cli.ts --check-only
 
+      # A selected build must contain every migration already applied on the
+      # target branch; applied files are immutable, so comparing names is enough.
+      # A missing schema_migrations table counts as zero applied migrations.
+      - name: Check selected build schema compatibility
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TARGET_SHA: ${{ steps.resolve_build.outputs.sha }}
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: |
+          applied_file=$(mktemp)
+          node <<'NODE' > "$applied_file"
+          const { Client } = require('pg');
+          (async () => {
+            const client = new Client({ connectionString: process.env.DIRECT_DATABASE_URL });
+            await client.connect();
+            try {
+              const exists = await client.query("select to_regclass('public.schema_migrations') as t");
+              if (!exists.rows[0].t) return;
+              const result = await client.query('select name from schema_migrations order by name');
+              process.stdout.write(result.rows.map((row) => row.name).join('\n'));
+            } finally {
+              await client.end();
+            }
+          })().catch((error) => {
+            console.error('Unable to read schema_migrations:', error.message);
+            process.exit(1);
+          });
+          NODE
+          applied=$(cat "$applied_file")
+          rm -f "$applied_file"
+          missing=""
+          while IFS= read -r migration; do
+            [ -z "$migration" ] && continue
+            if [ ! -f "src/backend/src/db/migrations/$migration" ]; then missing="$missing $migration"; fi
+          done <<< "$applied"
+          if [ -n "$missing" ]; then
+            echo "Build $TARGET_SHA predates applied migration(s):$missing; refusing to deploy a build older than the migrated schema." >&2
+            exit 1
+          fi
+          local_count=$(find src/backend/src/db/migrations -maxdepth 1 -name '*.sql' | wc -l)
+          applied_count=$(printf '%s\n' "$applied" | grep -c . || true)
+          echo "Schema compatibility OK for $TARGET_SHA: $local_count migration(s) in build, $applied_count applied on the target branch."
+
       - name: Migrate Neon database
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -96,7 +262,7 @@ jobs:
 
       # The GitHub Environment is the source of truth: write the nine deployed
       # values (SMTP plus the Brevo HTTPS API transport) to the Render service
-      # before the deploy hook starts a build.
+      # before the deploy starts a build.
       - name: Sync Brevo SMTP settings to Render
         env:
           SMTP_HOST: ${{ vars.SMTP_HOST }}
@@ -112,16 +278,111 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: npx --no-install tsx src/backend/src/deploy/render-env-cli.ts
 
-      # Backend runtime configuration lives on the Render service; this hook only
-      # starts a build of the service's tracked branch.
+      # Manual dispatches deploy the selected commit through the Render API; the
+      # automatic workflow_run path keeps the deploy hook for its tracked branch.
+      # A 202 carries no deploy id, so it fails closed; a 201 deploy is polled to
+      # live by the completion step before health/Vercel/smoke.
       - name: Deploy Render backend
+        id: render_deploy
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
-      # Render keeps the previous instance live while the new one builds; give the
-      # build a head start so the health poll cannot pass against the old instance.
-      - name: Wait for Render deploy to start
-        run: sleep 45
+          RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          TARGET_SHA: ${{ steps.resolve_build.outputs.sha || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo "Render deploy triggered by hook for $TARGET_SHA"
+            exit 0
+          fi
+          response_file=$(mktemp)
+          http_status=$(curl -sS -o "$response_file" -w '%{http_code}' -X POST \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+            -H "accept: application/json" -H "content-type: application/json" \
+            -H "authorization: Bearer $RENDER_API_KEY" \
+            --data "{\"commitId\":\"$TARGET_SHA\",\"clearCache\":\"do_not_clear\"}")
+          if [ "$http_status" = "202" ]; then
+            echo "Render deploy queued behind an in-progress deploy (HTTP 202); re-run after it completes." >&2
+            rm -f "$response_file"
+            exit 1
+          fi
+          if [ "$http_status" != "201" ]; then
+            echo "Render deploy failed (HTTP $http_status); refusing to continue." >&2
+            rm -f "$response_file"
+            exit 1
+          fi
+          deploy_id=$(node -e "const fs=require('node:fs');const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.id||'')" "$response_file")
+          deploy_commit=$(node -e "const fs=require('node:fs');const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write((d.commit&&d.commit.id)||'')" "$response_file")
+          deploy_status=$(node -e "const fs=require('node:fs');const d=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(d.status||'created')" "$response_file")
+          rm -f "$response_file"
+          case "$deploy_id" in
+            dep-*) ;;
+            *)
+              echo "Render deploy id $deploy_id does not start with dep-; refusing to continue." >&2
+              exit 1
+              ;;
+          esac
+          if [ "$deploy_commit" != "$TARGET_SHA" ]; then
+            echo "Render deploy commit mismatch: expected $TARGET_SHA, got ${deploy_commit:-none}; refusing to continue." >&2
+            exit 1
+          fi
+          echo "Render deploy: $deploy_id $deploy_status for $TARGET_SHA"
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+      # Render keeps the previous instance live while the selected commit builds,
+      # so a successful API response is not proof the selected revision is
+      # serving. Poll the selected deploy to live and require it to be the
+      # service's current deploy before the health poll, Vercel and smoke.
+      - name: Wait for Render deploy to complete
+        env:
+          RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          DEPLOY_ID: ${{ steps.render_deploy.outputs.deploy_id }}
+          TARGET_SHA: ${{ steps.resolve_build.outputs.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            sleep 45
+            echo "Render deploy hook started; using the existing 45 s head start (no deploy id to poll)."
+            exit 0
+          fi
+          timeout_seconds=${RENDER_DEPLOY_TIMEOUT_SECONDS:-900}
+          poll_interval=${RENDER_DEPLOY_POLL_INTERVAL_SECONDS:-10}
+          deadline=$((SECONDS + timeout_seconds))
+          status=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if ! body=$(curl -fsS "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys/$DEPLOY_ID" \
+              -H "accept: application/json" -H "authorization: Bearer $RENDER_API_KEY"); then
+              echo "Render deploy status GET failed transiently; retrying in ${poll_interval}s."
+              sleep "$poll_interval"
+              continue
+            fi
+            if ! status=$(printf '%s' "$body" | node -e "let s='';process.stdin.on('data',(d)=>{s+=d}).on('end',()=>{process.stdout.write((JSON.parse(s).status)||'')})"); then
+              echo "Render deploy status response was unreadable; retrying in ${poll_interval}s."
+              sleep "$poll_interval"
+              continue
+            fi
+            case "$status" in
+              live) break ;;
+              build_failed|update_failed|canceled|pre_deploy_failed|deactivated)
+                echo "Render deploy $DEPLOY_ID ended with status $status for $TARGET_SHA; refusing to continue." >&2
+                exit 1
+                ;;
+            esac
+            sleep "$poll_interval"
+          done
+          if [ "$status" != "live" ]; then
+            echo "Render deploy $DEPLOY_ID did not reach live within ${timeout_seconds}s (last status: ${status:-unknown}); refusing to continue." >&2
+            exit 1
+          fi
+          latest=$(curl --retry 3 --retry-delay 5 --retry-all-errors -fsS "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys?limit=1" \
+            -H "accept: application/json" -H "authorization: Bearer $RENDER_API_KEY")
+          current_id=$(printf '%s' "$latest" | node -e "let s='';process.stdin.on('data',(d)=>{s+=d}).on('end',()=>{const a=JSON.parse(s);process.stdout.write((a[0]&&a[0].deploy&&a[0].deploy.id)||'')})")
+          current_commit=$(printf '%s' "$latest" | node -e "let s='';process.stdin.on('data',(d)=>{s+=d}).on('end',()=>{const a=JSON.parse(s);process.stdout.write((a[0]&&a[0].deploy&&a[0].deploy.commit&&a[0].deploy.commit.id)||'')})")
+          if [ "$current_id" != "$DEPLOY_ID" ] || [ "$current_commit" != "$TARGET_SHA" ]; then
+            echo "Render service current deploy $current_id ($current_commit) does not match the selected deploy $DEPLOY_ID ($TARGET_SHA); refusing to continue." >&2
+            exit 1
+          fi
+          echo "Render current deploy: $current_id $current_commit"
+          echo "Render deploy live: $DEPLOY_ID for $TARGET_SHA"
       - name: Wait for Render backend health
         run: |
           start=$SECONDS
@@ -166,11 +427,13 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          TARGET_SHA: ${{ steps.resolve_build.outputs.sha || github.event.workflow_run.head_sha || github.sha }}
         run: |
-          deploy_output=$(vercel deploy --prebuilt --prod --yes)
+          deploy_output=$(vercel deploy --prebuilt --prod --yes --meta githubCommitSha="$TARGET_SHA")
           printf '%s\n' "$deploy_output"
           deployment_url=$(printf '%s\n' "$deploy_output" | tail -n 1)
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+          echo "Vercel deployment: $deployment_url for $TARGET_SHA"
 
       # The free backend instance can be cold when the smoke starts; warm it and
       # give each smoke check a longer budget than the local 10 s default.

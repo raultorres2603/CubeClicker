@@ -78,7 +78,137 @@ jobs:
           node -e "const fs=require('node:fs');const yaml=require('js-yaml');const blueprint=yaml.load(fs.readFileSync('render.yaml','utf8'));const services=blueprint&&blueprint.services;if(!Array.isArray(services)||services.length!==1){throw new Error('render.yaml must declare exactly one service')}const service=services[0];if(service.name!=='cubeclicker-development'||service.runtime!=='docker'||service.plan!=='free'){throw new Error('render.yaml must describe the cubeclicker-development docker service on the free plan')}if(service.healthCheckPath!==undefined&&service.healthCheckPath!==''){throw new Error('render.yaml must not declare a Render platform health check; the deploy workflow polls /healthz')}console.log('render.yaml: valid YAML (cubeclicker-development, docker, free, no platform health check)')"
       - name: Validate deploy workflow dispatch choices
         run: |
-          node -e "const fs=require('node:fs');const yaml=require('js-yaml');const w=yaml.load(fs.readFileSync('.github/workflows/deploy.yml','utf8'));const t=(w.on&&typeof w.on==='object')?w.on:w[true];if(Object.keys(t).sort().join(',')!=='workflow_dispatch,workflow_run')throw new Error('deploy triggers changed');if(Object.keys(t.workflow_dispatch.inputs).sort().join(',')!=='environment')throw new Error('workflow_dispatch inputs changed');const i=t.workflow_dispatch.inputs.environment;if(Object.keys(i).sort().join(',')!=='default,description,options,required,type')throw new Error('environment input fields changed');if(i.type!=='choice'||i.required!==true||i.default!=='production')throw new Error('environment input must stay a required choice defaulting to production');if(JSON.stringify(i.options)!==JSON.stringify(['production','development']))throw new Error('environment choices must be exactly [production, development]');if(i.description!=='GitHub Environment to deploy (development or production)')throw new Error('environment input description must name both environments');const d=w.jobs.deploy;if(Object.keys(w.jobs).length!==1)throw new Error('deploy.yml must keep exactly one job');const expectedIf=\"github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')\";if(d.if!==expectedIf)throw new Error('deploy job condition changed');if(d.environment!==d.env.TARGET_ENVIRONMENT)throw new Error('environment and TARGET_ENVIRONMENT must use the same expression');if(w.concurrency.group!=='deploy-'+d.environment)throw new Error('concurrency group must be deploy-<environment>');if(w.concurrency['cancel-in-progress']!==false)throw new Error('cancel-in-progress must stay false');for(const [k,v] of [['environment',d.environment],['TARGET_ENVIRONMENT',d.env.TARGET_ENVIRONMENT],['concurrency.group',w.concurrency.group]]){if(!v.includes('github.event.inputs.environment')||!v.includes(\"'development'\")||v.includes(\"'production'\"))throw new Error(k+' must resolve the dispatch input with a development fallback and no production hardcode')}const r=t.workflow_run;if(r&&Object.keys(r).sort().join(',')!=='branches,types,workflows')throw new Error('workflow_run fields changed');if(!r||JSON.stringify(r.workflows)!==JSON.stringify(['CI'])||JSON.stringify(r.types)!==JSON.stringify(['completed'])||JSON.stringify(r.branches)!==JSON.stringify(['main']))throw new Error('automatic trigger must stay workflow_run(CI, completed, main)');if(t.push!==undefined)throw new Error('deploy must not gain a push trigger');if(w.permissions.contents!=='read'||w.permissions.actions!=='read'||Object.keys(w.permissions).length!==2)throw new Error('permissions must stay contents: read, actions: read');if(d['timeout-minutes']!==45)throw new Error('deploy timeout must stay 45 minutes');const names=['Reject non-push CI runs','Verify CI succeeded for target commit','Checkout','Setup Node','Install dependencies','Check deployment Brevo configuration','Migrate Neon database','Sync Brevo SMTP settings to Render','Deploy Render backend','Wait for Render deploy to start','Wait for Render backend health','Install Vercel CLI','Pull Vercel project settings','Build Vercel frontend','Deploy Vercel frontend','Warm Render backend before smoke','Run deployed smoke'];const actual=d.steps.map((s)=>s.name);if(JSON.stringify(actual)!==JSON.stringify(names))throw new Error('deploy steps changed: '+JSON.stringify(actual));const co=d.steps.find((s)=>s.name==='Checkout');if(!co||!co.with||Object.keys(co.with).sort().join(',')!=='ref')throw new Error('checkout must keep exactly the ref input');const expectedRef=String.fromCharCode(36)+'{{ github.event.workflow_run.head_sha || github.sha }}';if(String(co.with.ref)!==expectedRef)throw new Error('checkout ref changed');const cw=yaml.load(fs.readFileSync('.github/workflows/ci.yml','utf8'));const ci=cw.jobs['verify-workflows'].steps.map((s)=>s.name);const expectedCi=['Checkout','Setup Node','Install dependencies','Lint GitHub Actions workflows','Validate Vercel config','Validate Render blueprint','Validate deploy workflow dispatch choices','Check deploy workflow has no Fly deploy path','Guard rejects placeholder values','Guard accepts a complete value set'];if(JSON.stringify(ci)!==JSON.stringify(expectedCi))throw new Error('verify-workflows steps changed: '+JSON.stringify(ci));console.log('deploy.yml: workflow_dispatch offers development and production; environment mapping and automatic path unchanged; ci.yml verify-workflows dispatch parse step in place')"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const yaml = require('js-yaml');
+          const w = yaml.load(fs.readFileSync('.github/workflows/deploy.yml', 'utf8'));
+          const t = (w.on && typeof w.on === 'object') ? w.on : w[true];
+          if (Object.keys(t).sort().join(',') !== 'workflow_dispatch,workflow_run') throw new Error('deploy triggers changed');
+          const wr = t.workflow_run;
+          if (Object.keys(wr).sort().join(',') !== 'branches,types,workflows') throw new Error('workflow_run fields changed');
+          if (JSON.stringify(wr.workflows) !== JSON.stringify(['CI'])) throw new Error('workflow_run workflows changed');
+          if (JSON.stringify(wr.types) !== JSON.stringify(['completed'])) throw new Error('workflow_run types changed');
+          if (JSON.stringify(wr.branches) !== JSON.stringify(['main'])) throw new Error('workflow_run branches changed');
+          if (t.push !== undefined) throw new Error('deploy must not gain a push trigger');
+          const inputs = t.workflow_dispatch.inputs;
+          if (Object.keys(inputs).sort().join(',') !== 'build,build_sha,environment') throw new Error('workflow_dispatch inputs changed');
+          const environment = inputs.environment;
+          if (Object.keys(environment).sort().join(',') !== 'default,description,options,required,type') throw new Error('environment input fields changed');
+          if (environment.type !== 'choice' || environment.required !== true || environment.default !== 'production') throw new Error('environment input must stay a required choice defaulting to production');
+          if (JSON.stringify(environment.options) !== JSON.stringify(['production', 'development'])) throw new Error('environment choices must be exactly [production, development]');
+          if (environment.description !== 'GitHub Environment to deploy (development or production)') throw new Error('environment input description must name both environments');
+          const d = w.jobs.deploy;
+          if (Object.keys(w.jobs).length !== 1) throw new Error('deploy.yml must keep exactly one job');
+          const expectedIf = "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')";
+          if (d.if !== expectedIf) throw new Error('deploy job condition changed');
+          if (d.environment !== d.env.TARGET_ENVIRONMENT) throw new Error('environment and TARGET_ENVIRONMENT must use the same expression');
+          if (w.concurrency.group !== 'deploy-' + d.environment) throw new Error('concurrency group must be deploy-<environment>');
+          if (w.concurrency['cancel-in-progress'] !== false) throw new Error('cancel-in-progress must stay false');
+          for (const [k, v] of [['environment', d.environment], ['TARGET_ENVIRONMENT', d.env.TARGET_ENVIRONMENT], ['concurrency.group', w.concurrency.group]]) {
+            if (!v.includes('github.event.inputs.environment') || !v.includes("'development'") || v.includes("'production'")) throw new Error(k + ' must resolve the dispatch input with a development fallback and no production hardcode');
+          }
+          if (w.permissions.contents !== 'read' || w.permissions.actions !== 'read' || Object.keys(w.permissions).length !== 2) throw new Error('permissions must stay contents: read, actions: read');
+          if (d['timeout-minutes'] !== 45) throw new Error('deploy timeout must stay 45 minutes');
+          console.log('deploy.yml: workflow_dispatch offers development and production with build selection; environment mapping and automatic trigger unchanged');
+          NODE
+      - name: Validate deploy build selection contract
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const yaml = require('js-yaml');
+          const w = yaml.load(fs.readFileSync('.github/workflows/deploy.yml', 'utf8'));
+          const t = (w.on && typeof w.on === 'object') ? w.on : w[true];
+          if (Object.keys(t).sort().join(',') !== 'workflow_dispatch,workflow_run') throw new Error('deploy triggers changed');
+          const wr = t.workflow_run;
+          if (Object.keys(wr).sort().join(',') !== 'branches,types,workflows') throw new Error('workflow_run fields changed');
+          if (JSON.stringify(wr.workflows) !== JSON.stringify(['CI']) || JSON.stringify(wr.types) !== JSON.stringify(['completed']) || JSON.stringify(wr.branches) !== JSON.stringify(['main'])) throw new Error('workflow_run trigger changed');
+          if (t.push !== undefined) throw new Error('deploy must not gain a push trigger');
+          const inputs = t.workflow_dispatch.inputs;
+          if (Object.keys(inputs).sort().join(',') !== 'build,build_sha,environment') throw new Error('dispatch inputs changed');
+          const environment = inputs.environment;
+          if (environment.description !== 'GitHub Environment to deploy (development or production)') throw new Error('environment input description changed');
+          if (environment.type !== 'choice' || environment.required !== true || environment.default !== 'production') throw new Error('environment input changed');
+          if (JSON.stringify(environment.options) !== JSON.stringify(['production', 'development'])) throw new Error('environment choices changed');
+          const build = inputs.build;
+          if (Object.keys(build).sort().join(',') !== 'default,description,options,required,type') throw new Error('build input fields changed');
+          if (build.type !== 'choice' || build.required !== true || build.default !== 'latest') throw new Error('build input must be a required choice defaulting to latest');
+          if (JSON.stringify(build.options) !== JSON.stringify(['latest', 'previous-1', 'previous-2', 'previous-3', 'previous-4', 'previous-5', 'previous-6', 'previous-7', 'previous-8', 'previous-9'])) throw new Error('build options changed');
+          if (build.description !== 'Build to deploy (production only; latest = newest successful CI build on main)') throw new Error('build description changed');
+          const buildSha = inputs.build_sha;
+          if (Object.keys(buildSha).sort().join(',') !== 'default,description,required,type') throw new Error('build_sha input fields changed');
+          if (buildSha.type !== 'string' || buildSha.required !== false || buildSha.default !== '') throw new Error('build_sha input must be an optional string with an empty default');
+          if (buildSha.description !== 'Optional full 40-character lowercase commit SHA for an exact build (production only)') throw new Error('build_sha description changed');
+          const d = w.jobs.deploy;
+          if (Object.keys(w.jobs).length !== 1) throw new Error('job count changed');
+          const expectedIf = "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')";
+          if (d.if !== expectedIf) throw new Error('job condition changed');
+          if (d.environment !== d.env.TARGET_ENVIRONMENT) throw new Error('environment mapping changed');
+          if (w.concurrency.group !== 'deploy-' + d.environment || w.concurrency['cancel-in-progress'] !== false) throw new Error('concurrency changed');
+          if (w.permissions.contents !== 'read' || w.permissions.actions !== 'read' || Object.keys(w.permissions).length !== 2) throw new Error('permissions changed');
+          const steps = d.steps;
+          const stepNames = steps.map((s) => s.name);
+          const expectedSteps = ['Reject non-push CI runs', 'Resolve selected build', 'Verify CI succeeded for target commit', 'Checkout', 'Confirm selected build checkout', 'Setup Node', 'Install dependencies', 'Check selected build deploy contract', 'Check deployment Brevo configuration', 'Check selected build schema compatibility', 'Migrate Neon database', 'Sync Brevo SMTP settings to Render', 'Deploy Render backend', 'Wait for Render deploy to complete', 'Wait for Render backend health', 'Install Vercel CLI', 'Pull Vercel project settings', 'Build Vercel frontend', 'Deploy Vercel frontend', 'Warm Render backend before smoke', 'Run deployed smoke'];
+          if (JSON.stringify(stepNames) !== JSON.stringify(expectedSteps)) throw new Error('deploy steps changed: ' + JSON.stringify(stepNames));
+          const step = (name) => {
+            const found = steps.find((candidate) => candidate.name === name);
+            if (!found) throw new Error('missing step: ' + name);
+            return found;
+          };
+          const dispatchOnly = "github.event_name == 'workflow_dispatch'";
+          const expectedRef = '$' + '{{ steps.resolve_build.outputs.sha || github.event.workflow_run.head_sha || github.sha }}';
+          const checkout = step('Checkout');
+          if (!checkout.with || Object.keys(checkout.with).sort().join(',') !== 'ref' || checkout.with.ref !== expectedRef) throw new Error('checkout ref changed');
+          const resolve = step('Resolve selected build');
+          if (resolve.id !== 'resolve_build' || resolve.if !== dispatchOnly) throw new Error('resolver step changed');
+          const resolveRun = resolve.run;
+          for (const anchor of ['actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100', '!seen[$1]++', 'sed -n "$((index + 1))p"', '^[0-9a-f]{40}$', 'build_sha must be a full 40-character lowercase commit SHA.', 'Set either build=previous-N or build_sha, not both.', 'Build selection is available for environment=production only; set build=latest and clear build_sha for a development dispatch.', 'Build choice $BUILD is unavailable: fewer than $((index + 1)) successful CI builds on main.', 'Resolved build: $sha ($source)', 'CI run:', 'sha=$sha', 'source=$source']) {
+            if (!resolveRun.includes(anchor)) throw new Error('resolver run missing: ' + anchor);
+          }
+          const guard = step('Verify CI succeeded for target commit');
+          if (guard.if !== dispatchOnly) throw new Error('guard must stay dispatch-only');
+          if (!guard.env || guard.env.TARGET_SHA !== '$' + '{{ steps.resolve_build.outputs.sha }}') throw new Error('guard target changed');
+          for (const anchor of ['gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --event push --branch main --commit "$TARGET_SHA"', 'compare/$TARGET_SHA...main', 'ahead|identical', 'CI for $TARGET_SHA is not successful (conclusion: ${conclusion:-none}); refusing to deploy', 'Build $TARGET_SHA is not on main (compare status: $status); refusing to deploy.', 'CI succeeded for $TARGET_SHA']) {
+            if (!guard.run.includes(anchor)) throw new Error('guard run missing: ' + anchor);
+          }
+          const confirm = step('Confirm selected build checkout');
+          if (!confirm.env || confirm.env.EXPECTED_SHA !== expectedRef) throw new Error('confirm expected sha changed');
+          for (const anchor of ['git rev-parse HEAD', 'Checked-out build $actual does not match the selected build $EXPECTED_SHA.', 'Deploying build $actual to $TARGET_ENVIRONMENT']) {
+            if (!confirm.run.includes(anchor)) throw new Error('confirm run missing: ' + anchor);
+          }
+          const contract = step('Check selected build deploy contract');
+          if (contract.if !== dispatchOnly) throw new Error('contract gate must stay dispatch-only');
+          for (const anchor of ['src/backend/src/deploy/render-env.ts', 'src/backend/src/deploy/render-env-cli.ts', 'src/backend/src/auth/config.ts', 'src/backend/src/db/migrate-cli.ts', 'src/backend/src/db/migrate-runner.ts', 'src/backend/src/db/migrate.ts', 'tests/e2e/deployed-smoke.mjs', 'git diff --quiet "$PIPELINE_SHA"', "require.resolve('pg')", 'has a different deploy/migration/smoke contract', 'does not include the pg dependency', 'Deploy contract OK for $SELECTED_SHA (guard/migration/smoke identical to $PIPELINE_SHA).']) {
+            if (!contract.run.includes(anchor)) throw new Error('contract run missing: ' + anchor);
+          }
+          const schema = step('Check selected build schema compatibility');
+          if (schema.if !== dispatchOnly) throw new Error('schema gate must stay dispatch-only');
+          const schemaIndex = stepNames.indexOf('Check selected build schema compatibility');
+          const brevoIndex = stepNames.indexOf('Check deployment Brevo configuration');
+          const migrateIndex = stepNames.indexOf('Migrate Neon database');
+          if (!(brevoIndex < schemaIndex && schemaIndex < migrateIndex)) throw new Error('schema gate position changed');
+          for (const anchor of ['schema_migrations', 'src/backend/src/db/migrations/', 'predates applied migration(s):', 'Schema compatibility OK for $TARGET_SHA: $local_count migration(s) in build, $applied_count applied on the target branch.']) {
+            if (!schema.run.includes(anchor)) throw new Error('schema run missing: ' + anchor);
+          }
+          const render = step('Deploy Render backend');
+          if (render.id !== 'render_deploy') throw new Error('render deploy step id changed');
+          for (const anchor of ['https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys', 'commitId', 'Render deploy queued behind an in-progress deploy (HTTP 202)', 'does not start with dep-', 'Render deploy commit mismatch', 'Render deploy: $deploy_id $deploy_status for $TARGET_SHA', 'RENDER_DEPLOY_HOOK_URL', 'deploy_id=$deploy_id']) {
+            if (!render.run.includes(anchor)) throw new Error('render run missing: ' + anchor);
+          }
+          const completion = step('Wait for Render deploy to complete');
+          if (!completion.env || completion.env.DEPLOY_ID !== '$' + '{{ steps.render_deploy.outputs.deploy_id }}') throw new Error('completion deploy id wiring changed');
+          for (const anchor of ['timeout_seconds=${RENDER_DEPLOY_TIMEOUT_SECONDS:-900}', 'poll_interval=${RENDER_DEPLOY_POLL_INTERVAL_SECONDS:-10}', 'retrying in', 'deploys?limit=1', 'build_failed|update_failed|canceled|pre_deploy_failed|deactivated', 'Render deploy $DEPLOY_ID ended with status $status for $TARGET_SHA; refusing to continue.', 'Render deploy $DEPLOY_ID did not reach live within ${timeout_seconds}s (last status: ${status:-unknown}); refusing to continue.', 'Render service current deploy $current_id ($current_commit) does not match the selected deploy $DEPLOY_ID ($TARGET_SHA); refusing to continue.', 'Render current deploy: $current_id $current_commit', 'Render deploy live: $DEPLOY_ID for $TARGET_SHA', 'sleep 45']) {
+            if (!completion.run.includes(anchor)) throw new Error('completion run missing: ' + anchor);
+          }
+          const vercel = step('Deploy Vercel frontend');
+          for (const anchor of ['--meta githubCommitSha="$TARGET_SHA"', 'Vercel deployment: $deployment_url for $TARGET_SHA']) {
+            if (!vercel.run.includes(anchor)) throw new Error('vercel run missing: ' + anchor);
+          }
+          const cw = yaml.load(fs.readFileSync('.github/workflows/ci.yml', 'utf8'));
+          const ciSteps = cw.jobs['verify-workflows'].steps.map((s) => s.name);
+          const expectedCi = ['Checkout', 'Setup Node', 'Install dependencies', 'Lint GitHub Actions workflows', 'Validate Vercel config', 'Validate Render blueprint', 'Validate deploy workflow dispatch choices', 'Validate deploy build selection contract', 'Check deploy workflow has no Fly deploy path', 'Guard rejects placeholder values', 'Guard accepts a complete value set'];
+          if (JSON.stringify(ciSteps) !== JSON.stringify(expectedCi)) throw new Error('verify-workflows steps changed: ' + JSON.stringify(ciSteps));
+          console.log('deploy.yml: build selection contract pinned (resolver, guard, contract, schema, Render API/completion, Vercel and 21-step order)');
+          NODE
       - name: Check deploy workflow has no Fly deploy path
         run: |
           if grep -niE 'fly' .github/workflows/deploy.yml; then
