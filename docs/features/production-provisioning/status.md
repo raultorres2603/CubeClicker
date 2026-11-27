@@ -64,4 +64,4 @@ Provision the `production` GitHub Environment end to end (Neon branch, Vercel pr
 - **F4 (INFO):** commit `3277661` mixed the six T7 docs, `build-log-T7.md`, orchestrator `status.md` and another feature's artifacts; `3277661`/`f29bcc6` use non-conventional messages. Documented integration hygiene; no history rewrite.
 - **F5 (INFO):** host Podman storage damage blocked the reviewer's full backend/coverage/local-smoke rerun; T8's recorded green run, the unchanged code, the independent frontend/deployed smoke and the pinned actionlint binary cover the gate.
 - **F6 (INFO, accepted):** Render MCP has no environment-variable read tool; T4's accepted 15-key replace-all write plus T6's sync/deploy/health/smoke is the functional proof.
-- **Next:** `production-build-selection` T1 is unblocked (the accepted state is now present); its Q-1 relative dropdown + `build_sha` is owner-approved.
+- **Next:** `production-build-selection` is in code review; the owner-approved contract is optional `build_sha` only (empty = latest successful `main` build, set = exact SHA). Its pinned and latest live proofs are green.
