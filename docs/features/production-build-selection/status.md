@@ -1,8 +1,8 @@
 ---
 feature: production-build-selection
-state: building
+state: accepted
 spec_review_round: 2
-build_round: 0
+build_round: 1
 created: 2026-11-27
 updated: 2026-11-27
 ---
@@ -15,7 +15,7 @@ Add an optional `build_sha` to the manual production deploy: empty selects the l
 - [x] T1 — Build-selection workflow contract, CI parse and dry-runs `[seq]` (rework for `build_sha`-only)
 - [x] T2 — Documentation and feature-index proposal `[P]` (rework for `build_sha`-only)
 - [x] T3 — Live selected-build proof and automatic development proof `[owner]` `[P]` (rework with `build_sha`)
-- [>] T4 — Verify & integrate `[seq]`
+- [x] T4 — Verify & integrate `[seq]`
 
 ## Loop log
 - 2026-11-27 — created → planning — request: production manual deploy should offer a dropdown of previous builds (default latest successful), development automatic stays latest; planner briefed with the GitHub Actions static-choice limitation, the `production-provisioning` T6a fix, and the same-revision requirement.
@@ -42,10 +42,11 @@ Add an optional `build_sha` to the manual production deploy: empty selects the l
 - 2026-11-27 — building — T2 rework completed (commits `0e85012` r4 artifacts + `e82f7ac` docs; README/deployment/vercel updated to `build_sha`-only, old dropdown sections removed; T2 verify exit 0 in place; links/actionlint/parses/no-edit/credential guards pass; proposed index row recorded); T3 needs the updated branch merged to `main` — build-log-T2.md
 - 2026-11-27 — building — user merged the reworked branch; T3 re-run dispatched with an exact prior `build_sha` and a latest restore omitting `build_sha`, followed by the automatic-development proof — build-log-T2.md
 - 2026-11-27 — building — T3 re-run completed (merge `2b7764f`; pinned `build_sha=5209d80…` run `46066174413` deployed `5209d804a` to Render `dep-dc4uq1bl550s73ar170g`/Vercel `dpl_2bi37UEKh99U7E3Kh6quReJXAGED`; latest restore `46066583737` resolved `2b7764f` to Render `dep-dc4urudg1s2s73fuaa5g`/Vercel `dpl_CKdzBvUnpCCvQxzTQyDKzCREwm2X`; automatic development `46066138982` green; smoke 8/8 each, protection intact, no mixed revision; T3 verify exit 0); T4 final gate dispatched — build-log-T3.md
+- 2026-11-27 — building → code_review — T4 completed (commit `956c874`; exact r4 gate exit 0; lint/typecheck/test/coverage/build green, backend 97.09/92.24/99.65/97.09, frontend 97.22/96.8/98.6/97.22; smoke 29/29 via provider fallback; 31/31 harness; actionlint/parses/Brevo fixtures; docs/stale scans; live evidence reproduction; no app code; `No mixed revision`/`Protection gate: not bypassed`; status committed unchanged); code review round 1 dispatched — build-log-T4.md
+- 2026-11-27 — code_review — review r1 approved (0 blocking; 3 nonblocking: stale predecessor status reference fixed here, stale F27 status note fixed here, `ci.yml` env-expression pinning backlog); accepted; production is live on `2b7764f` — reviews/code-r1.md
 
 ## Blockers / open questions
 - **Q-1 superseded by the owner:** the dropdown and relative choices are removed; the only selector is the optional `build_sha` field (empty = latest, set = exact SHA).
-- **T4 final gate in progress:** the pinned/latest/automatic proofs are green; the builder runs the full suite, coverage, 31-case harness, smoke, actionlint/parses, docs/stale scans and live-evidence reproduction. The orchestrator authorizes committing `status.md` unchanged with the T4 log.
-- The orchestrator-owned `status.md` is uncommitted; the eventual T4 builder is authorized to commit it unchanged with its build log.
-- **Q-2 (default):** empty `build_sha` means the newest successful `CI` push build on `main`; a set SHA is the exact commit (may not be the latest). **Q-3:** old builds fail closed on schema/contract mismatch. **Q-4:** selection is production-only.
-- **F27 (MINOR):** the broad docs negative would reject a correct “no dropdown” sentence; the T2 wording/scan needs a bounded fix before T2 runs.
+- **Accepted.** Production is live on the latest build (`2b7764f`); the pinned `5209d804a` proof and the automatic development proof are green. No provider action is needed.
+- **Backlog:** N1/N2 stale status references were fixed here; N3 the `ci.yml` env-expression pinning is less exhaustive than AC-9(b)'s broad wording. Q-2/Q-3/Q-4 are implemented and documented.
+- The final `status.md` + `docs/features/README.md` acceptance update is committed as a small integration commit; the feature branch is ready to merge.

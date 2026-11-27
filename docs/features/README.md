@@ -69,5 +69,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | deploy-development-manual-trigger | Manual Development Deploy Trigger | accepted | 2026-11-25 |
 | brevo-api-email-transport | Brevo HTTPS Email Transport (deployed environments) | code_review | 2026-11-27 |
 | production-provisioning | Production Environment Provisioning (Neon/Vercel/Render + GitHub production environment, live deploy proof) | accepted | 2026-11-27 |
+| production-build-selection | Production Build Selection (optional `build_sha`: empty = latest successful `main` build, set = exact SHA) | accepted | 2026-11-27 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
