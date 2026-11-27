@@ -68,5 +68,6 @@ Feature work runs through the agent workflow (see `AGENTS.md`). Every feature li
 | registration-account-exists | Registration Account Exists: Working Verification Delivery, Honest Conflicts & Resumable Registration | code_review | 2026-11-24 |
 | deploy-development-manual-trigger | Manual Development Deploy Trigger | accepted | 2026-11-25 |
 | brevo-api-email-transport | Brevo HTTPS Email Transport (deployed environments) | code_review | 2026-11-27 |
+| production-provisioning | Production Environment Provisioning (Neon/Vercel/Render + GitHub production environment, live deploy proof) | accepted | 2026-11-27 |
 
 States: `planning` · `spec_review` · `awaiting_approval` · `building` · `code_review` · `accepted` · `blocked` · `escalated`
